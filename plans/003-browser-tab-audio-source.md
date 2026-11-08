@@ -17,7 +17,7 @@
 - **Priority**: P1
 - **Effort**: S
 - **Risk**: LOW (frontend only; no backend, auth or schema change)
-- **Depends on**: `plans/002-youtube-intake-spike.md` (must be marked DONE in `plans/README.md` and `plans/002-results.md` Step 1 must have confirmed Chrome/Edge tab audio). If `plans/002-results.md` is missing or plan 002 is not marked DONE, stop execution immediately (see STOP conditions).
+- **Depends on**: `plans/002-youtube-intake-spike.md` (only its Step 1 is needed: `plans/002-results.md` Step 1 must have confirmed Chrome/Edge tab audio; plan 002 as a whole may stay IN PROGRESS in `plans/README.md`). If `plans/002-results.md` is missing or its Step 1 is not recorded, stop execution immediately (see STOP conditions).
 - **Category**: direction
 - **Planned at**: commit `250aefde`, 2026-11-01
 - **Issue**: https://github.com/fossasia/voxbento/issues/1087
@@ -318,7 +318,7 @@ In `.github/workflows/tests.yml`: under "Validate JS syntax" add
 
 ## STOP conditions
 
-- `plans/002-results.md` is missing, plan 002 is not marked DONE in `plans/README.md`, or Step 1
+- `plans/002-results.md` is missing, its Step 1 result is not recorded, or Step 1
   results say Chrome/Edge do not deliver a tab audio track, or that the track dies when the
   tab is backgrounded.
 - `program-sender.js` no longer has `openInput()`/`connect()`/`stop()` shaped as described
