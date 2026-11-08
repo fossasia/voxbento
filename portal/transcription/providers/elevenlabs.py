@@ -69,12 +69,21 @@ class ElevenLabsProvider(TranscriptionProvider):
             raise e
         return ""
 
-    @staticmethod
-    def _auth_error_from_frame(data: dict) -> TranscriptionAuthError | None:
+    # Frame types that mean the key was rejected. "unauthorized" does not
+    # contain "error", so the receive loop checks this set as well as looking
+    # for "error" in the type — otherwise a mid-stream rejection is ignored.
+    _AUTH_MESSAGE_TYPES = ("auth_error", "authentication_error", "unauthorized")
+
+    @classmethod
+    def _is_auth_frame_type(cls, message_type: str) -> bool:
+        return message_type in cls._AUTH_MESSAGE_TYPES or "error" in message_type
+
+    @classmethod
+    def _auth_error_from_frame(cls, data: dict) -> TranscriptionAuthError | None:
         """Return an auth error if this frame is ElevenLabs rejecting the key."""
         message_type = (data.get("message_type") or "").lower()
         detail = str(data.get("error") or data.get("message") or data).strip()
-        if message_type in ("auth_error", "authentication_error", "unauthorized"):
+        if message_type in cls._AUTH_MESSAGE_TYPES:
             return TranscriptionAuthError(
                 "elevenlabs", f"ElevenLabs API key was rejected ({detail})."
             )
@@ -173,7 +182,7 @@ class ElevenLabsProvider(TranscriptionProvider):
                                     text = data.get("text", "").strip()
                                     if text:
                                         await aggregator.handle_partial(booth_id, text)
-                                elif message_type and "error" in message_type:
+                                elif message_type and self._is_auth_frame_type(message_type):
                                     auth_error = self._auth_error_from_frame(data)
                                     if auth_error:
                                         raise auth_error
