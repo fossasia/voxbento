@@ -77,4 +77,4 @@ This keeps real-time prompts compact, minimizing LLM inference latency.
 - **OpenAI / OpenRouter / Groq**: Shared system and user messages with contextual instructions.
 - **Anthropic**: Persona, style, and glossary terms supplied through the top-level `system` prompt parameter.
 - **Google Gemini**: Applied via `systemInstruction`.
-- **Local NLLB**: Deterministic sequence-to-sequence translation models do not support system prompts or glossaries. Persona, style, and vocabulary settings are safely stored but bypassed when running local NLLB.
+- **Local NLLB**: Sequence-to-sequence models take no system prompt, so persona and style are stored but not applied. Glossary terms are applied by term protection: each match is swapped for a numbered placeholder before translation and replaced with its target term afterwards. If the model drops or mangles a placeholder, the segment is translated again without the glossary, so listeners never see a placeholder.

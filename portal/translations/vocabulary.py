@@ -3,7 +3,9 @@ from __future__ import annotations
 import asyncio
 import csv
 import io
+import itertools
 import re
+from collections.abc import Iterable
 from dataclasses import dataclass
 
 import pycountry
@@ -204,6 +206,67 @@ def _term_matches(entry: AIVocabularyEntry, transcript_text: str) -> bool:
     haystack = transcript_text if entry.case_sensitive else transcript_text.casefold()
     needle = entry.source_term if entry.case_sensitive else entry.source_term.casefold()
     return needle in haystack
+
+
+# NLLB keeps "[1]" to "[15]" as single tokens and copies them through unchanged in about
+# 95% of segments; "⟦1⟧" is not in its vocabulary and never survives.
+TERM_PLACEHOLDER = re.compile(r"\[(\d+)\]")
+
+
+@dataclass(frozen=True)
+class ProtectedSegment:
+    text: str
+    target_terms: tuple[str, ...]
+
+
+def find_term_spans(entry: VocabularyEntryInput | AIVocabularyEntry, text: str) -> list[tuple[int, int]]:
+    """Where ``entry`` occurs in ``text``, by the same rules as ``_term_matches``."""
+    term = entry.source_term if entry.case_sensitive else entry.source_term.casefold()
+    pieces = [char if entry.case_sensitive else char.casefold() for char in text]
+    # Case folding can lengthen the text ("ß" -> "ss"), so map folded offsets back to the original ones.
+    offsets = dict(zip(itertools.accumulate(map(len, pieces), initial=0), range(len(text) + 1)))
+    pattern = re.escape(term)
+    if entry.match_type == "exact":
+        pattern = rf"(?<!\w){pattern}(?!\w)"
+    return [
+        (offsets[match.start()], offsets[match.end()])
+        for match in re.finditer(pattern, "".join(pieces))
+        # A match that starts or ends inside a folded character cannot be cut out of the original.
+        if match.start() in offsets and match.end() in offsets
+    ]
+
+
+def protect_terms(text: str, entries: Iterable[VocabularyEntryInput | AIVocabularyEntry]) -> ProtectedSegment:
+    """Replace glossary matches with numbered placeholders for a model that takes no instructions."""
+    spans = sorted(
+        (
+            (start, end, rank, entry.target_term)
+            for rank, entry in enumerate(entries)
+            for start, end in find_term_spans(entry, text)
+        ),
+        # The longest match wins an overlap; ties go to the entry the resolver ranked first.
+        key=lambda span: (span[0] - span[1], span[2], span[0]),
+    )
+    chosen: list[tuple[int, int, int, str]] = []
+    for span in spans:
+        if all(span[1] <= other[0] or span[0] >= other[1] for other in chosen):
+            chosen.append(span)
+    chosen.sort()
+    parts: list[str] = []
+    cursor = 0
+    for number, (start, end, _, _) in enumerate(chosen, 1):
+        parts += (text[cursor:start], f"[{number}]")
+        cursor = end
+    parts.append(text[cursor:])
+    return ProtectedSegment("".join(parts), tuple(span[3] for span in chosen))
+
+
+def restore_terms(translated: str, segment: ProtectedSegment) -> str | None:
+    """Swap placeholders for target terms, or return None unless each one came back exactly once."""
+    numbers = sorted(int(number) for number in TERM_PLACEHOLDER.findall(translated))
+    if numbers != list(range(1, len(segment.target_terms) + 1)):
+        return None
+    return TERM_PLACEHOLDER.sub(lambda match: segment.target_terms[int(match.group(1)) - 1], translated)
 
 
 async def resolve_vocabulary_entries(

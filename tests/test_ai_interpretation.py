@@ -17,11 +17,14 @@ from portal.translations.providers.gemini import GeminiProvider
 from portal.translations.providers.openai import OpenAIProvider
 from portal.translations.vocabulary import (
     MAX_ROWS,
+    ProtectedSegment,
     VocabularyEntryInput,
     VocabularyOverlapIndex,
     _term_matches,
     parse_vocabulary_csv,
+    protect_terms,
     resolve_vocabulary_entries,
+    restore_terms,
     serialize_vocabulary_csv,
     vocabulary_terms_overlap,
 )
@@ -192,48 +195,151 @@ def test_prompt_omits_the_guard_when_nothing_is_configured():
     assert "constrain word choice and register only" not in prompt
 
 
-@pytest.mark.anyio
-async def test_local_provider_ignores_interpretation_settings_and_says_so(caplog):
-    import logging
-
+async def translate_locally(
+    monkeypatch, outputs: dict[str, str | None], text: str, entries, **settings
+) -> tuple[str | None, list[str]]:
+    """Run the NLLB provider with a fake model that maps exact inputs to outputs."""
     from portal.translations.providers.local import LocalProvider
 
-    entry = AIVocabularyEntry(
-        event_id=1, source_term="Voxbento", target_language="all", target_term="Voxbento"
-    )
-    captured = {}
+    calls = []
 
     def fake_inference(self, text, source_token, target_token, model_size):
-        captured["text"] = text
-        return "Willkommen"
+        calls.append(text)
+        return outputs[text]
 
-    LocalProvider._warned_unsupported_settings = False
-    original = LocalProvider._run_inference
-    LocalProvider._run_inference = fake_inference
-    try:
-        with caplog.at_level(logging.WARNING):
-            result = await LocalProvider().translate(
-                provider_name="local",
-                text="Welcome to Voxbento",
-                target_lang_name="German",
-                target_lang_code="de",
-                source_lang_name="English",
-                model="nllb-200-distilled-600M",
-                api_key=None,
-                persona="A commentator who adds background context.",
-                style="Summarize aggressively.",
-                vocabulary_entries=[entry],
-            )
-    finally:
-        LocalProvider._run_inference = original
-        LocalProvider._warned_unsupported_settings = False
+    monkeypatch.setattr(LocalProvider, "_run_inference", fake_inference)
+    monkeypatch.setattr(LocalProvider, "_warned_unsupported_settings", False)
+    result = await LocalProvider().translate(
+        provider_name="local",
+        text=text,
+        target_lang_name="French",
+        target_lang_code="fr",
+        source_lang_name="English",
+        model="nllb-200-distilled-600M",
+        api_key=None,
+        vocabulary_entries=entries,
+        **settings,
+    )
+    return result, calls
 
-    assert result == "Willkommen"
-    # The model sees the raw segment: no persona, style or glossary is injected.
-    assert captured["text"] == "Welcome to Voxbento"
+
+@pytest.mark.anyio
+async def test_local_provider_ignores_persona_and_style_and_says_so(monkeypatch, caplog):
+    import logging
+
+    entry = AIVocabularyEntry(event_id=1, source_term="Voxbento", target_language="all", target_term="Voxbento")
+    with caplog.at_level(logging.WARNING):
+        result, calls = await translate_locally(
+            monkeypatch,
+            {"Welcome to [1]": "Bienvenue à [1]"},
+            "Welcome to Voxbento",
+            [entry],
+            persona="A commentator who adds background context.",
+            style="Summarize aggressively.",
+        )
+
+    assert result == "Bienvenue à Voxbento"
+    # Only the glossary reaches the model, as a placeholder: no persona or style is injected.
+    assert calls == ["Welcome to [1]"]
     warning = "".join(record.message for record in caplog.records if record.levelno >= logging.WARNING)
-    assert "ignores persona, style, vocabulary" in warning
+    assert "ignores persona, style:" in warning
     assert "cloud translation provider" in warning
+
+
+@pytest.mark.anyio
+async def test_local_provider_applies_glossary_terms(monkeypatch):
+    entries = [
+        AIVocabularyEntry(event_id=1, source_term="MediaMTX", target_language="all", target_term="MediaMTX"),
+        AIVocabularyEntry(event_id=1, source_term="booth", target_language="fr", target_term="cabine"),
+    ]
+    result, calls = await translate_locally(
+        monkeypatch,
+        {"The [1] streams through [2].": "La [1] diffuse via [2]."},
+        "The booth streams through MediaMTX.",
+        entries,
+    )
+
+    assert calls == ["The [1] streams through [2]."]
+    assert result == "La cabine diffuse via MediaMTX."
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize(
+    "mangled",
+    ["Bienvenue à [1]", "Bienvenue à [1] et [1] [2]", "Bienvenue à [1] et [2] [3]", "Bienvenue à [ 1] et [2]", None],
+)
+async def test_local_provider_falls_back_when_placeholders_do_not_survive(monkeypatch, mangled):
+    entries = [
+        AIVocabularyEntry(event_id=1, source_term="MediaMTX", target_language="all", target_term="MediaMTX"),
+        AIVocabularyEntry(event_id=1, source_term="Jitsi", target_language="all", target_term="Jitsi"),
+    ]
+    plain = "Bienvenue à MédiaMTX et Jitsi"
+    result, calls = await translate_locally(
+        monkeypatch,
+        {"Welcome to [1] and [2]": mangled, "Welcome to MediaMTX and Jitsi": plain},
+        "Welcome to MediaMTX and Jitsi",
+        entries,
+    )
+
+    if mangled is None:
+        # A failed inference is not retried; the worker already handles a missing translation.
+        assert result is None
+        assert calls == ["Welcome to [1] and [2]"]
+    else:
+        assert result == plain
+        assert calls == ["Welcome to [1] and [2]", "Welcome to MediaMTX and Jitsi"]
+
+
+@pytest.mark.anyio
+async def test_local_provider_without_matching_terms_translates_the_raw_segment(monkeypatch):
+    entry = AIVocabularyEntry(event_id=1, source_term="Jitsi", target_language="all", target_term="Jitsi")
+    result, calls = await translate_locally(monkeypatch, {"Hello [1]": "Bonjour [1]"}, "Hello [1]", [entry])
+
+    # Text that merely looks like a placeholder is left alone when no glossary term matched.
+    assert result == "Bonjour [1]"
+    assert calls == ["Hello [1]"]
+
+
+def test_term_protection_resolves_overlaps_and_matching_rules():
+    def entry(term: str, target: str, match_type: str = "phrase", case_sensitive: bool = False):
+        return VocabularyEntryInput(
+            source_term=term,
+            target_language="fr",
+            target_term=target,
+            match_type=match_type,
+            case_sensitive=case_sensitive,
+        )
+
+    # The longest match wins an overlap, whichever entry was ranked first.
+    segment = protect_terms(
+        "The booth sits next to the interpreter booth.",
+        [entry("booth", "cabine"), entry("interpreter booth", "cabine d'interprétation")],
+    )
+    assert segment == ProtectedSegment("The [1] sits next to the [2].", ("cabine", "cabine d'interprétation"))
+
+    # Equal-length overlaps go to the entry the resolver ranked first.
+    segment = protect_terms("Open source", [entry("Open so", "A"), entry("en sour", "B")])
+    assert segment == ProtectedSegment("[1]urce", ("A",))
+
+    # Exact entries keep word boundaries and case sensitivity.
+    segment = protect_terms("US ships USB to us", [entry("US", "les États-Unis", "exact", case_sensitive=True)])
+    assert segment == ProtectedSegment("[1] ships USB to us", ("les États-Unis",))
+
+    # Case folding maps back onto the original text, even when it changes the length.
+    segment = protect_terms("Die Straße und die STRASSE", [entry("strasse", "rue", "exact")])
+    assert segment == ProtectedSegment("Die [1] und die [2]", ("rue", "rue"))
+
+    assert protect_terms("Nothing to see", [entry("booth", "cabine")]) == ProtectedSegment("Nothing to see", ())
+
+
+def test_restore_terms_requires_each_placeholder_exactly_once():
+    segment = ProtectedSegment("The [1] uses [2].", ("cabine", "[2] MediaMTX"))
+
+    # Placeholders may be reordered; a target term that looks like a placeholder is not re-expanded.
+    assert restore_terms("[2] et la [1].", segment) == "[2] MediaMTX et la cabine."
+    assert restore_terms("La [1] utilise.", segment) is None
+    assert restore_terms("La [1] utilise [2] [2].", segment) is None
+    assert restore_terms("La [1] utilise [2] [3].", segment) is None
 
 
 def test_prompt_stays_within_its_size_budget():
