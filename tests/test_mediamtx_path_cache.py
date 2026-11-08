@@ -247,6 +247,11 @@ async def test_a_failed_check_retries_sooner_than_a_full_window(mtx, monkeypatch
         {"items": 0, "pageCount": 1},
         {"items": "", "pageCount": 1},
         {"items": False, "pageCount": 1},
+        # MediaMTX's schema requires items as a list; absent or null is broken,
+        # not an empty MediaMTX. Treating it as empty would silently evict
+        # every cached path on a response that is in fact malformed.
+        {"pageCount": 1},
+        {"items": None, "pageCount": 1},
     ],
 )
 async def test_a_malformed_list_response_keeps_the_cache_and_does_not_raise(mtx, monkeypatch, payload):
@@ -265,14 +270,13 @@ async def test_a_malformed_list_response_keeps_the_cache_and_does_not_raise(mtx,
     assert CHANNEL in utils_mod._created_paths
 
 
-@pytest.mark.parametrize("payload", [{"pageCount": 1}, {"items": None, "pageCount": 1}])
-async def test_an_absent_items_key_still_means_no_paths(mtx, monkeypatch, payload):
-    """The other half of the contract: missing or null genuinely is empty."""
+async def test_an_empty_items_list_still_evicts_cached_paths(mtx, monkeypatch):
+    """An explicit empty list is the one shape that legitimately means "none"."""
 
     class _Empty(_FakeClient):
         async def get(self, url, params=None, timeout=None):
             self.list_calls += 1
-            return _FakeResponse(200, payload)
+            return _FakeResponse(200, {"items": [], "pageCount": 1})
 
     mtx(_Empty())
     utils_mod._created_paths.add(CHANNEL)
@@ -280,7 +284,7 @@ async def test_an_absent_items_key_still_means_no_paths(mtx, monkeypatch, payloa
 
     await utils_mod._revalidate_created_paths()
 
-    # MediaMTX really has nothing, so the stale entry is dropped.
+    # MediaMTX authoritatively has nothing, so the stale entry is dropped.
     assert CHANNEL not in utils_mod._created_paths
 
 

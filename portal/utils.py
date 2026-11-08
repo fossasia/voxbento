@@ -104,12 +104,11 @@ async def _configured_mediamtx_paths(api_base: str) -> set[str] | None:
             payload = r.json()
             if not isinstance(payload, dict):
                 return None
-            # Only an absent or null "items" means "no paths". A falsey wrong
-            # type ({}, 0, "") must not be coerced to [], or revalidation would
-            # read it as an empty MediaMTX and evict every cached path.
+            # MediaMTX's /v3/config/paths/list schema requires "items" as a
+            # list, so anything else — missing, null, a wrong type — is
+            # malformed rather than "no paths". Treating a broken response as
+            # empty would evict every cached path silently.
             items = payload.get("items")
-            if items is None:
-                items = []
             if not isinstance(items, list):
                 return None
             # A malformed entry makes the whole answer untrustworthy: skipping it
