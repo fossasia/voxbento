@@ -3,8 +3,6 @@
 from __future__ import annotations
 
 import hashlib
-import asyncio
-import hashlib
 import os
 import re
 import secrets
@@ -15,6 +13,7 @@ from pathlib import Path
 
 os.environ["BOOTH_ACCESS_TOKEN"] = ""
 
+import anyio
 import pytest
 
 from portal.auth import create_user_token, hash_password, verify_password
@@ -562,20 +561,21 @@ class TestUserLogin:
         if not node_bin:
             pytest.skip("Node.js not found")
         test_file = Path(__file__).resolve().parent / "test_password_toggle.js"
-        proc = await asyncio.create_subprocess_exec(
-            node_bin, str(test_file),
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
-        )
-        stdout_bytes, stderr_bytes = await proc.communicate()
-        stdout_text = stdout_bytes.decode()
-        stderr_text = stderr_bytes.decode()
+        result = await anyio.run_process([node_bin, str(test_file)], check=False)
+        stdout_text = result.stdout.decode()
+        stderr_text = result.stderr.decode()
         match = re.search(r"Password Toggle tests completed: (\d+) passed, (\d+) failed", stdout_text)
-        assert match is not None, f"Node test summary not found in output:\nstdout:\n{stdout_text}\nstderr:\n{stderr_text}"
+        assert match is not None, (
+            f"Node test summary not found in output:\nstdout:\n{stdout_text}\nstderr:\n{stderr_text}"
+        )
         passed_count = int(match.group(1))
         failed_count = int(match.group(2))
-        assert passed_count > 0, f"Expected at least one passed assertion, got {passed_count}\nstdout:\n{stdout_text}\nstderr:\n{stderr_text}"
-        assert failed_count == 0, f"Expected 0 failed assertions, got {failed_count}\nstdout:\n{stdout_text}\nstderr:\n{stderr_text}"
+        assert passed_count > 0, (
+            f"Expected at least one passed assertion, got {passed_count}\nstdout:\n{stdout_text}\nstderr:\n{stderr_text}"
+        )
+        assert failed_count == 0, (
+            f"Expected 0 failed assertions, got {failed_count}\nstdout:\n{stdout_text}\nstderr:\n{stderr_text}"
+        )
 
     @pytest.mark.anyio
     async def test_login_with_correct_credentials(self, setup_db):
