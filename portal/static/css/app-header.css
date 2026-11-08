@@ -1,8 +1,11 @@
 /* ── Shared header and user menu (#766) ──────────────────────────────────
    Used on every signed-in page via _app_header.html. Tokens are scoped to
-   .app-header so the header looks the same whatever page stylesheet loads. */
+   .app-header and .app-user so the header and the menu look the same whatever
+   page stylesheet loads. The booth's compact top bar renders the menu without
+   .app-header, so the menu has to carry its own tokens (#1135). */
 
-.app-header {
+.app-header,
+.app-user {
   --ah-surface: #ffffff;
   --ah-border: #e2e7f0;
   --ah-border-strong: #d0d7e6;
@@ -14,6 +17,9 @@
   --ah-primary-border: #bfd3fe;
   --ah-danger: #b42318;
   --ah-hover: #f5f7fb;
+}
+
+.app-header {
   --ah-gutter: 56px;
   position: sticky;
   top: 0;
@@ -24,7 +30,8 @@
   font-size: 16px;
   line-height: 1.5;
 }
-.app-header p { line-height: 1.4; }
+.app-header p,
+.app-user-menu p { line-height: 1.4; }
 
 .app-header-inner {
   width: min(1280px, 100% - 2 * var(--ah-gutter));
@@ -81,7 +88,16 @@
 .app-header-nav a.btn-primary { background: var(--ah-primary); color: #fff; }
 
 /* User menu */
-.app-user { position: relative; margin-left: auto; flex: none; }
+.app-user {
+  position: relative;
+  margin-left: auto;
+  flex: none;
+  /* The button and the menu inherit this, so the widget looks the same on any page,
+     including the booth's compact top bar where it sits outside .app-header (#1135). */
+  font-family: Inter, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;
+  font-size: 16px;
+  line-height: 1.5;
+}
 .app-user-button {
   display: inline-flex;
   align-items: center;
@@ -116,6 +132,9 @@
   border-radius: 12px;
   box-shadow: 0 12px 32px rgba(16, 24, 40, 0.12), 0 2px 6px rgba(16, 24, 40, 0.05);
   overflow: hidden;
+  /* Orders the menu among the positioned elements of its host bar. It cannot rise above that bar:
+     the bar's own z-index bounds it (.app-header is 200, the booth's .booth-topbar is 20). */
+  z-index: 300;
 }
 .app-user-menu[hidden] { display: none; }
 .app-user-head { padding: 15px 22px 12px; border-bottom: 1px solid var(--ah-border); }

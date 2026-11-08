@@ -301,7 +301,7 @@ async def list_rooms_for_event(
     event_id: int,
     *,
     search: str | None = None,
-    limit: int = 100,
+    limit: int | None = 100,
     offset: int = 0,
 ) -> list[Room]:
     from sqlalchemy.orm import selectinload
@@ -310,7 +310,11 @@ async def list_rooms_for_event(
     if search and search.strip():
         escaped_search = search.strip().replace("\\", "\\\\").replace("%", r"\%").replace("_", r"\_")
         query = query.where(Room.display_name.ilike(f"%{escaped_search}%", escape="\\"))
-    query = query.order_by(Room.created_at).limit(limit).offset(offset)
+    query = query.order_by(Room.created_at)
+    if limit is not None:
+        query = query.limit(limit)
+    if offset:
+        query = query.offset(offset)
 
     result = await session.execute(query)
     return list(result.scalars().all())
@@ -390,12 +394,12 @@ async def list_booths_for_event(
     session: AsyncSession,
     event_id: int,
     *,
-    limit: int = 100,
+    limit: int | None = 100,
     offset: int = 0,
 ) -> list[DBBooth]:
     from sqlalchemy.orm import selectinload
 
-    result = await session.execute(
+    query = (
         select(DBBooth)
         .join(Room, Room.id == DBBooth.room_id)
         .options(
@@ -406,9 +410,13 @@ async def list_booths_for_event(
         # A booth must belong to the room's event; keep inconsistent rows out of every list.
         .where(DBBooth.event_id == event_id, DBBooth.event_id == Room.event_id)
         .order_by(DBBooth.language_code)
-        .limit(limit)
-        .offset(offset),
     )
+    if limit is not None:
+        query = query.limit(limit)
+    if offset:
+        query = query.offset(offset)
+
+    result = await session.execute(query)
     return list(result.scalars().all())
 
 
@@ -588,6 +596,7 @@ async def update_user(
     email_verified: bool | None = None,
     is_admin: bool | None = None,
     is_active: bool | None = None,
+    last_sign_in_at: datetime | None = None,
 ) -> User | None:
     user = await get_user_by_id(session, user_id)
     if user:
@@ -599,7 +608,18 @@ async def update_user(
             user.is_admin = is_admin
         if is_active is not None:
             user.is_active = is_active
-        await session.flush()
+        if last_sign_in_at is not None:
+            await session.execute(
+                sa.update(User)
+                .where(User.id == user_id)
+                .where(or_(User.last_sign_in_at.is_(None), User.last_sign_in_at < last_sign_in_at))
+                .values(last_sign_in_at=last_sign_in_at)
+                .execution_options(synchronize_session=False)
+            )
+            await session.flush()
+            await session.refresh(user)
+        else:
+            await session.flush()
     return user
 
 
@@ -660,6 +680,7 @@ USER_SORT_COLUMNS = {
     "email_verified": User.email_verified,
     "is_active": User.is_active,
     "created_at": User.created_at,
+    "last_sign_in_at": User.last_sign_in_at,
 }
 
 

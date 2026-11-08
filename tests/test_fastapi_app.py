@@ -136,6 +136,27 @@ def test_token_redactor_handles_legacy_api_query_credentials():
     assert "[REDACTED]" in output
 
 
+def test_token_redactor_hides_overlay_join_code():
+    import logging
+
+    from fastapi_app import _UvicornTokenRedactor
+
+    # OBS / vMix overlays carry the join code on every page load and session refresh.
+    record = logging.LogRecord(
+        name="uvicorn.access",
+        level=logging.INFO,
+        pathname="",
+        lineno=0,
+        msg='%s - "%s %s HTTP/%s" %d',
+        args=("127.0.0.1:1234", "GET", "/overlay/demo/1/en/session?code=ROOM42", "1.1", 200),
+        exc_info=None,
+    )
+    _UvicornTokenRedactor().filter(record)
+    output = record.getMessage()
+    assert "ROOM42" not in output
+    assert "code=[REDACTED]" in output
+
+
 def test_token_redactor_hides_internal_hook_secret():
     import logging
 
@@ -608,6 +629,57 @@ def test_ws_standby_cannot_set_mic_active():
         err_msg = json.loads(ws_b.receive_text())
 
     assert err_msg["type"] == "booth:error"
+
+
+def test_ws_standby_cannot_set_themselves_active():
+    """Standby interpreter gets booth:error when naming themselves in booth:set-active."""
+    from portal.globals import booths
+
+    with (
+        client.websocket_connect("/ws/booth/standby-self-active-booth", cookies=_ws_auth()) as ws_a,
+        client.websocket_connect("/ws/booth/standby-self-active-booth", cookies=_ws_auth()) as ws_b,
+    ):
+        ws_a.send_text(
+            json.dumps(
+                {
+                    "type": "booth:join",
+                    "display_name": "A",
+                    "role": "interpreter",
+                    "language": "French",
+                    "channel_id": "standby-self-active-audio",
+                }
+            )
+        )
+        joined_a = json.loads(ws_a.receive_text())
+        if joined_a["type"] != "booth:joined":
+            joined_a = json.loads(ws_a.receive_text())
+        ws_a.receive_text()  # drain booth:state broadcast on ws_a
+        ws_b.receive_text()  # drain booth:state broadcast from IntA joining
+
+        ws_b.send_text(
+            json.dumps(
+                {
+                    "type": "booth:join",
+                    "display_name": "B",
+                    "role": "interpreter",
+                    "language": "French",
+                    "channel_id": "standby-self-active-audio",
+                }
+            )
+        )
+        joined_b = json.loads(ws_b.receive_text())
+        if joined_b["type"] != "booth:joined":
+            joined_b = json.loads(ws_b.receive_text())
+        ws_b.receive_text()  # drain booth:state on ws_b
+        ws_a.receive_text()  # drain broadcast to ws_a when ws_b joined
+
+        ws_b.send_text(json.dumps({"type": "booth:set-active", "target_id": joined_b["participant_id"]}))
+        err_msg = json.loads(ws_b.receive_text())
+        # Read the live booth while both sockets are still joined.
+        active_after = booths.get_booth_sync("standby-self-active-booth").active_interpreter_id
+
+    assert err_msg["type"] == "booth:error"
+    assert active_after == joined_a["participant_id"]
 
 
 def test_ws_three_way_coordinator_flow():
@@ -2444,8 +2516,9 @@ def test_ws_captions_enforces_anonymous_admission_limit(monkeypatch):
         with client.websocket_connect("/ws/captions/test-limit-1-en"):
             # Second anonymous connection exceeds limit of 1 and is rejected with 1008
             with pytest.raises(WebSocketDisconnect) as exc_info:
-                with client.websocket_connect("/ws/captions/test-limit-1-en"):
-                    pass
+                # Accepted then closed, so the browser sees 1008 rather than an HTTP 403.
+                with client.websocket_connect("/ws/captions/test-limit-1-en") as ws:
+                    ws.receive_text()
             assert exc_info.value.code == 1008
 
 
@@ -2463,8 +2536,8 @@ def test_ws_captions_zero_anonymous_limit_does_not_populate_anon_rooms(monkeypat
     assert booth_id not in listener_manager._anon_rooms
 
     with pytest.raises(WebSocketDisconnect) as exc_info:
-        with client.websocket_connect(f"/ws/captions/{booth_id}"):
-            pass
+        with client.websocket_connect(f"/ws/captions/{booth_id}") as ws:
+            ws.receive_text()
     assert exc_info.value.code == 1008
 
     # Must NOT have created an empty set entry in _anon_rooms!
