@@ -291,7 +291,9 @@ test('runAgentAttribution keeps attribution the author changed after the first r
 
 test('runAgentAttribution re-reads when the body changes just before writing', async () => {
   const { github, calls } = makeGithub({
-    bodies: ['A', 'A', 'B', 'B', 'B'],
+    // Detection and placement read A; the pre-write check sees B, so the run
+    // must start over and build the update from B.
+    bodies: ['A', 'A', 'A', 'B', 'B', 'B'],
     commits: [CLAUDE_TRAILER],
   });
   await run(github);
@@ -434,4 +436,118 @@ test('appendAttributionToBody keeps review records when moving creation attribut
   const reviewed = 'Reviewed with Gemini in Antigravity.';
   const body = `## Change\nX\n\n${created}\n${reviewed}\n\n## Testing\nOK`;
   assert.equal(appendAttributionToBody(body, created), `## Change\nX\n\n${reviewed}\n\n## Testing\nOK\n\n${created}\n`);
+});
+
+// --- CodeRabbit follow-up regressions ---
+
+test('detectModel keeps the full GPT variant', () => {
+  assert.equal(detectModel('gpt-4o-mini'), 'GPT-4o-mini');
+  assert.equal(detectModel('GPT-4.1-nano'), 'GPT-4.1-nano');
+  const detected = detectAgentDetails({
+    commitMessages: ['feat\n\nCo-authored-by: aider (gpt-4o-mini) <noreply@aider.chat>'],
+  });
+  assert.equal(formatAttributionLine(detected), 'Created with GPT-4o-mini in Aider.');
+});
+
+test('indented code blocks are not attribution', () => {
+  const body = '## Change\nExample:\n\n    Created with ChatGPT.\n\n## Testing\nOK';
+  assert.equal(detectAgentDetails({ body }), null);
+  const line = 'Created with Claude in Claude Code.';
+  assert.equal(appendAttributionToBody(body, line), `${body}\n\n${line}\n`);
+});
+
+test('a fence line with an info string does not close a fenced block', () => {
+  const body = '```md\nSee:\n```javascript\nCreated with ChatGPT.\n```\n\n```\nmore\n```';
+  assert.equal(detectAgentDetails({ body }), null);
+});
+
+test('human co-authors who share a tool name are not agents', () => {
+  for (const trailer of [
+    'Aider Smith <aider.smith@example.com>',
+    'Cursor Jones <cj@example.org>',
+    'Claude Martin <claude@example.com>',
+  ]) {
+    assert.equal(detectAgentDetails({ commitMessages: [`feat\n\nCo-authored-by: ${trailer}`] }), null, trailer);
+  }
+  assert.equal(
+    formatAttributionLine(detectAgentDetails({ commitMessages: ['feat\n\nCo-authored-by: Aider <noreply@aider.chat>'] })),
+    'Created with Aider.',
+  );
+});
+
+test('fenced Co-authored-by examples in commit messages are ignored', () => {
+  const message = 'docs: explain trailers\n\n```\nCo-authored-by: Claude Opus 5.5 <noreply@anthropic.com>\n```';
+  assert.equal(detectAgentDetails({ commitMessages: [message] }), null);
+});
+
+test('a legacy model wins over a harness-only trailer', () => {
+  const detected = detectAgentDetails({
+    body: 'This PR was created with the assistance of **Claude Sonnet 4.6**.',
+    commitMessages: ['feat\n\nCo-authored-by: Claude <noreply@anthropic.com>'],
+  });
+  assert.equal(formatAttributionLine(detected), 'Created with Claude Sonnet 4.6.');
+});
+
+test('a fenced block after the attribution counts as later content', () => {
+  const line = 'Created with ChatGPT.';
+  const body = `## Change\n\n${line}\n\n\`\`\`\nlog output\n\`\`\``;
+  assert.equal(appendAttributionToBody(body, line), `## Change\n\n\`\`\`\nlog output\n\`\`\`\n\n${line}\n`);
+});
+
+test('bot markers inside a fenced example do not split the description', () => {
+  const line = 'Created with ChatGPT.';
+  const body = '## Change\n```\n## Summary by Sourcery\n```\n\n## Testing\nOK';
+  assert.equal(appendAttributionToBody(body, line), `${body}\n\n${line}\n`);
+});
+
+test('earlier duplicate attribution lines are removed even when the last line matches', () => {
+  const line = 'Created with ChatGPT.';
+  const body = `## Change\n${line}\n\n## Testing\nOK\n\n${line}\n`;
+  assert.equal(appendAttributionToBody(body, line), `## Change\n\n## Testing\nOK\n\n${line}\n`);
+});
+
+test('blank lines inside code blocks and comments are preserved', () => {
+  const line = 'Created with ChatGPT.';
+  const body = '## Repro\n```\na\n\n\n\nb\n```\n<!--\nx\n\n\n\ny\n-->\n\n\n\nText';
+  const updated = appendAttributionToBody(body, line);
+  assert.ok(updated.includes('```\na\n\n\n\nb\n```'));
+  assert.ok(updated.includes('<!--\nx\n\n\n\ny\n-->'));
+  assert.ok(updated.includes('-->\n\nText'));
+});
+
+test('attribution is placed outside an unclosed fence or comment', () => {
+  const line = 'Created with ChatGPT.';
+  assert.equal(appendAttributionToBody('## Log\n```\nerror', line), `## Log\n\`\`\`\nerror\n\`\`\`\n\n${line}\n`);
+  const fixed = appendAttributionToBody('Notes\n<!-- todo', line);
+  assert.equal(fixed, `Notes\n<!-- todo\n-->\n\n${line}\n`);
+  assert.equal(appendAttributionToBody(fixed, line), fixed);
+});
+
+test('runAgentAttribution does not restore attribution the author removed', async () => {
+  const { github, calls } = makeGithub({
+    bodies: ['## Change\nX\n\nCreated with ChatGPT.\n\nmore', '## Change\nX\n\nCreated with ChatGPT.\n\nmore', '## Change\nX'],
+    commits: ['feat: human'],
+  });
+  await run(github);
+  assert.deepEqual(types(calls), ['addLabels']);
+});
+
+test('runAgentAttribution retries transient read failures', async () => {
+  const { github, calls } = makeGithub({ body: '## Problem', commits: [CLAUDE_TRAILER] });
+  const paginate = github.paginate;
+  let failures = 1;
+  github.paginate = async (...args) => {
+    if (failures-- > 0) throw Object.assign(new Error('bad gateway'), { status: 502 });
+    return paginate(...args);
+  };
+  await run(github);
+  assert.deepEqual(types(calls), ['addLabels', 'update']);
+});
+
+test('bot summaries are not read as attribution evidence', async () => {
+  const body = '## Change\nX\n\n## Summary by Sourcery\n\nCreated with ChatGPT.\n';
+  assert.equal(detectAgentDetails({ body }), null);
+  const { github, calls } = makeGithub({ body, commits: ['feat: human'] });
+  await run(github);
+  assert.deepEqual(calls, []);
 });
