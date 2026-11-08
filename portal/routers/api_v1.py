@@ -859,6 +859,11 @@ async def create_booth(
     )
     target_room_id = _extract_room_id(room, room_id)
     language_code = _validate_lang(language_code)
+    if language_code == "floor":
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="'floor' is not a valid booth language for a room.",
+        )
 
     result = await db.execute(select(DBBooth).where(DBBooth.room_id == target_room_id, DBBooth.language_code == language_code))
     if result.scalars().first():

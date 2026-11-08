@@ -387,3 +387,55 @@ async def test_booth_endpoints_preserve_cross_event_404_with_invalid_language_co
             res = await req(url, headers=_auth())
             assert res.status_code == 404, f"Expected 404 for {method.upper()} {url}, got {res.status_code}: {res.text}"
             assert res.json()["detail"] == "Event not found"
+
+
+@pytest.mark.anyio
+async def test_booth_endpoints_normalise_language_code():
+    """Uppercase or padded language codes are normalised before use downstream."""
+    event = await _seed()
+
+    async with _client() as c:
+        put_room = await c.put(
+            f"/api/v1/events/{event.slug}/rooms/room-1",
+            json={"name": "Main Hall"},
+            headers=_auth(),
+        )
+        assert put_room.status_code == 200
+        room_id = put_room.json()["room_id"]
+        base = f"/api/v1/events/{event.slug}/rooms/{room_id}/booths"
+
+        created = await c.post(f"{base}/EN", headers=_auth())
+        assert created.status_code == 200, created.text
+        assert created.json()["whip_path"] == f"{event.slug}/{room_id}/en"
+
+        duplicate = await c.post(f"{base}/%20en%20", headers=_auth())
+        assert duplicate.status_code == 409
+
+        fetched = await c.get(f"{base}/En", headers=_auth())
+        assert fetched.status_code == 200, fetched.text
+        assert fetched.json()["language_code"] == "en"
+
+        deleted = await c.delete(f"{base}/EN", headers=_auth())
+        assert deleted.status_code == 200, deleted.text
+        assert (await c.get(f"{base}/en", headers=_auth())).status_code == 404
+
+
+@pytest.mark.anyio
+async def test_create_booth_rejects_floor_language():
+    """'floor' is reserved for the floor channel and cannot be created as a booth."""
+    event = await _seed()
+
+    async with _client() as c:
+        put_room = await c.put(
+            f"/api/v1/events/{event.slug}/rooms/room-1",
+            json={"name": "Main Hall"},
+            headers=_auth(),
+        )
+        room_id = put_room.json()["room_id"]
+
+        res = await c.post(
+            f"/api/v1/events/{event.slug}/rooms/{room_id}/booths/FLOOR",
+            headers=_auth(),
+        )
+        assert res.status_code == 400
+        assert res.json()["detail"] == "'floor' is not a valid booth language for a room."
