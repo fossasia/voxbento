@@ -141,6 +141,33 @@ class TestChunk:
         # The viewer must see the line settle before the partial box empties.
         assert kinds == ["FinalCaption", "ClearCaption"]
 
+    def test_chunk_force_finalizes_past_the_time_cap(self, stream, clock):
+        """Without this a provider that never emits punctuation would buffer
+        indefinitely."""
+        stream.chunk("b", "word one word two")
+        clock.advance(MAX_UTTERANCE_SECONDS + 1.0)
+        events = stream.chunk("b", "word three word four")
+        kinds = [type(e).__name__ for e in events]
+        assert kinds == ["FinalCaption", "ClearCaption"]
+        assert "word one word two word three word four" in events[0].text
+
+    def test_chunk_force_finalizes_past_the_word_cap(self, stream):
+        stream.chunk("b", " ".join(f"w{n}" for n in range(MAX_UTTERANCE_WORDS - 2)))
+        events = stream.chunk("b", "w98 w99 w100")
+        assert isinstance(events[0], FinalCaption)
+        assert events[-1].__class__.__name__ == "ClearCaption"
+
+    def test_chunk_time_cap_counts_from_the_first_append_not_the_last(self, stream, clock):
+        """utterance_start_time was being reset at every chunk, so the time cap
+        never elapsed; the fix preserves it across chunks that leave content
+        buffered."""
+        stream.chunk("b", "steady stream")
+        clock.advance(MAX_UTTERANCE_SECONDS / 2)
+        stream.chunk("b", "of words with")
+        clock.advance(MAX_UTTERANCE_SECONDS / 2 + 0.1)
+        events = stream.chunk("b", "no boundary ever")
+        assert any(isinstance(e, FinalCaption) for e in events)
+
 
 class TestFinalAndClear:
     def test_final_settles_the_given_text(self, stream):
