@@ -210,13 +210,37 @@ class TestRestore:
         stream.restore(event)
         assert stream.clear("b")[0].text == "keep me"
 
-    def test_restore_does_not_clobber_newer_speech(self, stream):
+    def test_restore_prepends_rather_than_discarding(self, stream):
+        # Discarding on a non-empty buffer loses the settled sentence, which is
+        # the loss restore() exists to prevent.
         event = stream.final("b", "stale")[0]
         stream.partial("b", "newer words")
 
         stream.restore(event)
 
-        assert stream.state_for("b").current_utterance == "newer words"
+        assert stream.state_for("b").current_utterance == "stale newer words"
+
+    def test_restore_keeps_a_settled_sentence_when_chunk_left_a_remainder(self, stream):
+        """chunk() stores the tail of the same fragment before returning.
+
+        That tail is not newer speech, so bailing out on a non-empty buffer
+        dropped the sentence the final event carried.
+        """
+        events = stream.chunk("b", "This is a sentence with plenty of words. And more")
+        final = next(e for e in events if isinstance(e, FinalCaption))
+        assert stream.state_for("b").current_utterance == "And more"
+
+        stream.restore(final)
+
+        # The original utterance is whole again, in its original order.
+        assert stream.state_for("b").current_utterance == (
+            "This is a sentence with plenty of words. And more"
+        )
+
+    def test_a_restored_chunk_remainder_settles_on_the_next_clear(self, stream):
+        events = stream.chunk("b", "This is a sentence with plenty of words. And more")
+        stream.restore(next(e for e in events if isinstance(e, FinalCaption)))
+        assert stream.clear("b")[0].text == "This is a sentence with plenty of words. And more"
 
     def test_restore_preserves_the_original_start_time(self, stream, clock):
         started = clock.now
