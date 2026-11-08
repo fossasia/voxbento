@@ -160,7 +160,7 @@ Cancels the asyncio Task and awaits it; removes from state dicts.
 | Method | Input | Behavior |
 |---|---|---|
 | `handle_partial(booth_id, text)` | streaming partial | Broadcasts `{type:"caption", status:"partial", text}`. Force-finalizes if ≥50 words or ≥15 seconds in same utterance |
-| `handle_final(booth_id, text)` | completed utterance | Drops the text if `is_hallucination()`; otherwise broadcasts `{type:"caption", status:"final", text}`; resets state |
+| `handle_final(booth_id, text, complete_turn=True)` | completed utterance | Drops the text if `hallucination_reason()` returns a category; otherwise broadcasts `{type:"caption", status:"final", text}`; resets state |
 | `handle_chunk(booth_id, text)` | Whisper text chunk | Appends to buffer; splits on sentence boundary (`[.?!]+`); broadcasts `final` for each sentence, `partial` for remainder |
 | `handle_clear(booth_id)` | silence/endpoint | Broadcasts `{type:"caption", status:"clear"}` |
 
@@ -169,9 +169,20 @@ Cancels the asyncio Task and awaits it; removes from state dicts.
 ## Transcript Validation (`portal/transcript_processing.py`)
 
 `handle_final` is the one funnel where text reaches listeners, the stored
-transcript, the translation LLM and TTS, so `is_hallucination(text)` is checked
-there. A rejected utterance broadcasts `clear`, resets the utterance state and
-consumes no caption sequence number, so listeners see no gap.
+transcript, the translation LLM and TTS, so `hallucination_reason(text,
+complete_turn=...)` is checked there — that is the call to change or instrument,
+not `is_hallucination()`, which is only the boolean wrapper around it. A
+rejected utterance broadcasts `clear`, resets the utterance state and consumes
+no caption sequence number, so listeners see no gap.
+
+Two empty cases are distinct and easy to confuse. The classifier's `"empty"`
+category rejects text that *is* present but has no printable content, and that
+path broadcasts `clear`. Separately, before the classifier runs, `handle_final`
+falls back to the pending partial when the text it was handed is blank
+(`text.strip() or state.current_utterance`) — so a blank final publishes the
+buffered partial rather than nothing. If there is no pending partial either, it
+returns immediately and broadcasts nothing at all, leaving any existing caption
+on screen for `handle_clear` to deal with.
 
 Rejected: empty or punctuation-only text, any word longer than
 `MAX_WORD_LENGTH` (40), a single token repeated with nothing else
