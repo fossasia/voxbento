@@ -11,6 +11,7 @@ from portal.logging_config import (
     RequestIdFilter,
     TextFormatter,
     _is_sensitive_name,
+    _redact_structure,
     configure_logging,
     current_request_id,
     new_request_id,
@@ -266,6 +267,57 @@ def test_redaction_filter_recurses_into_a_nested_extra():
     record = _record("sent", context={"user": {"email": "gina@example.com"}, "ok": True})
     RedactionFilter().filter(record)
     assert "gina@example.com" not in json.dumps(record.context)
+
+
+@pytest.mark.parametrize(
+    "raw,leaked",
+    [
+        ('{"password": "my secret"}', "secret"),
+        ("{'password': 'my secret value'}", "secret value"),
+        ('password="my secret"', "secret"),
+        ('{"client_secret": "a b c", "ok": 1}', "a b c"),
+    ],
+)
+def test_redact_covers_a_quoted_multi_word_credential(raw, leaked):
+    # The unquoted pattern stops at the first space, which left the rest in.
+    cleaned = redact(raw)
+    assert leaked not in cleaned
+    assert "[REDACTED]" in cleaned
+
+
+def test_redact_keeps_what_follows_a_quoted_credential():
+    assert '"ok": 1' in redact('{"client_secret": "a b c", "ok": 1}')
+
+
+def test_redact_structure_survives_a_self_reference():
+    payload: dict = {"a": 1}
+    payload["self"] = payload
+    # Would raise RecursionError before the guard.
+    assert _redact_structure(payload)["self"] == "[TRUNCATED]"
+
+
+def test_redact_structure_survives_mutual_recursion():
+    first: dict = {}
+    second = {"first": first}
+    first["second"] = second
+    assert _redact_structure(first)["second"]["first"] == "[TRUNCATED]"
+
+
+def test_redact_structure_caps_depth_without_leaking_past_the_cap():
+    deep: dict = {}
+    cursor = deep
+    for _ in range(50):
+        cursor["next"] = {}
+        cursor = cursor["next"]
+    cursor["password"] = "leak"
+    assert "leak" not in json.dumps(_redact_structure(deep))
+
+
+def test_redact_structure_still_walks_a_shared_child_twice():
+    # Seen-tracking is per path, so a sibling reference is not a cycle.
+    shared = {"k": "v"}
+    out = _redact_structure({"x": shared, "y": shared})
+    assert out == {"x": {"k": "v"}, "y": {"k": "v"}}
 
 
 def test_redaction_filter_recurses_into_a_list_extra():
