@@ -438,6 +438,72 @@ async def test_deepgram_handshake_401_is_reported():
 
 
 @pytest.mark.anyio
+async def test_openai_realtime_handshake_401_is_reported():
+    """A rejected key on the realtime path used to be retried, then abandoned."""
+    from portal.transcription.providers.openai import OpenAIProvider
+
+    process = MagicMock()
+    process.returncode = None
+
+    for status in (401, 403):
+        def raise_handshake(*args, _status=status, **kwargs):
+            raise _ws_invalid_status(_status)
+
+        with patch("websockets.connect", side_effect=raise_handshake):
+            with pytest.raises(TranscriptionAuthError) as excinfo:
+                await OpenAIProvider().run_stream(
+                    process, "en", "gpt-realtime", ProviderConfig(api_key="bad"), AsyncMock(), "booth-1"
+                )
+        assert excinfo.value.error_code == "auth_failed"
+        assert excinfo.value.provider == "openai"
+
+
+@pytest.mark.anyio
+async def test_openai_realtime_non_auth_failure_still_retries():
+    """Only auth failures short-circuit; a network blip keeps the retry policy."""
+    from portal.transcription.providers.openai import OpenAIProvider
+
+    process = MagicMock()
+    process.returncode = None
+    attempts = 0
+
+    def raise_conn(*args, **kwargs):
+        nonlocal attempts
+        attempts += 1
+        raise ConnectionError("network down")
+
+    with patch("websockets.connect", side_effect=raise_conn):
+        with patch("portal.transcription.providers.openai.asyncio.sleep", new=AsyncMock()):
+            await asyncio.wait_for(
+                OpenAIProvider().run_stream(
+                    process, "en", "gpt-realtime", ProviderConfig(api_key="good"), AsyncMock(), "booth-1"
+                ),
+                timeout=5,
+            )
+
+    assert attempts > 1
+
+
+@pytest.mark.parametrize(
+    "event,expected",
+    [
+        ({"error": {"code": "invalid_api_key", "message": "Incorrect API key provided"}}, True),
+        ({"error": {"code": "x", "message": "Unauthorized"}}, True),
+        ({"error": {"code": "authentication_error", "message": "nope"}}, True),
+        ({"error": {"code": "server_error", "message": "upstream exploded"}}, False),
+        ({"error": {"code": "rate_limit_exceeded", "message": "slow down"}}, False),
+        ({"error": "not-a-dict"}, False),
+        ({}, False),
+    ],
+)
+@pytest.mark.anyio
+async def test_openai_realtime_error_events_are_classified(event, expected):
+    from portal.transcription.providers.openai import OpenAIProvider
+
+    assert bool(OpenAIProvider._auth_error_from_event(event)) is expected
+
+
+@pytest.mark.anyio
 async def test_deepgram_non_auth_failure_follows_retry_policy():
     from portal.transcription.providers.deepgram import DeepgramProvider
 
