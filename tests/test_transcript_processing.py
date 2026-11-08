@@ -281,6 +281,38 @@ async def test_deepgram_complete_turn_is_still_filtered():
     assert "final" not in statuses
 
 
+@pytest.mark.anyio
+async def test_a_forced_finalization_is_not_judged_as_a_whole_turn():
+    """Crossing the time cap cuts a turn; it does not end one.
+
+    The fragment left in the buffer is mid-sentence, so the whole-utterance
+    rules must not reject it as invented speech.
+    """
+    broadcast = AsyncMock()
+    agg = _aggregator(broadcast)
+
+    await agg.handle_partial("ev-1-en", "thank you")
+    # Age the utterance past the 15s forced-finalization threshold.
+    agg.states["ev-1-en"].utterance_start_time -= 20.0
+    await agg.handle_partial("ev-1-en", "thank you")
+
+    finals = [c.args[1] for c in broadcast.await_args_list if c.args[1]["status"] == "final"]
+    assert [f["text"] for f in finals] == ["thank you"]
+
+
+@pytest.mark.anyio
+async def test_a_deliberate_end_of_turn_is_still_filtered():
+    """The counterpart: the same text really ending a turn is still dropped."""
+    broadcast = AsyncMock()
+    agg = _aggregator(broadcast)
+
+    await agg.handle_partial("ev-1-en", "thank you")
+    await agg.handle_clear("ev-1-en")
+
+    statuses = [c.args[1]["status"] for c in broadcast.await_args_list]
+    assert "final" not in statuses
+
+
 def test_deepgram_passes_speech_final_as_the_turn_flag():
     """The bare is_final branch must not be filtered as a complete turn."""
     import inspect
