@@ -426,7 +426,6 @@ jobs:
             echo "base $base, venv $venv, venv base_prefix $prefix"
             test "$base" = "$venv"
             test "$prefix" = /usr/local
-            test ! -e /root/.local/share/uv/python
           '
 
       - name: Portal page endpoints

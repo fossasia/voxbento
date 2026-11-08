@@ -7,21 +7,14 @@ import tomllib
 from pathlib import Path
 
 import yaml
+from packaging.specifiers import SpecifierSet
 
 ROOT = Path(__file__).parents[1]
 
 
-def as_tuple(version: str) -> tuple[int, ...]:
-    return tuple(int(part) for part in version.split("."))
-
-
-def satisfies(version: str, requires: str) -> bool:
-    checks = {">=": lambda a, b: a >= b, "<": lambda a, b: a < b, "==": lambda a, b: a == b}
-    for spec in requires.split(","):
-        op, bound = re.match(r"\s*(>=|<|==)\s*([\d.]+)", spec).groups()
-        if not checks[op](as_tuple(version), as_tuple(bound)):
-            return False
-    return True
+def requires_python() -> SpecifierSet:
+    project = tomllib.loads((ROOT / "pyproject.toml").read_text())["project"]
+    return SpecifierSet(project["requires-python"])
 
 
 def base_image_python() -> str:
@@ -32,9 +25,9 @@ def base_image_python() -> str:
 
 
 def test_base_image_python_matches_requires_python():
-    requires = (tomllib.loads((ROOT / "pyproject.toml").read_text()))["project"]["requires-python"]
+    requires = requires_python()
     version = base_image_python()
-    assert satisfies(version, requires), (
+    assert requires.contains(f"{version}.0"), (
         f"Dockerfile uses python:{version} but pyproject.toml requires {requires}; "
         "uv would download a second Python during the build"
     )
@@ -54,7 +47,9 @@ def test_python_version_file_not_copied_into_image():
 
 
 def test_dependabot_does_not_bump_base_image_past_requires_python():
+    upper = [spec.version for spec in requires_python() if spec.operator == "<"]
+    assert len(upper) == 1, "requires-python should have exactly one '<' upper bound"
     config = yaml.safe_load((ROOT / ".github" / "dependabot.yml").read_text())
     root_docker = next(u for u in config["updates"] if u["package-ecosystem"] == "docker" and u["directory"] == "/")
     ignores = {i["dependency-name"]: i.get("versions", []) for i in root_docker.get("ignore", [])}
-    assert ignores.get("python") == [">=3.14"]
+    assert ignores.get("python") == [f">={upper[0]}"]
