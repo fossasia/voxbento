@@ -379,6 +379,36 @@ async def test_elevenlabs_auth_error_after_the_session_starts_is_reported():
     assert excinfo.value.provider == "elevenlabs"
 
 
+@pytest.mark.anyio
+@pytest.mark.parametrize("message_type", ["unauthorized", "authentication_error", "auth_error"])
+async def test_elevenlabs_reports_every_mid_stream_auth_frame_type(message_type):
+    """"unauthorized" has no "error" substring, so the old guard skipped it."""
+    with pytest.raises(TranscriptionAuthError) as excinfo:
+        await _run_elevenlabs_with_frames(
+            [
+                {"message_type": "session_started"},
+                {"message_type": "partial_transcript", "text": "hello"},
+                {"message_type": message_type, "error": "API key revoked"},
+            ]
+        )
+
+    assert excinfo.value.error_code == "auth_failed"
+    assert excinfo.value.provider == "elevenlabs"
+
+
+@pytest.mark.anyio
+async def test_elevenlabs_auth_frame_guard_matches_the_classifier():
+    """The guard and the classifier must not drift apart again."""
+    from portal.transcription.providers.elevenlabs import ElevenLabsProvider
+
+    for message_type in ElevenLabsProvider._AUTH_MESSAGE_TYPES:
+        assert ElevenLabsProvider._is_auth_frame_type(message_type)
+        assert ElevenLabsProvider._auth_error_from_frame(
+            {"message_type": message_type, "error": "nope"}
+        )
+    assert not ElevenLabsProvider._is_auth_frame_type("partial_transcript")
+
+
 def _ws_invalid_status(status_code: int):
     from websockets.datastructures import Headers
     from websockets.exceptions import InvalidStatus
