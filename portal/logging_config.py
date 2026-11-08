@@ -128,10 +128,6 @@ def _redact_structure(value: object, *, name: str = "", _depth: int = 0, _seen: 
     return redact(str(value))
 
 
-def _redact_value(value: object) -> object:
-    return redact(value) if isinstance(value, str) else value
-
-
 def _redact_format_string(msg: str) -> str:
     """Redact a format string without disturbing its "%" placeholders.
 
@@ -182,9 +178,11 @@ class RedactionFilter(logging.Filter):
         if isinstance(record.msg, str):
             record.msg = _redact_format_string(record.msg) if record.args else redact(record.msg)
         if isinstance(record.args, tuple):
-            record.args = tuple(_redact_value(value) for value in record.args)
+            # _redact_structure recurses, so `logger.info("x %s", {"password": "y"})`
+            # has its dict walked; a bare string is redacted exactly as before.
+            record.args = tuple(_redact_structure(value) for value in record.args)
         elif isinstance(record.args, dict):
-            record.args = {key: _redact_value(value) for key, value in record.args.items()}
+            record.args = {key: _redact_structure(value, name=str(key)) for key, value in record.args.items()}
         for key, value in list(record.__dict__.items()):
             if key not in _RESERVED_RECORD_FIELDS:
                 record.__dict__[key] = _redact_structure(value, name=key)
