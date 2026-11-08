@@ -551,3 +551,49 @@ test('bot summaries are not read as attribution evidence', async () => {
   await run(github);
   assert.deepEqual(calls, []);
 });
+
+// --- CodeRabbit third-round regressions ---
+
+test('detectModel keeps dated GPT identifiers', () => {
+  assert.equal(detectModel('gpt-4o-2024-08-06'), 'GPT-4o-2024-08-06');
+  const detected = detectAgentDetails({
+    commitMessages: ['feat\n\nCo-authored-by: aider (gpt-4o-2024-08-06) <noreply@aider.chat>'],
+  });
+  assert.equal(formatAttributionLine(detected), 'Created with GPT-4o-2024-08-06 in Aider.');
+});
+
+test('employees at agent vendors are not treated as agents', () => {
+  for (const trailer of [
+    'Jane Doe <jane@cursor.com>',
+    'Sam Lee <sam@windsurf.com>',
+    'Ana Ruiz <ana@codeium.com>',
+  ]) {
+    assert.equal(detectAgentDetails({ commitMessages: [`feat\n\nCo-authored-by: ${trailer}`] }), null, trailer);
+  }
+  const cursor = detectAgentDetails({ commitMessages: ['feat\n\nCo-authored-by: Cursor Agent <cursoragent@cursor.com>'] });
+  assert.equal(cursor.harness, 'Cursor');
+});
+
+test('fenced examples inside list items are code', () => {
+  const body = '## Steps\n1. Add this footer:\n   ```\n   Created with ChatGPT.\n   ```\n2. Done';
+  assert.equal(detectAgentDetails({ body }), null);
+  const line = 'Created with Claude in Claude Code.';
+  assert.equal(appendAttributionToBody(body, line), `${body}\n\n${line}\n`);
+  const bulleted = '- ```\n  Created with ChatGPT.\n  ```';
+  assert.equal(detectAgentDetails({ body: bulleted }), null);
+});
+
+test('blank lines inside an indented code block are preserved', () => {
+  const line = 'Created with ChatGPT.';
+  const body = 'Repro:\n\n    step one\n\n\n    step two\n\nDone';
+  const updated = appendAttributionToBody(body, line);
+  assert.ok(updated.includes('    step one\n\n\n    step two'), updated);
+});
+
+test('comment markers inside inline code do not hide later text', () => {
+  const line = 'Created with ChatGPT.';
+  const body = 'Use `<!--` to start a comment.\n\nCreated with ChatGPT.';
+  assert.equal(parseExistingAttribution(body).raw, line);
+  assert.equal(appendAttributionToBody(body, line), body);
+  assert.equal(appendAttributionToBody(`${body}\n`, line), `${body}\n`);
+});

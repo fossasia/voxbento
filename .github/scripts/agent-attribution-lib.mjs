@@ -46,6 +46,7 @@ const BOT_COMMENT_MARKERS = [
 const BOT_HEADING_MARKERS = [/^## Summary by Sourcery\s*$/];
 
 const VERSION = String.raw`\d+(?:\.\d+)*`;
+/** Upper-cases the first letter and lower-cases the rest. */
 const titleCase = (s) => s.charAt(0).toUpperCase() + s.slice(1).toLowerCase();
 
 // Each family reports the model exactly as written (tier, version and variant
@@ -67,7 +68,10 @@ export const MODEL_FAMILIES = [
     },
   },
   {
-    regex: new RegExp(String.raw`\bgpt-(${VERSION})(o?(?:-(?:mini|nano|turbo))?)(?!\w|\.\d)`, 'i'),
+    regex: new RegExp(
+      String.raw`\bgpt-(${VERSION})(o?(?:-(?:mini|nano|turbo|preview|\d{4}-\d{2}-\d{2}|\d{4}))*)(?!\w|\.\d)`,
+      'i',
+    ),
     format: ([, version, variant = '']) => ({ name: `GPT-${version}${variant.toLowerCase()}`, specific: true }),
   },
   {
@@ -86,13 +90,14 @@ export const MODEL_FAMILIES = [
   },
 ];
 
-// A trailer counts as an agent only when its email is the agent's own address,
+// A trailer counts as an agent only when its email is the agent's own address
+// (never a whole company domain, which its employees share),
 // or its display name (ignoring a parenthesised model) is exactly the tool's
 // name. A person who merely shares a first name, such as "Aider Smith" or
 // "Claude Martin", is not matched.
 export const KNOWN_HARNESSES = [
   { name: 'Claude Code', names: ['claude code'], email: /^noreply@anthropic\.com$/i },
-  { name: 'Cursor', names: ['cursor', 'cursor agent', 'cursoragent'], email: /@cursor\.(?:com|sh)$/i },
+  { name: 'Cursor', names: ['cursor', 'cursor agent', 'cursoragent'], email: /^cursoragent@cursor\.com$/i },
   {
     name: 'GitHub Copilot',
     names: ['copilot', 'github copilot'],
@@ -101,19 +106,39 @@ export const KNOWN_HARNESSES = [
   { name: 'ChatGPT', names: ['chatgpt'], email: /^chatgpt@openai\.com$/i },
   { name: 'Codex', names: ['codex', 'openai codex', 'codex agent'], email: /^codex@openai\.com$/i },
   { name: 'Antigravity', names: ['antigravity', 'google antigravity'] },
-  { name: 'Windsurf', names: ['windsurf'], email: /@(?:windsurf|codeium)\.com$/i },
+  { name: 'Windsurf', names: ['windsurf'] },
   { name: 'Aider', names: ['aider'], email: /^noreply@aider\.chat$/i },
   { name: 'T3 Code', names: ['t3 code', 't3code'] },
 ];
 
-// Classifies each line as 'prose', 'code' (fenced or indented code block) or
-// 'comment' (wholly or partly inside an HTML comment). Also reports whether a
-// comment was already open before each line and what is still open at the end.
+const FENCE_OPEN = /^\s*(?:(?:[-*+]|\d{1,9}[.)])\s+)*(`{3,}|~{3,})/;
+const FENCE_CLOSE = /^\s*(`{3,}|~{3,})\s*$/;
+const INDENTED = /^(?: {4}|\t)/;
+
+/**
+ * Blanks out inline code spans (`like this`) so delimiters inside them are not
+ * mistaken for HTML comment markers. Keeps the string length unchanged.
+ * @param {string} text
+ * @returns {string}
+ */
+function maskInlineCode(text) {
+  return text.replace(/(`+)(?:(?!\1).)+?\1/g, (span) => ' '.repeat(span.length));
+}
+
+/**
+ * Classifies each line as 'prose', 'code' (fenced or indented code block,
+ * including fences inside list items) or 'comment' (wholly or partly inside an
+ * HTML comment). Also reports whether a comment was already open before each
+ * line and what is still open at the end.
+ * @param {string[]} lines
+ * @returns {{types: string[], commentBefore: boolean[], openFence: string|null, openComment: boolean}}
+ */
 function classifyLines(lines) {
   let inComment = false;
   let fence = null;
   let inIndented = false;
   let prevBlank = true;
+  let pendingBlanks = [];
   const types = [];
   const commentBefore = [];
 
@@ -123,13 +148,18 @@ function classifyLines(lines) {
     let type;
 
     if (!inComment && fence) {
-      const close = line.match(/^ {0,3}(`{3,}|~{3,})\s*$/);
+      const close = line.match(FENCE_CLOSE);
       if (close && close[1][0] === fence[0] && close[1].length >= fence.length) fence = null;
       type = 'code';
-    } else if (!inComment && /^ {0,3}(`{3,}|~{3,})/.test(line)) {
-      fence = line.match(/^ {0,3}(`{3,}|~{3,})/)[1];
+    } else if (!inComment && inIndented && !blank && INDENTED.test(line)) {
+      // Blank lines between two lines of the same indented block are code too.
+      for (const i of pendingBlanks) types[i] = 'code';
       type = 'code';
-    } else if (!inComment && !blank && /^(?: {4}|\t)/.test(line) && (prevBlank || inIndented)) {
+    } else if (!inComment && FENCE_OPEN.test(line)) {
+      fence = line.match(FENCE_OPEN)[1];
+      inIndented = false;
+      type = 'code';
+    } else if (!inComment && !blank && INDENTED.test(line) && prevBlank) {
       inIndented = true;
       type = 'code';
     } else {
@@ -138,7 +168,7 @@ function classifyLines(lines) {
       let rest = line;
       while (rest) {
         const token = inComment ? '-->' : '<!--';
-        const at = rest.indexOf(token);
+        const at = (inComment ? rest : maskInlineCode(rest)).indexOf(token);
         if (at === -1) break;
         touched = true;
         inComment = !inComment;
@@ -147,23 +177,29 @@ function classifyLines(lines) {
       type = touched ? 'comment' : 'prose';
     }
 
+    if (blank && inIndented && type === 'prose') pendingBlanks.push(types.length);
+    else pendingBlanks = [];
     types.push(type);
     prevBlank = blank;
   }
   return { types, commentBefore, openFence: fence, openComment: inComment };
 }
 
+/** Splits text into lines, treating CRLF and LF alike. */
 function splitLines(text) {
   return (text || '').replace(/\r\n/g, '\n').split('\n');
 }
 
+/** Returns only the prose lines of the text (no code blocks or HTML comments). */
 function proseLines(text) {
   const lines = splitLines(text);
   const { types } = classifyLines(lines);
   return lines.filter((_, i) => types[i] === 'prose');
 }
 
-// Splits a PR body into the author-written part and the bot-generated part.
+/**
+ * Splits a PR body into the author-written part and the bot-generated part.
+ */
 export function splitAuthorSection(body) {
   const lines = splitLines(body);
   const { types, commentBefore } = classifyLines(lines);
@@ -176,6 +212,9 @@ export function splitAuthorSection(body) {
   return [lines.slice(0, cut).join('\n'), lines.slice(cut).join('\n')];
 }
 
+/**
+ * Parses one line as a "Created with ..." attribution; returns null for anything else, including "Reviewed with ..." lines.
+ */
 function parseAttributionLine(line) {
   const match = line.match(ATTRIBUTION_LINE_PATTERN);
   if (!match || match[1].toLowerCase() !== 'created') return null;
@@ -188,8 +227,10 @@ function parseAttributionLine(line) {
   };
 }
 
-// Returns the last "Created with ..." prose line in the text, ignoring code
-// blocks, HTML comments and "Reviewed with ..." lines.
+/**
+ * Returns the last "Created with ..." prose line in the text, ignoring code
+ * blocks, HTML comments and "Reviewed with ..." lines.
+ */
 export function parseExistingAttribution(text) {
   const lines = proseLines(text);
   for (let i = lines.length - 1; i >= 0; i -= 1) {
@@ -199,6 +240,9 @@ export function parseExistingAttribution(text) {
   return null;
 }
 
+/**
+ * Returns the model named in the older "created with the assistance of **<Model>**" wording, or null.
+ */
 function parseLegacyAttribution(text) {
   for (const line of proseLines(text)) {
     const match = line.match(LEGACY_ATTRIBUTION_PATTERN);
@@ -207,6 +251,9 @@ function parseLegacyAttribution(text) {
   return null;
 }
 
+/**
+ * Finds the first model name in the text, reported as written. With `requireSpecific`, a bare family name such as "Claude" is skipped.
+ */
 export function detectModel(text, { requireSpecific = false } = {}) {
   for (const family of MODEL_FAMILIES) {
     const match = (text || '').match(family.regex);
@@ -218,8 +265,10 @@ export function detectModel(text, { requireSpecific = false } = {}) {
   return null;
 }
 
+/** Escapes regular-expression special characters in a string. */
 const escapeRegExp = (s) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 
+/** Identifies the agent (harness) and model named by one Co-authored-by: trailer value. */
 function detectFromTrailer(trailer) {
   const emailMatch = trailer.match(/<([^>]*)>/);
   const email = emailMatch ? emailMatch[1].trim() : '';
@@ -242,8 +291,10 @@ function detectFromTrailer(trailer) {
   return { harness, model: detectModel(modelText, { requireSpecific: true }) };
 }
 
-// Detects agent details from authoring evidence only.
-// `body` is the PR description; `commitMessages` is a list of commit messages.
+/**
+ * Detects agent details from authoring evidence only.
+ * `body` is the PR description; `commitMessages` is a list of commit messages.
+ */
 export function detectAgentDetails({ body = '', commitMessages = [] } = {}) {
   const [authorBody] = splitAuthorSection(body);
 
@@ -284,8 +335,10 @@ export function detectAgentDetails({ body = '', commitMessages = [] } = {}) {
   return null;
 }
 
-// Formats "<Action> with <Model> in <Harness>, run from <Environment>."
-// A missing model or harness is left out instead of being invented.
+/**
+ * Formats "<Action> with <Model> in <Harness>, run from <Environment>."
+ * A missing model or harness is left out instead of being invented.
+ */
 export function formatAttributionLine({ action = 'Created', model, harness, environment }) {
   let line = `${action} with ${model || harness}`;
   if (model && harness) line += ` in ${harness}`;
@@ -293,8 +346,10 @@ export function formatAttributionLine({ action = 'Created', model, harness, envi
   return `${line}.`;
 }
 
-// True when the attribution line is the only "Created with" prose line in the
-// author section and nothing (prose or code) follows it.
+/**
+ * True when the attribution line is the only "Created with" prose line in the
+ * author section and nothing (prose or code) follows it.
+ */
 function endsWithOnlyAttribution(lines, classified, attributionLine) {
   const { types, openFence, openComment } = classified;
   if (openFence || openComment) return false;
@@ -309,11 +364,13 @@ function endsWithOnlyAttribution(lines, classified, attributionLine) {
   return lastContent === attributionIndexes[0] && lines[lastContent].trim() === attributionLine;
 }
 
-// Places the attribution line at the end of the author-written part of the body,
-// above any bot-generated summaries, and removes stray "Created with" prose lines
-// elsewhere in that part. Code blocks and HTML comments are kept exactly as they
-// are; a code block or comment left open at the end is closed first so the line
-// stays visible. Returns the body unchanged when it already ends with the line.
+/**
+ * Places the attribution line at the end of the author-written part of the body,
+ * above any bot-generated summaries, and removes stray "Created with" prose lines
+ * elsewhere in that part. Code blocks and HTML comments are kept exactly as they
+ * are; a code block or comment left open at the end is closed first so the line
+ * stays visible. Returns the body unchanged when it already ends with the line.
+ */
 export function appendAttributionToBody(body, attributionLine) {
   const [authorSection, botSection] = splitAuthorSection(body);
   const lines = splitLines(authorSection);
@@ -347,12 +404,15 @@ export function appendAttributionToBody(body, attributionLine) {
   return botSection ? `${updatedAuthor}\n${botSection}` : updatedAuthor;
 }
 
+/** True for errors worth retrying: network failures, rate limits and server errors. */
 function isTransient(error) {
   return !error.status || error.status === 429 || error.status >= 500;
 }
 
+/** Raised when the PR changed under a running job, so the newer run should handle it. */
 class StaleRunError extends Error {}
 
+/** Runs `fn`, retrying transient failures with a growing delay. */
 export async function withRetry(fn, { attempts = 3, delayMs = 1000, core } = {}) {
   for (let attempt = 1; ; attempt += 1) {
     try {
@@ -365,10 +425,12 @@ export async function withRetry(fn, { attempts = 3, delayMs = 1000, core } = {})
   }
 }
 
-// Lists every commit message on the PR. The pull request commits endpoint stops
-// at 250 commits, so larger PRs fall back to the compare API, which pages
-// through all of them. A result that is still short is reported, not hidden.
-// Each read is retried on transient errors.
+/**
+ * Lists every commit message on the PR. The pull request commits endpoint stops
+ * at 250 commits, so larger PRs fall back to the compare API, which pages
+ * through all of them. A result that is still short is reported, not hidden.
+ * Each read is retried on transient errors.
+ */
 async function listAllCommitMessages({ github, owner, repo, pr, core, retry }) {
   const commits = await withRetry(
     () =>
@@ -414,6 +476,7 @@ async function listAllCommitMessages({ github, owner, repo, pr, core, retry }) {
   return messages;
 }
 
+/** Creates the ai-assisted label if needed and adds it to the PR. */
 async function ensureLabel({ github, owner, repo, prNumber, labels, core }) {
   if (labels.includes(AI_LABEL)) return;
 
@@ -444,8 +507,10 @@ async function ensureLabel({ github, owner, repo, prNumber, labels, core }) {
   core.info(`#${prNumber}: Added "${AI_LABEL}" label.`);
 }
 
-// Reads the PR and stops the run if its head moved since this run started, so a
-// run that began before a force-push never writes results based on removed commits.
+/**
+ * Reads the PR and stops the run if its head moved since this run started, so a
+ * run that began before a force-push never writes results based on removed commits.
+ */
 async function readCurrentPr({ github, owner, repo, prNumber, headSha }) {
   const { data } = await github.rest.pulls.get({ owner, repo, pull_number: prNumber });
   if (data.state !== 'open' || (headSha && data.head?.sha !== headSha)) {
@@ -454,6 +519,7 @@ async function readCurrentPr({ github, owner, repo, prNumber, headSha }) {
   return data;
 }
 
+/** Adds or moves the attribution line in the PR description without overwriting newer edits. */
 async function ensureAttribution({ github, owner, repo, prNumber, headSha, commitMessages, core }) {
   // GitHub has no conditional update for PR bodies. Read, build the new body,
   // then read again right before writing and start over if the body changed,
@@ -495,6 +561,9 @@ async function ensureAttribution({ github, owner, repo, prNumber, headSha, commi
   core.warning(`#${prNumber}: PR description kept changing; attribution not added this run.`);
 }
 
+/**
+ * Entry point for the workflow: detects AI authoring evidence on the PR, then applies the label and the attribution line.
+ */
 export async function runAgentAttribution({ github, context, core, retryDelayMs = 1000 }) {
   const { owner, repo } = context.repo;
   const prNumber = context.payload.pull_request?.number;
