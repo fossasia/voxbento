@@ -245,6 +245,7 @@ class LocalProvider(TranslationProvider):
         style: str | None = None,
         vocabulary_entries: Sequence[Any] = (),
     ) -> str | None:
+        called = time.monotonic()
         logger.debug(
             f"[NLLB] translate called: source='{source_lang_name}' -> target='{target_lang_name}' "
             f"model='{model}' text_len={len(text)}"
@@ -297,8 +298,9 @@ class LocalProvider(TranslationProvider):
             if restored is not None:
                 return restored
             # Never show a placeholder to listeners: translate the original segment instead, unless a
-            # second pass as slow as the first would run past the worker's deadline anyway.
-            if time.monotonic() - started > LOCAL_TRANSLATION_TIMEOUT_SECS / 2:
+            # second pass as slow as the first could not finish before the worker gives up on the segment.
+            now = time.monotonic()
+            if (now - started) > LOCAL_TRANSLATION_TIMEOUT_SECS - (now - called):
                 logger.warning("[NLLB] Glossary placeholders were lost and no time is left to translate again")
                 return None
             logger.debug("[NLLB] Glossary placeholders did not survive translation; using the plain translation")

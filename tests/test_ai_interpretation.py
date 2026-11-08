@@ -346,11 +346,6 @@ def test_term_protection_resolves_overlaps_and_matching_rules():
     segment = protect_terms("Die Straße und die STRASSE", [entry("strasse", "rue", "exact")])
     assert segment == ProtectedSegment("Die [1] und die [2]", ("rue", "rue"))
 
-    # NLLB keeps only [1] to [15] intact, so later matches are left to the plain translation.
-    segment = protect_terms(" ".join(["booth"] * 16), [entry("booth", "cabine")])
-    assert len(segment.target_terms) == 15
-    assert segment.text.endswith("[15] booth")
-
     assert protect_terms("Nothing to see", [entry("booth", "cabine")]) == ProtectedSegment("Nothing to see", ())
     assert protect_terms("Hello", [entry("", "X")]) == ProtectedSegment("Hello", ())
 

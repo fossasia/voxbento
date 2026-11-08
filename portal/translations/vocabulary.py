@@ -212,7 +212,6 @@ def _term_matches(entry: AIVocabularyEntry, transcript_text: str) -> bool:
 # 95% of segments; "⟦1⟧" is not in its vocabulary and never survives. Matched loosely, so a
 # mangled copy such as "[ 1]" or "[01]" is caught instead of shown to listeners.
 TERM_PLACEHOLDER = re.compile(r"\[\s*\d+\s*\]")
-MAX_PLACEHOLDERS = 15
 
 
 @dataclass(frozen=True)
@@ -260,8 +259,7 @@ def protect_terms(text: str, entries: Iterable[VocabularyEntryInput | AIVocabula
     for span in spans:
         if all(span[1] <= other[0] or span[0] >= other[1] for other in chosen):
             chosen.append(span)
-    # Beyond MAX_PLACEHOLDERS NLLB splits the numbers into several tokens and rarely keeps them.
-    chosen = sorted(chosen[:MAX_PLACEHOLDERS])
+    chosen.sort()
     parts: list[str] = []
     cursor = 0
     for number, (start, end, _, _) in enumerate(chosen, 1):

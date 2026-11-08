@@ -69,8 +69,8 @@ NLLB is a sequence-to-sequence translation model with no system-prompt channel, 
 no effect on the output. The room settings page states this, and the worker logs a warning the first
 time a local translation runs with either configured. Select a cloud provider for them to take effect.
 
-Glossary entries do apply, through term protection: each whole-word match in the segment (up to 15)
-is replaced with a numbered placeholder (`[1]`, `[2]`, …) before translation and with the entry's
+Glossary entries do apply, through term protection: each whole-word match in the segment is
+replaced with a numbered placeholder (`[1]`, `[2]`, …) before translation and with the entry's
 target term afterwards. If a placeholder comes back missing, duplicated or changed, the segment is
 translated again without the glossary, so listeners never see a placeholder. Segments that already
 contain bracketed numbers are translated without the glossary.
