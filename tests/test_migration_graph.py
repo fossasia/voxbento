@@ -35,10 +35,15 @@ def _assigned(tree: ast.Module, name: str, source: str = "<module>") -> object:
                 values.append(node.value)
         elif isinstance(node, ast.Assign) and any(isinstance(t, ast.Name) and t.id == name for t in node.targets):
             values.append(node.value)
+        elif isinstance(node, ast.AugAssign) and isinstance(node.target, ast.Name) and node.target.id == name:
+            values.append(node)  # `revision += "x"` changes the value after the checked assignment
     if not values:
-        raise AssertionError(
-            f'{source}: no module-level `{name}` value. Set it (`{name} = "NNN"`) to the current head.'
+        hint = (
+            'set it to the migration\'s number from its file name (`revision = "NNN"`)'
+            if name == "revision"
+            else "set it to the current head"
         )
+        raise AssertionError(f"{source}: no module-level `{name}` value; {hint}.")
     if len(values) > 1:
         raise AssertionError(f"{source}: `{name}` is assigned {len(values)} times; assign it exactly once.")
     try:
@@ -56,6 +61,8 @@ def _migrations() -> tuple[tuple[str, str, tuple[str, ...]], ...]:
     """
     found = []
     for path in sorted(VERSIONS.glob("*.py")):
+        if path.name.startswith(("__", ".#")):  # __init__.py, editor lock files; Alembic skips these too
+            continue
         tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
         revision = _assigned(tree, "revision", path.name)
         down = _assigned(tree, "down_revision", path.name)
@@ -68,6 +75,8 @@ def test_assigned_reads_one_value_and_rejects_duplicates():
     assert _assigned(ast.parse('revision: str\nrevision = "040"\n'), "revision") == "040"
     with pytest.raises(AssertionError, match="assigned 2 times"):
         _assigned(ast.parse('revision = "040"\nrevision = "041"\n'), "revision")
+    with pytest.raises(AssertionError, match="assigned 2 times"):
+        _assigned(ast.parse('revision = "040"\nrevision += "1"\n'), "revision")
     with pytest.raises(AssertionError, match="plain literal"):
         _assigned(ast.parse('revision = "04" + "0"\n'), "revision")
 
