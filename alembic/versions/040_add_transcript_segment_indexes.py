@@ -1,7 +1,7 @@
 """add transcript segment indexes
 
-Revision ID: 039
-Revises: 038
+Revision ID: 040
+Revises: 039
 Create Date: 2026-10-26 17:10:00.000000
 
 """
@@ -15,16 +15,16 @@ from sqlalchemy import text
 from alembic import op
 
 # revision identifiers, used by Alembic.
-revision: str = "039"
-down_revision: Union[str, Sequence[str], None] = "038"
+revision: str = "040"
+down_revision: Union[str, Sequence[str], None] = "039"
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
 
 ROOM_LANGUAGE_CREATED = "ix_transcript_segments_room_language_created"
 BOOTH_ID = "ix_transcript_segments_booth_id"
-MIGRATION_ADVISORY_LOCK_ID = 20261026039
-ADVISORY_LOCK = text("SELECT pg_advisory_lock(:lock_id)").bindparams(lock_id=MIGRATION_ADVISORY_LOCK_ID)
-ADVISORY_UNLOCK = text("SELECT pg_advisory_unlock(:lock_id)").bindparams(lock_id=MIGRATION_ADVISORY_LOCK_ID)
+MIGRATION_ADVISORY_LOCK_ID = 20261026040
+ADVISORY_LOCK = text("SELECT pg_advisory_lock(20261026040)")
+ADVISORY_UNLOCK = text("SELECT pg_advisory_unlock(20261026040)")
 
 
 def upgrade() -> None:

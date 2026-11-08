@@ -40,11 +40,11 @@ target_metadata = Base.metadata
 # of them can read the same current revision, run the same step, and have the second
 # one fail the version-table update with "expected to match one row". Serialize the
 # whole run with an advisory lock, taken before run_migrations() reads the revision
-# and released only after the migration transaction has committed. Migration 039
+# and released only after the migration transaction has committed. Migration 040
 # acquires the same id; advisory locks are re-entrant within a session.
-MIGRATION_LOCK_ID = 20261026039
-ADVISORY_LOCK = sa.text("SELECT pg_advisory_lock(:lock_id)").bindparams(lock_id=MIGRATION_LOCK_ID)
-ADVISORY_UNLOCK = sa.text("SELECT pg_advisory_unlock(:lock_id)").bindparams(lock_id=MIGRATION_LOCK_ID)
+MIGRATION_LOCK_ID = 20261026040
+ADVISORY_LOCK = sa.text("SELECT pg_advisory_lock(20261026040)")
+ADVISORY_UNLOCK = sa.text("SELECT pg_advisory_unlock(20261026040)")
 
 
 # ---------------------------------------------------------------------------
