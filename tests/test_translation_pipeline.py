@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 import asyncio
 from unittest.mock import AsyncMock, patch
 
@@ -453,3 +455,33 @@ async def test_queue_counter_restored_when_glossary_lookup_cancelled(db_data, mo
                     )
     assert bundle.call_count >= 1
     assert worker_module.LANGUAGE_QUEUES[queue_key] == 0
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("failure_location", ["status_helper", "cache_probe"])
+async def test_download_status_failure_preserves_inference_timeout(db_data, mock_broadcast, caplog, failure_location):
+    """Both status-failure paths must preserve successful translation and its timeout."""
+    worker = TranslationWorker(mock_broadcast)
+    target = (
+        "portal.translations.providers.local.get_download_progress"
+        if failure_location == "status_helper"
+        else "huggingface_hub.snapshot_download"
+    )
+    with (
+        patch(target, side_effect=PermissionError("private model path")),
+        patch.object(worker, "_call_llm", new_callable=AsyncMock, return_value="Bonjour"),
+        patch("portal.tts.worker.synthesize", new_callable=AsyncMock, return_value=b"audio"),
+        patch("portal.websockets.manager.tts_manager.broadcast_bundle", new_callable=AsyncMock) as bundle,
+        patch("portal.translations.worker.asyncio.wait_for", wraps=asyncio.wait_for) as wait_for,
+    ):
+        await worker._translate_and_broadcast(
+            event=db_data["event"], room=db_data["room"], provider="local", model="uncached-test-model",
+            api_key="", lang_code="fr", lang_name="French", source_lang_code="en", source_lang_name="English",
+            segment_id=db_data["segment"].id, text="Hello", booth_id_str="floor", uuid_segment_id="probe-test", seq=1,
+        )
+
+    assert wait_for.call_args_list[0].kwargs["timeout"] == 60.0
+    assert bundle.await_count == 2
+    assert all(call.args[7] == "Bonjour" and call.args[8] is None for call in bundle.call_args_list)
+    assert "PermissionError" in caplog.text
+    assert "private model path" not in caplog.text
