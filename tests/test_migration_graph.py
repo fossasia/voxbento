@@ -28,7 +28,9 @@ def _assigned(tree: ast.Module, name: str) -> object:
     """The literal value assigned to a module-level name, with or without a type annotation."""
     for node in tree.body:
         if isinstance(node, ast.AnnAssign) and isinstance(node.target, ast.Name) and node.target.id == name:
-            return ast.literal_eval(node.value) if node.value is not None else None
+            if node.value is None:  # bare annotation (`revision: str`): keep looking for the assignment
+                continue
+            return ast.literal_eval(node.value)
         if isinstance(node, ast.Assign) and any(isinstance(t, ast.Name) and t.id == name for t in node.targets):
             return ast.literal_eval(node.value)
     raise AssertionError(f"no module-level `{name}` assignment")
@@ -75,7 +77,7 @@ def test_file_numbers_match_revisions():
 def test_parents_exist():
     known = {revision for _, revision, _ in MIGRATIONS}
     missing = [(name, parent) for name, _, parents in MIGRATIONS for parent in parents if parent not in known]
-    assert not missing, f"`down_revision` points at a revision that doesn't exist: {missing}"
+    assert not missing, f"`down_revision` points at a revision that doesn't exist: {missing}. {FIX_HINT}"
 
 
 def test_no_two_migrations_share_a_parent():
