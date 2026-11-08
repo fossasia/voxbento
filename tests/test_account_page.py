@@ -302,10 +302,12 @@ async def test_password_api_rejects_non_object_json():
 )
 @pytest.mark.parametrize("body", [b"", b"not json", b'{"password": ', b"\xff\xfe"])
 async def test_auth_json_api_rejects_malformed_json(path, body):
+    """A request body that is not valid JSON is a client error, not a server crash."""
     _, cookies = await make_user()
     async with client() as http:
         res = await http.post(path, content=body, headers={"content-type": "application/json"}, cookies=cookies)
     assert res.status_code == 400
+    assert res.json()["detail"] == "Request body must be valid JSON"
 
 
 @pytest.mark.anyio
@@ -321,7 +323,9 @@ async def test_auth_json_api_rejects_malformed_json(path, body):
 )
 @pytest.mark.parametrize("body", [b"[]", b'["x"]', b'"text"', b"123", b"null", b"true"])
 async def test_auth_json_api_rejects_non_object_json_body(path, body):
+    """Valid JSON that is not an object is rejected before any handler calls .get() on it."""
     _, cookies = await make_user()
     async with client() as http:
         res = await http.post(path, content=body, headers={"content-type": "application/json"}, cookies=cookies)
     assert res.status_code == 400
+    assert res.json()["detail"] == "Request body must be a JSON object"
