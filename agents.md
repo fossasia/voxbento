@@ -232,13 +232,14 @@ Max concurrent workers: 10 (`MAX_TOTAL_WORKERS`).
 
 ## AI Attribution Rules
 
-1. **PR Authoring**: When creating or assisting a PR with AI, include attribution at the end of the PR description:
+1. **PR Authoring**: When AI wrote or significantly shaped a PR (with or without an agent), put one attribution line at the end of the part of the description you wrote, above any bot-generated summary (Sourcery, CodeRabbit):
    `Created with <Model> in <Harness/IDE>, run from <Environment>.`
-   (e.g., `Created with Claude Opus 4.6 in Claude Code` or `Created with Gemini in Antigravity`).
-   Name only the tools you actually used; leave out a model or harness you do not know rather than guessing.
+   (e.g., `Created with Claude Opus 4.6 in Claude Code, run from T3 Code.`, `Created with Gemini in Antigravity.` or, without an agent, `Created with ChatGPT.`).
+   Name only the tools you actually used; leave out a model, harness or environment you do not know rather than guessing.
+   The Agent Attribution workflow adds or moves this line to that spot when it finds AI co-author trailers, so do not add a second copy.
 2. **PR Reviews**: When reviewing a PR with AI (inline comments, review summaries, or change requests), include attribution at the end of the review comment or summary:
    `Reviewed with <Model> in <Harness/IDE>, run from <Environment>.`
-   (e.g., `Reviewed with Claude Opus 4.6 in Claude Code` or `Reviewed with Gemini in Antigravity`).
+   (e.g., `Reviewed with Claude Opus 4.6 in Claude Code, run from T3 Code.` or `Reviewed with Gemini in Antigravity.`).
 
 - "AI-assisted" means the AI wrote or significantly shaped the code, commit messages,
   or PR description — not just that it answered a question.

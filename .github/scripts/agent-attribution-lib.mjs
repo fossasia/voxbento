@@ -20,8 +20,9 @@ export const AI_LABEL = 'ai-assisted';
 export const MAX_BODY_LENGTH = 65536;
 
 // A whole line such as "Created with Claude Opus 5.5 in Claude Code, run from T3 Code."
-// The model or the harness part may be absent ("Created with ChatGPT.").
-const WORD = String.raw`[\w-]+(?:\.[\w-]+)*`;
+// The model or the harness part may be absent ("Created with ChatGPT."), and
+// names may contain dots or slashes ("Claude Sonnet 4.5", "WSL2/Ubuntu").
+const WORD = String.raw`[\w-]+(?:[./][\w-]+)*`;
 const NAME = `(${WORD}(?: ${WORD})*?)`;
 export const ATTRIBUTION_LINE_PATTERN = new RegExp(
   String.raw`^\s*(Created|Reviewed) with ${NAME}(?: in ${NAME})?(?:,\s*run from ${NAME})?\s*\.?\s*$`,
@@ -202,17 +203,18 @@ export function detectAgentDetails({ body = '', commitMessages = [] } = {}) {
     }
   }
 
-  let harness = null;
-  let model = null;
+  // Model and harness always come from the same trailer, so two trailers are
+  // never combined into a pairing neither of them states. A trailer that names
+  // both wins over one that names only the harness.
+  let best = null;
   for (const message of commitMessages) {
     for (const match of (message || '').matchAll(CO_AUTHOR_TRAILER_PATTERN)) {
       const found = detectFromTrailer(match[1]);
       if (!found.harness) continue;
-      harness = harness || found.harness;
-      model = model || found.model;
+      if (!best || (!best.model && found.model)) best = found;
     }
   }
-  if (harness) return { model, harness, environment: null, explicit: false };
+  if (best) return { model: best.model, harness: best.harness, environment: null, explicit: false };
 
   for (const text of [body, ...commitMessages]) {
     const legacyModel = parseLegacyAttribution(text);

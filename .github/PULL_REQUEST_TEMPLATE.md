@@ -35,5 +35,7 @@ Describe how you tested these changes.
 
 <!-- Any extra context, concerns, or information -->
 
-<!-- If you used an agent, end with the model and harness that did the work,
-in the form: Created with <Model> in <Harness>, run from <Environment>. -->
+<!-- If AI wrote or significantly shaped this PR, with or without an agent, end
+with one line naming only the tools you used:
+Created with <Model> in <Harness>, run from <Environment>.
+Without an agent, name just the model: Created with <Model>. -->

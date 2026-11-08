@@ -371,3 +371,67 @@ test('a later run adds attribution to a PR that is labelled but missing it', asy
   await run(github);
   assert.deepEqual(types(calls), ['update']);
 });
+
+// --- CodeRabbit regressions ---
+
+test('detectAgentDetails keeps model and harness from the same trailer', () => {
+  const detected = detectAgentDetails({
+    commitMessages: [
+      'feat: a\n\nCo-authored-by: Cursor Agent <cursoragent@cursor.com>',
+      'feat: b\n\nCo-authored-by: Claude Opus 5.5 <noreply@anthropic.com>',
+    ],
+  });
+  assert.equal(formatAttributionLine(detected), 'Created with Claude Opus 5.5 in Claude Code.');
+
+  const harnessOnly = detectAgentDetails({
+    commitMessages: [
+      'feat: a\n\nCo-authored-by: Cursor Agent <cursoragent@cursor.com>',
+      'feat: b\n\nCo-authored-by: Copilot <copilot@github.com>',
+    ],
+  });
+  assert.equal(formatAttributionLine(harnessOnly), 'Created with Cursor.');
+});
+
+test('detectAgentDetails ignores a human co-author named Claude', () => {
+  assert.equal(
+    detectAgentDetails({ commitMessages: ['feat\n\nCo-authored-by: Claude Martin <claude.martin@example.com>'] }),
+    null,
+  );
+});
+
+test('parseExistingAttribution accepts slashes in names', () => {
+  const line = 'Created with Claude Sonnet 4.5 in VS Code, run from WSL2/Ubuntu.';
+  assert.equal(parseExistingAttribution(`Body\n\n${line}`).environment, 'WSL2/Ubuntu');
+});
+
+test('runAgentAttribution labels a PR whose only evidence has a slash environment', async () => {
+  const { github, calls } = makeGithub({
+    body: '## Change\nX\n\nCreated with Claude Sonnet 4.5 in VS Code, run from WSL2/Ubuntu.',
+    commits: ['feat: x'],
+  });
+  await run(github);
+  assert.deepEqual(types(calls), ['addLabels']);
+});
+
+test('runAgentAttribution leaves a fenced example in a human PR untouched', async () => {
+  const body = '## Change\nDocs now show:\n\n```\nCreated with ChatGPT.\n```\n\n## Testing\nRan docs build.';
+  const { github, calls } = makeGithub({ body, commits: ['docs: add attribution example'] });
+  await run(github);
+  assert.deepEqual(calls, []);
+});
+
+test('runAgentAttribution does not turn a review line in a commit into a creation claim', async () => {
+  const { github, calls } = makeGithub({
+    body: '## Change\nX',
+    commits: ['fix: y\n\nReviewed with Gemini in Antigravity.'],
+  });
+  await run(github);
+  assert.deepEqual(calls, []);
+});
+
+test('appendAttributionToBody keeps review records when moving creation attribution', () => {
+  const created = 'Created with Claude in Claude Code.';
+  const reviewed = 'Reviewed with Gemini in Antigravity.';
+  const body = `## Change\nX\n\n${created}\n${reviewed}\n\n## Testing\nOK`;
+  assert.equal(appendAttributionToBody(body, created), `## Change\nX\n\n${reviewed}\n\n## Testing\nOK\n\n${created}\n`);
+});
