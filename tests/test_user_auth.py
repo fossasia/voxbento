@@ -2,7 +2,11 @@
 
 from __future__ import annotations
 
+import hashlib
 import os
+import secrets
+import time
+from datetime import datetime, timedelta, timezone
 
 os.environ["BOOTH_ACCESS_TOKEN"] = ""
 
@@ -679,8 +683,6 @@ class TestUserLogin:
             assert b"Too many attempts. Try again later." in limited_resp.content
 
 
-
-
 class TestEmailVerification:
     @pytest.mark.anyio
     async def test_inactive_user_cannot_verify_or_receive_a_session(self, setup_db):
@@ -1006,6 +1008,171 @@ class TestAccountPage:
 # ---------------------------------------------------------------------------
 # Admin user management
 # ---------------------------------------------------------------------------
+
+
+class TestLastSignIn:
+    @pytest.mark.anyio
+    async def test_password_login_records_timestamp_and_failure_does_not(self, setup_db):
+        from portal.database import get_session, get_user_by_id
+
+        user = await _create_test_user(email="last-sign-in@example.com")
+        async with _client() as c:
+            failed = await c.post("/login", data={"email": user.email, "password": "wrong-password"})
+            assert failed.status_code == 403
+        async with get_session() as session:
+            stored = await get_user_by_id(session, user.id)
+            assert stored.last_sign_in_at is None
+
+        async with _client() as c:
+            success = await c.post("/login", data={"email": user.email, "password": "securepass123"})
+            assert success.status_code == 303
+
+        async with get_session() as session:
+            stored = await get_user_by_id(session, user.id)
+            assert stored.last_sign_in_at is not None
+
+    @pytest.mark.anyio
+    async def test_sign_in_timestamp_never_moves_backwards(self, setup_db):
+        from portal.database import get_session, update_user
+
+        user = await _create_test_user(email="monotonic-sign-in@example.com")
+        newer = datetime.now(timezone.utc)
+        older = newer - timedelta(minutes=1)
+        async with get_session() as session:
+            await update_user(session, user.id, last_sign_in_at=newer)
+        async with get_session() as session:
+            await update_user(session, user.id, last_sign_in_at=older)
+        async with get_session() as session:
+            stored = await session.get(type(user), user.id)
+            assert stored.last_sign_in_at.replace(tzinfo=timezone.utc) == newer
+
+    @pytest.mark.anyio
+    async def test_update_user_preserves_other_changes_with_timestamp(self, setup_db):
+        from portal.database import get_session, update_user
+
+        user = await _create_test_user(email="combined-update@example.com", password="oldpassword123")
+        timestamp = datetime.now(timezone.utc)
+        async with get_session() as session:
+            await update_user(
+                session,
+                user.id,
+                password_hash=hash_password("newpassword123"),
+                email_verified=False,
+                last_sign_in_at=timestamp,
+            )
+
+        async with get_session() as session:
+            stored = await session.get(type(user), user.id)
+            assert stored.password_hash != user.password_hash
+            assert stored.email_verified is False
+            assert stored.last_sign_in_at.replace(tzinfo=timezone.utc) == timestamp
+
+    @pytest.mark.anyio
+    async def test_password_login_retries_sqlite_write_conflict(self, setup_db, monkeypatch):
+        from sqlalchemy.exc import OperationalError
+
+        import portal.routers.auth as auth_router
+
+        user = await _create_test_user(email="retry-sign-in@example.com")
+        original_update_user = auth_router.update_user
+        attempts = 0
+
+        async def fail_once(*args, **kwargs):
+            nonlocal attempts
+            attempts += 1
+            if attempts == 1:
+                raise OperationalError("database is locked", {}, Exception())
+            return await original_update_user(*args, **kwargs)
+
+        monkeypatch.setattr(auth_router, "update_user", fail_once)
+        async with _client() as client:
+            response = await client.post("/login", data={"email": user.email, "password": "securepass123"})
+
+        assert response.status_code == 303
+        assert attempts == 2
+
+    @pytest.mark.anyio
+    async def test_inactive_password_reset_does_not_sign_in(self, setup_db):
+        from portal.database import create_auth_token, get_session, get_user_by_id
+
+        user = await _create_test_user(email="inactive-reset@example.com")
+        async with get_session() as session:
+            stored = await get_user_by_id(session, user.id)
+            stored.is_active = False
+            await create_auth_token(session, jti="inactive-reset-token", user_id=user.id, token_type="password_reset")
+
+        async with _client() as client:
+            response = await client.post(
+                "/auth/reset/inactive-reset-token", data={"password": "newpassword123"}, follow_redirects=False
+            )
+        assert response.status_code == 403
+        async with get_session() as session:
+            stored = await get_user_by_id(session, user.id)
+            assert stored.last_sign_in_at is None
+
+    @pytest.mark.anyio
+    async def test_email_verification_records_timestamp(self, setup_db):
+        from portal.database import create_auth_token, create_user, get_session, get_user_by_id
+
+        async with get_session() as session:
+            user = await create_user(
+                session,
+                email="verify-sign-in@example.com",
+                display_name="Verify",
+                password_hash=hash_password("securepass123"),
+                email_verified=False,
+            )
+            await create_auth_token(session, jti="verify-sign-in-token", user_id=user.id, token_type="verification")
+            user_id = user.id
+
+        async with _client() as client:
+            response = await client.get("/auth/verify/verify-sign-in-token", follow_redirects=False)
+        assert response.status_code in (200, 303)
+        async with get_session() as session:
+            stored = await get_user_by_id(session, user_id)
+            assert stored.email_verified is True
+            assert stored.last_sign_in_at is not None
+
+    @pytest.mark.anyio
+    @pytest.mark.parametrize("email_verified", [False, True])
+    async def test_direct_magic_link_records_timestamp(self, setup_db, email_verified):
+        from portal.database import create_auth_token, create_user, get_session, get_user_by_id
+
+        async with get_session() as session:
+            user = await create_user(
+                session,
+                email=f"magic-sign-in-{email_verified}@example.com",
+                display_name="Magic",
+                email_verified=email_verified,
+            )
+            await create_auth_token(
+                session, jti=f"magic-sign-in-{email_verified}", user_id=user.id, token_type="magic_link"
+            )
+            user_id = user.id
+
+        async with _client() as client:
+            response = await client.get(f"/auth/magic/magic-sign-in-{email_verified}", follow_redirects=False)
+        assert response.status_code == 303
+        async with get_session() as session:
+            stored = await get_user_by_id(session, user_id)
+            assert stored.last_sign_in_at is not None
+
+    @pytest.mark.anyio
+    async def test_successful_password_reset_records_timestamp(self, setup_db):
+        from portal.database import create_auth_token, get_session, get_user_by_id
+
+        user = await _create_test_user(email="reset-sign-in@example.com")
+        async with get_session() as session:
+            await create_auth_token(session, jti="reset-sign-in-token", user_id=user.id, token_type="password_reset")
+
+        async with _client() as client:
+            response = await client.post(
+                "/auth/reset/reset-sign-in-token", data={"password": "newpassword123"}, follow_redirects=False
+            )
+        assert response.status_code == 303
+        async with get_session() as session:
+            stored = await get_user_by_id(session, user.id)
+            assert stored.last_sign_in_at is not None
 
 
 class TestAdminUserManagement:
@@ -1361,7 +1528,6 @@ class TestMagicLinkAuthentication:
 
     @pytest.mark.anyio
     async def test_magic_link_redirect_places_auth_sync_in_query_before_fragment(self, setup_db):
-        import secrets
         from urllib.parse import quote
 
         from portal.database import create_auth_token, get_session
