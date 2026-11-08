@@ -10,7 +10,7 @@ from portal.translations.constants import OPENAI_COMPATIBLE_ENDPOINTS, Translati
 from portal.translations.keys import get_translation_api_key
 from portal.translations.providers.anthropic import AnthropicProvider
 from portal.translations.providers.gemini import GeminiProvider
-from portal.translations.providers.local import LocalProvider
+from portal.translations.providers.local import LOCAL_TRANSLATION_TIMEOUT_SECS, LocalProvider
 from portal.translations.providers.openai import OpenAIProvider
 from portal.translations.vocabulary import resolve_vocabulary_entries
 
@@ -236,7 +236,7 @@ class TranslationWorker:
                     # If the local CPU is pegged, NLLB can take 30+ seconds.
                     timeout_val = 12.0
                     if provider == "local":
-                        timeout_val = 60.0
+                        timeout_val = LOCAL_TRANSLATION_TIMEOUT_SECS
                         try:
                             from portal.translations.providers.local import get_download_progress
 

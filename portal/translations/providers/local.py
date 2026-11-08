@@ -23,6 +23,9 @@ from portal.translations.vocabulary import protect_terms, restore_terms
 
 logger = logging.getLogger(__name__)
 
+#: How long the translation worker waits for one local translation before dropping the segment.
+LOCAL_TRANSLATION_TIMEOUT_SECS = 60.0
+
 _download_progress = {}
 _progress_lock = threading.Lock()
 
@@ -284,6 +287,7 @@ class LocalProvider(TranslationProvider):
         )
         segment = protect_terms(text, vocabulary_entries)
         if segment.target_terms:
+            started = time.monotonic()
             translated = await asyncio.to_thread(
                 self._run_inference, segment.text, source_lang_token, target_lang_token, model
             )
@@ -292,7 +296,11 @@ class LocalProvider(TranslationProvider):
             restored = restore_terms(translated, segment)
             if restored is not None:
                 return restored
-            # Never show a placeholder to listeners: translate the original segment instead.
+            # Never show a placeholder to listeners: translate the original segment instead, unless a
+            # second pass as slow as the first would run past the worker's deadline anyway.
+            if time.monotonic() - started > LOCAL_TRANSLATION_TIMEOUT_SECS / 2:
+                logger.warning("[NLLB] Glossary placeholders were lost and no time is left to translate again")
+                return None
             logger.debug("[NLLB] Glossary placeholders did not survive translation; using the plain translation")
         return await asyncio.to_thread(self._run_inference, text, source_lang_token, target_lang_token, model)
 

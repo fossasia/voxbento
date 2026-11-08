@@ -209,8 +209,10 @@ def _term_matches(entry: AIVocabularyEntry, transcript_text: str) -> bool:
 
 
 # NLLB keeps "[1]" to "[15]" as single tokens and copies them through unchanged in about
-# 95% of segments; "⟦1⟧" is not in its vocabulary and never survives.
-TERM_PLACEHOLDER = re.compile(r"\[(\d+)\]")
+# 95% of segments; "⟦1⟧" is not in its vocabulary and never survives. Matched loosely, so a
+# mangled copy such as "[ 1]" or "[01]" is caught instead of shown to listeners.
+TERM_PLACEHOLDER = re.compile(r"\[\s*\d+\s*\]")
+MAX_PLACEHOLDERS = 15
 
 
 @dataclass(frozen=True)
@@ -220,24 +222,31 @@ class ProtectedSegment:
 
 
 def find_term_spans(entry: VocabularyEntryInput | AIVocabularyEntry, text: str) -> list[tuple[int, int]]:
-    """Where ``entry`` occurs in ``text``, by the same rules as ``_term_matches``."""
+    """Where ``entry`` occurs in ``text`` as whole words, folded as in ``_term_matches``.
+
+    Phrase entries are matched inside words when picking glossary lines for a prompt, but
+    replacing such a match would cut the surrounding word apart ("AI" in "said").
+    """
     term = entry.source_term if entry.case_sensitive else entry.source_term.casefold()
+    if not term:
+        return []
     pieces = [char if entry.case_sensitive else char.casefold() for char in text]
     # Case folding can lengthen the text ("ß" -> "ss"), so map folded offsets back to the original ones.
     offsets = dict(zip(itertools.accumulate(map(len, pieces), initial=0), range(len(text) + 1)))
-    pattern = re.escape(term)
-    if entry.match_type == "exact":
-        pattern = rf"(?<!\w){pattern}(?!\w)"
     return [
         (offsets[match.start()], offsets[match.end()])
-        for match in re.finditer(pattern, "".join(pieces))
-        # A match that starts or ends inside a folded character cannot be cut out of the original.
+        for match in re.finditer(rf"(?<!\w){re.escape(term)}(?!\w)", "".join(pieces))
+        # A match that starts or ends inside a folded character cannot be cut out without taking letters
+        # the term did not match; that occurrence is translated as usual.
         if match.start() in offsets and match.end() in offsets
     ]
 
 
 def protect_terms(text: str, entries: Iterable[VocabularyEntryInput | AIVocabularyEntry]) -> ProtectedSegment:
     """Replace glossary matches with numbered placeholders for a model that takes no instructions."""
+    # Numbers already in brackets could not be told apart from the placeholders.
+    if TERM_PLACEHOLDER.search(text):
+        return ProtectedSegment(text, ())
     spans = sorted(
         (
             (start, end, rank, entry.target_term)
@@ -251,7 +260,8 @@ def protect_terms(text: str, entries: Iterable[VocabularyEntryInput | AIVocabula
     for span in spans:
         if all(span[1] <= other[0] or span[0] >= other[1] for other in chosen):
             chosen.append(span)
-    chosen.sort()
+    # Beyond MAX_PLACEHOLDERS NLLB splits the numbers into several tokens and rarely keeps them.
+    chosen = sorted(chosen[:MAX_PLACEHOLDERS])
     parts: list[str] = []
     cursor = 0
     for number, (start, end, _, _) in enumerate(chosen, 1):
@@ -262,11 +272,12 @@ def protect_terms(text: str, entries: Iterable[VocabularyEntryInput | AIVocabula
 
 
 def restore_terms(translated: str, segment: ProtectedSegment) -> str | None:
-    """Swap placeholders for target terms, or return None unless each one came back exactly once."""
-    numbers = sorted(int(number) for number in TERM_PLACEHOLDER.findall(translated))
-    if numbers != list(range(1, len(segment.target_terms) + 1)):
+    """Swap placeholders for target terms, or return None unless each one came back intact, exactly once."""
+    placeholders = [f"[{number}]" for number in range(1, len(segment.target_terms) + 1)]
+    if sorted(TERM_PLACEHOLDER.findall(translated)) != sorted(placeholders):
         return None
-    return TERM_PLACEHOLDER.sub(lambda match: segment.target_terms[int(match.group(1)) - 1], translated)
+    targets = dict(zip(placeholders, segment.target_terms))
+    return TERM_PLACEHOLDER.sub(lambda match: targets[match.group(0)], translated)
 
 
 async def resolve_vocabulary_entries(

@@ -64,11 +64,16 @@ This keeps real-time prompts bounded and reduces provider latency and token cost
 
 ### Local provider and interpretation settings
 
-NLLB is a sequence-to-sequence translation model with no system-prompt channel, so persona, style
-and vocabulary **cannot** be applied to it. When a room uses the local provider, those settings are
-accepted and stored but have no effect on the output: the model receives the transcript segment
-unchanged. The room settings page states this, and the worker logs a warning the first time a local
-translation runs with any of them configured. Select a cloud provider for them to take effect.
+NLLB is a sequence-to-sequence translation model with no system-prompt channel, so persona and style
+**cannot** be applied to it. When a room uses the local provider, they are accepted and stored but have
+no effect on the output. The room settings page states this, and the worker logs a warning the first
+time a local translation runs with either configured. Select a cloud provider for them to take effect.
+
+Glossary entries do apply, through term protection: each whole-word match in the segment (up to 15)
+is replaced with a numbered placeholder (`[1]`, `[2]`, …) before translation and with the entry's
+target term afterwards. If a placeholder comes back missing, duplicated or changed, the segment is
+translated again without the glossary, so listeners never see a placeholder. Segments that already
+contain bracketed numbers are translated without the glossary.
 
 ## Privacy and production guidance
 

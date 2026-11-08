@@ -291,12 +291,25 @@ async def test_local_provider_falls_back_when_placeholders_do_not_survive(monkey
 
 
 @pytest.mark.anyio
-async def test_local_provider_without_matching_terms_translates_the_raw_segment(monkeypatch):
-    entry = AIVocabularyEntry(event_id=1, source_term="Jitsi", target_language="all", target_term="Jitsi")
-    result, calls = await translate_locally(monkeypatch, {"Hello [1]": "Bonjour [1]"}, "Hello [1]", [entry])
+async def test_local_provider_leaves_segments_with_bracketed_numbers_unprotected(monkeypatch):
+    entry = AIVocabularyEntry(event_id=1, source_term="booth", target_language="fr", target_term="cabine")
+    result, calls = await translate_locally(
+        monkeypatch, {"Press [1] at the booth": "Appuyez sur [1] au stand"}, "Press [1] at the booth", [entry]
+    )
 
-    # Text that merely looks like a placeholder is left alone when no glossary term matched.
-    assert result == "Bonjour [1]"
+    # A literal "[1]" could not be told apart from a placeholder, so the glossary sits this segment out.
+    assert result == "Appuyez sur [1] au stand"
+    assert calls == ["Press [1] at the booth"]
+
+
+@pytest.mark.anyio
+async def test_local_provider_skips_the_fallback_when_no_time_is_left(monkeypatch):
+    monkeypatch.setattr("portal.translations.providers.local.LOCAL_TRANSLATION_TIMEOUT_SECS", 0.0)
+    entry = AIVocabularyEntry(event_id=1, source_term="Jitsi", target_language="all", target_term="Jitsi")
+    result, calls = await translate_locally(monkeypatch, {"Hello [1]": "Bonjour"}, "Hello Jitsi", [entry])
+
+    # A second pass would only run past the worker's deadline, so the segment is dropped at once.
+    assert result is None
     assert calls == ["Hello [1]"]
 
 
@@ -318,10 +331,14 @@ def test_term_protection_resolves_overlaps_and_matching_rules():
     assert segment == ProtectedSegment("The [1] sits next to the [2].", ("cabine", "cabine d'interprétation"))
 
     # Equal-length overlaps go to the entry the resolver ranked first.
-    segment = protect_terms("Open source", [entry("Open so", "A"), entry("en sour", "B")])
-    assert segment == ProtectedSegment("[1]urce", ("A",))
+    segment = protect_terms("big cat toy", [entry("big cat", "A"), entry("cat toy", "B")])
+    assert segment == ProtectedSegment("[1] toy", ("A",))
 
-    # Exact entries keep word boundaries and case sensitivity.
+    # Only whole words are replaced, even for phrase entries: "AI" must not cut into "said".
+    segment = protect_terms("He said they maintain AI tools", [entry("AI", "IA")])
+    assert segment == ProtectedSegment("He said they maintain [1] tools", ("IA",))
+
+    # Case sensitivity is respected.
     segment = protect_terms("US ships USB to us", [entry("US", "les États-Unis", "exact", case_sensitive=True)])
     assert segment == ProtectedSegment("[1] ships USB to us", ("les États-Unis",))
 
@@ -329,7 +346,13 @@ def test_term_protection_resolves_overlaps_and_matching_rules():
     segment = protect_terms("Die Straße und die STRASSE", [entry("strasse", "rue", "exact")])
     assert segment == ProtectedSegment("Die [1] und die [2]", ("rue", "rue"))
 
+    # NLLB keeps only [1] to [15] intact, so later matches are left to the plain translation.
+    segment = protect_terms(" ".join(["booth"] * 16), [entry("booth", "cabine")])
+    assert len(segment.target_terms) == 15
+    assert segment.text.endswith("[15] booth")
+
     assert protect_terms("Nothing to see", [entry("booth", "cabine")]) == ProtectedSegment("Nothing to see", ())
+    assert protect_terms("Hello", [entry("", "X")]) == ProtectedSegment("Hello", ())
 
 
 def test_restore_terms_requires_each_placeholder_exactly_once():
@@ -340,6 +363,9 @@ def test_restore_terms_requires_each_placeholder_exactly_once():
     assert restore_terms("La [1] utilise.", segment) is None
     assert restore_terms("La [1] utilise [2] [2].", segment) is None
     assert restore_terms("La [1] utilise [2] [3].", segment) is None
+    # Mangled or zero-padded copies are not placeholders and must never reach listeners.
+    assert restore_terms("La [1] utilise [ 2].", segment) is None
+    assert restore_terms("La [01] utilise [2].", segment) is None
 
 
 def test_prompt_stays_within_its_size_budget():
