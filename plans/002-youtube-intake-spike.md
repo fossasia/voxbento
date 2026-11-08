@@ -110,13 +110,17 @@ Server setup) and a room in relay mode with **no YouTube key saved**:
 2. Use the OAuth 2.0 Playground (developers.google.com/oauthplayground) with your own
    client and scope `https://www.googleapis.com/auth/youtube.force-ssl`.
 3. Create an **unlisted** live event in YouTube Studio. Call:
-   - `GET https://www.googleapis.com/youtube/v3/liveBroadcasts?part=snippet,contentDetails,status&broadcastStatus=upcoming&broadcastType=all&mine=true&maxResults=50`
+   - `GET https://www.googleapis.com/youtube/v3/liveBroadcasts?part=snippet,contentDetails,status&broadcastStatus=upcoming&broadcastType=all&maxResults=50`
+     If the new event is not in `items`, repeat the call with `&pageToken=<nextPageToken>` until it appears.
    - `GET https://www.googleapis.com/youtube/v3/liveStreams?part=cdn,status,contentDetails&id=<contentDetails.boundStreamId>`
 4. Record (redacted): that `cdn.ingestionInfo.streamName` is present and equals the
    Studio stream key; the `ingestionAddress` host (`a.rtmp.youtube.com`?);
    `contentDetails.closedCaptionsIngestionUrl` host and path shape (redact query);
    `isDefaultStream`; the quota cost shown in the Cloud console per call type.
 5. Repeat call 3 with scope `youtube.readonly` only. Record whether `streamName` is still returned.
+   Capture the scopes the token was actually granted (for example the Playground's token details or Google's
+   `tokeninfo` endpoint) and record them, so the result is tied to a read-only grant and not to an earlier
+   `youtube.force-ssl` one.
 6. Try `liveBroadcasts.update?part=id,snippet,contentDetails` including the broadcast
    `id`, `snippet.scheduledStartTime`, and both monitor-stream fields required by the API
    (`contentDetails.monitorStream.enableMonitorStream` and

@@ -488,3 +488,24 @@ async def test_room_setup_does_not_add_booths_to_another_events_room(event):
     assert res.status_code == 404
     async with get_session() as s:
         assert await list_booths_for_room(s, event["other_room"]) == []
+
+
+@pytest.mark.anyio
+async def test_revocation_cache_failure_still_commits_and_closes_sockets(event, caplog):
+    """Cache failure must not prevent persistent revocation or closing active sockets."""
+    async with client() as http:
+        await post(http, event, "links", {"booth": f"booth:{event['booth']}", "link_role": INTERPRETER})
+        async with get_session() as s:
+            token = (await s.execute(select(InviteToken))).scalar_one()
+        with (
+            patch("portal.auth.invalidate_token_revocation_cache", side_effect=RuntimeError("private token details")),
+            patch("portal.team.manager.close_token_sessions", new_callable=AsyncMock) as close_sockets,
+        ):
+            result = await post(http, event, "links/revoke", {"token": token.token})
+
+    assert result.headers["location"].endswith("?notice=link_revoked")
+    close_sockets.assert_awaited_once_with(token.public_id, booth_id=f"summit-{event['room']}-de")
+    async with get_session() as s:
+        assert (await s.get(InviteToken, token.token)).revoked_at is not None
+    assert "Could not invalidate invite revocation cache (RuntimeError)" in caplog.text
+    assert "private token details" not in caplog.text
