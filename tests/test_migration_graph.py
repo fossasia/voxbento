@@ -41,7 +41,7 @@ def _assigned(tree: ast.Module, name: str, source: str = "<module>") -> object:
         hint = (
             'set it to the migration\'s number from its file name (`revision = "NNN"`)'
             if name == "revision"
-            else "set it to the current head"
+            else "set it to the current head for a new migration, or `None` for the first (root) migration"
         )
         raise AssertionError(f"{source}: no module-level `{name}` value; {hint}.")
     if len(values) > 1:
@@ -61,7 +61,7 @@ def _migrations() -> tuple[tuple[str, str, tuple[str, ...]], ...]:
     """
     found = []
     for path in sorted(VERSIONS.glob("*.py")):
-        if path.name.startswith(("__", ".#")):  # __init__.py, editor lock files; Alembic skips these too
+        if path.name == "__init__.py" or path.name.startswith(".#"):  # editor lock files; Alembic skips both
             continue
         tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
         revision = _assigned(tree, "revision", path.name)
@@ -130,10 +130,26 @@ def test_each_migration_follows_one_revision():
     assert not merges, f"Migrations must follow exactly one revision, not merge several: {merges}. {FIX_HINT}"
 
 
-def test_alembic_sees_one_head():
+@cache
+def _script_directory() -> ScriptDirectory:
+    """The migrations as Alembic itself loads them."""
     # No alembic.ini: it interpolates %(here)s, which breaks when the checkout path contains %.
     # Values set here are interpolated too, so the % is doubled.
     config = Config()
     config.set_main_option("script_location", str(ROOT / "alembic").replace("%", "%%"))
-    heads = ScriptDirectory.from_config(config).get_heads()
+    return ScriptDirectory.from_config(config)
+
+
+def test_alembic_revisions_match_file_names():
+    # Compares against the values Alembic actually loads, so computed or reassigned values can't slip past.
+    mismatched = [
+        (Path(script.path).name, script.revision)
+        for script in _script_directory().walk_revisions()
+        if not Path(script.path).name.startswith(f"{script.revision}_")
+    ]
+    assert not mismatched, f"File names must start with the revision Alembic loads (NNN_...): {mismatched}"
+
+
+def test_alembic_sees_one_head():
+    heads = _script_directory().get_heads()
     assert len(heads) == 1, f"Alembic has {len(heads)} heads: {sorted(heads)}. {FIX_HINT}"
