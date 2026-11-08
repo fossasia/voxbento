@@ -718,7 +718,8 @@ async def test_rotating_forwarded_headers_cannot_evade_event_create_limit():
     1. Rejects spoofed X-Forwarded-For headers and blocks a peer once quota is exhausted.
     2. Is enforced per client IP rather than per account, so switching user tokens on the
        same peer is still blocked.
-    3. Isolates peers, so a separate client peer with its own account is not blocked.
+    3. Blocks subsequent requests from the exhausted peer even without forwarding headers.
+    4. Isolates peers, so a separate client peer with its own account is not blocked.
     """
     rate_limit._rates.clear()
     async with get_session() as session:
@@ -777,6 +778,17 @@ async def test_rotating_forwarded_headers_cannot_evade_event_create_limit():
         )
         assert resp11.status_code == 429
         assert "rate limit exceeded" in resp11.text.lower()
+
+        # Subsequent request from Peer A without any forwarding header using token1
+        # must also be rate-limited (429) since Peer A's quota is exhausted.
+        resp12 = await http_peer_a.post(
+            "/workspace/setup",
+            data={"display_name": "Event 12", "slug": "unique-event-slug-12"},
+            cookies={"user_token": token1},
+            follow_redirects=False,
+        )
+        assert resp12.status_code == 429
+        assert "rate limit exceeded" in resp12.text.lower()
 
     # Distinct Peer B with its own account (token3) is NOT affected by Peer A reaching its limit
     async with AsyncClient(
