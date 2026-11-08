@@ -186,6 +186,25 @@ class RedactionFilter(logging.Filter):
         for key, value in list(record.__dict__.items()):
             if key not in _RESERVED_RECORD_FIELDS:
                 record.__dict__[key] = _redact_structure(value, name=key)
+        # Split-context fallback. `logger.info("key=%s", "v")` has the
+        # credential context in msg and the value in args; neither matches on
+        # its own, so the per-field pass leaves both intact. Our formatters
+        # redact after interpolation, but a foreign handler reading
+        # getMessage() directly would still leak. Interpolate once and, only if
+        # the redaction catches more than the per-field pass already removed,
+        # overwrite msg with the redacted form and drop args — the only way to
+        # make getMessage() safe for every handler. Each uvicorn.access arg
+        # carries its own credential context (the URL is the arg), so its per-
+        # field pass is already complete and this branch is a no-op there.
+        if isinstance(record.msg, str) and record.args:
+            try:
+                interpolated = record.msg % record.args
+            except (TypeError, ValueError, KeyError):
+                interpolated = record.msg
+            cleaned = redact(interpolated)
+            if cleaned != interpolated:
+                record.msg = cleaned
+                record.args = None
         # A traceback can carry a credential in its message or a local's repr.
         # exc_text is normally still empty here — the formatter fills it later —
         # so it is rendered and redacted now. A standard formatter reuses a
