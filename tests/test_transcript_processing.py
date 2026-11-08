@@ -259,6 +259,23 @@ def test_mid_turn_fragments_still_drop_structural_garbage(text):
     assert is_hallucination(text, complete_turn=False) is True
 
 
+@pytest.mark.parametrize("word", ["you", "the", "I"])
+def test_a_long_single_word_repetition_is_structural_garbage(word):
+    """Fifty repetitions survived forced finalization before this was lifted
+    above the complete_turn gate."""
+    text = " ".join([word] * 50)
+    assert hallucination_reason(text, complete_turn=False) == "repeated word"
+    assert hallucination_reason(text, complete_turn=True) == "repeated word"
+
+
+@pytest.mark.parametrize("text", ["you", "you you", "you you you", "I I I"])
+def test_a_short_repetition_is_still_allowed_mid_turn(text):
+    """Three or fewer identical words mid-turn can be legitimate speech
+    (stutters, "you you"), so the structural check keeps a looser bound than
+    the complete-turn one."""
+    assert hallucination_reason(text, complete_turn=False) is None
+
+
 @pytest.mark.anyio
 async def test_deepgram_mid_turn_chunk_is_published():
     broadcast = AsyncMock()
