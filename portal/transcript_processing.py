@@ -63,6 +63,10 @@ _HALLUCINATION_PHRASES = frozenset(
 # A single token repeated with nothing else ("Click click click", "Cough cough").
 # Two occurrences are enough: real speech rarely finalises as one word twice.
 _MIN_REPEATS = 2
+# A single word repeated this many times is garbage whatever the turn state,
+# so it catches cases like "you " * 50 at forced finalization. A looser
+# threshold would misread legitimate mid-turn stutters like "I I think".
+_STRUCTURAL_REPEAT_MIN = 4
 
 
 def _is_unspaced(ch: str) -> bool:
@@ -88,6 +92,11 @@ def _normalise(text: str) -> str:
 
 def _is_repeated_single_word(words: list[str]) -> bool:
     return len(words) >= _MIN_REPEATS and len(set(words)) == 1
+
+
+def _is_structural_repetition(words: list[str]) -> bool:
+    """Long single-word repetitions, so garbage regardless of turn state."""
+    return len(words) >= _STRUCTURAL_REPEAT_MIN and len(set(words)) == 1
 
 
 def has_no_printable_content(text: str) -> bool:
@@ -125,12 +134,17 @@ def hallucination_reason(text: str, *, complete_turn: bool = True) -> str | None
     if has_overlong_word(stripped):
         return "overlong word"
 
-    if not complete_turn:
-        return None
-
     normalised = _normalise(stripped)
     if not normalised:
         return "no printable content"
+    # Long single-word repetitions are structural garbage; catching them here
+    # means a forced finalization of "you you you..." does not reach listeners.
+    if _is_structural_repetition(normalised.split()):
+        return "repeated word"
+
+    if not complete_turn:
+        return None
+
     if normalised in _HALLUCINATION_PHRASES:
         return "subtitle phrase"
     if _is_repeated_single_word(normalised.split()):
