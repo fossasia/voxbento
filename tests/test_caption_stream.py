@@ -250,6 +250,40 @@ class TestRestore:
         stream.restore(event)
         assert stream.state_for("b").utterance_start_time == started
 
+    def test_restore_does_not_overwrite_a_newer_segments_identity(self, stream, clock):
+        """When a provider interleaves, a newer partial's id and timing must
+        survive the restore of an older failed final — otherwise the next
+        final publishes the newer text under the older id and start time."""
+        clock.now = 1000.0
+        stream.partial("b", "older")
+        stale_event = stream.final("b", "older")[0]
+
+        clock.now = 1050.0
+        stream.partial("b", "newer")
+        newer_state = stream.state_for("b")
+        new_id = newer_state.segment_id
+        new_start = newer_state.utterance_start_time
+
+        stream.restore(stale_event)
+
+        assert newer_state.segment_id == new_id
+        assert newer_state.utterance_start_time == new_start
+        # The restored text is still carried along so no sentence is lost.
+        assert newer_state.current_utterance == "older newer"
+
+    def test_restore_leaves_a_chunk_remainder_under_the_new_segment_id(self, stream):
+        """After _finalise, state.segment_id is already the id for the next
+        utterance. Restoring must not pull the old one back."""
+        events = stream.chunk("b", "This is a sentence with plenty of words. And more")
+        final = next(e for e in events if isinstance(e, FinalCaption))
+        remainder_id = stream.state_for("b").segment_id
+        assert remainder_id != final.segment_id
+
+        stream.restore(final)
+
+        # The id stays with the newer utterance the remainder belongs to.
+        assert stream.state_for("b").segment_id == remainder_id
+
 
 class TestSequenceAndIsolation:
     def test_the_sequence_increases_across_finals(self, stream):
