@@ -36,6 +36,17 @@ _REDACTIONS: tuple[tuple[re.Pattern[str], str], ...] = (
     (re.compile(r"(?i)\b(bearer|basic|token)\s+[A-Za-z0-9._~+/=-]{8,}"), r"\1 " + _PLACEHOLDER),
     # Webhook signing secrets.
     (re.compile(r"\bwhsec_[A-Za-z0-9_-]+"), _PLACEHOLDER),
+    # A quoted credential is redacted to its closing quote. This has to run
+    # before the unquoted pattern below, which stops at the first space and
+    # would leave the rest of "my secret" in the log.
+    (
+        re.compile(
+            r"(?i)\b(token|key|api_key|apikey|client_secret|secret|code|access_token"
+            r"|refresh_token|password|passwd|signature|stream_key|join_code)"
+            r"(['\"]?\s*[:=]\s*)(['\"])[^'\"]*\3"
+        ),
+        r"\1\2\3" + _PLACEHOLDER + r"\3",
+    ),
     # Query-string, form-encoded and mapping-repr credentials. The separator
     # allows either quote style so a Python dict repr ({'password': 'x'}) is
     # covered as well as "password=x" and '"password": "x"'.
