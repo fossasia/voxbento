@@ -101,7 +101,7 @@ VoxBento is a production-grade **browser-first interpretation booth console** fo
 
 1. **One active publisher per language channel.** MediaMTX enforces `overridePublisher: yes`; Python enforces via `BoothRegistry`.
 2. **Interpreter mic audio never routes to `AudioContext.destination`.** No local loopback.
-3. **Interpreter ingest remains browser-only WHIP.** Explicit exception: room-scoped Program Stream Ingest (#690) accepts authenticated HTTPS WHIP from an external encoder, and its operator-enabled relay mode (#749) accepts room-authenticated RTMPS (never plaintext RTMP) and pushes it to an allow-listed YouTube RTMPS destination from the dedicated `program-relay` service. No YouTube pulling, no unauthenticated or plaintext RTMP, no SRT. Floor ownership is `jitsi_bot` or `program_ingest`; never last-publisher-wins.
+3. **Interpreter ingest remains browser-only WHIP.** Explicit exception: room-scoped Program Stream Ingest (#690) accepts authenticated HTTPS WHIP from an external encoder, and its operator-enabled RTMPS ingest accepts room-authenticated RTMPS (never plaintext RTMP), either as an independent extra destination (#1087) or, in relay mode (#749), pushed to an allow-listed YouTube RTMPS destination by the dedicated `program-relay` service. No YouTube pulling, no unauthenticated or plaintext RTMP, no SRT. Floor ownership is `jitsi_bot` or `program_ingest`; never last-publisher-wins.
 4. **Jitsi is monitoring only** — receive-only iframe. Not the ingest transport.
 5. **No framework.** Frontend is plain ES modules in `portal/static/js/`. No Vue, React, jQuery, inline `<script>` blocks.
 6. **No Flask, Socket.IO, aiortc.**

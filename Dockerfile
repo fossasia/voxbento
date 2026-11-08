@@ -1,4 +1,8 @@
-FROM python:3.14-slim
+# Keep in line with requires-python in pyproject.toml (>=3.13,<3.14).
+FROM python:3.13-slim
+
+# Fail the build instead of quietly downloading another Python if they drift apart again.
+ENV UV_PYTHON_DOWNLOADS=never
 
 WORKDIR /app
 
