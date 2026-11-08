@@ -417,6 +417,19 @@ jobs:
           echo "$resp"
           echo "$resp" | python3 -c "import sys,json; d=json.load(sys.stdin); assert d['ok'], 'healthz not ok'"
 
+      - name: Portal venv uses the image's Python (#1131)
+        run: |
+          docker compose exec -T portal sh -c '
+            set -e
+            test "$UV_PYTHON_DOWNLOADS" = never
+            base=$(python -c "import sys; print(sys.version_info[:2])")
+            venv=$(.venv/bin/python -c "import sys; print(sys.version_info[:2])")
+            prefix=$(.venv/bin/python -c "import sys; print(sys.base_prefix)")
+            echo "base $base, venv $venv, venv base_prefix $prefix"
+            test "$base" = "$venv"
+            test "$prefix" = /usr/local
+          '
+
       - name: Portal page endpoints
         run: |
           source /tmp/ci-helpers.sh
