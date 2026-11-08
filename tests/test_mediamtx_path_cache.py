@@ -242,6 +242,11 @@ async def test_a_failed_check_retries_sooner_than_a_full_window(mtx, monkeypatch
         {"items": [{"name": CHANNEL}], "pageCount": "lots"},
         {"items": ["not-a-dict"], "pageCount": 1},
         {"items": [{"name": 42}], "pageCount": 1},
+        # Falsey wrong types: these must not be read as "MediaMTX has no paths".
+        {"items": {}, "pageCount": 1},
+        {"items": 0, "pageCount": 1},
+        {"items": "", "pageCount": 1},
+        {"items": False, "pageCount": 1},
     ],
 )
 async def test_a_malformed_list_response_keeps_the_cache_and_does_not_raise(mtx, monkeypatch, payload):
@@ -258,6 +263,25 @@ async def test_a_malformed_list_response_keeps_the_cache_and_does_not_raise(mtx,
     await utils_mod._revalidate_created_paths()
 
     assert CHANNEL in utils_mod._created_paths
+
+
+@pytest.mark.parametrize("payload", [{"pageCount": 1}, {"items": None, "pageCount": 1}])
+async def test_an_absent_items_key_still_means_no_paths(mtx, monkeypatch, payload):
+    """The other half of the contract: missing or null genuinely is empty."""
+
+    class _Empty(_FakeClient):
+        async def get(self, url, params=None, timeout=None):
+            self.list_calls += 1
+            return _FakeResponse(200, payload)
+
+    mtx(_Empty())
+    utils_mod._created_paths.add(CHANNEL)
+    monkeypatch.setattr(utils_mod.time, "monotonic", lambda: 10_000.0)
+
+    await utils_mod._revalidate_created_paths()
+
+    # MediaMTX really has nothing, so the stale entry is dropped.
+    assert CHANNEL not in utils_mod._created_paths
 
 
 async def test_a_truncated_page_run_does_not_evict_anything(mtx, monkeypatch):
