@@ -2565,10 +2565,13 @@ async def admin_transcription_settings(
                         room_id=db_booth.room_id,
                     )
                     worker = "restarted"
-                except (WorkerCapacityError, ImportError):
-                    # Full system, or a provider library that is not installed. The settings are saved, so show
-                    # the notice instead of a 500; any other error is a bug and is left to surface.
+                except WorkerCapacityError:
                     logger.warning("Could not start caption worker for %s", bid, exc_info=True)
+                    worker = "failed"
+                except Exception:
+                    # Deliberately broad (#1155): the old worker is already stopped and the settings are saved,
+                    # so any start failure must show the notice, not a 500 that rolls the settings back.
+                    logger.exception("Caption worker for %s failed to start", bid)
                     worker = "failed"
     return safe_redirect(
         url=_booth_saved_url(request, event_id, room_id, booth_id, "captions", worker),

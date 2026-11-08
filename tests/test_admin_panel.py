@@ -2473,7 +2473,9 @@ class TestBoothCRUD:
         async def noop(*_args, **_kwargs):
             pass
 
-        failure: list[Exception] = [ImportError("faster_whisper is not installed")]
+        from portal.transcription.worker import WorkerCapacityError
+
+        failure: list[Exception] = []
 
         async def broken(*_args, **_kwargs):
             raise failure[0]
@@ -2486,32 +2488,36 @@ class TestBoothCRUD:
             "get_booth_sync",
             lambda _bid: SimpleNamespace(active_interpreter_id="p1", ingest_status="connected", participants={}),
         )
-        await _update_row(
-            type(booth), booth.id, transcription_enabled=False, transcription_provider="local", transcription_model="tiny"
-        )
-        submitted = {"transcription_enabled": "true", "transcription_provider": "local", "transcription_model": "base"}
-        async with _client() as c:
-            resp = await c.post(
-                f"{url}transcription-settings", data=submitted, cookies=admin_cookie, follow_redirects=False
-            )
-            assert resp.status_code == 303
-            assert resp.headers["location"] == f"{url}?saved=captions&worker=failed#captions"
-            page = (await c.get(f"{url}?saved=captions&worker=failed", cookies=admin_cookie)).text
-            # Any other error is a bug: it is not hidden behind the notice.
-            failure[0] = RuntimeError("a bug")
-            with pytest.raises(RuntimeError, match="a bug"):
-                await c.post(f"{url}transcription-settings", data=submitted, cookies=admin_cookie)
-        assert "The caption worker could not be started" in page
-        # The notice says the settings were saved, so they must be.
         from portal.database import get_session
 
-        async with get_session() as sess:
-            saved = await sess.get(type(booth), booth.id)
-        assert (saved.transcription_enabled, saved.transcription_provider, saved.transcription_model) == (
-            True,
-            "local",
-            "base",
-        )
+        submitted = {"transcription_enabled": "true", "transcription_provider": "local", "transcription_model": "base"}
+        # Whatever makes the start fail (a full system, a missing library, anything else), the old worker is already
+        # stopped and the settings are saved, so the page shows the notice instead of a 500.
+        for error in (WorkerCapacityError("full"), ImportError("faster_whisper is missing"), RuntimeError("boom")):
+            failure[:] = [error]
+            await _update_row(
+                type(booth),
+                booth.id,
+                transcription_enabled=False,
+                transcription_provider="local",
+                transcription_model="tiny",
+            )
+            async with _client() as c:
+                resp = await c.post(
+                    f"{url}transcription-settings", data=submitted, cookies=admin_cookie, follow_redirects=False
+                )
+                assert resp.status_code == 303, type(error).__name__
+                assert resp.headers["location"] == f"{url}?saved=captions&worker=failed#captions"
+                page = (await c.get(f"{url}?saved=captions&worker=failed", cookies=admin_cookie)).text
+            assert "The caption worker could not be started" in page
+            # The notice says the settings were saved, so they must be.
+            async with get_session() as sess:
+                saved = await sess.get(type(booth), booth.id)
+            assert (saved.transcription_enabled, saved.transcription_provider, saved.transcription_model) == (
+                True,
+                "local",
+                "base",
+            ), type(error).__name__
 
     @pytest.mark.anyio
     async def test_an_unsupported_saved_model_does_not_block_captions(self, admin_cookie, seed_event):
