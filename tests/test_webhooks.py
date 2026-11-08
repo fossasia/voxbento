@@ -240,6 +240,34 @@ async def test_post_to_vetted_ip_single_ipv4():
 
 
 @pytest.mark.anyio
+async def test_post_to_vetted_ip_host_header_excludes_url_credentials():
+    """Credentials in the target URL must never reach the Host header (RFC 7230)."""
+    mock_client = AsyncMock(spec=httpx.AsyncClient)
+    mock_client.post.return_value = MagicMock()
+
+    await post_to_vetted_ip(
+        mock_client, "https://user:s3cret@example.com:8443/webhook", [EXTERNAL_IPV4], "{}", {}
+    )
+    host = mock_client.post.call_args.kwargs["headers"]["Host"]
+    assert host == "example.com:8443"
+    assert "user" not in host and "s3cret" not in host
+
+
+@pytest.mark.anyio
+async def test_post_to_vetted_ip_host_header_brackets_an_ipv6_literal():
+    """An IPv6 host keeps its brackets, so the authority stays parseable.
+
+    Building the header from host+port separately would emit
+    "2001:db8::1:9000", which a receiver cannot split into host and port.
+    """
+    mock_client = AsyncMock(spec=httpx.AsyncClient)
+    mock_client.post.return_value = MagicMock()
+
+    await post_to_vetted_ip(mock_client, "https://[2001:db8::1]:9000/webhook", [EXTERNAL_IPV4], "{}", {})
+    assert mock_client.post.call_args.kwargs["headers"]["Host"] == "[2001:db8::1]:9000"
+
+
+@pytest.mark.anyio
 async def test_post_to_vetted_ip_dual_stack_fallback():
     """IPv6 fails, falls back to IPv4."""
     mock_client = AsyncMock(spec=httpx.AsyncClient)
