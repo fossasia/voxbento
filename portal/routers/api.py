@@ -807,6 +807,11 @@ async def api_transcription_start(
     token: str = Query(""),
     credentials: HTTPAuthorizationCredentials | None = Depends(security),
 ):
+    """Start the transcription worker for the specified booth if enabled.
+
+    Validates operator/booth access and verifies that transcription is enabled
+    and configured for the booth before starting the background worker session.
+    """
     booth_id = make_booth_id(event_slug, room_id, language_code)
     async with get_session() as session:
         event = await get_event_by_slug(session, event_slug)

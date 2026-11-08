@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import logging
 from contextlib import ExitStack
 from datetime import datetime, timezone
 
@@ -667,32 +668,62 @@ def test_legacy_api_bearer_only_skips_the_live_check_with_a_configured_token(
     assert calls == (["stop"] if expected == 200 else [])
 
 
-def test_transcription_start_uses_logger_not_stdout(booth_team, caplog, capsys):
-    import logging
-
+def test_transcription_start_uses_logger_not_stdout(booth_team, caplog, capsys, monkeypatch):
+    """Ensure transcription start uses structured logging and does not print to stdout."""
     _, room_id, _, _ = booth_team
     caplog.set_level(logging.DEBUG)
 
-    # 1. Disabled booth path (fr booth has transcription_enabled=False)
+    # 1. Nonexistent booth path (no DBBooth record, db_booth is None)
+    response_nonexistent = client.post(
+        f"/api/events/team-event/rooms/{room_id}/booths/de/transcription/start?token=configured-master-token"
+    )
+    assert response_nonexistent.status_code == 200
+    assert response_nonexistent.json()["status"] == "disabled"
+
+    # 2. Disabled booth path (fr booth exists with transcription_enabled=False)
     response_disabled = client.post(
         f"/api/events/team-event/rooms/{room_id}/booths/fr/transcription/start?token=configured-master-token"
     )
     assert response_disabled.status_code == 200
     assert response_disabled.json()["status"] == "disabled"
 
-    # 2. Success path (es booth has transcription_enabled=True)
+    # 3. Success path (es booth has transcription_enabled=True)
     response_started = client.post(
         f"/api/events/team-event/rooms/{room_id}/booths/es/transcription/start?token=configured-master-token"
     )
     assert response_started.status_code == 200
     assert response_started.json()["status"] == "started"
 
-    # Assert no raw print statements reached stdout/stderr
+    # Verify structured logs for disabled and started paths
+    assert any(
+        r.levelno == logging.DEBUG and "Transcription disabled for booth" in r.getMessage()
+        for r in caplog.records
+    )
+    assert any(
+        r.levelno == logging.INFO and "Started transcription worker for booth" in r.getMessage()
+        for r in caplog.records
+    )
+
+    # 4. Error path (worker raises ValueError -> HTTP 429, no success log emitted)
+    async def fail_capacity(*args, **kwargs):
+        raise ValueError("Capacity reached")
+
+    monkeypatch.setattr("portal.routers.api.start_transcription_worker", fail_capacity)
+    caplog.clear()
+
+    response_error = client.post(
+        f"/api/events/team-event/rooms/{room_id}/booths/es/transcription/start?token=configured-master-token"
+    )
+    assert response_error.status_code == 429
+    assert response_error.json()["detail"] == "Capacity reached"
+    assert not any(
+        r.levelno == logging.INFO and "Started transcription worker for booth" in r.getMessage()
+        for r in caplog.records
+    )
+
+    # Assert no raw print statements or internal identifiers reached stdout/stderr
     captured = capsys.readouterr()
     assert "API START:" not in captured.out
     assert "API START:" not in captured.err
-
-    # Assert proper structured log records were captured
-    log_messages = [record.getMessage() for record in caplog.records]
-    assert any("Transcription disabled for booth" in msg for msg in log_messages)
-    assert any("Started transcription worker for booth" in msg for msg in log_messages)
+    assert "team-event" not in captured.out
+    assert "team-event" not in captured.err
