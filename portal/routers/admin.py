@@ -172,6 +172,7 @@ from portal.team import remove_assignment as remove_team_assignment
 from portal.team import revoke_invite_link as revoke_team_invite_link
 from portal.transcription import ALLOWED_MODELS, ProviderConfig, ProviderEnum, get_api_key
 from portal.transcription.worker import (
+    State,
     WorkerCapacityError,
     active_workers,
     start_transcription_worker,
@@ -2054,6 +2055,8 @@ BOOTH_WORKER_NOTICES = {
 BOOTH_ERROR_NOTICES = {
     "model": "That caption model is no longer supported. Pick another model and save again; nothing was changed.",
     "server": "That service is not available on this server. Pick another service and save again; nothing was changed.",
+    "api_off": "External transcription is turned off for this event. Turn it on under API keys, or pick Local; nothing was changed.",
+    "no_key": "That service has no API key on this event. Add its key under API keys, or pick another service; nothing was changed.",
 }
 BOOTH_IDLE_WORKER_NOTICE = "These settings are used the next time an interpreter goes live."
 
@@ -2516,11 +2519,18 @@ async def admin_transcription_settings(
                 status_code=status.HTTP_303_SEE_OTHER,
             )
         if transcription_enabled and provider_enum != ProviderEnum.LOCAL:
-            if not event.transcription_api_enabled:
-                raise HTTPException(status_code=400, detail="External API transcription is disabled for this event.")
-            if not get_api_key(event, provider_enum):
-                raise HTTPException(
-                    status_code=400, detail=f"API key for {transcription_provider} is not configured on the event."
+            # Both are fixed on the API keys page, so say so on the Captions tab instead of showing a bare 400.
+            missing = (
+                "api_off"
+                if not event.transcription_api_enabled
+                else "no_key"
+                if not get_api_key(event, provider_enum)
+                else ""
+            )
+            if missing:
+                return safe_redirect(
+                    url=_booth_saved_url(request, event_id, room_id, booth_id, "captions", error=missing),
+                    status_code=status.HTTP_303_SEE_OTHER,
                 )
         old_enabled = db_booth.transcription_enabled
         old_provider = db_booth.transcription_provider
@@ -2545,8 +2555,10 @@ async def admin_transcription_settings(
                 old_enabled != transcription_enabled
                 or old_provider != transcription_provider
                 or old_model != transcription_model
-                # A start that failed earlier left the settings saved but no worker: saving again retries it.
+                # A start that failed earlier left the settings saved but no worker (or a dead one still in the
+                # registry): saving again retries it.
                 or bid not in active_workers
+                or active_workers[bid].state == State.STOPPED
             ):
                 await stop_transcription_worker(bid)
                 await broadcast_transcription(bid, "")

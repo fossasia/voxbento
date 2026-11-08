@@ -2290,7 +2290,7 @@ class TestBoothCRUD:
         from types import SimpleNamespace
 
         from portal.routers import admin
-        from portal.transcription.worker import WorkerCapacityError
+        from portal.transcription.worker import State, WorkerCapacityError
 
         event, room, booth = seed_event
         url = f"/admin/events/{event.id}/rooms/{room.id}/booths/{booth.id}/"
@@ -2345,7 +2345,7 @@ class TestBoothCRUD:
                 lambda _bid: SimpleNamespace(active_interpreter_id="p1", ingest_status="connected", participants={}),
             )
             bid = admin.make_booth_id(event.slug, booth.room_id, booth.language_code)
-            monkeypatch.setattr(admin, "active_workers", {bid: object()})  # a worker is running
+            monkeypatch.setattr(admin, "active_workers", {bid: SimpleNamespace(state=State.RUNNING)})  # a worker is running
             location, page = await save(c, enabled=True)
             assert location == f"{url}?saved=captions&worker=kept#captions"
             assert "The caption worker was restarted" not in page
@@ -2388,11 +2388,20 @@ class TestBoothCRUD:
             assert "The caption worker was restarted with the new settings." in page
             assert calls == ["stop", "start", "stop", "stop", "stop", "stop", "start"]
 
+            # A dead worker left in the registry is not "kept running": saving again with no changes restarts it.
+            monkeypatch.setattr(admin, "active_workers", {bid: SimpleNamespace(state=State.STOPPED)})
+            location, page = await save(c, enabled=True)
+            assert location == f"{url}?saved=captions&worker=restarted#captions"
+            assert calls[-2:] == ["stop", "start"]
+
     @pytest.mark.anyio
     async def test_captions_can_be_turned_off_when_the_saved_service_lost_its_key(self, admin_cookie, seed_event):
         """Only turning captions on needs a working key; turning them off must never be blocked (#1081)."""
         event, room, booth = seed_event
         url = f"/admin/events/{event.id}/rooms/{room.id}/booths/{booth.id}/"
+        from portal.models import Event
+
+        await _update_row(Event, event.id, transcription_api_enabled=True)
         await _update_row(type(booth), booth.id, transcription_enabled=True, transcription_provider="deepgram", transcription_model="nova-2")
         data = {"transcription_provider": "deepgram", "transcription_model": "nova-2"}
         async with _client() as c:
@@ -2412,7 +2421,9 @@ class TestBoothCRUD:
                 cookies=admin_cookie,
                 follow_redirects=False,
             )
-        assert refused.status_code == 400
+        # No key: back on the Captions tab with a notice, nothing changed.
+        assert refused.status_code == 303
+        assert refused.headers["location"] == f"{url}?error=no_key#captions"
         assert off.status_code == 303
         assert bogus.status_code == 400
         from portal.database import get_session
@@ -2422,6 +2433,26 @@ class TestBoothCRUD:
         assert saved.transcription_enabled is False
         assert saved.transcription_provider == "deepgram"
         assert saved.transcription_model == "nova-2"
+
+    @pytest.mark.anyio
+    async def test_captions_on_with_the_event_switch_off_returns_a_notice(self, admin_cookie, seed_event):
+        from portal.crypto import encrypt_val
+        from portal.models import Event
+
+        event, room, booth = seed_event
+        url = f"/admin/events/{event.id}/rooms/{room.id}/booths/{booth.id}/"
+        await _update_row(Event, event.id, encrypted_openai_api_key=encrypt_val("k"), transcription_api_enabled=False)
+        async with _client() as c:
+            on = await c.post(
+                f"{url}transcription-settings",
+                data={"transcription_enabled": "true", "transcription_provider": "openai", "transcription_model": "whisper-1"},
+                cookies=admin_cookie,
+                follow_redirects=False,
+            )
+            page = (await c.get(on.headers["location"].split("#")[0], cookies=admin_cookie)).text
+        assert on.status_code == 303
+        assert on.headers["location"] == f"{url}?error=api_off#captions"
+        assert "External transcription is turned off for this event" in page
 
     @pytest.mark.anyio
     async def test_kept_service_uses_the_proper_brand_name(self, admin_cookie, seed_event):

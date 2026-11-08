@@ -47,7 +47,7 @@ for (const [saveStatus, triggerStatus] of [[400, 200], [500, 200], [200, 500], [
 const roomDetailSource = readFileSync(new URL('../portal/static/js/room-detail.js', import.meta.url), 'utf8');
 // The room page shares one tab implementation with the booth page instead of keeping its own.
 assert.match(roomDetailSource, /import \{ initTabs \} from '\.\/tabs\.js';/);
-assert.doesNotMatch(roomDetailSource, /function initTabs/);
+assert.doesNotMatch(roomDetailSource, /\bfunction\s+initTabs\b/);
 // vm scripts cannot import, so run the page code without its import line (tabs.js has its own tests).
 const roomDetail = roomDetailSource.replace(/^import .*$/m, '');
 for (const details of [null, { hidden: false }]) {
