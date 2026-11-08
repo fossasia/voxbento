@@ -1555,7 +1555,7 @@ class RoomEditValues:
     display_name: str
     jitsi_url: str
     relay_booth_id: int | None
-    audio_delay_ms: int
+    audio_delay_ms: int | None
     floor_transcription_enabled: bool
     floor_transcription_provider: str
     floor_transcription_model: str
@@ -1594,12 +1594,18 @@ def _parse_room_edit_values(form: FormData) -> RoomEditValues:
             relay_booth_id = _parse_relay_booth_id(str(form.get("relay_booth_id", "")).strip())
         except ValueError as exc:
             raise HTTPException(status_code=400, detail="Invalid relay booth selection.") from exc
+    # Only the general submission (or an all-sections save) writes this, and
+    # parsing rejects a bad value with a 400 — so validating it unconditionally
+    # would let a stale field on another tab's form block that tab's update.
+    audio_delay_ms = None
+    if not form_section or form_section == "general":
+        audio_delay_ms = parse_audio_delay_ms(form.get("audio_delay_ms", "0"))
     return RoomEditValues(
         form_section=form_section,
         display_name=str(form.get("display_name", "")).strip(),
         jitsi_url=str(form.get("jitsi_url", "")).strip(),
         relay_booth_id=relay_booth_id,
-        audio_delay_ms=parse_audio_delay_ms(form.get("audio_delay_ms", "0")),
+        audio_delay_ms=audio_delay_ms,
         floor_transcription_enabled=form.get("floor_transcription_enabled") == "on",
         floor_transcription_provider=str(form.get("floor_transcription_provider", "local")).strip(),
         floor_transcription_model=str(form.get("floor_transcription_model", "tiny")).strip(),
@@ -1622,7 +1628,8 @@ def _update_room_general(room: Room, values: RoomEditValues) -> None:
     if values.display_name:
         room.display_name = values.display_name
     room.jitsi_url = values.jitsi_url or None
-    room.audio_delay_ms = values.audio_delay_ms
+    if values.audio_delay_ms is not None:
+        room.audio_delay_ms = values.audio_delay_ms
 
 
 def _update_room_transcription(room: Room, values: RoomEditValues) -> None:
