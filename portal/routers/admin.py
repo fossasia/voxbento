@@ -152,6 +152,7 @@ from portal.room_setup import (
     load_snapshot,
     parse_plan,
     room_audio_choice,
+    server_unavailable_reason,
     summarize,
 )
 from portal.room_setup import ALL_LANGUAGES as ROOM_ALL_LANGUAGES
@@ -2052,8 +2053,22 @@ BOOTH_WORKER_NOTICES = {
 }
 BOOTH_ERROR_NOTICES = {
     "model": "That caption model is no longer supported. Pick another model and save again; nothing was changed.",
+    "server": "That service is not available on this server. Pick another service and save again; nothing was changed.",
 }
 BOOTH_IDLE_WORKER_NOTICE = "These settings are used the next time an interpreter goes live."
+
+
+def _kept_speech_hint(event: Event, catalog: EngineCatalog, provider: str) -> str:
+    """What to do to keep using a saved caption service that is no longer offered."""
+    if catalog.unavailable_reasons.get(provider):
+        return "not available on this server"
+    try:
+        has_key = bool(get_api_key(event, ProviderEnum(provider)))
+    except ValueError:  # a provider name this version no longer knows
+        has_key = False
+    if has_key and not event.transcription_api_enabled:
+        return "turn on external transcription to keep using it"
+    return "add its API key to keep using it"
 
 
 def _booth_saved_notice(request: Request) -> str | None:
@@ -2115,6 +2130,7 @@ async def admin_booth_detail(request: Request, event_id: int, room_id: int, boot
     speech_models: dict = {}
     translation_models: dict = {}
     saved_speech_model = db_booth.transcription_model
+    kept_speech_hint = ""
     if admin_flags["is_event_owner"]:
         # The saved model stays selectable even when it is no longer offered, so saving never swaps it silently.
         speech_models = {provider: list(models) for provider, models in booth_speech_models().items()}
@@ -2135,6 +2151,7 @@ async def admin_booth_detail(request: Request, event_id: int, room_id: int, boot
             if saved_model and saved_model not in {value for value, _ in offered}:
                 offered.append((saved_model, f"{saved_model} (current)"))
         catalog = engine_catalog(event)
+        kept_speech_hint = _kept_speech_hint(event, catalog, db_booth.transcription_provider)
     return templates.TemplateResponse(
         request=request,
         name="admin/booth_detail.html",
@@ -2143,6 +2160,7 @@ async def admin_booth_detail(request: Request, event_id: int, room_id: int, boot
             "room": room,
             "booth": db_booth,
             "catalog": catalog,
+            "kept_speech_hint": kept_speech_hint,
             "speech_models": speech_models,
             "saved_speech_model": saved_speech_model,
             "translation_models": translation_models,
@@ -2491,6 +2509,12 @@ async def admin_transcription_settings(
             raise HTTPException(status_code=404, detail="Event not found.")
         # Turning captions off must work even if the saved service lost its key, so the key and
         # external-API checks only apply when captions will be on.
+        if transcription_enabled and server_unavailable_reason(transcription_provider):
+            # A key cannot fix this: the server itself cannot run the service.
+            return safe_redirect(
+                url=_booth_saved_url(request, event_id, room_id, booth_id, "captions", error="server"),
+                status_code=status.HTTP_303_SEE_OTHER,
+            )
         if transcription_enabled and provider_enum != ProviderEnum.LOCAL:
             if not event.transcription_api_enabled:
                 raise HTTPException(status_code=400, detail="External API transcription is disabled for this event.")
@@ -2541,12 +2565,10 @@ async def admin_transcription_settings(
                         room_id=db_booth.room_id,
                     )
                     worker = "restarted"
-                except WorkerCapacityError:
+                except (WorkerCapacityError, ImportError):
+                    # Full system, or a provider library that is not installed. The settings are saved, so show
+                    # the notice instead of a 500; any other error is a bug and is left to surface.
                     logger.warning("Could not start caption worker for %s", bid, exc_info=True)
-                    worker = "failed"
-                except Exception:
-                    # The settings are saved; show the notice rather than a 500 so the owner can retry.
-                    logger.exception("Caption worker for %s failed to start", bid)
                     worker = "failed"
     return safe_redirect(
         url=_booth_saved_url(request, event_id, room_id, booth_id, "captions", worker),

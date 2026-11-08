@@ -213,6 +213,13 @@ def brand_name(provider: str) -> str:
     return _BRANDS.get(provider, provider.capitalize())
 
 
+def server_unavailable_reason(provider: str) -> str | None:
+    """Why this server cannot run a speech service whatever the event's keys are, or None when it can."""
+    if provider == "nvidia" and (find_spec("riva") is None or not settings.nvidia_function_id):
+        return "NVIDIA needs the server's nvidia extra and NVIDIA_FUNCTION_ID"
+    return None
+
+
 def engine_catalog(event: Event) -> EngineCatalog:
     """List the engines this event can use, so the setup only offers choices that will work."""
     speech: list[Engine] = []
@@ -225,8 +232,8 @@ def engine_catalog(event: Event) -> EngineCatalog:
     unavailable_reasons: dict[str, str] = {}
 
     for provider, model, label, key_attr in _SPEECH_ENGINES:
-        if provider == "nvidia" and (find_spec("riva") is None or not settings.nvidia_function_id):
-            reason = "NVIDIA needs the server's nvidia extra and NVIDIA_FUNCTION_ID"
+        reason = server_unavailable_reason(provider)
+        if reason:
             unavailable.append(reason)
             unavailable_reasons[provider] = reason
             continue

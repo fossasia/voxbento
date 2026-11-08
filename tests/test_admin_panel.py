@@ -2473,8 +2473,10 @@ class TestBoothCRUD:
         async def noop(*_args, **_kwargs):
             pass
 
+        failure: list[Exception] = [ImportError("faster_whisper is not installed")]
+
         async def broken(*_args, **_kwargs):
-            raise RuntimeError("model download failed")
+            raise failure[0]
 
         monkeypatch.setattr(admin, "stop_transcription_worker", noop)
         monkeypatch.setattr(admin, "broadcast_transcription", noop)
@@ -2484,17 +2486,32 @@ class TestBoothCRUD:
             "get_booth_sync",
             lambda _bid: SimpleNamespace(active_interpreter_id="p1", ingest_status="connected", participants={}),
         )
+        await _update_row(
+            type(booth), booth.id, transcription_enabled=False, transcription_provider="local", transcription_model="tiny"
+        )
+        submitted = {"transcription_enabled": "true", "transcription_provider": "local", "transcription_model": "base"}
         async with _client() as c:
             resp = await c.post(
-                f"{url}transcription-settings",
-                data={"transcription_enabled": "true", "transcription_provider": "local", "transcription_model": "base"},
-                cookies=admin_cookie,
-                follow_redirects=False,
+                f"{url}transcription-settings", data=submitted, cookies=admin_cookie, follow_redirects=False
             )
             assert resp.status_code == 303
             assert resp.headers["location"] == f"{url}?saved=captions&worker=failed#captions"
             page = (await c.get(f"{url}?saved=captions&worker=failed", cookies=admin_cookie)).text
+            # Any other error is a bug: it is not hidden behind the notice.
+            failure[0] = RuntimeError("a bug")
+            with pytest.raises(RuntimeError, match="a bug"):
+                await c.post(f"{url}transcription-settings", data=submitted, cookies=admin_cookie)
         assert "The caption worker could not be started" in page
+        # The notice says the settings were saved, so they must be.
+        from portal.database import get_session
+
+        async with get_session() as sess:
+            saved = await sess.get(type(booth), booth.id)
+        assert (saved.transcription_enabled, saved.transcription_provider, saved.transcription_model) == (
+            True,
+            "local",
+            "base",
+        )
 
     @pytest.mark.anyio
     async def test_an_unsupported_saved_model_does_not_block_captions(self, admin_cookie, seed_event):
@@ -2502,7 +2519,14 @@ class TestBoothCRUD:
 
         event, room, booth = seed_event
         url = f"/admin/events/{event.id}/rooms/{room.id}/booths/{booth.id}/"
-        await _update_row(type(booth), booth.id, transcription_provider="local", transcription_model="retired-model")
+        # Captions start on, so the first save is a real on -> off change.
+        await _update_row(
+            type(booth),
+            booth.id,
+            transcription_enabled=True,
+            transcription_provider="local",
+            transcription_model="retired-model",
+        )
         data = {"transcription_provider": "local", "transcription_model": "retired-model"}
         async with _client() as c:
             off = await c.post(f"{url}transcription-settings", data=data, cookies=admin_cookie, follow_redirects=False)
@@ -2522,6 +2546,59 @@ class TestBoothCRUD:
             saved = await sess.get(type(booth), booth.id)
         assert saved.transcription_enabled is False
         assert saved.transcription_model == "retired-model"
+
+    @pytest.mark.anyio
+    async def test_captions_cannot_be_turned_on_with_a_service_the_server_cannot_run(
+        self, admin_cookie, seed_event, monkeypatch
+    ):
+        from portal import room_setup
+        from portal.database import get_session
+
+        monkeypatch.setattr(room_setup, "find_spec", lambda name: None if name == "riva" else object())
+        event, room, booth = seed_event
+        url = f"/admin/events/{event.id}/rooms/{room.id}/booths/{booth.id}/"
+        await _update_row(
+            type(booth), booth.id, transcription_enabled=True, transcription_provider="nvidia", transcription_model="parakeet-rnnt"
+        )
+        data = {"transcription_provider": "nvidia", "transcription_model": "parakeet-rnnt"}
+        async with _client() as c:
+            on = await c.post(
+                f"{url}transcription-settings",
+                data={**data, "transcription_enabled": "true"},
+                cookies=admin_cookie,
+                follow_redirects=False,
+            )
+            page = (await c.get(on.headers["location"].split("#")[0], cookies=admin_cookie)).text
+            # Turning captions off is never blocked.
+            off = await c.post(f"{url}transcription-settings", data=data, cookies=admin_cookie, follow_redirects=False)
+        assert on.status_code == 303
+        assert on.headers["location"] == f"{url}?error=server#captions"
+        assert "That service is not available on this server" in page
+        assert off.status_code == 303
+        assert off.headers["location"] == f"{url}?saved=captions#captions"
+        async with get_session() as sess:
+            saved = await sess.get(type(booth), booth.id)
+        assert saved.transcription_enabled is False
+
+    @pytest.mark.anyio
+    async def test_kept_service_with_a_key_but_the_event_switch_off_says_to_turn_it_on(self, admin_cookie, seed_event):
+        from portal.crypto import encrypt_val
+        from portal.models import DBBooth, Event
+
+        event, room, booth = seed_event
+        url = f"/admin/events/{event.id}/rooms/{room.id}/booths/{booth.id}/"
+        await _update_row(DBBooth, booth.id, transcription_provider="openai", transcription_model="whisper-1")
+        await _update_row(Event, event.id, encrypted_openai_api_key=encrypt_val("k"), transcription_api_enabled=False)
+        async with _client() as c:
+            html = (await c.get(url, cookies=admin_cookie)).text
+        assert "OpenAI — turn on external transcription to keep using it" in html
+        assert "OpenAI — add its API key" not in html
+
+        # With the switch on and the key present the service is offered normally, so no "kept" option remains.
+        await _update_row(Event, event.id, transcription_api_enabled=True)
+        async with _client() as c:
+            html = (await c.get(url, cookies=admin_cookie)).text
+        assert "keep using it" not in html.split('id="transcription_provider"')[1].split("</select>")[0]
 
     @pytest.mark.anyio
     async def test_coordinator_view_skips_the_engine_catalog(self, room_scope_events, monkeypatch):
