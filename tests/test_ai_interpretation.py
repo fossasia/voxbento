@@ -302,17 +302,6 @@ async def test_local_provider_leaves_segments_with_bracketed_numbers_unprotected
     assert calls == ["Press [1] at the booth"]
 
 
-@pytest.mark.anyio
-async def test_local_provider_skips_the_fallback_when_no_time_is_left(monkeypatch):
-    monkeypatch.setattr("portal.translations.providers.local.LOCAL_TRANSLATION_TIMEOUT_SECS", 0.0)
-    entry = AIVocabularyEntry(event_id=1, source_term="Jitsi", target_language="all", target_term="Jitsi")
-    result, calls = await translate_locally(monkeypatch, {"Hello [1]": "Bonjour"}, "Hello Jitsi", [entry])
-
-    # A second pass would only run past the worker's deadline, so the segment is dropped at once.
-    assert result is None
-    assert calls == ["Hello [1]"]
-
-
 def test_term_protection_resolves_overlaps_and_matching_rules():
     def entry(term: str, target: str, match_type: str = "phrase", case_sensitive: bool = False):
         return VocabularyEntryInput(

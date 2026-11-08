@@ -23,9 +23,6 @@ from portal.translations.vocabulary import protect_terms, restore_terms
 
 logger = logging.getLogger(__name__)
 
-#: How long the translation worker waits for one local translation before dropping the segment.
-LOCAL_TRANSLATION_TIMEOUT_SECS = 60.0
-
 _download_progress = {}
 _progress_lock = threading.Lock()
 
@@ -245,7 +242,6 @@ class LocalProvider(TranslationProvider):
         style: str | None = None,
         vocabulary_entries: Sequence[Any] = (),
     ) -> str | None:
-        called = time.monotonic()
         logger.debug(
             f"[NLLB] translate called: source='{source_lang_name}' -> target='{target_lang_name}' "
             f"model='{model}' text_len={len(text)}"
@@ -288,7 +284,6 @@ class LocalProvider(TranslationProvider):
         )
         segment = protect_terms(text, vocabulary_entries)
         if segment.target_terms:
-            started = time.monotonic()
             translated = await asyncio.to_thread(
                 self._run_inference, segment.text, source_lang_token, target_lang_token, model
             )
@@ -297,12 +292,7 @@ class LocalProvider(TranslationProvider):
             restored = restore_terms(translated, segment)
             if restored is not None:
                 return restored
-            # Never show a placeholder to listeners: translate the original segment instead, unless a
-            # second pass as slow as the first could not finish before the worker gives up on the segment.
-            now = time.monotonic()
-            if (now - started) > LOCAL_TRANSLATION_TIMEOUT_SECS - (now - called):
-                logger.warning("[NLLB] Glossary placeholders were lost and no time is left to translate again")
-                return None
+            # Never show a placeholder to listeners: translate the original segment instead.
             logger.debug("[NLLB] Glossary placeholders did not survive translation; using the plain translation")
         return await asyncio.to_thread(self._run_inference, text, source_lang_token, target_lang_token, model)
 
