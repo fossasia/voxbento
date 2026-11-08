@@ -198,8 +198,9 @@ def test_prompt_omits_the_guard_when_nothing_is_configured():
 async def translate_locally(
     monkeypatch, outputs: dict[str, str | None], text: str, entries, **settings
 ) -> tuple[str | None, list[str]]:
-    """Run the NLLB provider with a fake model that maps exact inputs to outputs."""
+    """Run the NLLB provider through the worker's dispatch with a fake model that maps exact inputs to outputs."""
     from portal.translations.providers.local import LocalProvider
+    from portal.translations.worker import TranslationWorker
 
     calls = []
 
@@ -209,14 +210,14 @@ async def translate_locally(
 
     monkeypatch.setattr(LocalProvider, "_run_inference", fake_inference)
     monkeypatch.setattr(LocalProvider, "_warned_unsupported_settings", False)
-    result = await LocalProvider().translate(
-        provider_name="local",
-        text=text,
-        target_lang_name="French",
+    result = await TranslationWorker(MagicMock())._call_llm(
+        "local",
+        "nllb-200-distilled-600M",
+        None,
+        text,
+        "French",
+        "English",
         target_lang_code="fr",
-        source_lang_name="English",
-        model="nllb-200-distilled-600M",
-        api_key=None,
         vocabulary_entries=entries,
         **settings,
     )
