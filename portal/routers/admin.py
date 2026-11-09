@@ -1608,6 +1608,9 @@ async def admin_edit_room(request: Request, event_id: int, room_id: int):
     floor_translation_provider = form.get("floor_translation_provider", "").strip() or None
     floor_translation_model = form.get("floor_translation_model", "").strip() or None
     if floor_translation_provider == TranslationProviderEnum.SELF_HOSTED.value:
+        # Turning translation off must still work after the server setting is removed.
+        if floor_translation_enabled and form_section in ("", "translation") and not settings.self_hosted_llm_enabled:
+            raise HTTPException(status_code=400, detail="Self-hosted translation is not configured on this server")
         floor_translation_model = settings.self_hosted_llm_model_or_default(floor_translation_model)
     floor_translation_languages = form.getlist("floor_translation_languages")
     floor_ai_interpreter_persona = form.get("floor_ai_interpreter_persona", "").strip() or None

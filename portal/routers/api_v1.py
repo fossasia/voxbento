@@ -570,14 +570,17 @@ def _check_self_hosted_translation(payload_dict: dict, room: Room | None) -> Non
     """Reject self-hosted translation this server can't run, before anything is written.
 
     An explicit model must be on the allow list; when the model is left out, the room keeps an
-    allowed model it already has or gets the default one.
+    allowed model it already has or gets the default one. Turning translation off still works
+    after the server setting is removed.
     """
-    if "translation_provider" not in payload_dict and "translation_model" not in payload_dict:
+    if not {"translation_provider", "translation_model", "enable_translation"} & payload_dict.keys():
         return
     current_provider = room.floor_translation_provider if room else None
     if payload_dict.get("translation_provider", current_provider) != TranslationProviderEnum.SELF_HOSTED.value:
         return
     if not settings.self_hosted_llm_enabled:
+        if payload_dict.get("enable_translation") is False:
+            return
         raise HTTPException(status_code=422, detail="Self-hosted translation is not configured on this server")
     model = payload_dict.get("translation_model")
     if model is not None:

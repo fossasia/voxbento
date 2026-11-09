@@ -68,13 +68,13 @@ def unset(monkeypatch):
 def llm_server():
     """A mocked OpenAI-compatible server that records each request."""
     requests: list[httpx.Request] = []
-    state = {"status": 200, "content": "Hallo Welt"}
+    state = {"status": 200, "content": "Hallo Welt", "finish_reason": "stop"}
 
     def handler(request: httpx.Request) -> httpx.Response:
         requests.append(request)
-        if state["status"] != 200:
-            return httpx.Response(state["status"], json={"error": "down"})
-        return httpx.Response(200, json={"choices": [{"message": {"content": f"  {state['content']}  "}}]})
+        # Error replies carry a usable body too, so only the status check can reject them.
+        choice = {"message": {"content": f"  {state['content']}  "}, "finish_reason": state["finish_reason"]}
+        return httpx.Response(state["status"], json={"choices": [choice]})
 
     previous = pg.shared_http_client
     pg.shared_http_client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
@@ -124,6 +124,8 @@ def test_base_url_is_normalized(url, expected):
         "http://user:secret@llm.example.org/v1",
         "http://llm.example.org/v1?key=secret",
         "http://llm.example.org/v1#frag",
+        "http://bad host/v1",
+        "http://bad%20host/v1",
     ],
 )
 def test_unsafe_base_urls_are_rejected(url):
@@ -445,6 +447,22 @@ async def test_worker_runs_self_hosted_without_an_event_key(setup_db, self_hoste
     assert calls == ([("self_hosted", "llama3.2", None)] if translated else [])
 
 
+@pytest.mark.anyio
+async def test_worker_sends_self_hosted_segments_through_the_real_provider(setup_db, self_hosted, llm_server):
+    requests, _ = llm_server
+    room_id, segment_id = await _floor_segment("self_hosted")
+    worker = TranslationWorker(AsyncMock())
+    with (
+        patch("portal.tts.worker.synthesize", new=AsyncMock(return_value=b"")),
+        patch("portal.websockets.manager.tts_manager.has_listeners", return_value=True),
+        patch("portal.websockets.manager.TTSConnectionManager.broadcast_bundle", new_callable=AsyncMock) as sent,
+    ):
+        await worker.handle_translation(room_id, segment_id, "Hello world", "floor", "uuid-1", 1)
+
+    assert [str(r.url) for r in requests] == [f"{BASE_URL}/chat/completions"]
+    assert "Hallo Welt" in [c.args[7] for c in sent.await_args_list]
+
+
 # ── Settings edge cases ────────────────────────────────────────────────────
 
 
@@ -463,8 +481,9 @@ def test_bad_ports_and_full_endpoint_urls_are_rejected(url):
         _settings(url)
 
 
-def test_ipv6_base_url_is_accepted():
-    assert _settings("http://[::1]:11434/v1").self_hosted_llm_base_url == "http://[::1]:11434/v1"
+@pytest.mark.parametrize("url", ["http://[::1]:11434/v1", "http://ollama_server:11434/v1", "http://10.0.0.5:8080/v1"])
+def test_ip_and_service_name_base_urls_are_accepted(url):
+    assert _settings(url).self_hosted_llm_base_url == url
 
 
 def test_model_names_longer_than_the_column_are_rejected():
@@ -498,6 +517,7 @@ def test_enabled_needs_both_url_and_models(url, models, enabled):
         # Templates that open the tag in the prompt return only the closing tag.
         ("German, formal.</think>Hallo Welt", "Hallo Welt"),
         ("<think>a</think><think>b</think>Hallo Welt", "Hallo Welt"),
+        ("Hallo <think>choose the noun</think>Welt", "Hallo Welt"),
         ("<think>Cut off by the token limit", None),
         ("<think>a</think>Hallo<think>more", None),
         ("<think>only reasoning</think>", None),
@@ -517,6 +537,14 @@ async def test_reasoning_reply_is_stripped_and_output_is_capped(self_hosted, llm
     state["content"] = "<think>Formal German is needed.</think>Hallo Welt"
     assert await _translate() == "Hallo Welt"
     assert json.loads(requests[0].content)["max_tokens"] == SELF_HOSTED_MAX_TOKENS
+
+
+@pytest.mark.anyio
+async def test_reply_cut_off_at_the_token_limit_counts_as_no_translation(self_hosted, llm_server, caplog):
+    _, state = llm_server
+    state["finish_reason"] = "length"
+    assert await _translate() is None
+    assert "hit the 1024-token limit" in caplog.text
 
 
 @pytest.mark.anyio
@@ -787,6 +815,30 @@ async def test_api_model_only_update_on_a_self_hosted_room_is_checked(api_event,
 
 
 @pytest.mark.anyio
+async def test_api_turns_off_self_hosted_after_the_server_is_removed(api_event, monkeypatch, self_hosted):
+    await _put_room({"name": "Hall", "enable_translation": True, "translation_provider": "self_hosted"})
+    monkeypatch.setattr(settings, "self_hosted_llm_base_url", "")
+
+    res = await _put_room({"enable_translation": True})
+    assert res.status_code == 422
+    res = await _put_room({"enable_translation": False, "translation_provider": "self_hosted"})
+    assert res.status_code == 200, res.text
+    assert (await _api_room()).floor_translation_enabled is False
+
+
+@pytest.mark.anyio
+async def test_api_turning_translation_on_replaces_a_model_taken_off_the_list(api_event, monkeypatch, self_hosted):
+    await _put_room({"name": "Hall", "translation_provider": "self_hosted", "translation_model": "qwen2.5:7b"})
+    monkeypatch.setattr(settings, "self_hosted_llm_models", "llama3.2")
+
+    assert (await _put_room({"name": "Main Hall"})).status_code == 200
+    assert (await _api_room()).floor_translation_model == "qwen2.5:7b"
+    assert (await _put_room({"enable_translation": True})).status_code == 200
+    room = await _api_room()
+    assert (room.floor_translation_enabled, room.floor_translation_model) == (True, "llama3.2")
+
+
+@pytest.mark.anyio
 async def test_api_requests_without_self_hosted_are_untouched(api_event, unset):
     res = await _put_room({"name": "Hall", "translation_provider": "openai", "translation_model": "gpt-4o"})
     assert res.status_code == 200
@@ -840,14 +892,10 @@ async def test_setup_resave_keeps_an_allowed_model(admin_room, self_hosted):
 
 @pytest.mark.anyio
 @pytest.mark.parametrize(
-    ("configured", "model", "saved"),
-    [(True, "http://169.254.169.254/v1", "llama3.2"), (True, "qwen2.5:7b", "qwen2.5:7b"), (False, "llama3.2", None)],
+    ("model", "saved"),
+    [("http://169.254.169.254/v1", "llama3.2"), ("qwen2.5:7b", "qwen2.5:7b")],
 )
-async def test_older_room_form_keeps_self_hosted_models_on_the_list(
-    admin_room, monkeypatch, self_hosted, configured, model, saved
-):
-    if not configured:
-        monkeypatch.setattr(settings, "self_hosted_llm_base_url", "")
+async def test_older_room_form_keeps_self_hosted_models_on_the_list(admin_room, self_hosted, model, saved):
     cookie, event_id, room_id = admin_room
     async with _client(cookie) as client:
         res = await client.post(
@@ -864,6 +912,34 @@ async def test_older_room_form_keeps_self_hosted_models_on_the_list(
     assert res.status_code == 303
     room = await s_room(room_id)
     assert (room.floor_translation_provider, room.floor_translation_model) == ("self_hosted", saved)
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize(("enabled", "status"), [("on", 400), ("", 303)])
+async def test_older_room_form_turns_self_hosted_off_but_not_on_after_the_server_is_removed(
+    admin_room, monkeypatch, self_hosted, enabled, status
+):
+    monkeypatch.setattr(settings, "self_hosted_llm_base_url", "")
+    cookie, event_id, room_id = admin_room
+    async with _client(cookie) as client:
+        res = await client.post(
+            f"/admin/events/{event_id}/rooms/{room_id}/edit",
+            data={
+                "form_section": "translation",
+                "floor_translation_enabled": enabled,
+                "floor_translation_provider": "self_hosted",
+                "floor_translation_model": "llama3.2",
+                "floor_translation_languages": ["de"],
+            },
+            headers=ORIGIN,
+        )
+    assert res.status_code == status
+    room = await s_room(room_id)
+    assert room.floor_translation_enabled is False
+    if status == 400:
+        assert res.json()["detail"] == "Self-hosted translation is not configured on this server"
+    else:
+        assert (room.floor_translation_provider, room.floor_translation_model) == ("self_hosted", None)
 
 
 async def s_room(room_id: int) -> Room:

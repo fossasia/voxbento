@@ -66,10 +66,13 @@ for (const details of [null, { hidden: false }]) {
   assert.equal(options[1].disabled, true);
   if (details) assert.equal(details.hidden, true);
 }
-// A saved self-hosted model the server no longer lists isn't offered; a custom cloud model is kept.
-for (const [provider, saved, expected] of [
-  ['self_hosted', 'removed-model', ['', 'llama3.2', 'qwen2.5:7b']],
-  ['openai', 'my-custom-model', ['', 'my-custom-model', 'gpt-4o-mini']],
+// A saved self-hosted model the server no longer lists isn't offered; an allowed one and a custom
+// cloud model stay selected. If the model list fails to load, the saved model is kept for the server to check.
+for (const [provider, saved, listLoads, expected, selected] of [
+  ['self_hosted', 'removed-model', true, ['', 'llama3.2', 'qwen2.5:7b'], []],
+  ['self_hosted', 'qwen2.5:7b', true, ['', 'llama3.2', 'qwen2.5:7b'], ['qwen2.5:7b']],
+  ['self_hosted', 'qwen2.5:7b', false, ['', 'qwen2.5:7b'], ['qwen2.5:7b']],
+  ['openai', 'my-custom-model', true, ['', 'my-custom-model', 'gpt-4o-mini'], ['my-custom-model']],
 ]) {
   const added = [];
   const transProvider = { value: provider, addEventListener() {} };
@@ -79,14 +82,16 @@ for (const [provider, saved, expected] of [
     floor_translation_provider: transProvider,
     floor_translation_model: transModel,
   };
+  const catalog = { self_hosted: ['llama3.2', 'qwen2.5:7b'], openai: ['gpt-4o-mini'] };
   vm.runInNewContext(roomDetail, {
-    console,
+    console: { error() {} },
     initTabs() {},
-    Option: class { constructor(text, value) { this.text = text; this.value = value; } },
-    fetch: async () => ({ ok: true, json: async () => ({ self_hosted: ['llama3.2', 'qwen2.5:7b'], openai: ['gpt-4o-mini'] }) }),
+    Option: class { constructor(text, value, defaultSelected, isSelected) { this.value = value; this.selected = Boolean(isSelected); } },
+    fetch: async () => ({ ok: listLoads, json: async () => catalog }),
     document: { querySelector: () => null, querySelectorAll: () => [], getElementById: (id) => elements[id] },
   });
   await new Promise(setImmediate);
   assert.deepEqual(added.map((opt) => opt.value), expected);
+  assert.deepEqual(added.filter((opt) => opt.selected).map((opt) => opt.value), selected);
 }
 console.log('Room AI regression checks passed');

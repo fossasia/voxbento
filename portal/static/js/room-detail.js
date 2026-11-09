@@ -86,7 +86,9 @@ function initAiSettings() {
       const models = [...(catalog[provider] || [])];
       const keep = provider === savedProvider ? savedModel : '';
       // Cloud services accept any model name, but a self-hosted model must be on the server's list.
-      if (keep && !models.includes(keep) && provider !== 'self_hosted') models.unshift(keep);
+      // If the list didn't load, keep the saved model and let the server check it on save.
+      const mustBeListed = provider === 'self_hosted' && Boolean(catalog[provider]);
+      if (keep && !models.includes(keep) && !mustBeListed) models.unshift(keep);
       models.forEach((model) => transModel.append(new Option(model, model, false, model === keep)));
     }
 

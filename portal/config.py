@@ -1,9 +1,19 @@
 from __future__ import annotations
 
+import ipaddress
+import re
 from urllib.parse import urlparse
 
 from pydantic import Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+
+def _is_ip(host: str) -> bool:
+    try:
+        ipaddress.ip_address(host)
+    except ValueError:
+        return False
+    return True
 
 
 class Settings(BaseSettings):
@@ -193,6 +203,8 @@ class Settings(BaseSettings):
         parsed = urlparse(value)
         if parsed.scheme not in {"http", "https"} or not parsed.hostname:
             raise ValueError("self_hosted_llm_base_url must be an http(s) URL such as http://localhost:11434/v1")
+        if not _is_ip(parsed.hostname) and not re.fullmatch(r"[A-Za-z0-9._-]+", parsed.hostname):
+            raise ValueError("self_hosted_llm_base_url has an invalid host name")
         # Reading the port raises ValueError for one that isn't a number in 0-65535.
         if parsed.port == 0:
             raise ValueError("self_hosted_llm_base_url port must be between 1 and 65535")

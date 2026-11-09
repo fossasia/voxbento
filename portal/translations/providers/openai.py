@@ -1,8 +1,9 @@
 from __future__ import annotations
 
 import logging
+import re
 from collections.abc import Sequence
-from typing import Any
+from typing import Any, NotRequired, TypedDict
 
 import httpx
 
@@ -26,19 +27,31 @@ def self_hosted_endpoint(model: str) -> str | None:
     return f"{settings.self_hosted_llm_base_url}/chat/completions"
 
 
+_THINK_BLOCK = re.compile(r"<think>.*?</think>", re.IGNORECASE | re.DOTALL)
+
+
 def strip_reasoning(content: object) -> str | None:
-    """The translation without a reasoning model's ``<think>`` section.
+    """The translation without a reasoning model's ``<think>`` sections.
 
     Some servers return the model's thinking inline. Listeners must never see it, so an answer
     that stops while still thinking, or holds nothing else, counts as no translation.
     """
     if not isinstance(content, str):
         return None
-    close = content.lower().rfind("</think>")
-    answer = content[close + len("</think>") :] if close != -1 else content
+    answer = _THINK_BLOCK.sub("", content)
+    # Some chat templates open the thinking section themselves, so only "</think>" comes back.
+    close = answer.lower().rfind("</think>")
+    if close != -1:
+        answer = answer[close + len("</think>") :]
     if "<think>" in answer.lower():
         return None
     return answer.strip() or None
+
+
+class ChatRequest(TypedDict):
+    model: str
+    messages: list[dict[str, str]]
+    max_tokens: NotRequired[int]
 
 
 class OpenAIProvider(TranslationProvider):
@@ -81,7 +94,7 @@ class OpenAIProvider(TranslationProvider):
 
         import portal.globals as pg
 
-        payload: dict[str, Any] = {"model": model, "messages": messages}
+        payload: ChatRequest = {"model": model, "messages": messages}
         if self_hosted:
             payload["max_tokens"] = SELF_HOSTED_MAX_TOKENS
 
@@ -94,8 +107,16 @@ class OpenAIProvider(TranslationProvider):
                 timeout=timeout,
             )
             res.raise_for_status()
-            content = res.json()["choices"][0]["message"]["content"]
-            return strip_reasoning(content) if self_hosted else content.strip()
+            choice = res.json()["choices"][0]
+            if not self_hosted:
+                return choice["message"]["content"].strip()
+            # A reply cut off at max_tokens is incomplete, so it counts as no translation.
+            if choice.get("finish_reason") == "length":
+                logger.error(
+                    "Self-hosted translation for %s hit the %d-token limit", target_lang_name, SELF_HOSTED_MAX_TOKENS
+                )
+                return None
+            return strip_reasoning(choice["message"]["content"])
         except Exception as e:
-            logger.error(f"Translation via {provider_name} failed for {target_lang_name}: {e!r}")
+            logger.error("Translation via %s failed for %s: %r", provider_name, target_lang_name, e)
             return None
