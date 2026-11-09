@@ -323,6 +323,7 @@ async def _authorize_tts(websocket: WebSocket, room_id: int, language_code: str,
     from portal.booth_identity import parse_booth_id, validate_language_code
     from portal.config import settings
     from portal.database import get_event_by_slug, get_session
+    from portal.join_code_limit import JoinCodeThrottled, verify_join_code
 
     try:
         event_slug, actual_room, actual_lang = parse_booth_id(booth_id)
@@ -431,8 +432,16 @@ async def _authorize_tts(websocket: WebSocket, room_id: int, language_code: str,
     if cookie_code:
         async with get_session() as db_session:
             ev = await get_event_by_slug(db_session, event_slug)
-            if not ev or not ev.listener_join_code or cookie_code != ev.listener_join_code:
+            if not ev or not ev.listener_join_code:
                 raise WSAuthError("Invalid listener join code.")
+        try:
+            is_valid = verify_join_code(
+                websocket.client.host if websocket.client else "unknown", cookie_code, ev.listener_join_code
+            )
+        except JoinCodeThrottled as exc:
+            raise WSAuthError("Too many join attempts.") from exc
+        if not is_valid:
+            raise WSAuthError("Invalid listener join code.")
         return
 
     raise WSAuthError("Unauthorized.")
