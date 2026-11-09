@@ -201,6 +201,26 @@ class TestCaptionAggregator:
         finals = [msg for bid, msg in received if msg.get("status") == "final"]
         assert [m["text"] for m in finals] == ["retry me"]
 
+    async def test_a_cancelled_dispatch_restores_the_pending_finals(self):
+        """CancelledError does not subclass Exception, so an `except Exception`
+        used to leak it with the buffer already cleared. An ElevenLabs sender
+        failure can cancel the receiver mid-publish; the final must still be
+        recoverable for the reconnect's next clear."""
+        import asyncio as _asyncio
+
+        from portal.transcription.caption_stream import FinalCaption
+
+        async def cancelled_callback(booth_id, message):
+            raise _asyncio.CancelledError()
+
+        aggregator = CaptionAggregator(cancelled_callback)
+        events = [FinalCaption("b", "preserve me", "seg-1", seq=1, utterance_start_time=1000.0)]
+
+        with pytest.raises(_asyncio.CancelledError):
+            await aggregator._dispatch(events)
+
+        assert aggregator.states["b"].current_utterance == "preserve me"
+
     async def test_a_failed_final_restores_the_rest_of_its_batch(self):
         """A chunk can produce two FinalCaptions in one dispatch batch — a
         settled sentence then a force-finalised remainder past the word cap.
