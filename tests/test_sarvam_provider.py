@@ -405,7 +405,7 @@ async def test_stopping_the_worker_publishes_the_unfinished_caption(monkeypatch)
     async def session(s):
         await s.ws.send(json.dumps({"event": "transcript.partial", "utterance_idx": 0, "text": "अधूरा वाक्य"}))
         spoke.set()
-        await asyncio.sleep(30)
+        await asyncio.sleep(0.5)
 
     captions: list[dict] = []
 
@@ -434,7 +434,7 @@ async def test_a_late_final_transcript_is_reported_and_does_not_hold_the_worker(
 
     async def session(s):
         await _read_until_end(s)
-        await asyncio.sleep(30)
+        await asyncio.sleep(0.5)
 
     monkeypatch.setattr(sarvam, "FINAL_WAIT_SECS", 0.05)
     fake = FakeSarvam(session)
