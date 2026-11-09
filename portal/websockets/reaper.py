@@ -8,6 +8,7 @@ from sqlalchemy import or_, select
 
 from portal.booth_identity import parse_booth_id
 from portal.database import get_session
+from portal.globals import booths
 from portal.models import (
     BoothMembership,
     DBBooth,
@@ -23,6 +24,7 @@ from portal.websockets.manager import (
     REASON_INVITE_REVOKED,
     REASON_SESSION_EXPIRED,
     WS_CLOSE_REVOKED,
+    broadcast_booth_state,
     manager,
 )
 
@@ -201,6 +203,9 @@ async def session_reaper_loop(interval_seconds: float = 3.0) -> None:
         try:
             await asyncio.sleep(interval_seconds)
             await reap_stale_sessions()
+            # A restored active slot nobody came back for goes to the first interpreter who joined meanwhile (#1165).
+            for state in await booths.expire_reservations():
+                await broadcast_booth_state(state["booth_id"], state)
         except asyncio.CancelledError:
             break
         except Exception:

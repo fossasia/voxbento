@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import asyncio
+import time
+from collections.abc import Awaitable, Callable
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
 from uuid import uuid4
@@ -22,6 +24,16 @@ ParticipantRole = Role
 
 # Every booth:state carries recent chat messages, so keep each one small.
 CHAT_MESSAGE_MAX_LENGTH = 1000
+
+# After a portal restart the previous active interpreter keeps the slot for this long (#1165).
+ACTIVE_RESERVATION_SECONDS = 120.0
+# A change made by someone leaving is written to the database only after this delay. When the
+# portal shuts down every socket closes and each participant "leaves"; the process is gone before
+# the delay ends, so the stored active interpreter is still the one who was active.
+LEAVE_PERSIST_DELAY_SECONDS = 60.0
+
+# Stores (booth_id, session_key or None) as the booth's active interpreter. See portal.booth_store.
+PersistActive = Callable[[str, str | None], Awaitable[None]]
 
 
 def utc_now_iso() -> str:
@@ -134,9 +146,91 @@ def _pick_next_interpreter(booth: Booth) -> str | None:
 
 
 class BoothRegistry:
-    def __init__(self) -> None:
+    def __init__(
+        self,
+        *,
+        persist_active: PersistActive | None = None,
+        clock: Callable[[], float] = time.monotonic,
+        reservation_seconds: float = ACTIVE_RESERVATION_SECONDS,
+        leave_persist_delay: float = LEAVE_PERSIST_DELAY_SECONDS,
+    ) -> None:
         self._booths: dict[str, Booth] = {}
         self._lock = asyncio.Lock()
+        # Without persist_active nothing is stored and booths behave as they always did.
+        self._persist_active = persist_active
+        self._clock = clock
+        self._reservation_seconds = reservation_seconds
+        self._leave_persist_delay = leave_persist_delay
+        # booth_id -> (session_key of the interpreter who was active before a restart, deadline)
+        self._reservations: dict[str, tuple[str, float]] = {}
+        self._pending_persist: dict[str, asyncio.Task] = {}
+        self._persist_locks: dict[str, asyncio.Lock] = {}
+
+    def attach_persistence(self, persist_active: PersistActive) -> None:
+        """Start storing the active interpreter of every booth (called once at startup)."""
+        self._persist_active = persist_active
+
+    def restore_active(self, rows: list[tuple[str, str]]) -> None:
+        """Reserve each booth's active slot for the session that held it before the restart.
+
+        Nothing is given back automatically: the same person has to join again (their role
+        still comes from their session), and only they can take the slot until the window ends.
+        """
+        deadline = self._clock() + self._reservation_seconds
+        for booth_id, session_key in rows:
+            self._reservations[booth_id] = (session_key, deadline)
+
+    def _live_reservation(self, booth_id: str) -> tuple[str, float] | None:
+        reservation = self._reservations.get(booth_id)
+        if reservation is None or self._clock() >= reservation[1]:
+            return None
+        return reservation
+
+    def _schedule_persist(self, booth_id: str, delay: float = 0.0) -> None:
+        """Write the booth's current active interpreter to the database, off the live path.
+
+        One pending write per booth: a newer change replaces an older one that has not run yet.
+        The value is read when the write runs, so a late write never stores a stale answer.
+        """
+        if self._persist_active is None:
+            return
+        pending = self._pending_persist.pop(booth_id, None)
+        if pending is not None:
+            pending.cancel()
+        task = asyncio.create_task(self._persist_after(booth_id, delay))
+        self._pending_persist[booth_id] = task
+        track_task(task)
+
+    async def _persist_after(self, booth_id: str, delay: float) -> None:
+        try:
+            if delay:
+                await asyncio.sleep(delay)
+            async with self._persist_locks.setdefault(booth_id, asyncio.Lock()):
+                booth = self._booths.get(booth_id)
+                active = booth.participants.get(booth.active_interpreter_id) if booth else None
+                await self._persist_active(booth_id, active.joined_by if active else None)
+        finally:
+            if self._pending_persist.get(booth_id) is asyncio.current_task():
+                del self._pending_persist[booth_id]
+
+    async def expire_reservations(self) -> list[dict]:
+        """End reservations whose window has passed; return the booths that got an active interpreter.
+
+        A booth nobody rejoined has its stored interpreter cleared. If others did join while the
+        slot was reserved, the first of them who can go live takes it now, as they would have before.
+        """
+        now = self._clock()
+        changed: list[dict] = []
+        async with self._lock:
+            for booth_id in [b for b, (_, deadline) in self._reservations.items() if now >= deadline]:
+                del self._reservations[booth_id]
+                booth = self._booths.get(booth_id)
+                if booth is not None and booth.active_interpreter_id is None:
+                    booth.active_interpreter_id = _pick_next_interpreter(booth)
+                    if booth.active_interpreter_id is not None:
+                        changed.append(booth.as_public_dict())
+                self._schedule_persist(booth_id)
+        return changed
 
     def _get_or_create_booth(
         self,
@@ -265,11 +359,17 @@ class BoothRegistry:
             # Auto-assign active slot to any role that can go live.
             # Mission control now uses silent-observer mode (no booth:join),
             # so only real interpreter-booth participants appear here.
-            if (
-                can_go_live(participant.role)
-                and booth.active_interpreter_id is None
-            ):
-                booth.active_interpreter_id = participant.participant_id
+            if can_go_live(participant.role) and booth.active_interpreter_id is None:
+                reservation = self._live_reservation(booth_id)
+                if reservation is None:
+                    booth.active_interpreter_id = participant.participant_id
+                    self._schedule_persist(booth_id)
+                elif participant.joined_by is not None and participant.joined_by == reservation[0]:
+                    # Back after a restart: the same session, not a participant_id anyone could reuse.
+                    booth.active_interpreter_id = participant.participant_id
+                    del self._reservations[booth_id]
+                    self._schedule_persist(booth_id)
+                # Otherwise the slot is kept for the interpreter who was active before the restart.
             return participant, booth.as_public_dict()
 
     async def leave_participant(self, booth_id: str, participant_id: str, language: str, channel_id: str) -> dict:
@@ -281,6 +381,7 @@ class BoothRegistry:
             was_active = booth.active_interpreter_id == participant_id
             if was_active:
                 booth.active_interpreter_id = _pick_next_interpreter(booth)
+                self._schedule_persist(booth_id, self._leave_persist_delay)
             # A handoff cannot complete once its initiator or the active interpreter has left.
             if was_active or participant_id == booth.handoff_initiator_id:
                 booth.handoff_state = "idle"
@@ -362,6 +463,8 @@ class BoothRegistry:
                     "Only room coordinators, event owners, Admins or the active interpreter can reassign another interpreter."
                 )
             booth.active_interpreter_id = target_id
+            self._reservations.pop(booth_id, None)
+            self._schedule_persist(booth_id)
             # A direct reassignment supersedes any handoff in progress.
             booth.handoff_state = "idle"
             booth.handoff_initiator_id = None
@@ -456,6 +559,8 @@ class BoothRegistry:
 
             # Flip active interpreter
             booth.active_interpreter_id = new_active
+            self._reservations.pop(booth_id, None)
+            self._schedule_persist(booth_id)
             booth.handoff_state = "idle"
             booth.handoff_initiator_id = None
 
@@ -618,6 +723,10 @@ class BoothRegistry:
         booth_id = make_booth_id(event_slug, room_id, language_code)
         async with self._lock:
             self._booths.pop(booth_id, None)
+            self._reservations.pop(booth_id, None)
+            pending = self._pending_persist.pop(booth_id, None)
+            if pending is not None:
+                pending.cancel()
 
     async def validate_booth_event(self, booth_id: str, expected_event: str) -> None:
         """Raise PermissionError if *booth_id* does not belong to *expected_event*.

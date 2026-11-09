@@ -16,7 +16,7 @@ from fastapi.templating import Jinja2Templates
 from starlette.exceptions import HTTPException as StarletteHTTPException
 from unilimit.integrations.fastapi import RateLimitExceeded, setup
 
-from portal import meeting_source, program_ingest
+from portal import booth_store, meeting_source, program_ingest
 from portal.auth import require_owner_or_coordinator
 from portal.config import settings
 from portal.exceptions import RedirectRequired
@@ -69,6 +69,9 @@ async def lifespan(app: FastAPI):
     settings.validate_production_secrets()
 
     pg.shared_http_client = httpx.AsyncClient(timeout=10.0)
+
+    # Remember each booth's active interpreter, so a restart does not hand the slot to whoever joins first (#1165).
+    await booth_store.enable_persistence(pg.booths)
 
     # Generate landing page demo audio in the background on first startup.
     # Uses local Supertonic — no external API key needed.
