@@ -655,3 +655,15 @@ async def test_plain_text_writes_out_phone_and_email_links_only_when_the_label_h
         '<p><a href="mailto:help@example.com">help@example.com</a></p>'
     )
     assert _plain_text(html) == "Call us (tel:+12025550123)\n\n+12025550123\n\nhelp@example.com\n"
+
+
+@pytest.mark.anyio
+async def test_plain_text_keeps_what_follows_a_hidden_element_with_an_unclosed_tag():
+    assert _plain_text("<p>Before</p><div hidden><p>x</div><p>After</p>") == "Before\n\nAfter\n"
+    assert _plain_text("<div hidden><span><b>x</div><p>After</p>") == "After\n"
+
+
+@pytest.mark.anyio
+async def test_plain_text_restores_the_outer_row_after_a_nested_table():
+    html = "<table><tr><td>Event</td><td><table><tr><td>PyCon</td></tr><tr></tr></table></td><td>2026</td></tr></table>"
+    assert _plain_text(html) == "Event:\n\nPyCon\n\n: 2026\n"

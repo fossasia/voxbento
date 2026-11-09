@@ -113,6 +113,7 @@ class _PlainTextParser(HTMLParser):
         self._hidden: list[str] = []
         self._links: list[tuple[str, int]] = []
         self._cells = 0
+        self._tables: list[int] = []
 
     def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
         if tag in self._VOID:
@@ -126,7 +127,10 @@ class _PlainTextParser(HTMLParser):
             return
         if tag in self._BLOCKS:
             self.parts.append("\n\n")
-        if tag == "tr":
+        if tag == "table":
+            self._tables.append(self._cells)
+            self._cells = 0
+        elif tag == "tr":
             self._cells = 0
         elif tag in {"td", "th"}:
             if self._cells:
@@ -137,8 +141,9 @@ class _PlainTextParser(HTMLParser):
 
     def handle_endtag(self, tag: str) -> None:
         if self._hidden:
-            if self._hidden[-1] == tag:
-                self._hidden.pop()
+            if tag in self._hidden:
+                while self._hidden.pop() != tag:
+                    pass
             return
         if tag == "a" and self._links:
             href, start = self._links.pop()
@@ -149,6 +154,8 @@ class _PlainTextParser(HTMLParser):
                 if shown.rstrip("/") != label.rstrip("/"):
                     self.parts.append(f" ({href})" if label else href)
         elif tag in self._BLOCKS:
+            if tag == "table" and self._tables:
+                self._cells = self._tables.pop()
             self.parts.append("\n\n")
 
     def handle_data(self, data: str) -> None:
