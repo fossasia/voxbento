@@ -440,7 +440,7 @@ async def test_a_late_final_transcript_is_reported_and_does_not_hold_the_worker(
     fake = FakeSarvam(session)
     with caplog.at_level(logging.WARNING, logger=sarvam.__name__):
         async with fake as url:
-            await _run(url, monkeypatch, b" " * 3200)
+            await _run(url, monkeypatch, b"\0" * 3200)
 
     assert "did not arrive in time" in caplog.text
 
