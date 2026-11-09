@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import logging
 import time
 
@@ -62,7 +63,7 @@ class CaptionAggregator:
             elif isinstance(event, FinalCaption):
                 try:
                     await self._emit_final(event)
-                except Exception:
+                except (Exception, asyncio.CancelledError):
                     # The buffer was cleared when the event was produced, so
                     # put this one back. Any later FinalCaption in the same
                     # batch (a chunk that split one sentence off and then
@@ -71,6 +72,10 @@ class CaptionAggregator:
                     # the loop simply terminated — restore the pending ones in
                     # reverse order, so prepend chains preserve chronological
                     # order on the next publish.
+                    # CancelledError is caught alongside Exception because an
+                    # ElevenLabs sender failure can cancel the receiver mid-
+                    # publish; the aggregator survives the reconnect, so the
+                    # buffered text must too.
                     for pending in reversed([e for e in events[i + 1 :] if isinstance(e, FinalCaption)]):
                         self.stream.restore(pending)
                     self.stream.restore(event)
