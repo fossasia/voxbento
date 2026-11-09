@@ -150,6 +150,7 @@ from portal.room_setup import (
     load_snapshot,
     parse_plan,
     room_audio_choice,
+    speech_language_problem,
     summarize,
 )
 from portal.room_setup import ALL_LANGUAGES as ROOM_ALL_LANGUAGES
@@ -160,7 +161,6 @@ from portal.room_setup import DELIVERY_LABELS as ROOM_DELIVERY_LABELS
 from portal.room_setup import SPEECH_MODELS as ROOM_SPEECH_MODELS
 from portal.room_setup import VOICE_PRESETS as ROOM_VOICE_PRESETS
 from portal.room_setup import language_name as room_language_name
-from portal.room_setup import speech_language_problem
 from portal.team import ROLE_CHOICES as TEAM_ROLE_CHOICES
 from portal.team import TeamError, load_team
 from portal.team import add_member as add_team_member
