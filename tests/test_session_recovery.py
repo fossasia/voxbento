@@ -287,6 +287,23 @@ def test_revoked_user_cookie_does_not_override_valid_listener_code(recovery):
         assert socket.receive_bytes().endswith(b"private-pcm")
 
 
+@pytest.mark.parametrize("event_code", ["venue-listener-code", None])
+def test_tts_rejects_a_listener_code_cookie_the_event_does_not_have(recovery, event_code):
+    client, (_, _, event, room, _) = recovery
+
+    async def set_code():
+        async with get_session() as db:
+            row = await db.get(Event, event.id)
+            row.listener_join_code = event_code
+
+    asyncio.run(set_code())
+    client.cookies.set("listener_code_recovery-test", "wrong-listener-code")
+    with pytest.raises(WebSocketDisconnect) as exc:
+        with client.websocket_connect(tts_path(room)):
+            pass
+    assert exc.value.code == 4003
+
+
 def test_tts_listener_code_recheck_ignores_other_guesses_but_follows_code_changes(recovery):
     from portal.join_code_limit import JOIN_CODE_RATE_LIMIT, JoinCodeThrottled, _join_code_attempts, verify_join_code
 
