@@ -1567,7 +1567,10 @@ def _apply_ai_settings(room: Room, form: FormData, catalog: EngineCatalog) -> No
     left out of the form, keeps the room's current choice.
     """
     speech = catalog.find("speech", str(form.get("floor_transcription_provider", "")))
-    if speech and not speech_language_problem(speech.provider, room.floor_language_code):
+    if speech:
+        language_problem = speech_language_problem(speech.provider, room.floor_language_code)
+        if language_problem:
+            raise HTTPException(status_code=400, detail=language_problem)
         model = str(form.get("floor_transcription_model", ""))
         allowed = {value for value, _ in ROOM_SPEECH_MODELS.get(speech.provider, ())}
         room.floor_transcription_provider = speech.provider
@@ -2368,9 +2371,13 @@ async def admin_edit_booth(request: Request, event_id: int, room_id: int, booth_
             booth.language_name = language_name
         if language_code_raw:
             try:
-                booth.language_code = validate_language_code(language_code_raw)
+                language_code = validate_language_code(language_code_raw)
             except ValueError as e:
                 raise HTTPException(status_code=400, detail=str(e))
+            language_problem = speech_language_problem(booth.transcription_provider, language_code)
+            if language_problem:
+                raise HTTPException(status_code=400, detail=language_problem)
+            booth.language_code = language_code
         await session.flush()
     return safe_redirect(
         url=management_url(request, f"events/{event_id}/rooms/{room_id}/booths/{booth_id}/"),

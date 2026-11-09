@@ -315,3 +315,27 @@ def test_pipeline_reports_an_unsupported_language():
     assert "can't make captions in German" in pipeline_problem(room, event)
     room.floor_language_code = "hi"
     assert pipeline_problem(room, event) is None
+
+
+def test_room_ai_settings_reject_an_unsupported_language():
+    from fastapi import HTTPException
+    from starlette.datastructures import FormData
+
+    from portal.models import Room
+    from portal.room_setup import Engine, EngineCatalog
+    from portal.routers.admin import _apply_ai_settings
+
+    catalog = EngineCatalog(speech=(Engine("sarvam", MODEL, "Sarvam", "note"),), translation=(), voice=(), locked=())
+    room = Room(floor_transcription_provider="deepgram", floor_language_code="de")
+    form = FormData({"floor_transcription_provider": "sarvam"})
+
+    with pytest.raises(HTTPException) as rejected:
+        _apply_ai_settings(room, form, catalog)
+    assert rejected.value.status_code == 400
+    assert "can't make captions in German" in rejected.value.detail
+    assert room.floor_transcription_provider == "deepgram"
+
+    room.floor_language_code = "hi"
+    _apply_ai_settings(room, form, catalog)
+    assert room.floor_transcription_provider == "sarvam"
+    assert room.floor_transcription_model == MODEL

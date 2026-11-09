@@ -3095,3 +3095,23 @@ async def test_developer_accounts_page_has_no_inline_styles(seed_accounts):
     else:
         assert b"No developer applications" in resp.content
     assert not re.search(rb"\sstyle\s*=", resp.content, re.IGNORECASE)
+
+
+@pytest.mark.anyio
+async def test_booth_language_cannot_change_to_one_its_provider_lacks(admin_cookie, seed_event):
+    from portal.database import get_booth_by_id, get_session
+
+    event, room, booth = seed_event
+    async with get_session() as session:
+        (await get_booth_by_id(session, booth.id)).transcription_provider = "sarvam"
+
+    url = f"/admin/events/{event.id}/rooms/{room.id}/booths/{booth.id}/edit"
+    async with _client() as c:
+        rejected = await c.post(url, cookies=admin_cookie, data={"language_code": "de"}, follow_redirects=False)
+        accepted = await c.post(url, cookies=admin_cookie, data={"language_code": "hi"}, follow_redirects=False)
+
+    assert rejected.status_code == 400
+    assert "can't make captions in German" in rejected.json()["detail"]
+    assert accepted.status_code == 303
+    async with get_session() as session:
+        assert (await get_booth_by_id(session, booth.id)).language_code == "hi"
