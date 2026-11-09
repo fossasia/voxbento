@@ -207,7 +207,7 @@
             {% if room.floor_transcription_provider and not catalog.find("speech", room.floor_transcription_provider) %}
             <option value="" selected disabled>{{ room.floor_transcription_provider | capitalize }} — not available now, choose another</option>
             {% endif %}
-            {% for engine in catalog.speech %}
+            {% for engine in speech_engines %}
             <option value="{{ engine.provider }}" {% if room.floor_transcription_provider == engine.provider %}selected{% endif %}>{{ engine.label }} — {{ engine.note }}</option>
             {% endfor %}
           </select>

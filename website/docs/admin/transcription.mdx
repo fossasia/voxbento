@@ -71,6 +71,15 @@ While ElevenLabs is widely known for Text-to-Speech, Voxbento utilizes their **S
 :::
 
 </TabItem>
+  <TabItem value="sarvam" label="Sarvam AI">
+
+Uses Sarvam's **realtime speech-to-text** WebSocket API, built for Indian languages and code-mixed speech such as Hinglish. Requires a Sarvam API key stored in the event's API settings.
+
+**Models available:** `saaras:v3-realtime` (beta)
+
+**Languages:** Assamese, Bengali, English, Gujarati, Hindi, Kannada, Kashmiri, Malayalam, Marathi, Nepali, Odia, Punjabi, Sanskrit, Sindhi, Tamil, Telugu and Urdu. Other languages can't be selected with this service.
+
+</TabItem>
   <TabItem value="nvidia-riva" label="NVIDIA Riva">
 
 Uses NVIDIA's Riva speech recognition service. Requires an NVIDIA API key and the optional `nvidia-riva` Python dependency installed in your environment.
@@ -91,6 +100,7 @@ Best suited for deployments that already operate NVIDIA GPU infrastructure.
 | Deepgram | `nova-2` | Requires Deepgram API key, WebSocket streaming |
 | ElevenLabs | `scribe_v2` | Requires ElevenLabs API key |
 | NVIDIA Riva | `parakeet-rnnt`, `parakeet-ctc` | Requires NVIDIA API key and optional dependency |
+| Sarvam AI | `saaras:v3-realtime` | Requires Sarvam API key, WebSocket streaming, Indian languages only |
 
 ## Storing API Keys per Event
 
@@ -104,7 +114,7 @@ In the admin panel, navigate to `/admin/events/` and click the event you want to
 Click **API Settings** on the event detail page, or navigate to `/admin/events/{event_id}/api-settings/`.
   ### Enter API keys
 
-Fill in the API key fields for the providers you intend to use — OpenAI, Deepgram, ElevenLabs, or NVIDIA. Leave fields blank for providers you are not using.
+Fill in the API key fields for the providers you intend to use — OpenAI, Deepgram, ElevenLabs, NVIDIA, or Sarvam AI. Leave fields blank for providers you are not using.
   ### Save
 
 Click **Save**. Voxbento encrypts each key and stores it. The keys are never displayed in plain text after saving.

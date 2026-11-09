@@ -33,6 +33,7 @@ from portal.database import get_session
 from portal.globals import get_http_client
 from portal.models import Event, Room
 from portal.outage_log import OutageLog
+from portal.room_setup import speech_language_problem
 from portal.transcription.process import audio_progress
 from portal.transcription.providers.base import ProviderConfig, ProviderEnum, get_api_key
 from portal.transcription.worker import active_workers, start_transcription_worker, stop_transcription_worker
@@ -347,7 +348,7 @@ def pipeline_problem(room: Room, event: Event) -> str | None:
     provider = ProviderEnum(room.floor_transcription_provider)
     if provider != ProviderEnum.LOCAL and (not event.transcription_api_enabled or not get_api_key(event, provider)):
         return "Enable the event transcription API and configure its provider key."
-    return None
+    return speech_language_problem(room.floor_transcription_provider, room.floor_language_code)
 
 
 async def media_path(path: str) -> MediaPath | None:

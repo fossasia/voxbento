@@ -936,6 +936,7 @@ class TestEventCRUD:
             "deepgram_api_key": "deepgram-secret",
             "nvidia_api_key": "nvidia-secret",
             "elevenlabs_api_key": "elevenlabs-secret",
+            "sarvam_api_key": "sarvam-secret",
             "translation_openai_api_key": "translation-openai-secret",
             "openrouter_api_key": "openrouter-secret",
             "gemini_api_key": "gemini-secret",

@@ -156,6 +156,9 @@
           <option value="nvidia" {% if booth.transcription_provider == 'nvidia' %}selected{% endif %}>NVIDIA Parakeet</option>
           <option value="elevenlabs" {% if booth.transcription_provider == 'elevenlabs' %}selected{% endif %}>ElevenLabs</option>
           <option value="atlascloud" {% if booth.transcription_provider == 'atlascloud' %}selected{% endif %}>Atlas Cloud</option>
+          {% if sarvam_supported %}
+          <option value="sarvam" {% if booth.transcription_provider == 'sarvam' %}selected{% endif %}>Sarvam AI (Indian languages)</option>
+          {% endif %}
           {% else %}
           <option disabled>External APIs disabled in Event settings</option>
           {% endif %}
@@ -179,6 +182,7 @@
           <option value="parakeet-ctc" data-provider="nvidia" {% if booth.transcription_model == 'parakeet-ctc' %}selected{% endif %}>NVIDIA: parakeet-ctc</option>
           <option value="scribe_v2_realtime" data-provider="elevenlabs" {% if booth.transcription_model == 'scribe_v2_realtime' or booth.transcription_model == 'scribe_v2' %}selected{% endif %}>ElevenLabs: scribe_v2_realtime (Streaming)</option>
           <option value="bytedance/seed-asr-2.0" data-provider="atlascloud" {% if booth.transcription_model == 'bytedance/seed-asr-2.0' %}selected{% endif %}>Atlas Cloud: Seed ASR 2.0</option>
+          <option value="saaras:v3-realtime" data-provider="sarvam" {% if booth.transcription_model == 'saaras:v3-realtime' %}selected{% endif %}>Sarvam: saaras:v3-realtime (Streaming)</option>
         </select>
       </div>
       <div class="form-group form-group-btn">

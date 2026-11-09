@@ -136,6 +136,7 @@ def test_without_keys_only_self_hosted_engines_are_offered():
         "ElevenLabs",
         "OpenAI",
         "Atlas Cloud",
+        "Sarvam AI",
         "NVIDIA",
         "Anthropic",
         "Google Gemini",

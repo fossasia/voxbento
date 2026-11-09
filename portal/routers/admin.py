@@ -160,6 +160,7 @@ from portal.room_setup import DELIVERY_LABELS as ROOM_DELIVERY_LABELS
 from portal.room_setup import SPEECH_MODELS as ROOM_SPEECH_MODELS
 from portal.room_setup import VOICE_PRESETS as ROOM_VOICE_PRESETS
 from portal.room_setup import language_name as room_language_name
+from portal.room_setup import speech_language_problem
 from portal.team import ROLE_CHOICES as TEAM_ROLE_CHOICES
 from portal.team import TeamError, load_team
 from portal.team import add_member as add_team_member
@@ -1241,11 +1242,13 @@ async def admin_event_api_settings_post(
     nvidia_api_key: str | None = Form(None),
     elevenlabs_api_key: str | None = Form(None),
     atlascloud_api_key: str | None = Form(None),
+    sarvam_api_key: str | None = Form(None),
     clear_openai_api_key: bool | None = Form(False),
     clear_deepgram_api_key: bool | None = Form(False),
     clear_nvidia_api_key: bool | None = Form(False),
     clear_elevenlabs_api_key: bool | None = Form(False),
     clear_atlascloud_api_key: bool | None = Form(False),
+    clear_sarvam_api_key: bool | None = Form(False),
     translation_openai_api_key: str | None = Form(None),
     openrouter_api_key: str | None = Form(None),
     gemini_api_key: str | None = Form(None),
@@ -1271,6 +1274,7 @@ async def admin_event_api_settings_post(
                     ("encrypted_nvidia_api_key", nvidia_api_key, clear_nvidia_api_key),
                     ("encrypted_elevenlabs_api_key", elevenlabs_api_key, clear_elevenlabs_api_key),
                     ("encrypted_atlascloud_api_key", atlascloud_api_key, clear_atlascloud_api_key),
+                    ("encrypted_sarvam_api_key", sarvam_api_key, clear_sarvam_api_key),
                     (
                         "encrypted_translation_openai_api_key",
                         translation_openai_api_key,
@@ -1491,6 +1495,11 @@ async def admin_room_detail(request: Request, event_id: int, room_id: int):
             "kept_live_languages": kept_live,
             "fallback_jitsi_url": fallback_jitsi_url,
             "catalog": catalog,
+            "speech_engines": [
+                engine
+                for engine in catalog.speech
+                if not speech_language_problem(engine.provider, room.floor_language_code)
+            ],
             "audio_choice": room_audio_choice(room),
             "speech_models": ROOM_SPEECH_MODELS,
             "voice_presets": ROOM_VOICE_PRESETS,
@@ -1558,7 +1567,7 @@ def _apply_ai_settings(room: Room, form: FormData, catalog: EngineCatalog) -> No
     left out of the form, keeps the room's current choice.
     """
     speech = catalog.find("speech", str(form.get("floor_transcription_provider", "")))
-    if speech:
+    if speech and not speech_language_problem(speech.provider, room.floor_language_code):
         model = str(form.get("floor_transcription_model", ""))
         allowed = {value for value, _ in ROOM_SPEECH_MODELS.get(speech.provider, ())}
         room.floor_transcription_provider = speech.provider
@@ -1632,6 +1641,9 @@ async def admin_edit_room(request: Request, event_id: int, room_id: int):
             room.relay_booth_id = relay_booth_id
 
         if not form_section or form_section == "transcription":
+            language_problem = speech_language_problem(floor_transcription_provider, floor_language_code)
+            if language_problem:
+                raise HTTPException(status_code=400, detail=language_problem)
             room.floor_transcription_enabled = floor_transcription_enabled
             room.floor_transcription_provider = floor_transcription_provider
             room.floor_transcription_model = floor_transcription_model
@@ -2062,6 +2074,7 @@ async def admin_booth_detail(request: Request, event_id: int, room_id: int, boot
         request=request,
         name="admin/booth_detail.html",
         context={
+            "sarvam_supported": speech_language_problem("sarvam", db_booth.language_code) is None,
             "event": event,
             "room": room,
             "booth": db_booth,
@@ -2388,6 +2401,9 @@ async def admin_transcription_settings(
             raise HTTPException(
                 status_code=400, detail=f"Invalid model '{transcription_model}' for provider '{transcription_provider}'"
             )
+        language_problem = speech_language_problem(transcription_provider, db_booth.language_code)
+        if language_problem:
+            raise HTTPException(status_code=400, detail=language_problem)
         event = await get_event_by_id(session, event_id)
         if event is None:
             raise HTTPException(status_code=404, detail="Event not found.")

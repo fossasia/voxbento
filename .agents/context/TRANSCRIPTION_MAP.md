@@ -88,6 +88,7 @@ Jitsi Meet Floor Conference
 | `portal/transcription/providers/deepgram.py` | `DeepgramProvider` — nova-2 WebSocket streaming |
 | `portal/transcription/providers/nvidia.py` | `NVIDIAProvider` — Parakeet-RNNT/CTC via Riva gRPC |
 | `portal/transcription/providers/elevenlabs.py` | `ElevenLabsProvider` — scribe_v2 |
+| `portal/transcription/providers/sarvam.py` | `SarvamProvider` — saaras:v3-realtime WebSocket streaming, backoff reconnect |
 | `portal/translations/worker.py` | `start_translation_worker()`, LLM translation loop, multithreaded translation dispatch |
 | `portal/translations/constants.py` | Translation models enum mapped to Anthropic, OpenAI, Groq, Gemini, etc. |
 | `portal/translations/prompts.py` | Contextual prompt construction incorporating room AI persona and style instructions |
@@ -108,6 +109,7 @@ Jitsi Meet Floor Conference
 | `deepgram` | `DeepgramProvider` | `nova-2` | `deepgram_api_key` | WebSocket streaming (with `numerals=true` for interpretation) |
 | `nvidia` | `NVIDIAProvider` | `parakeet-rnnt`, `parakeet-ctc` | `nvidia_api_key` | Riva gRPC |
 | `elevenlabs` | `ElevenLabsProvider` | `scribe_v2` | `elevenlabs_api_key` | — |
+| `sarvam` | `SarvamProvider` | `saaras:v3-realtime` | `sarvam_api_key` | WebSocket streaming; languages limited to `SARVAM_LANGUAGE_CODES`, enforced by `speech_language_problem` at configuration time |
 
 API keys are stored encrypted on the `events` table (`encrypted_*_api_key` columns).
 `get_api_key(event, ProviderEnum.X)` decrypts via `portal.crypto.decrypt_val`.

@@ -27,6 +27,7 @@ from portal.models import (
 )
 from portal.rate_limit import auth_rate_limiter
 from portal.roles import EVENT_OWNER
+from portal.room_setup import speech_language_problem
 from portal.transcription.constants import ProviderEnum
 from portal.transcription.worker import active_workers, start_transcription_worker, stop_transcription_worker
 from portal.websockets.revocation import revoke_booths_for_deleted_entity
@@ -43,6 +44,7 @@ _API_KEY_FIELDS: list[tuple[str, str]] = [
     ("deepgram_api_key",           "encrypted_deepgram_api_key"),
     ("nvidia_api_key",             "encrypted_nvidia_api_key"),
     ("elevenlabs_api_key",         "encrypted_elevenlabs_api_key"),
+    ("sarvam_api_key",             "encrypted_sarvam_api_key"),
     ("translation_openai_api_key", "encrypted_translation_openai_api_key"),
     ("openrouter_api_key",         "encrypted_openrouter_api_key"),
     ("gemini_api_key",             "encrypted_gemini_api_key"),
@@ -562,6 +564,9 @@ def _apply_floor_settings(room, payload_dict: dict):
         room.floor_translation_provider = payload_dict["translation_provider"]
     if "translation_model" in payload_dict:
         room.floor_translation_model = payload_dict["translation_model"]
+    language_problem = speech_language_problem(room.floor_transcription_provider, room.floor_language_code)
+    if language_problem:
+        raise HTTPException(status_code=422, detail=language_problem)
 
 
 @router.put("/events/{event_slug}/rooms/{eventyay_room_id}")
@@ -1098,6 +1103,7 @@ class EventAPIKeysUpdate(BaseModel):
     deepgram_api_key: str | None = None
     nvidia_api_key: str | None = None
     elevenlabs_api_key: str | None = None
+    sarvam_api_key: str | None = None
     translation_openai_api_key: str | None = None
     openrouter_api_key: str | None = None
     gemini_api_key: str | None = None

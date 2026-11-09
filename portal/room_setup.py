@@ -23,6 +23,7 @@ from portal.config import settings
 from portal.database import create_booth, delete_booth, list_booths_for_room
 from portal.models import DBBooth, Event, Room, RoomTranslationLanguage
 from portal.roles import INTERPRETER
+from portal.transcription.constants import speech_language_supported
 from portal.translations.constants import NLLB_LANGUAGE_MAP
 from portal.tts.constants import DEEPGRAM_VOICE_MAPPING, SUPERTONIC_SUPPORTED_LANGS
 from portal.utils import _make_jitsi_url
@@ -148,6 +149,7 @@ _SPEECH_ENGINES = (
     ("elevenlabs", "scribe_v2_realtime", "ElevenLabs Scribe", "encrypted_elevenlabs_api_key"),
     ("openai", "whisper-1", "OpenAI Whisper", "encrypted_openai_api_key"),
     ("atlascloud", "bytedance/seed-asr-2.0", "Atlas Cloud Seed ASR", "encrypted_atlascloud_api_key"),
+    ("sarvam", "saaras:v3-realtime", "Sarvam Saaras (Indian languages)", "encrypted_sarvam_api_key"),
     ("nvidia", "parakeet-rnnt", "NVIDIA Parakeet", "encrypted_nvidia_api_key"),
 )
 _TRANSLATION_ENGINES = (
@@ -170,6 +172,7 @@ SPEECH_MODELS: dict[str, tuple[tuple[str, str], ...]] = {
         ("gpt-realtime-whisper", "Realtime Whisper, lowest delay"),
     ),
     "atlascloud": (("bytedance/seed-asr-2.0", "Seed ASR 2.0"),),
+    "sarvam": (("saaras:v3-realtime", "Saaras v3, streaming"),),
     "nvidia": (("parakeet-rnnt", "Parakeet RNNT"), ("parakeet-ctc", "Parakeet CTC")),
     "local": (("tiny", "Tiny, fastest"), ("base", "Base, more accurate but slower")),
 }
@@ -180,12 +183,23 @@ _BRANDS = {
     "elevenlabs": "ElevenLabs",
     "openai": "OpenAI",
     "atlascloud": "Atlas Cloud",
+    "sarvam": "Sarvam AI",
     "nvidia": "NVIDIA",
     "anthropic": "Anthropic",
     "gemini": "Google Gemini",
     "groq": "Groq",
     "openrouter": "OpenRouter",
 }
+
+
+def speech_language_problem(provider: str | None, language_code: str | None) -> str | None:
+    """Say why this caption service can't transcribe this language, if it can't."""
+    if speech_language_supported(provider, language_code):
+        return None
+    return (
+        f"{_BRANDS.get(provider, provider)} can't make captions in {language_name(language_code)}. "
+        "Choose another caption service or change the language spoken in the room."
+    )
 
 
 def engine_catalog(event: Event) -> EngineCatalog:
@@ -392,6 +406,10 @@ def parse_plan(
 
     if plan.uses_speech_recognition and catalog.find("speech", plan.speech_engine) is None:
         errors.append("Choose a service to make the captions.")
+    elif plan.uses_speech_recognition:
+        problem = speech_language_problem(plan.speech_engine, plan.spoken_language)
+        if problem:
+            errors.append(problem)
     if ai_languages and catalog.find("translation", plan.translation_engine) is None:
         errors.append("Choose a service to translate the AI languages.")
     voice = catalog.find("voice", plan.voice_engine)
