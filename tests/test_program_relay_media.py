@@ -1,4 +1,4 @@
-"""Real RTMPS ingest -> MediaMTX -> program-relay -> RTMPS sink tests (#749).
+"""Real RTMPS ingest -> MediaMTX -> program-relay -> RTMPS sink tests (#749), plus relay-free RTMPS ingest.
 
 MEDIAMTX_TEST_BINARY=/path/to/mediamtx uv run pytest tests/test_program_relay_media.py -v
 Requires MediaMTX 1.18.2 and FFmpeg (libx264, AAC, TLS) on PATH. CI runs this module in the
@@ -259,19 +259,27 @@ class Stack:
         )
         assert response.status_code == 200, response.text
 
-    async def publish(self, url: str) -> asyncio.subprocess.Process:
-        # What OBS sends: "Server" + "/" + "Stream Key", H.264 + AAC over RTMPS.
+    async def publish(self, url: str, *rtmp_options: str) -> asyncio.subprocess.Process:
+        # "Server" + "/" + "Stream Key" as one URL, H.264 + AAC over RTMPS.
         process = await asyncio.create_subprocess_exec(
             "ffmpeg", "-hide_banner", "-loglevel", "error", "-re",
             "-f", "lavfi", "-i", "testsrc2=size=640x360:rate=25",
             "-f", "lavfi", "-i", "sine=frequency=440:sample_rate=48000",
             "-c:v", "libx264", "-preset", "ultrafast", "-tune", "zerolatency", "-g", "50",
             "-pix_fmt", "yuv420p", "-b:v", "1500k",
-            "-c:a", "aac", "-b:a", "96k", "-tls_verify", "0", "-f", "flv", url,
+            "-c:a", "aac", "-b:a", "96k", "-tls_verify", "0", *rtmp_options, "-f", "flv", url,
             stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.DEVNULL,
         )  # fmt: skip
         self.processes.append(process)
         return process
+
+    async def publish_like_obs(self, room: Room, stream_key: str) -> asyncio.subprocess.Process:
+        """OBS sends the whole Server path as the RTMP app and the Stream Key as the stream name."""
+        server = self.server_url(room)
+        app = server.split("/", 3)[3]
+        return await self.publish(
+            f"{server}/{stream_key}", "-rtmp_app", app, "-rtmp_tcurl", server, "-rtmp_playpath", stream_key
+        )
 
     async def rejected(self, url: str, path: str) -> bool:
         """The real MediaMTX auth callback refused the publish: FFmpeg failed and nothing went live."""
@@ -464,6 +472,16 @@ async def test_native_rtmps_publish_is_authorized_for_exactly_one_room(native):
     assert encoder.returncode is None and other_encoder.returncode is None
 
 
+async def test_native_obs_style_server_and_stream_key_publish(native):
+    """The values the room page shows work when pasted into OBS's separate Server and Stream Key fields."""
+    room = native.rooms[0]
+    _, stream_key = await native.enable(room)
+    encoder = await native.publish_like_obs(room, stream_key)
+    assert await wait_path(native.floor(room)) is not None, (native.tmp_path / "media.log").read_text()
+    assert len(await native.rtmps_publishers(native.floor(room))) == 1
+    assert encoder.returncode is None
+
+
 async def test_native_revoke_kicks_the_active_rtmps_connection(native):
     room, other = native.rooms
     secret, stream_key = await native.enable(room)
@@ -548,3 +566,29 @@ async def test_native_relay_detects_destination_that_stops_consuming(native):
         assert (await native.relay_health(room))["relay"]["state"] == "live"
     finally:
         await proxy.close()
+
+
+async def test_native_rtmps_extra_destination_without_relay(native, monkeypatch):
+    """Plan 004: RTMPS ingest with no relay service, VoxBento as an extra destination (#1087)."""
+    monkeypatch.setattr(settings, "program_relay_enabled", False)
+    monkeypatch.setattr(settings, "program_rtmps_enabled", True)
+    room = native.rooms[0]
+    response = await native.client.post(
+        native.admin_url(room, "program-ingest"), json={"action": "enable", "mode": "rtmps"}
+    )
+    assert response.status_code == 200, response.text
+    secret, stream_key = response.json()["secret"], response.json()["stream_key"]
+    assert await native.rejected(f"{native.server_url(room)}/floor?key=not-{secret}", native.floor(room))
+    encoder = await native.publish_like_obs(room, stream_key)
+    ready = await wait_path(native.floor(room))
+    assert ready is not None, (native.tmp_path / "media.log").read_text()
+    assert "MPEG-4 Audio" in ready.tracks
+    health = await native.relay_health(room)
+    assert health["ingest"]["state"] == "connected" and health["relay"]["state"] == "disabled"
+    assert native.manager.snapshot() == {}
+    floor = f"rtsp://127.0.0.1:{native.ports['rtsp']}/{native.floor(room)}"
+    async with FfmpegProcess(floor, "16000", "rtmps-native") as decoder:
+        pcm = await asyncio.wait_for(decoder.stdout.readexactly(32000), 20)
+        assert len(pcm) == 32000 and any(pcm)
+    assert encoder.returncode is None
+    assert secret not in (native.tmp_path / "media.log").read_text()

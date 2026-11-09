@@ -213,6 +213,8 @@ class TranslationWorker:
         source_booth_id: int | None = None,
     ):
         """Translate one segment and deliver it.
+        """Translate and deliver a segment, keeping advisory status failures outside inference."""
+        from portal.websockets.manager import tts_manager
 
         The text goes to the language's caption channel (*target_booth_id*). When *tts_booth_id* is set,
         the text and then the synthesized audio also go to that AI booth as TTS bundles.
@@ -265,8 +267,12 @@ class TranslationWorker:
                             prog = get_download_progress(model)
                             if prog and prog.get("status") == "downloading":
                                 timeout_val = 0.1  # Fail fast if downloading
-                        except Exception:
-                            pass
+                        except Exception as exc:
+                            # Download status is advisory; inference keeps its normal timeout.
+                            logger.warning(
+                                "Local model download status unavailable (%s); using standard inference timeout",
+                                type(exc).__name__,
+                            )
 
                     translated_text = await asyncio.wait_for(
                         self._call_llm(

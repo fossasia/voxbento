@@ -42,11 +42,18 @@ class Settings(BaseSettings):
     program_sender_session_ttl_secs: int = 150  # Browser sender publish window; long enough to negotiate, short enough to expire.
     # RTMPS ingest with YouTube relay (#749). Off unless the operator deploys docker-compose.relay.yml.
     program_relay_enabled: bool = False
+    # RTMPS contribution ingest without relaying (VoxBento as an extra destination).
+    # Relay deployments imply it; see rtmps_ingest_enabled.
+    program_rtmps_enabled: bool = False
     program_rtmps_public_base: str = ""  # e.g. rtmps://voxbento.com:1936 (MediaMTX RTMPS listener)
     program_relay_base: str = "http://program-relay:8090"
     program_relay_control_secret: str = ""
     program_relay_max: int = 4
     program_relay_allowed_hosts: str = "a.rtmps.youtube.com,b.rtmps.youtube.com"
+
+    @property
+    def rtmps_ingest_enabled(self) -> bool:
+        return self.program_ingest_enabled and (self.program_rtmps_enabled or self.program_relay_enabled)
 
     @property
     def effective_jitsi_base_url(self) -> str:
@@ -118,8 +125,11 @@ class Settings(BaseSettings):
             )
         # Every outgoing email is encrypted at rest in the outbox, so sign-in links,
         # invitations and password resets cannot be sent without this key.
-        encryption_key = (self.api_key_encryption_key or "").strip()
-        if encryption_key in {"", "change-this-encryption-key-in-production", "your-secure-32-char-key-here"}:
+        encryption_keys = [
+            key.strip() for key in (self.api_key_encryption_key or "").split(",") if key.strip()
+        ]
+        weak_encryption_keys = {"change-this-encryption-key-in-production", "your-secure-32-char-key-here"}
+        if not encryption_keys or any(key in weak_encryption_keys or len(key) < 32 for key in encryption_keys):
             raise RuntimeError(
                 "API_KEY_ENCRYPTION_KEY is not set. It encrypts stored provider keys and queued email, "
                 "so sign-in and invitation emails cannot be sent without it. "
@@ -147,6 +157,11 @@ class Settings(BaseSettings):
     # Team inbox notified of each new hosting access request.
     hosting_requests_email: str = "voxbento.dev@gmail.com"
     public_base_url: str = "https://voxbento.com"
+    # Opt-in so existing deployments work before a Turnstile widget is provisioned.
+    registration_turnstile_enabled: bool = False
+    turnstile_site_key: str = ""
+    turnstile_secret_key: str = Field(default="", repr=False)
+    registration_requests_per_minute: int = Field(default=20, ge=1)
     # Webhook Settings
     max_webhook_subscriptions: int = 50
     # Caption WebSocket Settings

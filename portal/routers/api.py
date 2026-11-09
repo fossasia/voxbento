@@ -17,6 +17,7 @@ from portal.auth import (
     decode_token,
     get_booth_session,
     get_booth_sessions,
+    is_invite_token_revoked,
     load_membership_scope,
     resolve_booth_role,
     security,
@@ -269,6 +270,9 @@ async def _verify_resource_access(
                 raise
             payload = participant_payload
         else:
+            if payload and not payload.get("user") and payload.get("token_id") is not None:
+                if await is_invite_token_revoked(str(payload["token_id"])):
+                    raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Invitation revoked.")
             return payload
     if credentials is None and payload and not payload.get("user") and request.cookies.get("user_token"):
         try:
@@ -280,6 +284,9 @@ async def _verify_resource_access(
             # independently scoped participant session from being used.
             pass
         else:
+            if payload and not payload.get("user") and payload.get("token_id") is not None:
+                if await is_invite_token_revoked(str(payload["token_id"])):
+                    raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Invitation revoked.")
             return payload
     if payload and payload.get("user") and not (settings.debug and payload.get("is_admin")):
         await _verify_event_access(
@@ -300,6 +307,9 @@ async def _verify_resource_access(
         )
     else:
         _require_access(request, credentials, token, session_payload=payload)
+    if payload and not payload.get("user") and payload.get("token_id") is not None:
+        if await is_invite_token_revoked(str(payload["token_id"])):
+            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Invitation revoked.")
     if not is_global_credential:
         _verify_participant_scope(
             request,
@@ -630,6 +640,22 @@ async def list_event_booths(
                 human_languages = {b.language_code for b in room.booths}
                 for lang in ai_booth_languages(room, human_languages):
                     booth_list.append(ai_booth_entry(event.slug, room, lang))
+                if room.floor_translation_enabled:
+                    for tl in room.translation_languages:
+                        if not tl.enabled:
+                            continue
+                        ai_stream = {
+                            "id": f"ai_{room.id}_{tl.language_code}",
+                            "room_id": room.id,
+                            "eventyay_room_id": room.eventyay_room_id,
+                            "language_code": tl.language_code,
+                            "language_name": tl.language_name,
+                            "type": "ai",
+                            "label": f"{tl.language_name} (AI)",
+                            "is_ai": True,
+                            "floor_tts_enabled": room.floor_tts_enabled and tl.tts_enabled,
+                        }
+                        booth_list.append(ai_stream)
 
     return {"event_slug": event_slug, "booths": booth_list}
 

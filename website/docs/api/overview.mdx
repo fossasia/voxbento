@@ -40,7 +40,7 @@ The tables below list every REST and WebSocket endpoint exposed by the Voxbento 
 | `/api/v1/events/{event_slug}/rooms` | `GET` | Bearer | List event rooms and configurations |
 | `/api/v1/events/{event_slug}/rooms/{room_id}/booths` | `GET` | Bearer | List booths configured for a specific room |
 | `/api/v1/events/{event_slug}/rooms/{room_id}/status` | `GET` | Bearer | Operational status of room media and transcription |
-| `/api/v1/events/{event_slug}/rooms/{room_id}/booths/{language_code}/transcripts/export` | `GET` | Bearer (OAuth access token with `transcripts:read` scope) | Export transcript segments (placeholder / unimplemented endpoint; returns status 200 with placeholder response) |
+| `/api/v1/events/{event_slug}/rooms/{room_id}/booths/{language_code}/transcripts/export` | `GET` | Bearer (OAuth access token with `transcripts:read` scope) | Export a booth's transcript segments in chronological order; add `?target_lang=xx` for its translations |
 
 ### WebSocket Endpoints
 

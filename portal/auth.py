@@ -20,12 +20,74 @@ logger = logging.getLogger(__name__)
 
 security = HTTPBearer(auto_error=False)
 
+_REVOKED_TOKEN_CACHE: dict[str, tuple[float, bool]] = {}
+
+
+def invalidate_token_revocation_cache(token_str: str | None = None) -> None:
+    """Invalidate the short-lived in-memory cache for revoked tokens."""
+    if token_str is None:
+        _REVOKED_TOKEN_CACHE.clear()
+    else:
+        _REVOKED_TOKEN_CACHE.pop(str(token_str), None)
+
+
+async def is_invite_token_revoked(token_str: str, ttl: float = 5.0) -> bool:
+    """Check if an invite token is revoked in the database with a short TTL cache."""
+    import asyncio
+    import time
+    now_mono = time.monotonic()
+    key = str(token_str)
+    cached = _REVOKED_TOKEN_CACHE.get(key)
+    if cached is not None and (now_mono - cached[0] < ttl):
+        return cached[1]
+
+    from portal.database import get_invite_token_by_public_id, get_session
+    for attempt in range(2):
+        try:
+            async with get_session() as session:
+                tok = await get_invite_token_by_public_id(session, key)
+                revoked = (tok is None) or (tok.revoked_at is not None)
+                _REVOKED_TOKEN_CACHE[key] = (now_mono, revoked)
+                return revoked
+        except Exception:
+            if attempt == 0:
+                logger.warning(
+                    "Transient error checking token revocation for public_id %s; retrying once", key
+                )
+                await asyncio.sleep(0.05)
+                continue
+            logger.exception(
+                "Error checking token revocation for public_id %s after retry; failing closed", key
+            )
+            # Fail closed on database errors without poisoning the cache
+            return True
+    return True
+
+
+# bcrypt only uses the first 72 bytes of a password, and bcrypt 5 raises
+# ValueError for anything longer, so longer passwords are rejected up front.
+PASSWORD_MAX_BYTES = 72
+PASSWORD_TOO_LONG_MESSAGE = (
+    f"Password must be at most {PASSWORD_MAX_BYTES} bytes. "
+    "Accented letters and other non-ASCII characters count as more than one byte."
+)
+
+
+def password_too_long(password: str) -> bool:
+    return len(password.encode()) > PASSWORD_MAX_BYTES
+
 
 def hash_password(password: str) -> str:
+    # Callers check password_too_long() first and show a form error; this guard keeps a
+    # missed check from surfacing bcrypt's own ValueError.
+    if password_too_long(password):
+        raise ValueError(PASSWORD_TOO_LONG_MESSAGE)
     return bcrypt.hashpw(password.encode(), bcrypt.gensalt()).decode()
 
 
 def verify_password(password: str, password_hash: str) -> bool:
+    if password_too_long(password):
+        return False
     return bcrypt.checkpw(password.encode(), password_hash.encode())
 
 
@@ -39,7 +101,15 @@ def create_token() -> str:
     return jwt.encode(payload, settings.effective_jwt_secret, algorithm="HS256")
 
 
-def create_participant_token(*, booth_id: int, role: str, event_slug: str, room_id: int, language_code: str) -> str:
+def create_participant_token(
+    *,
+    booth_id: int,
+    role: str,
+    event_slug: str,
+    room_id: int,
+    language_code: str,
+    token_id: str | int | None = None,
+) -> str:
     """Create a JWT with role claims for a participant who joined via invite link."""
     now = datetime.now(timezone.utc)
     payload = {
@@ -49,6 +119,7 @@ def create_participant_token(*, booth_id: int, role: str, event_slug: str, room_
         "event_slug": event_slug,
         "room_id": room_id,
         "language_code": language_code,
+        "token_id": str(token_id) if token_id is not None else None,
         "iat": now,
         "exp": now + timedelta(seconds=settings.jwt_expiry_seconds),
     }
@@ -57,7 +128,7 @@ def create_participant_token(*, booth_id: int, role: str, event_slug: str, room_
 
 # Listening is open to everyone with the event link or join code; it is not a
 # role (#757). Listener tokens are marked with this "kind" instead.
-LISTENER_TOKEN_KIND = "listener"
+LISTENER_TOKEN_KIND = "listener"  # nosec B105 # token kind discriminator, not a credential
 
 
 def is_listener_token(payload: dict | None) -> bool:
@@ -858,6 +929,43 @@ async def resolve_ws_auth(websocket: WebSocket, booth_id: str) -> dict:
         raise WSAuthError("Missing WebSocket token and session cookie.")
 
     return await _authorize_session_cookie(websocket, payload, booth_id)
+    # Check Cookie Scope
+    if payload.get("is_admin") or payload.get("admin"):
+        return payload
+
+    token_event = payload.get("event_slug", "")
+    if is_listener_token(payload):
+        if not token_event or not (booth_id.startswith(f"{token_event}-") or booth_id.startswith(f"{token_event}/")):
+            await websocket.close(code=4003)
+            raise WSAuthError("Listener cookie event_slug does not match booth_id.")
+        return payload
+
+    token_lang = payload.get("language_code", "")
+    token_room = payload.get("room_id")
+    if token_event and token_lang:
+        from portal.booth_identity import parse_booth_id
+
+        try:
+            actual_event, actual_room, actual_lang = parse_booth_id(booth_id)
+        except ValueError:
+            await websocket.close(code=4003)
+            raise WSAuthError("Invalid booth_id format.")
+
+        if (
+            token_event != actual_event
+            or token_lang != actual_lang
+            or (token_room is not None and str(token_room) != str(actual_room))
+        ):
+            await websocket.close(code=4003)
+            raise WSAuthError("Participant cookie scope does not match booth_id.")
+
+    token_id = payload.get("token_id")
+    if token_id is not None:
+        if await is_invite_token_revoked(str(token_id)):
+            await websocket.close(code=4003)
+            raise WSAuthError("Invitation revoked.")
+
+    return payload
 
 
 async def resolve_booth_role(
@@ -895,6 +1003,8 @@ async def resolve_booth_role(
 
         # 2. Direct role claim (e.g. invite token or mock payload)
         if "role" in sess:
+            if sess.get("token_id") is not None and await is_invite_token_revoked(str(sess["token_id"])):
+                continue
             role = sess["role"]
             scope_matches = True
             token_event = sess.get("event_slug")

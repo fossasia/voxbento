@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json
-from datetime import timedelta
+from datetime import datetime, timedelta, timezone
 from unittest.mock import AsyncMock
 from uuid import uuid4
 
@@ -19,6 +19,7 @@ from portal.config import settings
 from portal.crypto import decrypt_val
 from portal.database import configure, create_user, dispose, get_session, init_db
 from portal.models import Event, Room
+from portal.transcription.worker import active_workers
 
 RELAY_SECRET = "r" * 64
 YOUTUBE_SERVER = "rtmps://a.rtmps.youtube.com/live2"
@@ -192,8 +193,16 @@ def test_destination_validation_is_allowlisted_rtmps_only():
     assert relay.normalize_destination("rtmps://b.rtmps.youtube.com:443/live2", YOUTUBE_KEY) == (
         "rtmps://b.rtmps.youtube.com:443/live2"
     )
+    # YouTube Studio shows plain RTMP by default; it maps to the same ingest over RTMPS.
+    assert relay.normalize_destination("rtmp://a.rtmp.youtube.com/live2", YOUTUBE_KEY) == YOUTUBE_SERVER
+    assert relay.normalize_destination("rtmp://b.rtmp.youtube.com:1935/live2", YOUTUBE_KEY) == (
+        "rtmps://b.rtmps.youtube.com/live2"
+    )
     rejected = [
         ("rtmp://a.rtmps.youtube.com/live2", YOUTUBE_KEY),
+        ("rtmp://evil.example/live2", YOUTUBE_KEY),
+        ("rtmp://a.rtmp.youtube.com:8080/live2", YOUTUBE_KEY),
+        ("rtmp://b.rtmp.youtube.com/live2?backup=1", YOUTUBE_KEY),
         ("https://a.rtmps.youtube.com/live2", YOUTUBE_KEY),
         ("rtmps://evil.example/live2", YOUTUBE_KEY),
         ("rtmps://127.0.0.1/live2", YOUTUBE_KEY),
@@ -201,6 +210,7 @@ def test_destination_validation_is_allowlisted_rtmps_only():
         ("rtmps://user:pass@a.rtmps.youtube.com/live2", YOUTUBE_KEY),
         ("rtmps://a.rtmps.youtube.com/live2?x=1", YOUTUBE_KEY),
         ("rtmps://a.rtmps.youtube.com", YOUTUBE_KEY),
+        ("rtmps://a.rtmps.youtube.com/" + "a" * 120 + "/" + "b" * 120 + "/c", YOUTUBE_KEY),  # > column length
         (YOUTUBE_SERVER, "key with spaces"),
         (YOUTUBE_SERVER, "../../etc"),
         (YOUTUBE_SERVER, "abc"),
@@ -208,6 +218,32 @@ def test_destination_validation_is_allowlisted_rtmps_only():
     for server, key in rejected:
         with pytest.raises(ValueError):
             relay.normalize_destination(server, key)
+
+
+def test_pasted_key_and_default_server():
+    assert relay.split_pasted_key(None, f" {YOUTUBE_KEY} ") == (relay.YOUTUBE_DEFAULT_SERVER, YOUTUBE_KEY)
+    assert relay.split_pasted_key("", YOUTUBE_KEY) == (relay.YOUTUBE_DEFAULT_SERVER, YOUTUBE_KEY)
+    # A whole "<server>/<key>" URL pasted into the key field wins over the server field.
+    assert relay.split_pasted_key(YOUTUBE_SERVER, f"rtmp://a.rtmp.youtube.com/live2/{YOUTUBE_KEY}") == (
+        "rtmp://a.rtmp.youtube.com/live2",
+        YOUTUBE_KEY,
+    )
+    # Whitespace before a trailing slash must not end up in the stored key.
+    assert relay.split_pasted_key(None, f"{YOUTUBE_SERVER}/{YOUTUBE_KEY} /")[1] == YOUTUBE_KEY
+
+
+@pytest.mark.anyio
+async def test_destination_key_only_defaults_to_youtube(relay_env):
+    client, event, room = relay_env["client"], relay_env["event"], relay_env["rooms"][0]
+    response = await client.put(relay_url(event, room), json={"stream_key": YOUTUBE_KEY})
+    assert response.status_code == 200, response.text
+    assert response.json()["server_url"] == relay.YOUTUBE_DEFAULT_SERVER
+    pasted = f"rtmp://a.rtmp.youtube.com/live2/{YOUTUBE_KEY}"
+    response = await client.put(relay_url(event, room), json={"server_url": "", "stream_key": pasted})
+    assert response.status_code == 200, response.text
+    async with get_session() as session:
+        stored = await session.get(Room, room.id)
+        assert relay.destination(stored) == f"{YOUTUBE_SERVER}/{YOUTUBE_KEY}"
 
 
 @pytest.mark.anyio
@@ -247,11 +283,11 @@ async def test_destination_encrypted_write_only_rotatable_and_revocable(relay_en
 @pytest.mark.anyio
 async def test_request_validation_errors_never_echo_the_stream_key(relay_env):
     client, event, room = relay_env["client"], relay_env["event"], relay_env["rooms"][0]
-    long_key = "k" * 200 + "-unique-tail"
+    long_key = "k" * 450 + "-unique-tail"
     for payload in [
         {"server_url": YOUTUBE_SERVER, "stream_key": long_key},  # over max_length
         {"server_url": YOUTUBE_SERVER, "stream_key": [long_key]},  # wrong type
-        {"stream_key": long_key},  # "missing" reports the whole body as its input
+        {"server_url": YOUTUBE_SERVER, "key": long_key},  # "missing" reports the whole body as its input
     ]:
         response = await client.put(relay_url(event, room), json=payload)
         assert response.status_code == 422, response.text
@@ -577,3 +613,41 @@ async def test_workspace_namespace_reaches_relay_destination(relay_env):
         json={"server_url": YOUTUBE_SERVER, "stream_key": YOUTUBE_KEY},
     )
     assert response.status_code == 200
+
+
+@pytest.mark.anyio
+async def test_deleted_event_relay_is_stopped_while_media_listing_fails(relay_env, monkeypatch):
+    env = relay_env
+    client, event, room = env["client"], env["event"], env["rooms"][0]
+    secret = await enable_relay(client, event, room)
+    await save_destination(client, event, room)
+    auth = await connect(env, room, secret)
+    await ingest.reconcile_once()
+    assert str(room.id) in env["relays"]
+    monkeypatch.setitem(active_workers, f"relay-test-{room.id}-floor", object())  # the running worker
+
+    async with get_session() as session:
+        other = Event(slug="other-event", display_name="Other Event")
+        session.add(other)
+        await session.flush()
+        active = Room(event_id=other.id, display_name="Other Room", floor_source="program_ingest")
+        session.add(active)
+        await session.flush()
+        # A relay that belongs to the room that stays active.
+        env["relays"][str(active.id)] = {"source": "other-event/1/floor", "fingerprint": "x", "state": "live"}
+        (await session.get(Event, event.id)).deleted_at = datetime.now(timezone.utc)
+
+    # Another room is still active, so the media paths are requested, and that request fails.
+    monkeypatch.setattr(ingest, "media_paths", AsyncMock(side_effect=httpx.ConnectError("media down")))
+    env["calls"].clear()
+    env["stop"].reset_mock()
+    await ingest.reconcile_once()
+    # Worker, relay, publisher and reservation of the deleted room are all released; the active room is untouched.
+    env["stop"].assert_awaited_once_with(f"relay-test-{room.id}-floor")
+    assert str(room.id) not in env["relays"]
+    assert str(active.id) in env["relays"]
+    assert ("POST", f"/v3/rtmpsconns/kick/{auth['id']}") in env["calls"]
+    async with get_session() as session:
+        assert (await session.get(Room, room.id)).program_session_id is None
+    # The encoder reconnecting is refused.
+    assert (await client.post("/internal/media-auth", json=rtmps_publish(room, secret))).status_code == 401

@@ -75,7 +75,7 @@ asyncio.run(main())
 1. Check interpreter is "Go Live" — `ingest_status == 'connected'` in booth state.
 2. Check `MEDIAMTX_WHIP_BASE` in listener page source — must be browser-reachable HTTPS.
 3. Browser DevTools → check RTCPeerConnection state in `whep-listener.js`.
-4. Check MediaMTX path: `GET http://localhost:9997/v3/paths/get/{event_slug}/{language_code}`.
+4. Check MediaMTX path: `GET http://localhost:9997/v3/paths/get/{event_slug}/{room_id}/{language_code}`.
 5. Check `alwaysAvailable: true` on the path — if not set, WHEP fails when no publisher.
 
 **Fix:** Ensure `_ensure_mediamtx_path` was called. Manually: `PATCH http://mediamtx:9997/v3/config/paths/patch/{path}` with `{"alwaysAvailable": true}`.
@@ -105,7 +105,7 @@ asyncio.run(main())
 
 **Diagnosis:**
 1. Check `active_workers` state — portal logs should show worker start: `Starting {provider} transcription worker for booth {booth_id}`.
-2. Check ffmpeg can reach MediaMTX RTSP: `docker-compose exec portal ffmpeg -rtsp_transport tcp -i rtsp://mediamtx:8554/{event_slug}/{language_code} -f null - -t 5`.
+2. Check ffmpeg can reach MediaMTX RTSP: `docker-compose exec portal ffmpeg -rtsp_transport tcp -i rtsp://mediamtx:8554/{event_slug}/{room_id}/{language_code} -f null - -t 5`.
 3. Check API key exists and is valid: portal logs for `API key missing` or `Failed to decrypt`.
 4. Check `event.transcription_api_enabled` is `True` for external providers.
 5. Check `MAX_TOTAL_WORKERS` (10) not exceeded: count workers in portal logs.

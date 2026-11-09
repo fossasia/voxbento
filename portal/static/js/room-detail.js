@@ -1,4 +1,4 @@
-// Room page (owner view): tabs, provider/model pickers and the translation language picker.
+// Room page (owner view): tabs, the room audio chooser and the AI settings pickers.
 // Values the page needs come from data attributes on #room-detail (no inline script).
 
 const root = document.getElementById('room-detail');
@@ -52,7 +52,9 @@ function initTabs() {
   });
   let initial = window.location.hash.slice(1);
   // Back from a vocabulary upload: show the result where it was uploaded.
-  if (!initial && [...params.keys()].some((key) => key.startsWith('vocab'))) initial = 'captions';
+  if (!initial && [...params.keys()].some((key) => key.startsWith('vocab'))) initial = 'ai';
+  // Older links used other tab names.
+  initial = { source: 'audio', captions: 'ai' }[initial] || initial;
   // Back from room setup: show the saved languages and the next steps.
   if (params.has('created') || params.has('updated')) initial = 'overview';
   if (!initial) {
@@ -62,70 +64,72 @@ function initTabs() {
   show(initial || 'overview');
 }
 
-// ── Captions & translation pickers (moved unchanged from the page) ───────
+// ── Room audio ──────────────────────────────────────────────────────────
+// One way of hearing the room is shown at a time. Choosing one only changes what is
+// shown; each source's own buttons connect or disconnect it.
 
-function initPickers() {
-    const providerSelect = document.getElementById('floor_transcription_provider');
-    if (!providerSelect) return;
-    const modelSelect = document.getElementById('floor_transcription_model');
-    const allOptions = Array.from(modelSelect.options);
+function initAudioChooser() {
+  const chooser = document.querySelector('[data-audio-chooser]');
+  if (!chooser) return;
+  const radios = [...chooser.querySelectorAll('input[name="audio_choice"]')];
+  const panels = [...document.querySelectorAll('[data-audio-panel]')];
 
-    function filterModels() {
-      const selectedProvider = providerSelect.value;
-      let firstVisible = null;
-      let currentSelectedStillVisible = false;
+  function sync() {
+    const choice = radios.find((r) => r.checked)?.value || '';
+    panels.forEach((panel) => { panel.hidden = panel.dataset.audioPanel !== choice; });
+  }
 
-      allOptions.forEach(opt => {
-        if (opt.getAttribute('data-provider') === selectedProvider) {
-          opt.style.display = '';
-          opt.disabled = false;
-          if (!firstVisible) firstVisible = opt;
-          if (opt.selected) currentSelectedStillVisible = true;
-        } else {
-          opt.style.display = 'none';
-          opt.disabled = true;
-        }
+  radios.forEach((radio) => radio.addEventListener('change', sync));
+  sync();
+}
+
+// ── AI settings ─────────────────────────────────────────────────────────
+
+function initAiSettings() {
+  const speechProvider = document.getElementById('floor_transcription_provider');
+  const speechModel = document.getElementById('floor_transcription_model');
+  if (speechProvider && speechModel) {
+    const options = [...speechModel.options];
+    const filterModels = () => {
+      const visible = options.filter((opt) => opt.dataset.provider === speechProvider.value);
+      options.forEach((opt) => {
+        opt.hidden = !visible.includes(opt);
+        opt.disabled = !visible.includes(opt);
       });
-
-      if (!currentSelectedStillVisible && firstVisible) {
-        firstVisible.selected = true;
-      }
-    }
-
-    providerSelect.addEventListener('change', filterModels);
+      if (!visible.some((opt) => opt.selected) && visible.length) visible[0].selected = true;
+      const modelDetails = speechModel.closest('details');
+      if (modelDetails) modelDetails.hidden = visible.length < 2;
+    };
+    speechProvider.addEventListener('change', filterModels);
     filterModels();
+  }
 
-    const transProviderSelect = document.getElementById('floor_translation_provider');
-    const transModelSelect = document.getElementById('floor_translation_model');
-    const initialTransModel = root.dataset.initialTranslationModel || '';
+  const transProvider = document.getElementById('floor_translation_provider');
+  const transModel = document.getElementById('floor_translation_model');
+  if (transProvider && transModel) {
+    const savedProvider = transProvider.value;
+    const savedModel = root.dataset.initialTranslationModel || '';
+    const localNote = document.querySelector('[data-local-translation-note]');
+    let catalog = null;
 
-    async function loadTranslationModels() {
-      const provider = transProviderSelect.value;
-      if (provider === 'none') {
-        transModelSelect.innerHTML = '<option value="none" data-provider="none">-- None --</option>';
-      } else {
-        transModelSelect.innerHTML = '<option value="">Select a Model...</option>';
-      }
+    async function loadModels() {
+      const provider = transProvider.value;
+      if (localNote) localNote.hidden = provider !== 'local';
+      transModel.replaceChildren(new Option('Recommended for this service', ''));
       if (!provider) return;
-
       try {
-        const res = await fetch('/api/admin/providers/translation/models');
-        if (res.ok) {
-          const data = await res.json();
-          const models = data[provider] || [];
-          models.forEach(model => {
-            const opt = document.createElement('option');
-            opt.value = model;
-            opt.textContent = model;
-            if (model === initialTransModel) {
-              opt.selected = true;
-            }
-            transModelSelect.appendChild(opt);
-          });
+        if (!catalog) {
+          const res = await fetch('/api/admin/providers/translation/models');
+          catalog = res.ok ? await res.json() : {};
         }
       } catch (err) {
-        console.error("Failed to load models", err);
+        console.error('Could not load translation models', err);
+        catalog = {};
       }
+      const models = [...(catalog[provider] || [])];
+      const keep = provider === savedProvider ? savedModel : '';
+      if (keep && !models.includes(keep)) models.unshift(keep);
+      models.forEach((model) => transModel.append(new Option(model, model, false, model === keep)));
     }
 
     transProviderSelect.addEventListener('change', loadTranslationModels);
@@ -253,7 +257,24 @@ function initPickers() {
         hiddenId: 'lp_floor_tts_hidden',
       });
     }
+    transProvider.addEventListener('change', loadModels);
+    loadModels();
   }
 
+  const ttsProvider = document.getElementById('floor_tts_provider');
+  if (ttsProvider) {
+    const voiceGroup = document.getElementById('tts_voice_group');
+    const deepgramHelp = document.getElementById('tts_provider_help_deepgram');
+    const syncVoice = () => {
+      const supertonic = ttsProvider.value === 'supertonic';
+      if (voiceGroup) voiceGroup.hidden = !supertonic;
+      if (deepgramHelp) deepgramHelp.hidden = ttsProvider.value !== 'deepgram';
+    };
+    ttsProvider.addEventListener('change', syncVoice);
+    syncVoice();
+  }
+}
+
 initTabs();
-initPickers();
+initAudioChooser();
+initAiSettings();
