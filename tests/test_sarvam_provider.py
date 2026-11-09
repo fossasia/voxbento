@@ -48,7 +48,14 @@ class FakeSarvam:
         await self.server.wait_closed()
 
 
+async def _until_connected(fake, count):
+    """Wait until the mock server has accepted this many connections."""
+    while len(fake.connections) < count:
+        await asyncio.sleep(0.01)
+
+
 async def _read_until_end(session):
+    """Record what the provider sends until it ends the session."""
     async for raw in session.ws:
         message = json.loads(raw)
         session.received.append(message)
@@ -212,8 +219,12 @@ async def test_fatal_error_reconnects_and_never_logs_the_key_or_provider_text(mo
             stream = asyncio.create_task(
                 SarvamProvider().run_stream(process, "hi", MODEL, ProviderConfig(API_KEY), broadcast, "conf-1-hi")
             )
-            while len(fake.connections) < 2:
-                await asyncio.sleep(0.01)
+            try:
+                await asyncio.wait_for(_until_connected(fake, 2), 5)
+            except TimeoutError:
+                stream.cancel()
+                await asyncio.gather(stream, return_exceptions=True)
+                raise
             process.stdout.feed_eof()
             await asyncio.wait_for(stream, 5)
 
@@ -222,6 +233,7 @@ async def test_fatal_error_reconnects_and_never_logs_the_key_or_provider_text(mo
 
 
 def test_backoff_doubles_to_a_cap_and_logs_once_per_outage(caplog):
+    """Delays stop growing at the cap, and one outage logs one line."""
     link = _LinkHealth("conf-1-hi")
     with caplog.at_level(logging.WARNING, logger=sarvam.__name__):
         delays = [link.failed("boom") for _ in range(7)]
@@ -235,6 +247,7 @@ def test_backoff_doubles_to_a_cap_and_logs_once_per_outage(caplog):
 
 @pytest.mark.anyio
 async def test_text_published_by_forced_finalization_is_not_repeated():
+    """Later transcripts of a force-finalized utterance publish only the new words."""
     calls: list[tuple[str, str]] = []
 
     class Aggregator:
@@ -303,6 +316,16 @@ def test_api_room_update_rejects_an_unsupported_language():
 
     _apply_floor_settings(room, {"transcription_provider": ProviderEnum.SARVAM, "source_language": "hi"})
     assert room.floor_language_code == "hi"
+    assert room.floor_transcription_model == MODEL
+
+
+def test_api_room_update_ignores_an_old_service_when_captions_are_off():
+    from portal.models import Room
+    from portal.routers.api_v1 import _apply_floor_settings
+
+    room = Room(floor_transcription_enabled=False, floor_transcription_provider="sarvam", floor_language_code="de")
+    _apply_floor_settings(room, {"name": "Renamed"})
+    assert room.display_name == "Renamed"
 
 
 def test_pipeline_reports_an_unsupported_language():
@@ -315,6 +338,97 @@ def test_pipeline_reports_an_unsupported_language():
     assert "can't make captions in German" in pipeline_problem(room, event)
     room.floor_language_code = "hi"
     assert pipeline_problem(room, event) is None
+    room.floor_language_code = None
+    assert pipeline_problem(room, event) is None
+
+
+def test_backoff_attempts_stop_growing_at_the_cap():
+    link = _LinkHealth("conf-1-hi")
+    for _ in range(2000):
+        assert link.failed("boom") <= sarvam.BACKOFF_MAX_SECS
+    assert link.attempts < 10
+
+
+def _recording_feed():
+    """A feed whose aggregator records what it is asked to publish."""
+    calls: list[tuple[str, str]] = []
+
+    class Aggregator:
+        states = {"b": SimpleNamespace(current_utterance="pending")}
+
+        async def handle_partial(self, _booth, text):
+            calls.append(("partial", text))
+
+        async def handle_final(self, _booth, text):
+            calls.append(("final", text))
+
+        async def handle_clear(self, _booth):
+            calls.append(("clear", ""))
+
+    return _CaptionFeed(Aggregator(), "b"), calls
+
+
+@pytest.mark.anyio
+async def test_malformed_messages_are_skipped_without_ending_the_session(caplog):
+    """Non-objects, bad JSON and non-string text publish nothing, and later messages still arrive."""
+    feed, calls = _recording_feed()
+
+    async def frames():
+        yield "[1, 2]"
+        yield "not json"
+        yield json.dumps({"event": "transcript.final", "text": {"oops": 1}})
+        yield json.dumps({"event": "transcript.final", "text": "ठीक है"})
+
+    with caplog.at_level(logging.WARNING, logger=sarvam.__name__):
+        await sarvam._receive(frames(), feed)
+
+    assert calls == [("final", "ठीक है")]
+    assert caplog.text.count("malformed") == 2
+
+
+@pytest.mark.anyio
+async def test_stopping_the_worker_publishes_the_unfinished_caption(monkeypatch):
+    spoke = asyncio.Event()
+
+    async def session(s):
+        await s.ws.send(json.dumps({"event": "transcript.partial", "utterance_idx": 0, "text": "अधूरा वाक्य"}))
+        spoke.set()
+        await asyncio.sleep(30)
+
+    captions: list[dict] = []
+
+    async def broadcast(_booth_id, payload):
+        captions.append(payload)
+
+    fake = FakeSarvam(session)
+    async with fake as url:
+        monkeypatch.setattr(sarvam, "SARVAM_WS_URL", url)
+        stream = asyncio.create_task(
+            SarvamProvider().run_stream(
+                _audio_process(eof=False), "hi", MODEL, ProviderConfig(API_KEY), broadcast, "conf-1-hi"
+            )
+        )
+        await asyncio.wait_for(spoke.wait(), 5)
+        await asyncio.sleep(0.05)
+        stream.cancel()
+        await asyncio.gather(stream, return_exceptions=True)
+
+    assert _texts(captions, "final") == ["अधूरा वाक्य"]
+
+
+@pytest.mark.anyio
+async def test_failure_after_the_audio_ended_is_logged(monkeypatch, caplog):
+    async def session(s):
+        await _read_until_end(s)
+        await s.ws.close(code=1011)
+
+    fake = FakeSarvam(session)
+    with caplog.at_level(logging.WARNING, logger=sarvam.__name__):
+        async with fake as url:
+            await _run(url, monkeypatch, b"\0" * 3200)
+
+    assert "Sarvam session lost: connection closed code=1011" in caplog.text
+    assert len(fake.connections) == 1
 
 
 def test_room_ai_settings_reject_an_unsupported_language():

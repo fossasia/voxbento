@@ -34,6 +34,7 @@ from portal.globals import get_http_client
 from portal.models import Event, Room
 from portal.outage_log import OutageLog
 from portal.room_setup import speech_language_problem
+from portal.transcription.constants import speech_language_required
 from portal.transcription.process import audio_progress
 from portal.transcription.providers.base import ProviderConfig, ProviderEnum, get_api_key
 from portal.transcription.worker import active_workers, start_transcription_worker, stop_transcription_worker
@@ -343,7 +344,7 @@ def pipeline_problem(room: Room, event: Event) -> str | None:
     """Return why room settings block the canonical floor pipeline, if they do."""
     if not room.floor_transcription_enabled or room.floor_transcription_provider == "none":
         return "Floor transcription is disabled. Enable it in the room AI settings."
-    if not room.floor_language_code:
+    if not room.floor_language_code and speech_language_required(room.floor_transcription_provider):
         return "Select the floor source language in the room AI settings."
     provider = ProviderEnum(room.floor_transcription_provider)
     if provider != ProviderEnum.LOCAL and (not event.transcription_api_enabled or not get_api_key(event, provider)):

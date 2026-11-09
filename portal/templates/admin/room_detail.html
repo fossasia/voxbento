@@ -204,7 +204,7 @@
         <div class="field">
           <label for="floor_transcription_provider">Service</label>
           <select id="floor_transcription_provider" name="floor_transcription_provider">
-            {% if room.floor_transcription_provider and not catalog.find("speech", room.floor_transcription_provider) %}
+            {% if room.floor_transcription_provider and not (speech_engines | selectattr("provider", "equalto", room.floor_transcription_provider) | list) %}
             <option value="" selected disabled>{{ room.floor_transcription_provider | capitalize }} — not available now, choose another</option>
             {% endif %}
             {% for engine in speech_engines %}

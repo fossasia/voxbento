@@ -25,6 +25,7 @@ from portal.program_ingest import (
     open_sender_session,
     room_lock,
 )
+from portal.transcription.constants import speech_language_required
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
@@ -107,7 +108,8 @@ async def ingest_status(event_id: int, room_id: int) -> JSONResponse:
         warnings = []
         if not room.floor_transcription_enabled:
             warnings.append("Enable floor transcription to generate captions.")
-        if not room.floor_language_code or room.floor_transcription_provider == "none":
+        language_missing = not room.floor_language_code and speech_language_required(room.floor_transcription_provider)
+        if language_missing or room.floor_transcription_provider == "none":
             warnings.append("Choose a floor source language and transcription provider.")
         return JSONResponse(
             {

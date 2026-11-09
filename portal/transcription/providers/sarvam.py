@@ -58,7 +58,8 @@ class _LinkHealth:
             logger.warning("[%s] Sarvam session lost: %s", self.booth_id, reason)
         self.outage.failed()
         delay = min(BACKOFF_BASE_SECS * 2**self.attempts, BACKOFF_MAX_SECS)
-        self.attempts += 1
+        if delay < BACKOFF_MAX_SECS:
+            self.attempts += 1
         return delay
 
 
@@ -76,11 +77,13 @@ class _CaptionFeed:
         self.committed = ""
 
     def _unpublished(self, text: str) -> str:
+        """Drop the part of this utterance that forced finalization already published."""
         if self.committed and text.startswith(self.committed):
             return text[len(self.committed) :].strip()
         return text
 
     async def _partial(self, text: str) -> None:
+        """Show an interim caption and note what the aggregator force-finalized."""
         unpublished = self._unpublished(text)
         if not unpublished:
             return
@@ -89,6 +92,7 @@ class _CaptionFeed:
             self.committed = text
 
     async def _final(self, text: str) -> None:
+        """Publish the end of an utterance and start tracking the next one."""
         unpublished = self._unpublished(text)
         self.committed = ""
         if unpublished:
@@ -97,12 +101,13 @@ class _CaptionFeed:
             await self.aggregator.handle_clear(self.booth_id)
 
     async def handle(self, message: dict) -> None:
+        """Publish a transcript or act on a Sarvam error; every other event is ignored."""
         event = message.get("event")
-        text = str(message.get("text") or "").strip()
-        if event == "transcript.partial":
-            await self._partial(text)
-        elif event == "transcript.final":
-            await self._final(text)
+        text = message.get("text")
+        if event == "transcript.partial" and isinstance(text, str):
+            await self._partial(text.strip())
+        elif event == "transcript.final" and isinstance(text, str):
+            await self._final(text.strip())
         elif event == "error":
             detail = f"error code={message.get('code')} status={message.get('status_code')}"
             if message.get("is_fatal"):
@@ -131,8 +136,16 @@ async def _send_audio(ws, process: asyncio.subprocess.Process) -> None:
 
 
 async def _receive(ws, feed: _CaptionFeed) -> None:
+    """Hand each Sarvam message to the feed, skipping any that isn't a JSON object."""
     async for raw in ws:
-        await feed.handle(json.loads(raw))
+        try:
+            message = json.loads(raw)
+        except ValueError:
+            message = None
+        if isinstance(message, dict):
+            await feed.handle(message)
+        else:
+            logger.warning("[%s] Ignored a malformed Sarvam message", feed.booth_id)
 
 
 async def _discard_audio(process: asyncio.subprocess.Process, delay: float) -> bool:
@@ -176,7 +189,9 @@ class SarvamProvider(TranscriptionProvider):
                     done, _ = await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
                 if sender in done:
                     sender.result()
-                    await asyncio.wait({receiver}, timeout=FINAL_WAIT_SECS)
+                    done, _ = await asyncio.wait({receiver}, timeout=FINAL_WAIT_SECS)
+                    if receiver in done:
+                        receiver.result()
                     return True
                 receiver.result()
                 return False
@@ -195,6 +210,7 @@ class SarvamProvider(TranscriptionProvider):
         booth_id: str,
         room_id: int | None = None,
     ) -> None:
+        """Stream ffmpeg's audio to Sarvam until it ends, reconnecting with backoff when the link drops."""
         from portal.transcription.aggregator import CaptionAggregator
 
         api_key = config.get_key()
@@ -220,6 +236,10 @@ class SarvamProvider(TranscriptionProvider):
             reason = "server ended the session"
             try:
                 ended = await self._run_session(url, headers, process, _CaptionFeed(aggregator, booth_id), link)
+            except asyncio.CancelledError:
+                # The worker is stopping: keep the words already spoken in the transcript.
+                await aggregator.handle_clear(booth_id)
+                raise
             except Exception as exc:
                 reason = _failure_reason(exc)
             # Publish a caption the lost session left unfinished; the next one starts a new utterance.

@@ -205,8 +205,10 @@
       <div class="field-row">
         <div class="field">
           <label for="transcription_provider">Service</label>
-          <select id="transcription_provider" name="transcription_provider">
-            {% if not catalog.find("speech", booth.transcription_provider) %}
+          <select id="transcription_provider" name="transcription_provider" required>
+            {% if speech_provider_unsupported %}
+            <option value="" selected disabled>{{ booth.transcription_provider | capitalize }} can't caption {{ booth.language_name }} — choose another service</option>
+            {% elif not catalog.find("speech", booth.transcription_provider) %}
             <option value="{{ booth.transcription_provider }}" selected>{{ booth.transcription_provider | capitalize }} — add its API key to keep using it</option>
             {% endif %}
             {% for engine in speech_engines %}

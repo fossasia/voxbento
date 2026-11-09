@@ -3415,7 +3415,9 @@ async def test_booth_language_cannot_change_to_one_its_provider_lacks(admin_cook
 
     event, room, booth = seed_event
     async with get_session() as session:
-        (await get_booth_by_id(session, booth.id)).transcription_provider = "sarvam"
+        stored = await get_booth_by_id(session, booth.id)
+        stored.transcription_provider = "sarvam"
+        stored.transcription_enabled = True
 
     url = f"/admin/events/{event.id}/rooms/{room.id}/booths/{booth.id}/edit"
     async with _client() as c:
@@ -3427,6 +3429,50 @@ async def test_booth_language_cannot_change_to_one_its_provider_lacks(admin_cook
     assert accepted.status_code == 303
     async with get_session() as session:
         assert (await get_booth_by_id(session, booth.id)).language_code == "hi"
+
+
+@pytest.mark.anyio
+async def test_booth_with_captions_off_can_change_language_and_must_then_pick_a_service(admin_cookie, seed_event):
+    """The saved service is flagged as incompatible rather than silently replaced by the first choice."""
+    from portal.crypto import encrypt_val
+    from portal.database import get_booth_by_id, get_event_by_id, get_session
+
+    event, room, booth = seed_event
+    async with get_session() as session:
+        stored_event = await get_event_by_id(session, event.id)
+        stored_event.transcription_api_enabled = True
+        stored_event.encrypted_sarvam_api_key = encrypt_val("sarvam-secret")
+        stored = await get_booth_by_id(session, booth.id)
+        stored.transcription_provider = "sarvam"
+        stored.transcription_enabled = False
+
+    booth_url = f"/admin/events/{event.id}/rooms/{room.id}/booths/{booth.id}/"
+    async with _client() as c:
+        changed = await c.post(f"{booth_url}edit", cookies=admin_cookie, data={"language_code": "de"}, follow_redirects=False)
+        page = await c.get(booth_url, cookies=admin_cookie)
+
+    assert changed.status_code == 303
+    assert 'name="transcription_provider" required' in page.text
+    assert '<option value="" selected disabled>Sarvam can\'t caption' in page.text or (
+        '<option value="" selected disabled>Sarvam can&#39;t caption' in page.text
+    )
+
+
+@pytest.mark.anyio
+async def test_room_transcription_form_stores_a_model_sarvam_accepts(admin_cookie, seed_event):
+    """The form's default model belongs to another service, so Sarvam's own is stored instead."""
+    from portal.database import get_room_by_id, get_session
+
+    event, room, _booth = seed_event
+    form = {"form_section": "transcription", "floor_transcription_provider": "sarvam", "floor_language_code": "hi"}
+    async with _client() as c:
+        saved = await c.post(
+            f"/admin/events/{event.id}/rooms/{room.id}/edit", cookies=admin_cookie, data=form, follow_redirects=False
+        )
+
+    assert saved.status_code == 303
+    async with get_session() as session:
+        assert (await get_room_by_id(session, room.id)).floor_transcription_model == "saaras:v3-realtime"
 
 
 @pytest.mark.anyio
@@ -3446,4 +3492,7 @@ async def test_booth_captions_offer_sarvam_only_for_its_languages(admin_cookie, 
         page = await c.get(f"/admin/events/{event.id}/rooms/{room.id}/booths/{booth.id}/", cookies=admin_cookie)
 
     assert page.status_code == 200
-    assert ('<option value="sarvam"' in page.text) is offered
+    option = re.search(r'<option value="sarvam"[^>]*>', page.text)
+    assert bool(option) is offered
+    if offered:
+        assert "disabled" not in option.group(0)

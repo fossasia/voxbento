@@ -28,7 +28,7 @@ from portal.models import (
 from portal.rate_limit import auth_rate_limiter
 from portal.roles import EVENT_OWNER
 from portal.room_setup import speech_language_problem
-from portal.transcription.constants import ProviderEnum
+from portal.transcription.constants import ProviderEnum, usable_speech_model
 from portal.transcription.worker import active_workers, start_transcription_worker, stop_transcription_worker
 from portal.websockets.revocation import revoke_booths_for_deleted_entity
 
@@ -547,6 +547,7 @@ class RoomUpsert(BaseModel):
 
 
 def _apply_floor_settings(room, payload_dict: dict):
+    """Copy a room upsert onto the room, rejecting a caption service that can't transcribe its language."""
     if "name" in payload_dict and payload_dict["name"] is not None:
         room.display_name = payload_dict["name"]
     if "enable_transcription" in payload_dict and payload_dict["enable_transcription"] is not None:
@@ -564,9 +565,14 @@ def _apply_floor_settings(room, payload_dict: dict):
         room.floor_translation_provider = payload_dict["translation_provider"]
     if "translation_model" in payload_dict:
         room.floor_translation_model = payload_dict["translation_model"]
-    language_problem = speech_language_problem(room.floor_transcription_provider, room.floor_language_code)
-    if language_problem:
-        raise HTTPException(status_code=422, detail=language_problem)
+    model = usable_speech_model(room.floor_transcription_provider, room.floor_transcription_model)
+    if model != room.floor_transcription_model:
+        room.floor_transcription_model = model
+    # An interpreter-only room may keep an old service: only captions in use, or a change to them, must fit.
+    if room.floor_transcription_enabled or {"transcription_provider", "source_language"} & payload_dict.keys():
+        language_problem = speech_language_problem(room.floor_transcription_provider, room.floor_language_code)
+        if language_problem:
+            raise HTTPException(status_code=422, detail=language_problem)
 
 
 @router.put("/events/{event_slug}/rooms/{eventyay_room_id}")
@@ -1119,6 +1125,7 @@ async def update_event_api_keys(
     token: OAuthToken = Depends(require_oauth_scope("events:write")),
     db: AsyncSession = Depends(get_db_session),
 ):
+    """Store or clear an event's provider API keys; keys are write-only."""
     from portal.crypto import encrypt_val
 
     event = await _get_event_for_request(db, event_slug, write_lock=True)

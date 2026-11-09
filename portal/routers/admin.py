@@ -170,6 +170,7 @@ from portal.team import parse_place as parse_team_place
 from portal.team import remove_assignment as remove_team_assignment
 from portal.team import revoke_invite_link as revoke_team_invite_link
 from portal.transcription import ALLOWED_MODELS, ProviderConfig, ProviderEnum, get_api_key
+from portal.transcription.constants import usable_speech_model
 from portal.transcription.worker import (
     WorkerCapacityError,
     active_workers,
@@ -1266,6 +1267,7 @@ async def admin_event_api_settings_post(
     clear_anthropic_api_key: bool | None = Form(False),
     clear_groq_api_key: bool | None = Form(False),
 ):
+    """Save the event's external-API switch and any provider keys entered or cleared."""
     async with get_session() as session:
         event = await get_event_by_id(session, event_id)
         if event is None:
@@ -1655,7 +1657,9 @@ async def admin_edit_room(request: Request, event_id: int, room_id: int):
                 raise HTTPException(status_code=400, detail=language_problem)
             room.floor_transcription_enabled = floor_transcription_enabled
             room.floor_transcription_provider = floor_transcription_provider
-            room.floor_transcription_model = floor_transcription_model
+            room.floor_transcription_model = usable_speech_model(
+                floor_transcription_provider, floor_transcription_model
+            )
             room.floor_language_code = floor_language_code
 
         if not form_section or form_section == "translation":
@@ -2084,6 +2088,7 @@ def _booth_saved_url(request: Request, event_id: int, room_id: int, booth_id: in
 
 @router.get("/admin/events/{event_id}/rooms/{room_id}/booths/{booth_id}/", dependencies=[Depends(require_owner_or_coordinator)])
 async def admin_booth_detail(request: Request, event_id: int, room_id: int, booth_id: int):
+    """Show one booth with the caption services that can transcribe its language."""
     admin_flags = await get_access_flags(request, event_id=event_id, room_id=room_id)
     async with get_session() as session:
         event = await get_event_by_id(session, event_id)
@@ -2142,6 +2147,9 @@ async def admin_booth_detail(request: Request, event_id: int, room_id: int, boot
                 for engine in engine_catalog(event).speech
                 if not speech_language_problem(engine.provider, db_booth.language_code)
             ],
+            "speech_provider_unsupported": bool(
+                speech_language_problem(db_booth.transcription_provider, db_booth.language_code)
+            ),
             "speech_models": speech_models,
             "saved_speech_model": saved_speech_model,
             "translation_models": translation_models,
@@ -2428,6 +2436,7 @@ async def admin_booth_translation_settings(
 
 @router.post("/admin/events/{event_id}/rooms/{room_id}/booths/{booth_id}/edit", dependencies=[Depends(require_event_owner)])
 async def admin_edit_booth(request: Request, event_id: int, room_id: int, booth_id: int):
+    """Rename a booth or change its language, keeping captions that are on working."""
     form = await request.form()
     language_name = form.get("language_name", "").strip()
     language_code_raw = form.get("language_code", "").strip()
@@ -2440,9 +2449,10 @@ async def admin_edit_booth(request: Request, event_id: int, room_id: int, booth_
                 language_code = validate_language_code(language_code_raw)
             except ValueError as e:
                 raise HTTPException(status_code=400, detail=str(e))
-            language_problem = speech_language_problem(booth.transcription_provider, language_code)
-            if language_problem:
-                raise HTTPException(status_code=400, detail=language_problem)
+            if booth.transcription_enabled:
+                language_problem = speech_language_problem(booth.transcription_provider, language_code)
+                if language_problem:
+                    raise HTTPException(status_code=400, detail=language_problem)
             booth.language_code = language_code
         await session.flush()
     return safe_redirect(
@@ -2464,6 +2474,7 @@ async def admin_transcription_settings(
     transcription_provider: str = Form("local"),
     transcription_model: str = Form("tiny"),
 ):
+    """Save a booth's caption settings and restart its worker if it is live."""
     async with get_session() as session:
         db_booth = await booth_in_room(session, event_id, room_id, booth_id)
         try:

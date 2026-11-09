@@ -50,6 +50,21 @@ SARVAM_LANGUAGE_CODES: Dict[str, str] = {
 }
 
 
+SARVAM_MODEL = "saaras:v3-realtime"
+
+
+def usable_speech_model(provider: str | None, model: str | None) -> str | None:
+    """The model to store: Sarvam rejects any other, so another service's model becomes Sarvam's own."""
+    if provider == ProviderEnum.SARVAM and model not in ALLOWED_MODELS[ProviderEnum.SARVAM]:
+        return SARVAM_MODEL
+    return model
+
+
+def speech_language_required(provider: str | None) -> bool:
+    """Whether the room must name its language: Sarvam can detect it, the others are told it."""
+    return provider != ProviderEnum.SARVAM
+
+
 def sarvam_language_code(language_code: str | None) -> str | None:
     """Sarvam's code for a stored language, "auto" for none, or None if Sarvam lacks it."""
     if not language_code or language_code == "floor":
