@@ -81,6 +81,7 @@ for (const [provider, saved, expected] of [
   };
   vm.runInNewContext(roomDetail, {
     console,
+    initTabs() {},
     Option: class { constructor(text, value) { this.text = text; this.value = value; } },
     fetch: async () => ({ ok: true, json: async () => ({ self_hosted: ['llama3.2', 'qwen2.5:7b'], openai: ['gpt-4o-mini'] }) }),
     document: { querySelector: () => null, querySelectorAll: () => [], getElementById: (id) => elements[id] },

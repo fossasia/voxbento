@@ -2120,6 +2120,11 @@ async def admin_booth_detail(request: Request, event_id: int, room_id: int, boot
         offered = models.setdefault(saved_provider, [])
         if saved_model and saved_model not in {value for value, _ in offered}:
             offered.append((saved_model, f"{saved_model} (current)"))
+    if settings.self_hosted_llm_enabled:
+        # Set after the step above: a self-hosted model the server no longer lists can't be saved, so it isn't offered.
+        translation_models[TranslationProviderEnum.SELF_HOSTED.value] = [
+            (model, model) for model in settings.self_hosted_llm_model_list
+        ]
     return templates.TemplateResponse(
         request=request,
         name="admin/booth_detail.html",
@@ -2146,7 +2151,6 @@ async def admin_booth_detail(request: Request, event_id: int, room_id: int, boot
             "membership_map": membership_map,
             "translation_languages_dataset": translation_languages_dataset,
             "enabled_translation_language_codes": enabled_translation_language_codes,
-            "self_hosted_models": settings.self_hosted_llm_model_list if settings.self_hosted_llm_enabled else (),
             **admin_flags,
         },
     )

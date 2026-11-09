@@ -584,14 +584,14 @@ async def _booth(booth_id: int) -> DBBooth:
 @pytest.mark.anyio
 async def test_booth_page_lists_self_hosted_models_only_when_configured(admin_booth, monkeypatch, self_hosted):
     page = await _booth_page(*admin_booth)
-    assert '<option value="self_hosted" >Self-hosted LLM</option>' in page
-    assert 'value="llama3.2" data-trans-provider="self_hosted"' in page
-    assert 'value="qwen2.5:7b" data-trans-provider="self_hosted"' in page
+    assert '<option value="self_hosted" >Self-hosted LLM — ' in page
+    assert '<option value="llama3.2" data-provider="self_hosted" >llama3.2</option>' in page
+    assert '<option value="qwen2.5:7b" data-provider="self_hosted" >qwen2.5:7b</option>' in page
 
     monkeypatch.setattr(settings, "self_hosted_llm_base_url", "")
     page = await _booth_page(*admin_booth)
     assert "Self-hosted" not in page
-    assert 'data-trans-provider="self_hosted"' not in page
+    assert 'data-provider="self_hosted"' not in page
 
 
 @pytest.mark.anyio
@@ -611,8 +611,27 @@ async def test_booth_saves_self_hosted_with_an_allowed_model(admin_booth, self_h
     assert (booth.translation_provider, booth.translation_model) == ("self_hosted", "qwen2.5:7b")
 
     page = await _booth_page(cookie, event_id, room_id, booth_id)
-    assert '<option value="self_hosted" selected>Self-hosted LLM</option>' in page
-    assert 'value="qwen2.5:7b" data-trans-provider="self_hosted" selected' in page
+    assert '<option value="self_hosted" selected>Self-hosted LLM — ' in page
+    assert '<option value="qwen2.5:7b" data-provider="self_hosted" selected>qwen2.5:7b</option>' in page
+
+
+@pytest.mark.anyio
+async def test_booth_page_does_not_offer_a_self_hosted_model_the_server_dropped(admin_booth, monkeypatch, self_hosted):
+    cookie, event_id, room_id, booth_id = admin_booth
+    await _save_booth(
+        cookie,
+        event_id,
+        room_id,
+        booth_id,
+        translation_enabled="true",
+        translation_provider="self_hosted",
+        translation_model="qwen2.5:7b",
+    )
+    monkeypatch.setattr(settings, "self_hosted_llm_models", "llama3.2")
+
+    page = await _booth_page(cookie, event_id, room_id, booth_id)
+    assert '<option value="llama3.2" data-provider="self_hosted" >llama3.2</option>' in page
+    assert "qwen2.5:7b" not in page
 
 
 @pytest.mark.anyio
@@ -660,7 +679,7 @@ async def test_booth_left_on_a_removed_server_can_still_turn_translation_off(adm
 
     page = await _booth_page(cookie, event_id, room_id, booth_id)
     assert (
-        '<option value="self_hosted" selected>Self-hosted LLM — not available on this server, choose another</option>'
+        '<option value="self_hosted" selected>Self-hosted LLM — not set up on this server, choose another</option>'
         in page
     )
 

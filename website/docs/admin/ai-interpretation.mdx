@@ -104,7 +104,7 @@ The server address is set only in the server environment. Event owners can pick 
 
    From the Docker portal container, use `http://host.docker.internal:11434/v1`. Docker Desktop resolves that name itself. On Linux, also add `extra_hosts: ["host.docker.internal:host-gateway"]` to the portal service, and make Ollama listen on an address the container can reach (`OLLAMA_HOST`; it binds to `127.0.0.1` by default). Ollama has no authentication, so don't expose it beyond your own machine or network.
 
-3. Choose **Self-hosted LLM** in the room's **Translation** card or the booth's **Translation Provider**. If only the URL is set, the room setup page says `SELF_HOSTED_LLM_MODELS` is missing.
+3. Choose **Self-hosted LLM** as the service in the **Translation** card of the room's **AI settings** tab, or on the booth's **Translations** tab. If only the URL is set, the room setup page says `SELF_HOSTED_LLM_MODELS` is missing.
 
 If you later remove the server or a model, rooms and booths that used it show it as not available, translate nothing until you pick another service or model, and can still turn translation off.
 
