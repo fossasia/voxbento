@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import hashlib
 import json
 from datetime import datetime, timedelta, timezone
 from unittest.mock import AsyncMock, patch
@@ -41,6 +40,7 @@ from portal.models import (
 )
 from portal.roles import EVENT_OWNER
 from portal.room_setup import engine_catalog
+from portal.routers.oauth import hash_token
 from portal.translations.keys import get_translation_api_key
 from portal.translations.providers.openai import SELF_HOSTED_MAX_TOKENS, OpenAIProvider, strip_reasoning
 from portal.translations.worker import TranslationWorker
@@ -713,7 +713,7 @@ async def api_event(setup_db):
                 user_id=user.id,
                 event_id=event.id,
                 scopes=["rooms:write"],
-                access_token_hash=hashlib.sha256(API_TOKEN.encode()).hexdigest(),
+                access_token_hash=hash_token(API_TOKEN),
                 expires_at=datetime.now(timezone.utc) + timedelta(hours=1),
             )
         )
