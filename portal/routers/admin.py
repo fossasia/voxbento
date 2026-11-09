@@ -25,6 +25,7 @@ from starlette.datastructures import FormData
 
 from portal import meeting_source
 from portal import roles as roles_module
+from portal.ai_booths import excluded_ai_languages
 from portal.auth import (
     coordinates_room,
     get_access_flags,
@@ -177,6 +178,8 @@ from portal.translations.vocabulary import (
     serialize_vocabulary_csv,
     validate_vocabulary_scope,
 )
+from portal.tts.constants import TTS_VOICE_OPTIONS, normalize_tts_voice
+from portal.tts.worker import invalidate_room_config
 from portal.tts.worker import invalidate_config as invalidate_tts_config
 from portal.user_admin import ERROR_MESSAGES as USER_ADMIN_ERRORS
 from portal.user_admin import FIELDS as USER_ACCESS_FIELDS
@@ -1467,6 +1470,20 @@ async def admin_room_detail(request: Request, event_id: int, room_id: int):
     clean_name = re.sub("[^a-zA-Z0-9]+", "", room.display_name)
     room_id_str = f"Voxbento-{event.slug}-{clean_name}"
     fallback_jitsi_url = _make_jitsi_url(settings.effective_jitsi_base_url, room_id_str)
+    translation_languages_dataset = [
+        {"code": lang.alpha_2, "name": lang.name} for lang in pycountry.languages if hasattr(lang, "alpha_2")
+    ]
+    translation_languages_dataset.sort(key=lambda x: x["name"])
+    enabled_translation_language_codes = [lang.language_code for lang in room.translation_languages if lang.enabled]
+    excluded_tts_codes = excluded_ai_languages(room, {b.language_code for b in db_booths})
+    tts_available_languages_dataset = [
+        lang for lang in translation_languages_dataset if lang["code"] not in excluded_tts_codes
+    ]
+    enabled_tts_language_codes = [
+        lang.language_code
+        for lang in room.translation_languages
+        if lang.enabled and lang.tts_enabled and lang.language_code not in excluded_tts_codes
+    ]
     async with get_session() as session:
         memberships = await list_memberships_for_room(session, room_id)
     kept_live = [
@@ -1490,6 +1507,11 @@ async def admin_room_detail(request: Request, event_id: int, room_id: int):
             "just_updated": request.query_params.get("updated") == "1",
             "kept_live_languages": kept_live,
             "fallback_jitsi_url": fallback_jitsi_url,
+            "translation_languages_dataset": translation_languages_dataset,
+            "enabled_translation_language_codes": enabled_translation_language_codes,
+            "tts_available_languages_dataset": tts_available_languages_dataset,
+            "enabled_tts_language_codes": enabled_tts_language_codes,
+            "tts_voice_options": TTS_VOICE_OPTIONS,
             "catalog": catalog,
             "audio_choice": room_audio_choice(room),
             "speech_models": ROOM_SPEECH_MODELS,
@@ -1604,14 +1626,92 @@ async def admin_edit_room(request: Request, event_id: int, room_id: int):
     floor_ai_interpretation_style = form.get("floor_ai_interpretation_style", "").strip() or None
     floor_ai_vocabulary_enabled = form.get("floor_ai_vocabulary_enabled") == "on"
     floor_tts_enabled = form.get("floor_tts_enabled") == "on"
+    floor_tts_languages = form.getlist("floor_tts_languages")
     floor_tts_provider = (form.get("floor_tts_provider", "deepgram") or "deepgram").strip().lower() or "deepgram"
     if floor_tts_provider not in {"deepgram", "supertonic"}:
         floor_tts_provider = "deepgram"
-    floor_tts_voice = (form.get("floor_tts_voice", "M1") or "M1").strip().upper() or "M1"
-    if floor_tts_voice not in {"M1", "M2", "M3", "M4", "M5", "F1", "F2", "F3", "F4", "F5"}:
-        floor_tts_voice = "M1"
+    # An empty voice lets the provider choose a voice for each target language.
+    floor_tts_voice = normalize_tts_voice(floor_tts_provider, form.get("floor_tts_voice", ""))
     async with get_session() as session:
         room = await get_room_by_id(session, room_id)
+        if room and room.event_id == event_id:
+            if not form_section or form_section == "general":
+                if display_name:
+                    room.display_name = display_name
+                room.jitsi_url = jitsi_url if jitsi_url else None
+                room.audio_delay_ms = audio_delay_ms
+
+            if not form_section or form_section == "relay":
+                # The relay booth must be one of this event's booths.
+                if relay_booth_id is not None:
+                    relay_booth = await get_booth_by_id(session, relay_booth_id)
+                    if relay_booth is None or relay_booth.event_id != event_id:
+                        raise HTTPException(status_code=404, detail="Relay booth not found.")
+                room.relay_booth_id = relay_booth_id
+
+            if not form_section or form_section == "transcription":
+                room.floor_transcription_enabled = floor_transcription_enabled
+                room.floor_transcription_provider = floor_transcription_provider
+                room.floor_transcription_model = floor_transcription_model
+                room.floor_language_code = floor_language_code
+
+            if not form_section or form_section == "translation":
+                room.floor_translation_enabled = floor_translation_enabled
+                room.floor_translation_provider = floor_translation_provider
+                room.floor_translation_model = floor_translation_model
+                room.floor_ai_interpreter_persona = floor_ai_interpreter_persona
+                room.floor_ai_interpretation_style = floor_ai_interpretation_style
+                room.floor_ai_vocabulary_enabled = floor_ai_vocabulary_enabled
+
+                existing_langs = {lang.language_code: lang for lang in room.translation_languages}
+                requested_codes = set(floor_translation_languages)
+                for code, lang in existing_langs.items():
+                    if code not in requested_codes:
+                        lang.enabled = False
+                        lang.tts_enabled = False  # AI audio needs the translation
+                for code in requested_codes:
+                    if code in existing_langs:
+                        existing_langs[code].enabled = True
+                    else:
+                        lang_obj = pycountry.languages.get(alpha_2=code)
+                        lang_name = lang_obj.name if lang_obj else code
+                        new_lang = RoomTranslationLanguage(
+                            room_id=room_id, language_code=code, language_name=lang_name, enabled=True
+                        )
+                        session.add(new_lang)
+
+            if not form_section or form_section == "tts":
+                room.floor_tts_enabled = floor_tts_enabled
+                room.floor_tts_provider = floor_tts_provider
+                room.floor_tts_voice = floor_tts_voice
+
+                # Human booths and the floor language can't be AI languages, whatever the form sent.
+                human_langs = {b.language_code for b in await list_booths_for_room(session, room_id)}
+                excluded = excluded_ai_languages(room, human_langs)
+                requested_tts_codes = {
+                    code
+                    for code in floor_tts_languages
+                    if code not in excluded and pycountry.languages.get(alpha_2=code) is not None
+                }
+                existing_langs = {lang.language_code: lang for lang in room.translation_languages}
+                for code, lang in existing_langs.items():
+                    lang.tts_enabled = code in requested_tts_codes
+                    if lang.tts_enabled:
+                        lang.enabled = True  # AI audio needs the translation
+                for code in requested_tts_codes - existing_langs.keys():
+                    session.add(
+                        RoomTranslationLanguage(
+                            room_id=room_id,
+                            language_code=code,
+                            language_name=pycountry.languages.get(alpha_2=code).name,
+                            enabled=True,
+                            tts_enabled=True,
+                        )
+                    )
+            await session.flush()
+    if not form_section or form_section == "tts":
+        # After the commit, so a TTS worker can't cache the old settings in between.
+        invalidate_room_config(room_id)
         if room is None or room.event_id != event_id:
             raise HTTPException(status_code=404, detail="Room not found.")
 

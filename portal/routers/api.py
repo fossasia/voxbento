@@ -8,6 +8,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 from sqlalchemy.orm.exc import ObjectDeletedError, StaleDataError
 
+from portal.ai_booths import ai_booth_entry, ai_booth_languages
 from portal.auth import (
     booth_session_key,
     coordinates_room,
@@ -45,6 +46,7 @@ from portal.utils import (
     _ensure_mediamtx_path,
     _require_access,
     _resolve_whip_url,
+    public_ws_url,
     verify_same_origin,
 )
 from portal.websockets.manager import broadcast_transcription
@@ -528,9 +530,7 @@ async def create_event_booth(
 
         state["interpreter_invite_url"] = f"{settings.public_base_url}/join/{invite.token}"
 
-    state["caption_url"] = (
-        f"wss://{settings.public_base_url.replace('https://', '').replace('http://', '')}/ws/captions/{state['booth_id']}"
-    )
+    state["caption_url"] = public_ws_url(f"/ws/captions/{state['booth_id']}")
     return state
 
 
@@ -623,15 +623,23 @@ async def list_event_booths(
             b["whep_url"] = f"{settings.mediamtx_whip_base}/{mtx}/whep"
         b["type"] = "human"
         b["label"] = f"{b.get('language_name', b.get('language_code', ''))} (Human)"
+        b["is_ai"] = False
 
     async with get_session() as session:
-
-        stmt = select(Event).where(Event.slug == event_slug, Event.deleted_at.is_(None)).options(
-            selectinload(Event.rooms).selectinload(Room.translation_languages)
+        stmt = (
+            select(Event)
+            .where(Event.slug == event_slug, Event.deleted_at.is_(None))
+            .options(
+                selectinload(Event.rooms).selectinload(Room.translation_languages),
+                selectinload(Event.rooms).selectinload(Room.booths),
+            )
         )
         event = await session.scalar(stmt)
         if event:
             for room in event.rooms:
+                human_languages = {b.language_code for b in room.booths}
+                for lang in ai_booth_languages(room, human_languages):
+                    booth_list.append(ai_booth_entry(event.slug, room, lang))
                 if room.floor_translation_enabled:
                     for tl in room.translation_languages:
                         if not tl.enabled:

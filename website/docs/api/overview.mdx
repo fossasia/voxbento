@@ -48,7 +48,7 @@ The tables below list every REST and WebSocket endpoint exposed by the Voxbento 
 | --- | --- | --- |
 | `/ws/booth/{booth_id}` | Optional JWT via `?token=` query parameter or session cookie | Real-time booth coordination — join, leave, chat, handoffs, and publish tickets |
 | `/ws/captions/{booth_id}` | Protected (`BOOTH_ACCESS_TOKEN` / session token or cookie in production; open in dev when unset) | Live caption and translated caption feed for listeners |
-| `/ws/tts/{room_id}/{language_code}/{booth_id}` | Pre-authorized (token or join code) | Direct-push synthetic audio stream with framed binary bundle messages |
+| `/ws/tts/{booth_id}` (AI booth `{event_slug}-{room_id}-ai-{language_code}`) | Pre-authorized (listener token, scoped invite, or member session) | Direct-push synthetic audio stream with framed binary bundle messages |
 
 ## The Captions WebSocket Broadcast
 

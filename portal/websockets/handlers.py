@@ -14,8 +14,11 @@ from portal.auth import (
     decode_token,
     is_invite_token_revoked,
     is_listener_token,
+    listener_scope_matches,
     resolve_booth_role,
     resolve_ws_auth,
+    ws_bearer_subprotocol,
+    ws_credential,
 )
 from portal.database import get_booth_language_name, get_session, get_user_by_id
 from portal.globals import booths
@@ -98,7 +101,7 @@ async def ws_booth(websocket: WebSocket, booth_id: str) -> None:
             return
 
     ws_granted_role = await resolve_booth_role(payload, booth_id)
-    await websocket.accept()
+    await websocket.accept(subprotocol=ws_bearer_subprotocol(websocket))
 
     language_name = await get_booth_language_name(booth_id)
 
@@ -209,7 +212,8 @@ async def ws_booth(websocket: WebSocket, booth_id: str) -> None:
 @router.websocket("/ws/captions/{booth_id}")
 async def ws_captions(websocket: WebSocket, booth_id: str) -> None:
     """WebSocket endpoint for live captions. Listener tokens are limited to their own event"""
-    token = websocket.query_params.get("token", "")
+    # The listener page offers its token as a "bearer.<token>" subprotocol; ?token= still works.
+    token = ws_credential(websocket)
     is_anonymous = not bool(token)
 
     booth_event: str | None = None
@@ -227,6 +231,12 @@ async def ws_captions(websocket: WebSocket, booth_id: str) -> None:
         reject_code: int | None = None
         try:
             payload = decode_token(token)
+            if not (payload.get("is_admin") or payload.get("admin")):
+                if not listener_scope_matches(payload.get("event_slug", ""), booth_id):
+                    await websocket.close(code=4003)
+                    return
+        except Exception:
+            await websocket.close(code=4001)
             if payload.get("user"):
                 if not await _current_user(payload):
                     reject_code = 4001
@@ -287,7 +297,7 @@ async def ws_captions(websocket: WebSocket, booth_id: str) -> None:
 
     accepted = False
     try:
-        await websocket.accept()
+        await websocket.accept(subprotocol=ws_bearer_subprotocol(websocket))
         accepted = True
     finally:
         if not accepted and is_anonymous:
@@ -307,24 +317,14 @@ async def ws_captions(websocket: WebSocket, booth_id: str) -> None:
         listener_manager.remove(websocket, booth_id)
 
 
-async def _authorize_tts(websocket: WebSocket, room_id: int, language_code: str, booth_id: str) -> None:
-    """Authorize a TTS WebSocket subscription before accept.
+@router.websocket("/ws/tts/{booth_id}")
+async def ws_tts(websocket: WebSocket, booth_id: str) -> None:
+    """WebSocket endpoint for an AI booth's synthesized audio (``{event_slug}-{room_id}-ai-{language_code}``).
 
-    The subscription key is (room_id, target language, source booth_id).
-    The target language may differ from the source booth language for
-    translated audio, so only the room coordinate must match exactly.
-    Credentials must still be scoped to the same event and room.
+    Authorized before accept by ``resolve_ws_auth``, the same check ``/ws/booth/{booth_id}`` uses.
     """
-    from urllib.parse import urlparse
-
-    import jwt
-
-    from portal.auth import WSAuthError, decode_token, get_booth_session, resolve_booth_role
-    from portal.booth_identity import parse_booth_id, validate_language_code
-    from portal.config import settings
-    from portal.database import get_event_by_slug, get_session
-
     try:
+        await resolve_ws_auth(websocket, booth_id)
         event_slug, actual_room, actual_lang = parse_booth_id(booth_id)
     except ValueError:
         raise WSAuthError("Invalid booth_id format.")
@@ -444,15 +444,13 @@ async def ws_tts(websocket: WebSocket, room_id: int, language_code: str, booth_i
     try:
         await _authorize_tts(websocket, room_id, language_code, booth_id)
     except WSAuthError:
-        await websocket.close(code=4003)
         return
-
-    await websocket.accept()
-    tts_manager.add(websocket, room_id, language_code, booth_id)
+    await websocket.accept(subprotocol=ws_bearer_subprotocol(websocket))
+    tts_manager.add(websocket, booth_id)
     try:
         while True:
             await websocket.receive_text()
     except WebSocketDisconnect:
         pass
     finally:
-        tts_manager.remove(websocket, room_id, language_code, booth_id)
+        tts_manager.remove(websocket, booth_id)

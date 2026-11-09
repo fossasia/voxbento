@@ -4,6 +4,7 @@
  */
 
 import { initLocalModelDownloader } from './download-model.js';
+import { initTtsVoicePicker } from './tts-voice-picker.js';
 
 function managementPrefix() {
   return document.body.dataset.managementPrefix || '/admin';
@@ -102,6 +103,7 @@ document.addEventListener('DOMContentLoaded', () => {
   initCustomModal();
   initLocalModelDownloader();
   initAsyncSave();
+  initTtsVoicePicker();
   initRevealPanels();
 });
 

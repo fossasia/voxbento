@@ -132,6 +132,131 @@ function initAiSettings() {
       models.forEach((model) => transModel.append(new Option(model, model, false, model === keep)));
     }
 
+    transProviderSelect.addEventListener('change', loadTranslationModels);
+    if (transProviderSelect.value) {
+      loadTranslationModels();
+    }
+
+    // The TTS provider's voices and help text are handled by tts-voice-picker.js (loaded by admin.js).
+
+    // Language tag picker
+    function initLangPicker(cfg) {
+      const tagsEl = document.getElementById(cfg.tagsId);
+      const searchEl = document.getElementById(cfg.searchId);
+      const dropdownEl = document.getElementById(cfg.dropdownId);
+      const hiddenEl = document.getElementById(cfg.hiddenId);
+      const selected = new Set(cfg.selectedCodes);
+      let filtered = [];
+      let focusedIdx = -1;
+
+      function renderTags() {
+        tagsEl.innerHTML = '';
+        selected.forEach(code => {
+          const lang = cfg.allLanguages.find(l => l.code === code);
+          if (!lang) return;
+          const tag = document.createElement('span');
+          tag.className = 'lang-tag';
+          const nameSpan = document.createElement('span');
+          nameSpan.textContent = lang.name + ' (' + lang.code + ')';
+          const btn = document.createElement('button');
+          btn.type = 'button';
+          btn.className = 'lang-tag-remove';
+          btn.setAttribute('aria-label', 'Remove ' + lang.name);
+          btn.textContent = '×';
+          btn.addEventListener('click', () => { selected.delete(code); renderTags(); syncHidden(); });
+          tag.appendChild(nameSpan);
+          tag.appendChild(btn);
+          tagsEl.appendChild(tag);
+        });
+      }
+
+      function syncHidden() {
+        hiddenEl.innerHTML = '';
+        selected.forEach(code => {
+          const inp = document.createElement('input');
+          inp.type = 'hidden';
+          inp.name = cfg.inputName;
+          inp.value = code;
+          hiddenEl.appendChild(inp);
+        });
+      }
+
+      function renderDropdown(q) {
+        const ql = q.toLowerCase();
+        filtered = cfg.allLanguages.filter(l =>
+          !selected.has(l.code) &&
+          (l.name.toLowerCase().includes(ql) || l.code.toLowerCase().includes(ql))
+        ).slice(0, 60);
+        focusedIdx = -1;
+        dropdownEl.innerHTML = '';
+        if (filtered.length === 0) { dropdownEl.hidden = true; return; }
+        filtered.forEach(lang => {
+          const li = document.createElement('li');
+          li.textContent = lang.name + ' (' + lang.code + ')';
+          li.addEventListener('mousedown', e => { e.preventDefault(); addLang(lang.code); });
+          dropdownEl.appendChild(li);
+        });
+        dropdownEl.hidden = false;
+      }
+
+      function addLang(code) {
+        selected.add(code);
+        searchEl.value = '';
+        renderTags();
+        syncHidden();
+        dropdownEl.hidden = true;
+        searchEl.focus();
+      }
+
+      searchEl.addEventListener('input', () => renderDropdown(searchEl.value));
+      searchEl.addEventListener('focus', () => renderDropdown(searchEl.value));
+      searchEl.addEventListener('blur', () => { setTimeout(() => { dropdownEl.hidden = true; }, 150); });
+      searchEl.addEventListener('keydown', e => {
+        if (dropdownEl.hidden) return;
+        const items = dropdownEl.querySelectorAll('li');
+        if (e.key === 'ArrowDown') {
+          e.preventDefault();
+          focusedIdx = Math.min(focusedIdx + 1, filtered.length - 1);
+          items.forEach((li, i) => li.classList.toggle('lp-focused', i === focusedIdx));
+          if (items[focusedIdx]) items[focusedIdx].scrollIntoView({ block: 'nearest' });
+        } else if (e.key === 'ArrowUp') {
+          e.preventDefault();
+          focusedIdx = Math.max(focusedIdx - 1, 0);
+          items.forEach((li, i) => li.classList.toggle('lp-focused', i === focusedIdx));
+        } else if (e.key === 'Enter') {
+          e.preventDefault();
+          if (focusedIdx >= 0 && filtered[focusedIdx]) addLang(filtered[focusedIdx].code);
+        } else if (e.key === 'Escape') {
+          dropdownEl.hidden = true;
+          focusedIdx = -1;
+        }
+      });
+
+      renderTags();
+      syncHidden();
+    }
+
+    initLangPicker({
+      allLanguages: JSON.parse(root.dataset.translationLanguages || '[]'),
+      selectedCodes: JSON.parse(root.dataset.selectedTranslationLanguages || '[]'),
+      inputName: 'floor_translation_languages',
+      tagsId: 'lp_floor_translation_tags',
+      searchId: 'lp_floor_translation_search',
+      dropdownId: 'lp_floor_translation_dropdown',
+      hiddenId: 'lp_floor_translation_hidden',
+    });
+
+    if (document.getElementById('lp_floor_tts_tags')) {
+      initLangPicker({
+        allLanguages: JSON.parse(root.dataset.ttsLanguages || '[]'),
+        selectedCodes: JSON.parse(root.dataset.selectedTtsLanguages || '[]'),
+        inputName: 'floor_tts_languages',
+        tagsId: 'lp_floor_tts_tags',
+        searchId: 'lp_floor_tts_search',
+        dropdownId: 'lp_floor_tts_dropdown',
+        hiddenId: 'lp_floor_tts_hidden',
+      });
+    }
     transProvider.addEventListener('change', loadModels);
     loadModels();
   }

@@ -309,6 +309,7 @@ class RoomTranslationLanguage(Base):
     language_code: Mapped[str] = mapped_column(String(20))
     language_name: Mapped[str] = mapped_column(String(100))
     enabled: Mapped[bool] = mapped_column(Boolean, default=True, server_default="1")
+    tts_enabled: Mapped[bool] = mapped_column(Boolean, default=False, server_default="0")
     # False for AI text languages: translated for reading, never spoken.
     tts_enabled: Mapped[bool] = mapped_column(Boolean, default=True, server_default="1")
 

@@ -25,6 +25,11 @@
 
 <div id="room-detail"
      data-room-id="{{ room.id }}"
+     data-initial-translation-model="{{ room.floor_translation_model or '' }}"
+     data-translation-languages='{{ translation_languages_dataset | tojson }}'
+     data-selected-translation-languages='{{ enabled_translation_language_codes | tojson }}'
+     data-tts-languages='{{ tts_available_languages_dataset | tojson }}'
+     data-selected-tts-languages='{{ enabled_tts_language_codes | tojson }}'>
      data-initial-translation-model="{{ room.floor_translation_model or '' }}">
 
 {% set setup_url = management_prefix ~ '/events/' ~ event.id ~ '/rooms/' ~ room.id ~ '/setup' %}
@@ -333,6 +338,38 @@
       <a class="btn btn-outline btn-sm" href="{{ management_prefix }}/events/{{ event.id }}/rooms/{{ room.id }}/ai-vocabulary/export">Download as CSV</a>
     </div>
 
+    <div class="form-row form-row--top">
+      <div class="form-group form-group--grow">
+        <label for="floor_tts_provider">TTS Provider</label>
+        <select id="floor_tts_provider" name="floor_tts_provider" class="input">
+          <option value="deepgram" {% if (room.floor_tts_provider or 'deepgram') == 'deepgram' %}selected{% endif %}>Deepgram Aura (Cloud)</option>
+          <option value="supertonic" {% if room.floor_tts_provider == 'supertonic' %}selected{% endif %}>Supertonic (Self-Hosted)</option>
+        </select>
+        <p class="form-help form-help--spaced" id="tts_provider_help_deepgram"><strong>Supported Deepgram languages:</strong> English (en), Spanish (es), Dutch (nl), French (fr), German (de), Italian (it), Japanese (ja). Other languages fall back to an English voice.</p>
+        <p class="form-help form-help--spaced" id="tts_provider_help_supertonic" hidden>Supertonic runs locally with no API key. 31 languages supported; unknown languages use a language-agnostic fallback. The model (~400MB) downloads on first use.</p>
+      </div>
+      <div class="form-group form-group--grow" id="tts_voice_group">
+        <label for="floor_tts_voice">TTS Voice</label>
+        <select id="floor_tts_voice" name="floor_tts_voice" class="input" data-current-voice="{{ room.floor_tts_voice or '' }}" data-voices='{{ tts_voice_options | tojson }}'>
+          <option value="">(Model will pick best voice)</option>
+        </select>
+        <p class="form-help form-help--spaced">Leave empty to let the provider pick a voice for each language. A Deepgram voice is only used for the language it speaks.</p>
+      </div>
+    </div>
+
+    <div class="form-row">
+      <div class="form-group form-group--grow">
+        <label>TTS Target Languages</label>
+        <div class="lang-picker" id="lp_floor_tts" aria-label="TTS Target languages picker">
+          <div class="lang-picker-tags" id="lp_floor_tts_tags"></div>
+          <div class="lang-picker-search-wrap">
+            <input type="text" class="lang-picker-input" id="lp_floor_tts_search"
+                   placeholder="Search and add a language…" autocomplete="off">
+            <ul class="lang-picker-dropdown" id="lp_floor_tts_dropdown" hidden></ul>
+          </div>
+        </div>
+        <div id="lp_floor_tts_hidden"></div>
+        <p class="form-help form-help--spaced">Select which translated languages should be synthesized into AI speech. Languages served by a human booth in this room, and the floor language, are hidden.</p>
     {% if vocabulary_imported is not none %}
       <div class="alert alert-success ai-vocabulary-alert">
         Added {{ vocabulary_imported }} term{% if vocabulary_imported != '1' %}s{% endif %}.

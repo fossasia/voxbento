@@ -74,6 +74,7 @@
               <option value="">Original</option>
             </select>
           </div>
+
           <div class="flex flex-col gap-1 listener-control captions-settings__full" id="tts-sync-group" hidden>
             <label for="tts-sync-toggle" class="tts-toggle">
               <input type="checkbox" id="tts-sync-toggle" class="tts-toggle__input">
@@ -107,6 +108,7 @@
 <script id="listener-data" type="application/json">
 {
   "eventSlug": "{{ event.slug }}",
+  "listenerToken": {{ listener_token | tojson }},
   "shareUrl": {{ share_url | tojson }},
   "booths": {{ booths_json | safe }},
   "rooms": {{ rooms_json | safe }}
