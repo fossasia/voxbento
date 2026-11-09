@@ -198,8 +198,11 @@ class ConnectionManager:
                 transport.abort()
             elif transport is not None and hasattr(transport, "close"):
                 transport.close()
-        except Exception:
-            pass
+            else:
+                logger.warning("Could not force-abort revoked WebSocket: no usable transport")
+        except Exception as exc:
+            # Authorization is already revoked; transport cleanup must not undo it.
+            logger.warning("Could not force-abort revoked WebSocket transport (%s)", type(exc).__name__)
 
     async def close_session(
         self,
