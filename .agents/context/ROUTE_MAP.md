@@ -70,7 +70,7 @@ and `docs/registration-protection.md`. Other routes are unaffected.
 |---|---|---|
 | `/ws/booth/{booth_id}` | optional JWT via `?token=` + cookies (`session_token` or `user_token`) | See WebSocket Protocol in `REPOSITORY_CONTEXT.md` |
 | `/ws/captions/{booth_id}` | optional JWT via `?token=` (always validated); listener token, join code (cookie or `?code=`), or user session required when event has `listener_join_code`; events without a join code retain public caption access with an anonymous connection cap | Receives `booth:state` (listener-safe live/lock status, sent on connect and on change), `caption`, and `translated_caption` messages; listener captions feed. Supports `{event_slug}-{room_id}-{language_code}` (`floor-{room_id}` allowed only in unauthenticated dev) |
-| `/ws/tts/{room_id}/{language_code}/{booth_id}` | pre-authorized (JWT query param, session token, or listener join code cookie) | Receives framed binary bundle messages (1-byte version `0x01`, 4-byte big-endian header length `L`, `L`-byte UTF-8 JSON header, optional 24 kHz 16-bit mono PCM payload) |
+| `/ws/tts/{room_id}/{language_code}/{booth_id}` | pre-authorized (JWT query param, session token, or listener join code cookie; cookie codes spend the shared join-code budget) | Receives framed binary bundle messages (1-byte version `0x01`, 4-byte big-endian header length `L`, `L`-byte UTF-8 JSON header, optional 24 kHz 16-bit mono PCM payload) |
 
 ---
 
@@ -185,10 +185,12 @@ with `?error=invalid_role&role=…` and the page explains why.
 
 ## Program relay routes (#749)
 
-- `POST .../program-ingest` also accepts `mode` (`whip` | `rtmps_relay`) on enable;
-  relay-mode enable/rotate responses add `stream_key` (`floor?key=<secret>`). Status
-  adds `mode`, `relay_available`, `relay_service_down` (last relay-service call failed),
-  `rtmps_server`, write-only `destination`
+- `POST .../program-ingest` also accepts `mode` (`whip` | `rtmps` | `rtmps_relay`) on enable
+  (`rtmps`, #1087: VoxBento as an extra RTMPS destination, no relay; 409 until the operator
+  enables RTMPS ingest). Enable/rotate responses in either RTMPS mode add `stream_key`
+  (`floor?key=<secret>`). Status adds `mode`, `rtmps_available`, `relay_available`,
+  `relay_service_down` (last relay-service call failed), `rtmps_server` (empty while RTMPS
+  ingest is off), write-only `destination`
   (`configured`, `server_url`, `updated_at`) and `health.{ingest,relay,processing}`.
 - `PUT/DELETE /workspace/events/{event_id}/rooms/{room_id}/program-relay`: event-owner,
   origin-checked. PUT `{server_url?, stream_key}` (server defaults to YouTube's primary RTMPS
@@ -196,8 +198,9 @@ with `?error=invalid_role&role=…` and the page explains why.
   is rewritten to its RTMPS host) validates RTMPS + allow-listed host and
   stores the key encrypted (422 invalid, 409 relay disabled). DELETE clears it and stops
   the relay (202 + `cleanup_pending` if the relay service is unreachable).
-- `/internal/media-auth` accepts `protocol: rtmp` only for relay-mode rooms with query
-  exactly `key=<secret>`; WHIP is refused for relay-mode rooms.
+- `/internal/media-auth` accepts `protocol: rtmp` only for `rtmps` and relay-mode rooms with
+  query exactly `key=<secret>` (never a browser-sender session secret); WHIP is refused for
+  both RTMPS modes, and publishes for soft-deleted events are refused.
 - `program-relay` service (private, `Authorization: Bearer $PROGRAM_RELAY_CONTROL_SECRET`):
   `GET /relays`, `PUT /relays/{room_id}` `{source, destination, fingerprint}`,
   `DELETE /relays/{room_id}`, unauthenticated `GET /healthz`.
