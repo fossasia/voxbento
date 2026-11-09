@@ -29,15 +29,24 @@ from portal.transcript_processing import (
 @pytest.mark.parametrize(
     "text",
     [
-        "Click click click",
-        "Cough cough",
-        "click click",
-        "Click. Click. Click.",
-        "yes yes",
+        " ".join(["Click"] * 10),
+        " ".join(["cough"] * 15),
+        ". ".join(["Click"] * 12),
+        " ".join(["yes"] * 10),
     ],
 )
-def test_repeated_single_word_is_rejected(text):
+def test_long_repetition_is_rejected(text):
+    """Only the long runs are now treated as structural garbage. Short
+    repetitions like 'no no no' or 'yes yes' are left alone, since real
+    speech uses them as emphasis and rejecting them on word count misses
+    more than it catches."""
     assert is_hallucination(text) is True
+
+
+@pytest.mark.parametrize("text", ["Click click click", "Cough cough", "yes yes", "no no no no"])
+def test_short_repetition_is_kept_as_possible_real_speech(text):
+    """Previously rejected at 2+ reps, which cleared legitimate emphasis."""
+    assert is_hallucination(text) is False
 
 
 @pytest.mark.parametrize(
@@ -159,7 +168,7 @@ def test_digits_keep_otherwise_identical_words_distinct(text):
 
 def test_numbers_are_real_content():
     assert is_hallucination("2026") is False
-    assert is_hallucination("5 5 5") is True, "a repeated number is still a repetition"
+    assert is_hallucination(" ".join(["5"] * 10)) is True, "a long number repetition is still a repetition"
 
 
 # ---------------------------------------------------------------------------
@@ -193,7 +202,7 @@ async def test_hallucinated_final_is_not_published():
     broadcast = AsyncMock()
     agg = _aggregator(broadcast)
 
-    await agg.handle_final("ev-1-en", "Click click click")
+    await agg.handle_final("ev-1-en", " ".join(["Click"] * 12))
 
     statuses = [call.args[1]["status"] for call in broadcast.await_args_list]
     assert "final" not in statuses, "an invented transcript must not be published as final"
@@ -219,7 +228,7 @@ async def test_a_discarded_final_does_not_consume_a_sequence_number():
     agg = _aggregator(broadcast)
 
     await agg.handle_final("ev-1-en", "First real sentence here.")
-    await agg.handle_final("ev-1-en", "Click click click")
+    await agg.handle_final("ev-1-en", " ".join(["Click"] * 12))
     await agg.handle_final("ev-1-en", "Second real sentence here.")
 
     seqs = [c.args[1]["seq"] for c in broadcast.await_args_list if c.args[1]["status"] == "final"]
@@ -233,7 +242,7 @@ async def test_a_discarded_final_resets_the_utterance_state():
 
     await agg.handle_partial("ev-1-en", "Cough")
     before = agg._get_state("ev-1-en").segment_id
-    await agg.handle_final("ev-1-en", "Cough cough")
+    await agg.handle_final("ev-1-en", " ".join(["Cough"] * 12))
 
     state = agg._get_state("ev-1-en")
     assert state.current_utterance == ""
@@ -247,9 +256,11 @@ async def test_a_discarded_final_resets_the_utterance_state():
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.parametrize("text", ["you", "thank you", "uh", "Click click click"])
+@pytest.mark.parametrize("text", ["you", "thank you", "uh"])
 def test_mid_turn_fragments_keep_short_phrases(text):
-    """A bare is_final can finalise part of a turn, so one short word is legitimate."""
+    """A bare is_final can finalise part of a turn, so one short phrase is
+    legitimate mid-turn. A complete turn with the same text is rejected as a
+    subtitle phrase or filler."""
     assert is_hallucination(text) is True
     assert is_hallucination(text, complete_turn=False) is False
 
@@ -359,7 +370,7 @@ def test_reason_names_a_category_and_not_the_text():
         ("...", "no printable content"),
         ("a" * (MAX_WORD_LENGTH + 1), "overlong word"),
         ("Thank you", "subtitle phrase"),
-        ("Click click click", "repeated word"),
+        (" ".join(["Click"] * 12), "repeated word"),
         ("Hello world.", None),
     ],
 )
