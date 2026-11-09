@@ -498,8 +498,8 @@ async def test_owner_generates_a_report_for_a_channel_with_a_transcript(world, m
             url, data={"channel": "floor"}, headers=ORIGIN, cookies=world["admin"], follow_redirects=False
         )
         pending_page = await c.get(url, cookies=world["admin"])
-    assert 'value="floor"' in page.text and "Floor audio — 2 lines" in page.text
-    assert 'value="es"' not in page.text
+    assert '<optgroup label="Floor audio">' in page.text and "· 2 lines · latest" in page.text
+    assert 'value="es:' not in page.text
     assert no_origin.status_code == 403
     assert empty.headers["location"].endswith("?error=channel")
     assert created.headers["location"].endswith("/analysis/")
@@ -946,3 +946,104 @@ def test_jobs_finish_before_they_can_be_retired_as_stale():
     from portal.meeting_analysis.constants import JOB_TIMEOUT, STALE_AFTER
 
     assert JOB_TIMEOUT < STALE_AFTER
+
+
+async def _add_old_session(world, texts=("Yesterday we planned the venue.", "Booking is next week.")) -> int:
+    start = utc_now() - timedelta(days=1)
+    async with get_session() as s:
+        rows = [
+            TranscriptSegment(
+                room_id=world["room"], language_code="floor", text=text, created_at=start + timedelta(minutes=i)
+            )
+            for i, text in enumerate(texts)
+        ]
+        s.add_all(rows)
+        await s.flush()
+        return rows[0].id
+
+
+def test_sessions_split_on_a_long_gap_newest_first():
+    from portal.meeting_analysis.sessions import split_sessions
+
+    start = utc_now()
+    rows = [
+        (1, start),
+        (2, start + timedelta(minutes=29)),
+        (3, start + timedelta(minutes=90)),
+        (4, start + timedelta(minutes=91)),
+    ]
+    sessions = split_sessions(rows)
+    assert [(s.first_id, s.lines) for s in sessions] == [(3, 2), (1, 2)]
+    assert sessions[1].ended_at == start + timedelta(minutes=29)
+
+
+@pytest.mark.anyio
+async def test_a_report_covers_only_the_latest_session_by_default(world, monkeypatch):
+    await _enable(world)
+    await _add_old_session(world)
+    started: list[int] = []
+    monkeypatch.setattr(analysis_router, "start_analysis", started.append)
+    url = f"/admin/events/{world['event']}/rooms/{world['room']}/analysis/"
+    async with _client() as c:
+        page = await c.get(url, cookies=world["admin"])
+        await c.post(url, data={"channel": "floor"}, headers=ORIGIN, cookies=world["admin"])
+    assert page.text.count("<option ") == 2 and page.text.count(" · latest") == 1
+    fake = FakeProvider()
+    monkeypatch.setattr(worker, "get_provider", lambda name: fake)
+    await worker.run_analysis(started[0])
+    report = await _load(started[0])
+    assert (report.status, report.segment_count) == ("done", 2)
+    assert "We will ship captions" in fake.calls[0]["user"]
+    assert "planned the venue" not in fake.calls[0]["user"]
+    async with _client() as c:
+        detail = await c.get(f"{url}{started[0]}/", cookies=world["admin"])
+    assert "We will ship captions" in detail.text and "planned the venue" not in detail.text
+
+
+@pytest.mark.anyio
+async def test_an_earlier_session_can_be_picked_and_unknown_ones_are_refused(world, monkeypatch):
+    await _enable(world)
+    first_id = await _add_old_session(world)
+    started: list[int] = []
+    monkeypatch.setattr(analysis_router, "start_analysis", started.append)
+    url = f"/admin/events/{world['event']}/rooms/{world['room']}/analysis/"
+    async with _client() as c:
+        unknown = await c.post(
+            url, data={"session": "floor:999999"}, headers=ORIGIN, cookies=world["admin"], follow_redirects=False
+        )
+        await c.post(url, data={"session": f"floor:{first_id}"}, headers=ORIGIN, cookies=world["admin"])
+    assert unknown.headers["location"].endswith("?error=channel")
+    fake = FakeProvider()
+    monkeypatch.setattr(worker, "get_provider", lambda name: fake)
+    await worker.run_analysis(started[0])
+    report = await _load(started[0])
+    assert "planned the venue" in fake.calls[0]["user"] and "ship captions" not in fake.calls[0]["user"]
+    assert report.session_ended_at - report.session_started_at == timedelta(minutes=1)
+    async with get_session() as s:
+        event = await s.get(Event, world["event"])
+        room = await s.get(Room, world["room"])
+        markdown = report_markdown(await s.get(MeetingReport, report.id), event, room)
+    assert "- Session: " in markdown
+
+
+@pytest.mark.anyio
+async def test_a_session_too_long_to_fit_says_which_part_was_covered(world, monkeypatch):
+    from portal.meeting_analysis import prompts
+
+    await _enable(world)
+    monkeypatch.setattr(worker, "build_transcript", lambda lines: prompts.build_transcript(lines, limit=40))
+    monkeypatch.setattr(worker, "get_provider", lambda name: FakeProvider())
+    report_id = await _report(world)
+    async with get_session() as s:
+        segments = (await s.scalars(select(TranscriptSegment).order_by(TranscriptSegment.created_at))).all()
+        report = await s.get(MeetingReport, report_id)
+        report.session_started_at, report.session_ended_at = segments[0].created_at, segments[-1].created_at
+    await worker.run_analysis(report_id)
+    report = await _load(report_id)
+    assert report.truncated and report.covered_until == segments[0].created_at
+    async with _client() as c:
+        detail = await c.get(
+            f"/admin/events/{world['event']}/rooms/{world['room']}/analysis/{report_id}/", cookies=world["admin"]
+        )
+    assert "the session was too long to fit" in detail.text
+    assert "Welcome to the summit." in detail.text and "We will ship captions" not in detail.text

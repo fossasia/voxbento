@@ -212,12 +212,13 @@ with `?error=invalid_role&role=…` and the page explains why.
   coordinators; lists the room's reports (no-store). Also marks reports left
   in progress for 30 minutes as failed.
 - `POST /workspace/events/{event_id}/rooms/{room_id}/analysis/`: event owners,
-  origin-checked. Form `channel` (`floor` or a booth language code with stored
-  segments). Redirects with `?error=disabled|busy|channel`; one report per room
+  origin-checked. Form `session` (`{channel}:{first segment id}`, one of the
+  channel's sessions as listed on the page), or `channel` alone for its latest
+  session; `channel` is `floor` or a booth language code with stored segments. Redirects with `?error=disabled|busy|channel`; one report per room
   is written at a time, in a tracked background task.
 - `GET /workspace/events/{event_id}/rooms/{room_id}/analysis/{report_id}/`:
   owners and coordinators; one report with Summary and Transcript tabs. The
-  transcript shows the channel's segments up to the report's `last_segment_id`.
+  transcript shows the segments of the report's session up to `covered_until`.
 - `GET /workspace/events/{event_id}/rooms/{room_id}/analysis/{report_id}.md`:
   owners and coordinators; Markdown download of a finished report.
 - `GET /api/workspace/events/{event_id}/rooms/{room_id}/analysis/{report_id}`:

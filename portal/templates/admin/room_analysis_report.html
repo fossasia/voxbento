@@ -21,7 +21,7 @@
   <div>
     <h1>{{ view.title }}</h1>
     <p class="analysis-meta">
-      <span class="chip">{{ (report.generated_at or report.created_at).strftime('%b %d') }}</span>
+      <span class="chip">{{ view.session_range or (report.generated_at or report.created_at).strftime('%b %d') }}</span>
       <span class="chip">{{ report.channel_label }}</span>
       <span class="muted">{{ view.provider_label }} ({{ report.model }})</span>
     </p>
@@ -46,7 +46,7 @@
 
   <section id="report-panel-summary" role="tabpanel" aria-labelledby="report-tab-summary" data-report-panel="summary">
     <div class="room-card">
-      <p class="analysis-reading">{{ view.read_minutes }} min read{% if report.truncated %} · covers the first part of a long session{% endif %}</p>
+      <p class="analysis-reading">{{ view.read_minutes }} min read{% if view.covered_range %} · covers {{ view.covered_range }} only, the session was too long to fit{% endif %}</p>
       <p class="analysis-overview">{{ report.summary }}</p>
       {% for section in view.sections %}
       <h2 class="analysis-heading">{{ section.heading }}</h2>

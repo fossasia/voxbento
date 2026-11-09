@@ -19,6 +19,7 @@ class Segment(Protocol):
 class TranscriptLine:
     offset_seconds: int
     text: str
+    created_at: datetime | None = None
 
 
 _CONTROL = re.compile(r"[\x00-\x08\x0b-\x1f\x7f]")
@@ -43,7 +44,7 @@ def transcript_lines(segments: Sequence[Segment]) -> list[TranscriptLine]:
     for segment in segments:
         text = _clean(_TRANSCRIPT_TAG.sub(" ", segment.text or ""), 2000)
         if text:
-            lines.append(TranscriptLine(int((segment.created_at - first).total_seconds()), text))
+            lines.append(TranscriptLine(int((segment.created_at - first).total_seconds()), text, segment.created_at))
     return lines
 
 

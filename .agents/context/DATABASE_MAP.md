@@ -351,7 +351,7 @@ No links or email content are shown in the administration history.
 `show_logo` (default true) and an optional https `logo_url` (empty means the
 VoxBento logo served by the site). No row means the defaults.
 
-## Migration 039 — meeting reports (#1080)
+## Migration 041 — meeting reports (#1080)
 
 Adds `events.meeting_analysis_enabled` (default false),
 `events.meeting_analysis_provider` (default `local`) and
@@ -361,7 +361,10 @@ and the `meeting_reports` table: `event_id`/`room_id` (CASCADE), `channel_id`
 `channel_label`, `language_code`, `provider`, `model`, `status`
 (`pending` → `running` → `done` | `failed`), `error`, `title`, `summary`
 (the overview), `sections_json` (`[{heading, points}]`), `last_segment_id` (the
-last transcript segment the report read), `segment_count`,
+last transcript segment the report read), `session_started_at`/`session_ended_at`
+(the session the report covers: a stretch of segments with no gap longer than
+30 minutes), `covered_until` (the last line the report read, earlier than the
+session end when the session was too long), `segment_count`,
 `truncated`, `tokens_used`, `created_at`, `generated_at`. Index
 `(room_id, created_at)` and partial unique index `uq_meeting_reports_room_in_progress`
 (one `pending`/`running` report per room). CRUD: `create_meeting_report`, `list_meeting_reports`,

@@ -43,16 +43,24 @@ that server a context of at least the same size (for Ollama itself,
 
 Open the room and choose **View reports** (or go to
 `/workspace/events/{event_id}/rooms/{room_id}/analysis/`). The page lists the
-channels that have a stored transcript: the floor audio and each booth. Choose
-one and select **Generate report**. The report is written in the background and
-the page refreshes when it is ready.
+sessions of each channel that has a stored transcript (the floor audio and each
+booth). A session is a stretch of transcript with no break longer than 30
+minutes, so a room used over several sessions or days gets one entry per
+session. The latest session is selected; pick an earlier one to report on it
+instead, then select **Generate report**. The report is written in the
+background and the page refreshes when it is ready.
+
+A report covers only its session, and the session's time range is stored on
+the report and shown with it. When a session is longer than the 60,000
+characters a report can read, the report says which part it covered (for
+example "covers Nov 08, 14:00–15:20 UTC only").
 
 Open a finished report to see it on its own page with two tabs:
 
 - **Summary**: the overview and the sections, with an estimated reading time.
 - **Transcript**: the transcript lines the report was written from, with their
-  time from the start of the session. Lines stored after the report was written
-  are not shown.
+  time from the start of the session. Lines from other sessions, lines past the
+  covered part and lines stored after the report was written are not shown.
 
 Each finished report can also be downloaded as Markdown.
 
@@ -111,7 +119,7 @@ Reports are never shown on listener, embed or overlay pages.
 
 ## Data
 
-Migration `039_meeting_analysis.py` adds `events.meeting_analysis_enabled`,
+Migration `041_meeting_analysis.py` adds `events.meeting_analysis_enabled`,
 `events.meeting_analysis_provider` and `events.meeting_analysis_model`, and the
 `meeting_reports` table. Reports are deleted with their room or event.
 

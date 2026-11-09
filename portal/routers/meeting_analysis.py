@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections import defaultdict
 from dataclasses import dataclass
 
 from fastapi import APIRouter, Depends, Form, HTTPException, Request, status
@@ -20,7 +21,8 @@ from portal.meeting_analysis.constants import IN_PROGRESS, PROVIDER_LABELS, STAT
 from portal.meeting_analysis.export import report_markdown
 from portal.meeting_analysis.prompts import format_offset, transcript_lines
 from portal.meeting_analysis.schema import load_sections
-from portal.meeting_analysis.worker import mark_interrupted_reports, start_analysis
+from portal.meeting_analysis.sessions import Session, describe_range, split_sessions
+from portal.meeting_analysis.worker import mark_interrupted_reports, session_filter, start_analysis
 from portal.models import MeetingReport, TranscriptSegment
 from portal.routers.admin import room_in_event, templates
 from portal.utils import safe_redirect, verify_same_origin
@@ -42,33 +44,42 @@ class Channel:
     id: str
     label: str
     language_code: str
-    lines: int
+    sessions: list[Session]
 
 
 async def _channels(session, room) -> list[Channel]:
-    counts = dict(
-        (
-            await session.execute(
-                select(TranscriptSegment.language_code, func.count())
-                .where(TranscriptSegment.room_id == room.id)
-                .group_by(TranscriptSegment.language_code)
-            )
-        ).all()
-    )
+    rows: dict[str, list] = defaultdict(list)
+    for language_code, segment_id, created_at in await session.execute(
+        select(TranscriptSegment.language_code, TranscriptSegment.id, TranscriptSegment.created_at)
+        .where(TranscriptSegment.room_id == room.id)
+        .order_by(TranscriptSegment.created_at, TranscriptSegment.id)
+    ):
+        rows[language_code].append((segment_id, created_at))
     channels = []
-    if counts.get(FLOOR):
-        channels.append(Channel(FLOOR, "Floor audio", room.floor_language_code or FLOOR, counts[FLOOR]))
+    if rows.get(FLOOR):
+        channels.append(Channel(FLOOR, "Floor audio", room.floor_language_code or FLOOR, split_sessions(rows[FLOOR])))
     for booth in await list_booths_for_room(session, room.id):
-        if counts.get(booth.language_code):
+        if rows.get(booth.language_code):
             channels.append(
                 Channel(
                     booth.language_code,
                     f"{booth.language_name} booth",
                     booth.language_code,
-                    counts[booth.language_code],
+                    split_sessions(rows[booth.language_code]),
                 )
             )
     return channels
+
+
+def _session_choice(channels: list[Channel], choice: str) -> tuple[Channel, Session] | None:
+    channel_id, _, first_id = choice.partition(":")
+    channel = next((c for c in channels if c.id == channel_id), None)
+    if channel is None:
+        return None
+    if not first_id:
+        return channel, channel.sessions[0]
+    stretch = next((s for s in channel.sessions if str(s.first_id) == first_id), None)
+    return (channel, stretch) if stretch else None
 
 
 WORDS_PER_MINUTE = 200
@@ -77,8 +88,11 @@ WORDS_PER_MINUTE = 200
 def _report_view(report: MeetingReport) -> dict:
     sections = load_sections(report.sections_json)
     words = len(report.summary.split()) + sum(len(point.split()) for s in sections for point in s.points)
+    started, ended, covered = report.session_started_at, report.session_ended_at, report.covered_until
     return {
         "report": report,
+        "session_range": describe_range(started, ended) if started and ended else "",
+        "covered_range": describe_range(started, covered) if report.truncated and started and covered else "",
         "title": report.title or report.channel_label,
         "provider_label": PROVIDER_LABELS.get(report.provider, report.provider),
         "sections": sections,
@@ -112,6 +126,7 @@ async def room_analysis_page(request: Request, event_id: int, room_id: int):
             "event": event,
             "room": room,
             "channels": channels,
+            "describe_range": describe_range,
             "reports": [_report_view(report) for report in reports],
             "in_progress": any(report.status in IN_PROGRESS for report in reports),
             "provider_label": PROVIDER_LABELS.get(event.meeting_analysis_provider, event.meeting_analysis_provider),
@@ -124,12 +139,14 @@ async def room_analysis_page(request: Request, event_id: int, room_id: int):
 
 
 @router.post("/admin/events/{event_id}/rooms/{room_id}/analysis/", dependencies=[Depends(require_event_owner)])
-async def room_analysis_generate(request: Request, event_id: int, room_id: int, channel: str = Form("")):
+async def room_analysis_generate(
+    request: Request, event_id: int, room_id: int, channel: str = Form(""), stretch: str = Form("", alias="session")
+):
     if not verify_same_origin(request):
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Invalid request origin.")
     page = f"events/{event_id}/rooms/{room_id}/analysis/"
     try:
-        report_id = await _create_report(event_id, room_id, channel)
+        report_id = await _create_report(event_id, room_id, stretch or channel)
     except IntegrityError:
         return safe_redirect(url=management_url(request, f"{page}?error=busy"), status_code=303)
     except _Refused as refused:
@@ -138,7 +155,7 @@ async def room_analysis_generate(request: Request, event_id: int, room_id: int, 
     return safe_redirect(url=management_url(request, page), status_code=status.HTTP_303_SEE_OTHER)
 
 
-async def _create_report(event_id: int, room_id: int, channel: str) -> int:
+async def _create_report(event_id: int, room_id: int, choice: str) -> int:
     async with get_session() as session:
         event = await get_event_by_id(session, event_id)
         if event is None:
@@ -154,9 +171,10 @@ async def _create_report(event_id: int, room_id: int, channel: str) -> int:
         )
         if busy:
             raise _Refused("busy")
-        chosen = next((c for c in await _channels(session, room) if c.id == channel), None)
-        if chosen is None:
+        picked = _session_choice(await _channels(session, room), choice)
+        if picked is None:
             raise _Refused("channel")
+        chosen, stretch = picked
         report = await create_meeting_report(
             session,
             event_id=event_id,
@@ -167,6 +185,8 @@ async def _create_report(event_id: int, room_id: int, channel: str) -> int:
             provider=event.meeting_analysis_provider,
             model=model_for(event.meeting_analysis_provider, event.meeting_analysis_model),
             status=STATUS_PENDING,
+            session_started_at=stretch.started_at,
+            session_ended_at=stretch.ended_at,
         )
         return report.id
 
@@ -188,11 +208,7 @@ async def room_analysis_report(request: Request, event_id: int, room_id: int, re
             segments = (
                 await session.scalars(
                     select(TranscriptSegment)
-                    .where(
-                        TranscriptSegment.room_id == room_id,
-                        TranscriptSegment.language_code == report.channel_id,
-                        TranscriptSegment.id <= report.last_segment_id,
-                    )
+                    .where(*session_filter(report, covered_only=True))
                     .order_by(TranscriptSegment.created_at, TranscriptSegment.id)
                 )
             ).all()

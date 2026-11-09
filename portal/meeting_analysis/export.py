@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from portal.meeting_analysis.constants import PROVIDER_LABELS
 from portal.meeting_analysis.schema import load_sections
+from portal.meeting_analysis.sessions import describe_range
 from portal.models import Event, MeetingReport, Room
 
 
@@ -17,6 +18,12 @@ def report_markdown(report: MeetingReport, event: Event, room: Room) -> str:
         f"- Event: {_line(event.display_name)}",
         f"- Room: {_line(room.display_name)}",
         f"- Channel: {_line(report.channel_label)}",
+    ]
+    if report.session_started_at and report.session_ended_at:
+        lines.append(f"- Session: {describe_range(report.session_started_at, report.session_ended_at)}")
+    if report.truncated and report.session_started_at and report.covered_until:
+        lines.append(f"- Covered: {describe_range(report.session_started_at, report.covered_until)} only")
+    lines += [
         f"- Generated: {when.strftime('%Y-%m-%d %H:%M UTC')}",
         f"- AI service: {PROVIDER_LABELS.get(report.provider, report.provider)} ({report.model})",
         f"- Transcript lines: {report.segment_count}{' (only the first part fit)' if report.truncated else ''}",

@@ -48,6 +48,7 @@ RATE_LIMIT_RETRIES = 3
 MAX_RETRY_WAIT_SECONDS = 60.0
 DEFAULT_RETRY_WAIT_SECONDS = 15.0
 STALE_AFTER = timedelta(minutes=30)
+SESSION_GAP = timedelta(minutes=30)
 JOB_TIMEOUT = timedelta(minutes=25)
 
 

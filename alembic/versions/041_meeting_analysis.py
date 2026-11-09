@@ -1,7 +1,7 @@
 """add meeting analysis settings and the meeting_reports table
 
-Revision ID: 039
-Revises: 038
+Revision ID: 041
+Revises: 040
 Create Date: 2026-11-01 12:00:00.000000
 
 """
@@ -14,8 +14,8 @@ import sqlalchemy as sa
 
 from alembic import op
 
-revision: str = "039"
-down_revision: Union[str, Sequence[str], None] = "038"
+revision: str = "041"
+down_revision: Union[str, Sequence[str], None] = "040"
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
 
@@ -53,6 +53,9 @@ def upgrade() -> None:
             sa.Column("summary", sa.Text(), nullable=False),
             sa.Column("sections_json", sa.Text(), nullable=False),
             sa.Column("last_segment_id", sa.Integer(), nullable=True),
+            sa.Column("session_started_at", sa.DateTime(timezone=True), nullable=True),
+            sa.Column("session_ended_at", sa.DateTime(timezone=True), nullable=True),
+            sa.Column("covered_until", sa.DateTime(timezone=True), nullable=True),
             sa.Column("segment_count", sa.Integer(), nullable=False),
             sa.Column("truncated", sa.Boolean(), nullable=False),
             sa.Column("tokens_used", sa.Integer(), nullable=True),

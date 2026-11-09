@@ -44,12 +44,17 @@
     {% if channels %}
     <p class="room-card-sub">Reports use <strong>{{ provider_label }}</strong> ({{ model }}). You can change this on <a href="{{ management_prefix }}/events/{{ event.id }}/api-settings/">API keys</a>.</p>
     <div class="field">
-      <label for="analysis_channel">Transcript</label>
-      <select id="analysis_channel" name="channel" required>
+      <label for="analysis_session">Session</label>
+      <select id="analysis_session" name="session" aria-describedby="analysis_session_help" required>
         {% for channel in channels %}
-        <option value="{{ channel.id }}">{{ channel.label }} — {{ channel.lines }} {{ 'line' if channel.lines == 1 else 'lines' }}</option>
+        <optgroup label="{{ channel.label }}">
+          {% for stretch in channel.sessions %}
+          <option value="{{ channel.id }}:{{ stretch.first_id }}">{{ describe_range(stretch.started_at, stretch.ended_at) }} · {{ stretch.lines }} {{ 'line' if stretch.lines == 1 else 'lines' }}{% if loop.first %} · latest{% endif %}</option>
+          {% endfor %}
+        </optgroup>
         {% endfor %}
       </select>
+      <p class="form-help" id="analysis_session_help">A session is a stretch of transcript with no break longer than 30 minutes. The latest one is selected; pick an earlier one to report on it instead.</p>
     </div>
     <div class="room-save-bar">
       <button type="submit" class="btn btn-primary" {% if in_progress %}disabled{% endif %}>Generate report</button>
@@ -66,7 +71,7 @@
     <div class="room-card-head">
       <div>
         <h2>{% if report.status == 'done' %}<a href="{{ analysis_url }}{{ report.id }}/">{{ view.title }}</a>{% else %}{{ report.channel_label }}{% endif %}</h2>
-        <p class="room-card-sub">{{ report.channel_label }} · {{ report.created_at.strftime('%b %d, %Y, %H:%M UTC') }} · {{ view.provider_label }} ({{ report.model }}){% if report.segment_count %} · {{ report.segment_count }} {{ 'line' if report.segment_count == 1 else 'lines' }}{% endif %}</p>
+        <p class="room-card-sub">{{ report.channel_label }} · {{ view.session_range or report.created_at.strftime('%b %d, %Y, %H:%M UTC') }} · {{ view.provider_label }} ({{ report.model }}){% if report.segment_count %} · {{ report.segment_count }} {{ 'line' if report.segment_count == 1 else 'lines' }}{% endif %}</p>
       </div>
       {% if report.status == 'done' %}
       <a href="{{ analysis_url }}{{ report.id }}/" class="btn btn-outline btn-sm">Open report</a>

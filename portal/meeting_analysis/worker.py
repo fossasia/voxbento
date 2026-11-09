@@ -71,6 +71,18 @@ async def _still_running(report_id: int) -> bool:
     return status == STATUS_RUNNING
 
 
+def session_filter(report: MeetingReport, *, covered_only: bool = False) -> list:
+    conditions = [TranscriptSegment.room_id == report.room_id, TranscriptSegment.language_code == report.channel_id]
+    if report.session_started_at is not None:
+        conditions.append(TranscriptSegment.created_at >= report.session_started_at)
+    end = report.covered_until if covered_only and report.covered_until is not None else report.session_ended_at
+    if end is not None:
+        conditions.append(TranscriptSegment.created_at <= end)
+    elif covered_only and report.last_segment_id is not None:
+        conditions.append(TranscriptSegment.id <= report.last_segment_id)
+    return conditions
+
+
 async def _prepare(report_id: int) -> _Job | None:
     async with get_session() as session:
         report = await session.get(MeetingReport, report_id)
@@ -85,7 +97,7 @@ async def _prepare(report_id: int) -> _Job | None:
         segments = (
             await session.scalars(
                 select(TranscriptSegment)
-                .where(TranscriptSegment.room_id == room.id, TranscriptSegment.language_code == report.channel_id)
+                .where(*session_filter(report))
                 .order_by(TranscriptSegment.created_at, TranscriptSegment.id)
             )
         ).all()
@@ -105,6 +117,7 @@ async def _prepare(report_id: int) -> _Job | None:
                 report.error = "The event has no API key for the chosen AI service. Add it on the API keys page."
                 return None
         transcript, truncated = build_transcript(lines)
+        covered = lines[: len(transcript.splitlines())] or lines[:1]
         context = {
             "event_name": event.display_name,
             "room_name": room.display_name,
@@ -122,6 +135,7 @@ async def _prepare(report_id: int) -> _Job | None:
         report.status = STATUS_RUNNING
         report.segment_count = len(lines)
         report.last_segment_id = segments[-1].id
+        report.covered_until = covered[-1].created_at
         report.truncated = truncated
         return _Job(report.provider, report.model, api_key, context, parts, truncated)
 
