@@ -1,0 +1,211 @@
+{% extends "admin/base.html" %}
+
+{% block title %}Team — {{ event.display_name }}{% endblock %}
+
+{% block head %}
+<script type="module" src="{{ url_for('static', path='js/team.js') }}?v={{ asset_version }}"></script>
+{% endblock %}
+
+{% block breadcrumb %}
+<nav class="breadcrumb" aria-label="Breadcrumb">
+  <a href="{{ management_prefix }}/">{{ 'My events' if is_workspace else 'Overview' }}</a> <span>/</span>
+  <a href="{{ management_prefix }}/events/{{ event.id }}/">{{ event.display_name }}</a> <span>/</span>
+  <span class="breadcrumb-current" aria-current="page">Team</span>
+</nav>
+{% endblock %}
+
+{% block content %}
+<div class="tm-header">
+  <div>
+    <h1>Team</h1>
+    <p class="tm-subtitle">Everyone who helps run {{ event.display_name }}. Add people by email; they get an email with a link to sign in.</p>
+  </div>
+  <ul class="tm-summary" aria-label="Team size">
+    {% for value, label, _help, _levels in role_choices %}
+    <li><strong>{{ team.count(value) }}</strong> {{ label }}{{ 's' if team.count(value) != 1 else '' }}</li>
+    {% endfor %}
+  </ul>
+</div>
+
+{% if error %}
+<div class="alert alert-danger" role="alert">{{ error }}</div>
+{% elif notice %}
+<div class="alert alert-success" role="status">{{ notice }}</div>
+{% endif %}
+
+{# ── Add someone ── #}
+<section class="tm-card tm-add" aria-labelledby="tm-add-title">
+  <h2 class="tm-card-title" id="tm-add-title">Add someone</h2>
+  <form method="post" action="{{ management_prefix }}/events/{{ event.id }}/team/add" class="tm-add-form" data-team-add>
+    <div class="tm-field tm-field--email">
+      <label for="tm-email">Email</label>
+      <input id="tm-email" name="email" type="email" required autocomplete="off" placeholder="name@example.org" value="{{ form.get('email', '') }}" />
+    </div>
+    <div class="tm-field">
+      <label for="tm-role">Role</label>
+      <select id="tm-role" name="role" required data-team-role>
+        {% for value, label, help, levels in role_choices %}
+        <option value="{{ value }}" data-levels="{{ levels|join(' ') }}" data-help="{{ help }}"{% if form.get('role', roles.INTERPRETER) == value %} selected{% endif %}>{{ label }}</option>
+        {% endfor %}
+      </select>
+    </div>
+    <div class="tm-field">
+      <label for="tm-where">Where</label>
+      <select id="tm-where" name="where" required data-team-where>
+        <option value="event:{{ event.id }}" data-level="event"{% if form.get('where') == 'event:' ~ event.id %} selected{% endif %}>Whole event</option>
+        {% if team.room_places %}
+        <optgroup label="Rooms">
+          {% for place in team.room_places %}
+          <option value="{{ place.key }}" data-level="room"{% if form.get('where') == place.key %} selected{% endif %}>{{ place.label }}</option>
+          {% endfor %}
+        </optgroup>
+        {% endif %}
+        {% if team.booth_places %}
+        <optgroup label="Booths">
+          {% for place in team.booth_places %}
+          <option value="{{ place.key }}" data-level="booth"{% if form.get('where') == place.key %} selected{% endif %}>{{ place.label }}</option>
+          {% endfor %}
+        </optgroup>
+        {% endif %}
+      </select>
+    </div>
+    <button type="submit" class="btn btn-primary tm-add-btn">Add to team</button>
+  </form>
+  <p class="tm-role-help" data-team-help aria-live="polite">
+    {% for value, label, help, _levels in role_choices %}{% if form.get('role', roles.INTERPRETER) == value %}{{ help }}{% endif %}{% endfor %}
+  </p>
+</section>
+
+{# ── People ── #}
+<section class="tm-card" aria-labelledby="tm-people-title">
+  <div class="tm-people-head">
+    <h2 class="tm-card-title" id="tm-people-title">People <span class="tm-count">{{ team.members|length }}</span></h2>
+    <div class="tm-filters">
+      <label class="visually-hidden" for="tm-search">Search the team</label>
+      <input id="tm-search" type="search" placeholder="Search by name or email" data-team-search />
+      <div class="tm-tabs" role="group" aria-label="Show">
+        <button type="button" class="tm-tab is-active" data-team-filter="" aria-pressed="true">All</button>
+        {% for value, label, _help, _levels in role_choices %}
+        <button type="button" class="tm-tab" data-team-filter="{{ value }}" aria-pressed="false">{{ label }}s</button>
+        {% endfor %}
+      </div>
+    </div>
+  </div>
+
+  {% if team.members %}
+  <ul class="tm-people">
+    {% for member in team.members %}
+    <li class="tm-person" data-team-person data-roles="{{ member.roles|join(' ') }}" data-search="{{ (member.user.display_name ~ ' ' ~ member.user.email)|lower }}">
+      <div class="tm-who">
+        <span class="tm-name">{{ member.user.display_name }}{% if member.user.id == current_user_id %} <span class="tm-tag">You</span>{% endif %}</span>
+        <span class="tm-email">{{ member.user.email }}</span>
+        {% if member.invitation_pending %}<span class="tm-tag tm-tag--pending">Hasn't signed in yet</span>{% endif %}
+      </div>
+      <ul class="tm-roles" aria-label="Roles of {{ member.user.display_name }}">
+        {% for a in member.assignments %}
+        <li class="tm-role tm-role--{{ a.role }}">
+          <span>{{ a.label }}</span>
+          <form method="post" action="{{ management_prefix }}/events/{{ event.id }}/team/remove"
+            data-confirm-message="Remove {{ member.user.display_name }} as {{ a.label }}?">
+            <input type="hidden" name="level" value="{{ a.level }}" />
+            <input type="hidden" name="membership_id" value="{{ a.membership_id }}" />
+            <button type="submit" class="tm-role-remove" aria-label="Remove {{ member.user.display_name }} as {{ a.label }}" title="Remove">&times;</button>
+          </form>
+        </li>
+        {% endfor %}
+      </ul>
+      <div class="tm-actions">
+        {% if member.invitation_pending %}
+        <form method="post" action="{{ management_prefix }}/events/{{ event.id }}/team/resend">
+          <input type="hidden" name="user_id" value="{{ member.user.id }}" />
+          <button type="submit" class="btn btn-sm btn-outline">Resend invitation</button>
+        </form>
+        {% endif %}
+      </div>
+    </li>
+    {% endfor %}
+  </ul>
+  <p class="tm-empty" data-team-empty hidden>No one matches.</p>
+  {% else %}
+  <p class="tm-empty">No one is on the team yet. Add someone above.</p>
+  {% endif %}
+</section>
+
+{# ── Invite links ── #}
+<section class="tm-card" aria-labelledby="tm-links-title">
+  <h2 class="tm-card-title" id="tm-links-title">Invite links</h2>
+  <p class="tm-card-note">A link lets someone join one booth without an account. Anyone who has the link can use it, so send it only to the interpreter and revoke it when it's no longer needed.</p>
+  {% if team.booth_places %}
+  <form method="post" action="{{ management_prefix }}/events/{{ event.id }}/team/links" class="tm-add-form tm-link-form">
+    <div class="tm-field">
+      <label for="tm-link-booth">Booth</label>
+      <select id="tm-link-booth" name="booth" required>
+        {% for place in team.booth_places %}
+        <option value="{{ place.key }}"{% if form.get('booth') == place.key %} selected{% endif %}>{{ place.label }}</option>
+        {% endfor %}
+      </select>
+    </div>
+    <div class="tm-field">
+      <label for="tm-link-role">Role</label>
+      <select id="tm-link-role" name="link_role">
+        {% for r in booth_roles|reverse %}
+        <option value="{{ r }}"{% if form.get('link_role', roles.INTERPRETER) == r %} selected{% endif %}>{{ r|role_label }}</option>
+        {% endfor %}
+      </select>
+    </div>
+    <div class="tm-field">
+      <label for="tm-link-label">Label <span class="tm-optional">(optional)</span></label>
+      <input id="tm-link-label" name="label" type="text" maxlength="200" placeholder="e.g. Maria, day 1" value="{{ form.get('label', '') }}" />
+    </div>
+    <div class="tm-field tm-field--short">
+      <label for="tm-link-expires">Expires after <span class="tm-optional">(hours)</span></label>
+      <input id="tm-link-expires" name="expires_hours" type="number" min="1" max="2160" placeholder="Never" value="{{ form.get('expires_hours', '') }}" />
+    </div>
+    <button type="submit" class="btn btn-outline tm-add-btn">Create link</button>
+  </form>
+  {% else %}
+  <p class="tm-empty">Add a booth to the event to create invite links.</p>
+  {% endif %}
+
+  {% if team.invite_links %}
+  <div class="tm-table-wrap">
+    <table class="tm-table">
+      <thead>
+        <tr><th scope="col">Booth</th><th scope="col">Role</th><th scope="col">Label</th><th scope="col">Expires</th><th scope="col">Link</th><th scope="col"><span class="visually-hidden">Revoke</span></th></tr>
+      </thead>
+      <tbody>
+        {% for link in team.invite_links %}
+        <tr>
+          <td>{{ link.booth_label }}</td>
+          <td>{{ link.role_label }}</td>
+          <td>{{ link.token.label or '—' }}</td>
+          <td>{{ link.token.expires_at.strftime('%b %d, %Y %H:%M') if link.token.expires_at else 'Never' }}</td>
+          <td class="tm-link-cell">
+            <input id="tm-link-{{ loop.index }}" class="tm-link-input" type="text" readonly value="{{ public_base_url }}/join/{{ link.token.token }}" aria-label="Invite link for {{ link.booth_label }}" />
+            <button type="button" class="btn btn-sm btn-copy" data-copy-target="tm-link-{{ loop.index }}">Copy</button>
+          </td>
+          <td>
+            <form method="post" action="{{ management_prefix }}/events/{{ event.id }}/team/links/revoke" data-confirm-message="Revoke this invite link? Anyone who has it can no longer join.">
+              <input type="hidden" name="token" value="{{ link.token.token }}" />
+              <button type="submit" class="btn btn-sm btn-outline tm-revoke">Revoke</button>
+            </form>
+          </td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  {% endif %}
+</section>
+
+<dialog class="ul-dialog" data-users-confirm aria-labelledby="tm-confirm-title">
+  <form method="dialog">
+    <h2 class="ul-dialog-title" id="tm-confirm-title">Please confirm</h2>
+    <p class="ul-dialog-text" data-confirm-text></p>
+    <div class="ul-dialog-actions">
+      <button type="submit" value="cancel" class="btn btn-outline">Cancel</button>
+      <button type="submit" value="confirm" class="btn btn-danger" data-confirm-ok>Confirm</button>
+    </div>
+  </form>
+</dialog>
+{% endblock %}

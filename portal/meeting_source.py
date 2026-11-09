@@ -27,6 +27,7 @@ from portal.config import settings
 from portal.database import get_session
 from portal.globals import get_http_client
 from portal.models import Event, Room
+from portal.outage_log import OutageLog
 from portal.program_ingest import MediaPath, configure_source, media_paths, pipeline_problem, room_lock
 from portal.transcription.process import audio_progress
 from portal.transcription.providers.base import ProviderConfig, ProviderEnum, get_api_key
@@ -79,6 +80,7 @@ class AgentHealth:
 health: dict[int, AgentHealth] = {}
 _last_sweep = 0.0  # monotonic time of the last stale-agent sweep; 0 forces one
 _unreachable = False
+database_outage = OutageLog(logger, "meeting_agent database_unavailable")
 
 
 def process_key(event_slug: str, room_id: int) -> str:
@@ -441,7 +443,11 @@ async def _stop_stale_agents(agents: dict[str, dict]) -> None:
         room_id = int(room_id)
         # Re-check under the room lock: a connect may be committing right now.
         async with room_lock(room_id), get_session() as session:
-            row = (await session.execute(select(Room, Event).join(Event).where(Room.id == room_id))).first()
+            row = (
+                await session.execute(
+                    select(Room, Event).join(Event).where(Room.id == room_id, Event.deleted_at.is_(None))
+                )
+            ).first()
             if (
                 row
                 and row[1].slug == event_slug
@@ -453,11 +459,34 @@ async def _stop_stale_agents(agents: dict[str, dict]) -> None:
             logger.info("meeting_agent stale_agent_stopped room_id=%s", room_id)
 
 
+async def _stop_deleted_event_workers(room_ids: set[int]) -> None:
+    """Stop the floor worker of rooms whose event was deleted.
+
+    A delete can commit after a reconcile pass already read the room and started its worker, so
+    the reconciler cleans up rather than the delete: once the event is deleted it no longer sees the room.
+    """
+    if not room_ids:
+        return
+    async with get_session() as session:
+        rows = (
+            await session.execute(
+                select(Room.id, Event.slug).join(Event).where(Room.id.in_(room_ids), Event.deleted_at.is_not(None))
+            )
+        ).all()
+    for room_id, slug in rows:
+        await _stop_worker(health.get(room_id) or AgentHealth(), make_booth_id(slug, room_id, "floor"))
+
+
 async def reconcile_once() -> None:
     global _last_sweep, _unreachable
     async with get_session() as session:
-        rows = (await session.execute(select(Room.id, Event.slug).join(Event).where(Room.meeting_agent_enabled))).all()
+        rows = (
+            await session.execute(
+                select(Room.id, Event.slug).join(Event).where(Room.meeting_agent_enabled, Event.deleted_at.is_(None))
+            )
+        ).all()
     ids = [room_id for room_id, _ in rows]
+    await _stop_deleted_event_workers(set(health) - set(ids))
     for room_id in set(health) - set(ids):
         health.pop(room_id, None)
     if not rows and monotonic() - _last_sweep < IDLE_SWEEP_SECS:
@@ -489,7 +518,11 @@ async def reconcile_once() -> None:
     for room_id in ids:
         try:
             async with room_lock(room_id), get_session() as session:
-                row = (await session.execute(select(Room, Event).join(Event).where(Room.id == room_id))).first()
+                row = (
+                    await session.execute(
+                        select(Room, Event).join(Event).where(Room.id == room_id, Event.deleted_at.is_(None))
+                    )
+                ).first()
                 if not row or not row[0].meeting_agent_enabled:
                     continue
                 room, event = row
@@ -520,8 +553,10 @@ async def reconcile_loop() -> None:
         try:
             await reconcile_once()
         except SQLAlchemyError:
-            logger.warning("meeting_agent database_unavailable")
+            database_outage.failed()
         except Exception as exc:  # noqa: BLE001 - the loop must outlive any single bad tick
             # Log the type only: exception text from upstream calls may echo the meeting URL.
             logger.error("meeting_agent reconcile_error type=%s", type(exc).__name__)
+        else:
+            database_outage.recovered()
         await asyncio.sleep(RECONCILE_INTERVAL_SECS)

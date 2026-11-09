@@ -1,0 +1,46 @@
+/* ── My booths (interpreter lobby) ────────────────────────────────────────
+   Uses the Account area's tokens (body.account-area) so it matches the other
+   signed-in pages. The booth list comes first; the audio check sits beside it. */
+
+.lobby-page { max-width: 1100px; margin: 0 auto; padding: 22px 16px 64px; }
+.lobby-grid { display: grid; grid-template-columns: minmax(0, 1.4fr) minmax(300px, 1fr); gap: 20px; align-items: start; }
+
+.lobby-event { padding: 16px 24px 4px; border-bottom: 1px solid var(--aa-border); }
+.lobby-event:last-child { border-bottom: 0; }
+.lobby-event-name { margin: 0 0 4px; font-size: 1.05rem; font-weight: 700; color: var(--aa-text); }
+.lobby-room-name { margin: 12px 0 6px; font-size: 0.75rem; font-weight: 700; letter-spacing: 0.06em; text-transform: uppercase; color: var(--aa-text-secondary); }
+.lobby-booth-list { list-style: none; margin: 0 0 12px; padding: 0; }
+.lobby-booth { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 12px 0; border-top: 1px solid var(--aa-border); }
+.lobby-booth:first-child { border-top: 0; }
+.lobby-booth-main { display: grid; gap: 2px; min-width: 0; }
+.lobby-booth-language { font-weight: 700; color: var(--aa-text); }
+.lobby-booth-meta { font-size: 0.875rem; color: var(--aa-text-secondary); }
+.lobby-live { color: #b42318; font-weight: 700; }
+.lobby-offline { color: var(--aa-text-secondary); }
+.lobby-booth-actions { display: flex; flex-wrap: wrap; gap: 8px; justify-content: flex-end; }
+
+.lobby-empty { padding: 32px 24px; text-align: center; color: var(--aa-text-secondary); }
+.lobby-empty-title { margin: 0 0 6px; font-weight: 700; color: var(--aa-text); }
+.lobby-empty p { margin: 0; }
+
+.lobby-field { display: grid; gap: 8px; margin-bottom: 22px; }
+.lobby-field:last-child { margin-bottom: 0; }
+.lobby-field label, .lobby-label { font-size: 0.875rem; font-weight: 600; color: var(--aa-text); }
+.lobby-field-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.lobby-inline { display: flex; gap: 8px; }
+.lobby-select { flex: 1; min-width: 0; padding: 9px 12px; border: 1px solid var(--aa-border-strong); border-radius: 8px; background: var(--aa-surface); color: var(--aa-text); font: inherit; }
+.lobby-select:focus { outline: 3px solid var(--aa-focus); border-color: var(--aa-primary); }
+.lobby-check-option { display: inline-flex; align-items: center; gap: 8px; font-weight: 400 !important; color: var(--aa-text-secondary) !important; }
+.lobby-hint { margin: 0; font-size: 0.875rem; color: var(--aa-text-secondary); }
+.loopback-progress { width: 100%; height: 8px; }
+.loopback-status { margin-top: 4px; font-size: 0.8125rem; color: var(--aa-text-secondary); }
+
+@media (max-width: 860px) {
+  .lobby-grid { grid-template-columns: 1fr; }
+}
+@media (max-width: 520px) {
+  .lobby-event { padding-left: 16px; padding-right: 16px; }
+  .lobby-booth { flex-direction: column; align-items: stretch; }
+  .lobby-booth-actions { justify-content: stretch; }
+  .lobby-booth-actions .aa-btn { flex: 1; text-align: center; }
+}

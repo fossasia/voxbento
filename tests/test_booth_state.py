@@ -4,6 +4,7 @@ import asyncio
 
 import pytest
 
+from portal.auth import booth_session_key, create_participant_token, create_token, create_user_token, decode_token
 from portal.booth_state import BoothRegistry
 
 
@@ -108,6 +109,37 @@ async def test_standby_interpreter_cannot_reassign_another_interpreter():
             "French",
             "hall-1-fr-audio",
         )
+
+
+@pytest.mark.anyio
+async def test_standby_interpreter_cannot_make_themselves_active():
+    """A passive interpreter naming themselves must not take the mic from whoever is live."""
+    registry = BoothRegistry()
+    interpreter_a = await join(registry, "Interpreter A")
+    interpreter_b = await join(registry, "Interpreter B")
+    await registry.update_participant_state(
+        "hall-1-fr",
+        interpreter_a.participant_id,
+        "French",
+        "hall-1-fr-audio",
+        mic_active=True,
+        ingest_connected=True,
+    )
+
+    with pytest.raises(PermissionError):
+        await registry.set_active_interpreter(
+            "hall-1-fr",
+            interpreter_b.participant_id,
+            interpreter_b.participant_id,
+            "French",
+            "hall-1-fr-audio",
+        )
+
+    state = await registry.snapshot("hall-1-fr", "French", "hall-1-fr-audio")
+    participants = {p["participant_id"]: p for p in state["participants"]}
+    assert state["active_interpreter_id"] == interpreter_a.participant_id
+    assert state["ingest_status"] == "connected"
+    assert participants[interpreter_a.participant_id]["mic_active"] is True
 
 
 @pytest.mark.anyio
@@ -1015,12 +1047,14 @@ async def test_handoff_and_chat_event_coordination():
     # Handoff initiation emits state
     await registry.initiate_handoff("pycon2026-1-en", int_a.participant_id, "English", "pycon2026/1/en")
     assert len(publisher.booth_events) == 1
+    assert publisher.booth_events[0][1]["type"] == "booth:state"
     assert publisher.booth_events[0][1]["state"]["handoff_state"] == "offered"
 
     # Handoff acceptance emits state
     publisher.booth_events.clear()
     await registry.accept_handoff("pycon2026-1-en", int_b.participant_id, "English", "pycon2026/1/en")
     assert len(publisher.booth_events) == 1
+    assert publisher.booth_events[0][1]["type"] == "booth:state"
     assert publisher.booth_events[0][1]["state"]["handoff_state"] == "idle"
     assert publisher.booth_events[0][1]["state"]["active_interpreter_id"] == int_b.participant_id
 
@@ -1186,3 +1220,169 @@ async def test_set_ingest_overloaded_coordinates_state_and_broadcast():
     publisher.booth_events.clear()
     assert await registry.set_ingest_overloaded("non-existent") is None
     assert len(publisher.booth_events) == 0
+
+
+@pytest.mark.anyio
+async def test_join_participant_broadcasts_state_when_before_broadcast_fails():
+    """Committed join state must still be broadcast to booth when before_broadcast fails."""
+    publisher = RecordingPublisher()
+    registry = BoothRegistry(publisher=publisher)
+
+    async def failing_callback(participant, state):
+        raise ConnectionResetError("Client disconnected during join ack")
+
+    with pytest.raises(ConnectionResetError, match="Client disconnected"):
+        await registry.join_participant(
+            booth_id="pycon2026-1-en",
+            display_name="Interpreter A",
+            role="interpreter",
+            language="English",
+            channel_id="pycon2026/1/en",
+            before_broadcast=failing_callback,
+        )
+
+    # State broadcast was still emitted to booth despite before_broadcast failure
+    assert len(publisher.booth_events) == 1
+    assert publisher.booth_events[0][1]["type"] == "booth:state"
+    assert len(publisher.booth_events[0][1]["state"]["participants"]) == 1
+
+
+@pytest.mark.anyio
+async def test_set_broadcast_unlocked_stops_worker_outside_broadcast_lock(monkeypatch):
+    """Transcription worker teardown must occur before acquiring the per-booth broadcast lock."""
+    events = []
+
+    publisher = RecordingPublisher()
+    registry = BoothRegistry(publisher=publisher)
+    await registry.create_booth("pycon2026", "en", "English", room_id=1)
+    booth = registry.get_booth_sync("pycon2026-1-en")
+
+    original_acquire = booth._broadcast_lock.acquire
+
+    async def tracked_acquire():
+        events.append("lock_acquired")
+        return await original_acquire()
+
+    monkeypatch.setattr(booth._broadcast_lock, "acquire", tracked_acquire)
+
+    async def mock_stop_worker(b_id):
+        events.append(f"worker_stopped_{b_id}")
+
+    monkeypatch.setattr("portal.transcription.worker.stop_transcription_worker", mock_stop_worker)
+
+    await registry.set_broadcast_unlocked("pycon2026-1-en", False, "English", "pycon2026/1/en")
+
+    assert events == ["worker_stopped_pycon2026-1-en", "lock_acquired"]
+
+
+@pytest.mark.anyio
+async def test_already_joined_session_rejoin_removes_previous_participant():
+    """A socket sending booth:join with a different or omitted participant_id leaves the previous participant."""
+    from portal.websockets.booth_protocol import BoothProtocolCoordinator
+    from portal.websockets.manager import Session
+
+    class DummyWs:
+        def __init__(self):
+            self.sent = []
+
+        async def send_text(self, text: str) -> None:
+            import json
+
+            self.sent.append(json.loads(text))
+
+    publisher = RecordingPublisher()
+    registry = BoothRegistry(publisher=publisher)
+    protocol = BoothProtocolCoordinator(registry=registry)
+
+    ws = DummyWs()
+    session = Session(
+        booth_id="pycon2026-1-en",
+        participant_id=None,
+        language="English",
+        channel_id="pycon2026/1/en",
+        granted_role="interpreter",
+    )
+
+    # First join
+    await protocol.handle_join(ws, session, {"role": "interpreter", "display_name": "First"})
+    first_id = session.participant_id
+    assert first_id is not None
+    booth = registry.get_booth_sync("pycon2026-1-en")
+    assert first_id in booth.participants
+
+    # Second join without participant_id
+    await protocol.handle_join(ws, session, {"role": "interpreter", "display_name": "Second"})
+    second_id = session.participant_id
+    assert second_id is not None
+    assert second_id != first_id
+    # First participant was cleanly removed; only second remains
+    assert first_id not in booth.participants
+    assert second_id in booth.participants
+    assert len(booth.participants) == 1
+
+    # Disconnecting cleans up the second participant with nothing orphaned
+    await protocol.handle_disconnect(session)
+    assert len(booth.participants) == 0
+
+
+@pytest.mark.anyio
+async def test_who_joined_a_participant_stays_on_the_server():
+    registry = BoothRegistry()
+
+    _, state = await registry.join_participant(
+        booth_id="hall-1-fr",
+        display_name="A",
+        role="interpreter",
+        language="French",
+        channel_id="c",
+        joined_by="user:7",
+    )
+
+    [participant] = state["participants"]
+    assert "joined_by" not in participant
+    assert "user:7" not in repr(registry.get_booth_sync("hall-1-fr"))
+
+
+@pytest.mark.anyio
+async def test_only_the_session_that_joined_the_live_participant_can_stop_live():
+    registry = BoothRegistry()
+    assert await registry.can_stop_live("hall-1-fr", set())
+
+    for name, key in (("Live", "user:1"), ("Standby", "user:2")):
+        await registry.join_participant(
+            booth_id="hall-1-fr",
+            display_name=name,
+            role="interpreter",
+            language="French",
+            channel_id="c",
+            joined_by=key,
+        )
+
+    assert await registry.can_stop_live("hall-1-fr", {"user:1"})
+    assert await registry.can_stop_live("hall-1-fr", {"invite:x", "user:1"})
+    assert not await registry.can_stop_live("hall-1-fr", {"user:2"})
+    assert not await registry.can_stop_live("hall-1-fr", set())
+
+
+@pytest.mark.anyio
+async def test_a_live_participant_without_a_session_key_matches_no_caller():
+    registry = BoothRegistry()
+    await join(registry, "Joined without a session key")
+
+    assert not await registry.can_stop_live("hall-1-fr", set())
+
+
+def test_booth_session_key_tells_users_and_invite_visits_apart():
+    def invite():
+        return decode_token(
+            create_participant_token(booth_id=1, role="interpreter", event_slug="hall", room_id=1, language_code="fr")
+        )
+
+    first, second = invite(), invite()
+
+    assert booth_session_key(decode_token(create_user_token(user_id=7, email="a@example.com"))) == "user:7"
+    assert booth_session_key(first) == f"invite:{first['sub']}"
+    assert booth_session_key(first) != booth_session_key(second)
+    assert booth_session_key(decode_token(create_token())) is None
+    assert booth_session_key({"sub": "x", "kind": "listener"}) is None
+    assert booth_session_key(None) is None

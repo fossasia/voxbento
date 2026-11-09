@@ -14,13 +14,7 @@ from portal.database import (
     list_room_memberships_for_user,
 )
 from portal.models import Event
-
-ROLE_LABELS = {
-    "event_owner": "Event owner",
-    "room_coordinator": "Room coordinator",
-    "interpreter": "Interpreter",
-}
-_ROLE_ORDER = {"event_owner": 0, "room_coordinator": 1, "interpreter": 2}
+from portal.roles import EVENT_OWNER, ROLE_RANK, ROOM_COORDINATOR, role_label
 
 MANAGE_EVENT = "Manage event"
 OPEN_MISSION_CONTROL = "Open Mission Control"
@@ -60,8 +54,8 @@ class MyEvent:
         return sorted(actions, key=lambda a: order.get(a.label, 2))
 
     def add_role(self, role: str, *where: str) -> None:
-        label = " · ".join((ROLE_LABELS.get(role, role.replace("_", " ").capitalize()), *[w for w in where if w]))
-        self._roles.append((_ROLE_ORDER.get(role, 9), label))
+        label = " · ".join((role_label(role), *[w for w in where if w]))
+        self._roles.append((-ROLE_RANK.get(role, 0), label))
 
     def add_action(self, action: EventAction) -> None:
         self._actions.append(action)
@@ -71,9 +65,9 @@ def role_action(
     role: str, event: Event, *, room_id: int | None = None, language_code: str = "", detail: str = ""
 ) -> EventAction:
     """Where a person with this role works in the event."""
-    if role == "event_owner":
+    if role == EVENT_OWNER:
         return EventAction(MANAGE_EVENT, f"/workspace/events/{event.id}/")
-    if role == "room_coordinator":
+    if role == ROOM_COORDINATOR:
         return EventAction(OPEN_MISSION_CONTROL, f"/mission-control/{event.slug}/")
     if room_id is not None and language_code:
         return EventAction(ENTER_BOOTH, f"/interpreter/{event.slug}/{room_id}/{language_code}", detail)

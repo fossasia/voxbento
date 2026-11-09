@@ -23,7 +23,7 @@ Attendees receive sub-second audio via WHEP. All coordination flows through Fast
 | Floor monitoring | Jitsi Meet | `ghcr.io/jitsi/*:stable-11248` — rootless, read-only, self-hosted receive-only iframe |
 | DB (dev) | SQLite + aiosqlite | `sqlite+aiosqlite:///./interpretation.db` |
 | DB (prod) | PostgreSQL + asyncpg | via `DATABASE_URL` env override |
-| ORM / migrations | SQLAlchemy 2.0 async + Alembic | 31 migrations in `alembic/versions/` (001–031) |
+| ORM / migrations | SQLAlchemy 2.0 async + Alembic | 38 migrations in `alembic/versions/` (001–038) |
 | Auth | PyJWT (HS256) + bcrypt | three JWT token types (see Auth section) |
 | API key crypto | Fernet (cryptography) | `portal/crypto.py`; keys hashed via SHA-256 |
 | Transcription | faster-whisper + 4 cloud providers | `portal/transcription/` |
@@ -58,6 +58,7 @@ Attendees receive sub-second audio via WHEP. All coordination flows through Fast
 | `portal/meeting_source.py` | Managed Jitsi floor agent lifecycle reconciler |
 | `portal/program_ingest.py` | Program Stream Ingest floor authorization and reconciliation |
 | `portal/program_relay.py` | YouTube RTMPS destination management and relay convergence |
+| `portal/outage_log.py` | `OutageLog` — reconcile-loop failures logged once per outage, with reminders and recovery |
 | `portal/user_admin.py` | Administrative access rules and user access switches |
 | `portal/static/js/interpreter-booth.js` | Interpreter UI — WebRTC/WHIP, WebSocket, Jitsi, mic controls |
 | `portal/static/js/whep-listener.js` | Listener WHEP client — RTCPeerConnection, auto-reconnect |
@@ -66,7 +67,7 @@ Attendees receive sub-second audio via WHEP. All coordination flows through Fast
 | `mediamtx.yml` | MediaMTX config — WHIP/WHEP paths, RTSP, Control API |
 | `docker-compose.yml` | portal + mediamtx + jitsi-web/prosody/jicofo/jvb |
 | `Dockerfile` | Portal container (uv-based, runs alembic then uvicorn) |
-| `alembic/versions/` | 31 migrations (001–031) |
+| `alembic/versions/` | 38 migrations (001–038) |
 
 ---
 
@@ -89,17 +90,29 @@ rtsp_url   = rtsp://mediamtx:8554/{mtx_path}    (transcription use)
 ## Role Hierarchy
 
 ```
-super_admin > event_owner > room_coordinator > interpreter > support > listener
+admin > event_owner > room_coordinator > interpreter
 ```
 
-| Role | Go Live | Set Active | Chat | Manage Booths | Manage Events |
-|---|---|---|---|---|---|
-| super_admin | ✓ | ✓ | ✓ | ✓ | ✓ |
-| event_owner | ✓ | ✓ | ✓ | ✓ | — |
-| room_coordinator | ✓ | ✓ | ✓ | — | — |
-| interpreter | ✓ | — | ✓ | — | — |
-| support | — | — | — | — | — (view only) |
-| listener | — | — | — | — | — |
+Four roles, defined once in `portal/roles.py` (#757): role names, plain-language
+labels (`role_label`), where each can be given (`EVENT_ROLES`, `ROOM_ROLES`,
+`BOOTH_ROLES`, `assignment_error`) and one `Permission` per action. Never type a
+role name elsewhere; `tests/test_roles.py` fails if you do.
+
+| Action | Admin | Event owner | Room coordinator | Interpreter |
+|---|:-:|:-:|:-:|:-:|
+| Manage users, Admins, hosting access, developer apps | ✓ | | | |
+| See all events / create events (or hosting access) | ✓ | | | |
+| Edit/delete event; manage rooms, booths, team, keys | ✓ | ✓ | | |
+| Mission Control, floor transcription, choose active interpreter | ✓ | ✓ | ✓ | |
+| Go live, booth chat, view booths | ✓ | ✓ | ✓ | ✓ |
+| Can be given per | account | event | event, room, booth | event, booth |
+
+"Admin" means only the platform role (`users.is_admin`, read from the database).
+Access checks are named after who they admit: `require_admin` (Admins),
+`require_event_owner`, `require_owner_or_coordinator`; Admins pass every check.
+Hosting access is an account setting, not a role. Listening is not a role:
+listener/embed tokens carry `kind: "listener"`. Booth participants are sent to
+browsers with `can_go_live` / `can_set_active`, so client code never compares role names.
 
 Defined in: `portal/roles.py` (`Permission` enum, `ROLE_PERMISSIONS` dict)
 Enforced at: `portal/websockets/booth_protocol.py` (WS `handle_join`), `portal/routers/api.py` (WHIP endpoint) + `portal/booth_state.py`

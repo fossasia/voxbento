@@ -36,6 +36,10 @@ body {
   display: none !important;
 }
 
+.embed-audio {
+  display: none;
+}
+
 /* ── Status bar ──────────────────────────────────────────────────────── */
 .status-row {
   display: flex;
@@ -104,6 +108,7 @@ body {
 }
 .captions-box.empty #embed-caption-placeholder { display: block; color: var(--muted); font-style: italic; }
 .captions-box:not(.empty) #embed-caption-placeholder { display: none; }
+.embed-caption-current { color: var(--primary); }
 
 /* ── Branding footer ─────────────────────────────────────────────────── */
 .footer {

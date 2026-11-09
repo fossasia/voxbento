@@ -7,6 +7,7 @@ from typing import Dict
 import portal.webhooks.worker as _wh_worker
 from portal.config import settings
 from portal.transcription.process import FfmpegProcess
+from portal.transcription.providers.atlascloud import AtlasCloudProvider
 from portal.transcription.providers.base import ProviderConfig
 from portal.transcription.providers.deepgram import DeepgramProvider
 from portal.transcription.providers.elevenlabs import ElevenLabsProvider
@@ -17,6 +18,7 @@ from portal.transcription.providers.openai import OpenAIProvider
 logger = logging.getLogger(__name__)
 
 PROVIDERS = {
+    "atlascloud": AtlasCloudProvider(),
     "local": LocalProvider(),
     "openai": OpenAIProvider(),
     "deepgram": DeepgramProvider(),
@@ -26,6 +28,10 @@ PROVIDERS = {
 
 active_workers_lock = asyncio.Lock()
 MAX_TOTAL_WORKERS = 10
+
+
+class WorkerCapacityError(ValueError):
+    """Raised when starting a worker would exceed MAX_TOTAL_WORKERS."""
 
 
 class State(Enum):
@@ -62,6 +68,7 @@ class TranscriptionWorkerSession:
         self.state = State.STARTING
         self.stop_event = asyncio.Event()
         self.task: asyncio.Task | None = None
+        self.loop_entered = False
 
         from portal.booth_identity import make_mediamtx_path
 
@@ -82,7 +89,7 @@ class TranscriptionWorkerSession:
         logger.info(f"[{self.booth_id}][{self.session_id}] Session stopping")
         self.state = State.STOPPING
         self.stop_event.set()
-        if self.task:
+        if self.task and self.loop_entered:
             self.task.cancel()
 
     async def wait_until_stopped(self):
@@ -95,6 +102,7 @@ class TranscriptionWorkerSession:
                 logger.error(f"[{self.booth_id}][{self.session_id}] Task ended with exception: {e}")
 
     async def _run_loop(self):
+        self.loop_entered = True
         retry_count = 0
         try:
             while self.state != State.STOPPING:
@@ -197,7 +205,7 @@ async def start_transcription_worker(
             existing_session = active_workers.get(booth_id)
             if not existing_session:
                 if len(active_workers) >= MAX_TOTAL_WORKERS:
-                    raise ValueError(
+                    raise WorkerCapacityError(
                         f"System at maximum capacity ({MAX_TOTAL_WORKERS} concurrent transcription booths)."
                     )
 

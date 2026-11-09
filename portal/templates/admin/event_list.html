@@ -3,7 +3,7 @@
 
 {% block breadcrumb %}
 <nav class="breadcrumb">
-  <a href="{{ management_prefix }}/">{{ 'My events' if is_workspace else 'Dashboard' }}</a> <span>/</span> <span class="breadcrumb-current" aria-current="page">Events</span>
+  <a href="{{ management_prefix }}/">{{ 'My events' if is_workspace else 'Overview' }}</a> <span>/</span> <span class="breadcrumb-current" aria-current="page">Events</span>
 </nav>
 {% endblock %}
 
@@ -18,12 +18,12 @@
     <h1>Events</h1>
     <p class="text-secondary">Everything you host lives here.</p>
   </div>
-  {% if can_host or is_super_admin %}
+  {% if can_host or is_admin %}
   <a href="{{ management_prefix }}/setup" class="btn btn-primary">+ New event</a>
   {% endif %}
 </div>
 
-{% if can_host or is_super_admin %}
+{% if can_host or is_admin %}
 <details class="create-panel">
   <summary>Quick create (advanced)</summary>
   <div class="create-body">

@@ -11,6 +11,7 @@
     <script src="https://cdn.tailwindcss.com"></script>
 
     <!-- Custom CSS for animations and overrides -->
+    <link rel="stylesheet" href="{{ url_for('static', path='css/tokens.css') }}?v={{ js_version }}" />
     <link rel="stylesheet" href="{{ url_for('static', path='css/fonts.css') }}?v={{ js_version }}" />
     <link rel="stylesheet" href="{{ url_for('static', path='css/landing.css') }}?v={{ js_version }}" />
     <link rel="stylesheet" href="{{ url_for('static', path='css/home.css') }}?v={{ js_version }}" />
@@ -863,6 +864,7 @@
     <script type="module" src="{{ url_for('static', path='js/demo-player.js') }}?v={{ js_version }}"></script>
 
     {% include "_demo_modal.html" %}
+    {% include "_auth_sync.html" %}
 
 </body>
 

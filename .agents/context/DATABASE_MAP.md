@@ -127,6 +127,7 @@ Properties: `is_expired` (compares UTC), `is_used` (used_at is not None).
 | `password_hash` | String(200) | bcrypt via `portal.auth.hash_password` |
 | `is_active` | Boolean | Default True; deactivated users cannot login |
 | `is_admin` | Boolean | Default False; grants full admin panel access |
+| `last_sign_in_at` | DateTime(tz) nullable | UTC; most recent qualifying sign-in, or unset if not recorded since tracking began |
 | `created_at` | DateTime(tz) | UTC |
 
 ---
@@ -207,6 +208,7 @@ Unique index on `(segment_id, language_code)`.
 | `language_code` | String(20) | ISO 639-1 target language |
 | `language_name` | String(100) | Human readable |
 | `enabled` | Boolean | Default True |
+| `tts_enabled` | Boolean | Room table only. Default True; False for an AI captions language (`ai_text`: translated, never spoken). Migration 035 |
 
 Tracks which languages the translation worker should generate for a given room or booth.
 
@@ -247,6 +249,15 @@ Tracks which languages the translation worker should generate for a given room o
 | 029 | `029_add_can_host_to_users.py` | `users.can_host`, `users.hosting_requested_at`, `hosting_invitations` table |
 | 030 | `030_hosting_requests.py` | `hosting_requests` table with partial unique index for open requests |
 | 031 | `031_add_ai_interpretation_settings.py` | `rooms.floor_ai_interpreter_persona`, `rooms.floor_ai_interpretation_style`, `rooms.floor_ai_vocabulary_enabled`, `ai_vocabulary_entries` table |
+| 032 | `032_remove_support_role.py` | Removes the obsolete support role |
+| 033 | `033_add_index_booths_event_id.py` | Index on `booths.event_id` |
+| 034 | `034_email_notifications.py` | Transactional email templates, settings, revisions, and delivery outbox |
+| 035 | `035_per_language_voice.py` | `room_translation_languages.tts_enabled` |
+| 036 | `036_add_sessions_valid_after_to_users.py` | `users.sessions_valid_after` |
+| 037 | `037_add_revoked_at_to_invite_tokens.py` | `invite_tokens.revoked_at` |
+| 038 | `038_add_public_id_to_invite_tokens.py` | `invite_tokens.public_id` |
+| 039 | `039_add_atlascloud_api_key.py` | AtlasCloud API key setting |
+| 040 | `040_add_last_sign_in_at_to_users.py` | Nullable `users.last_sign_in_at` |
 
 Run migrations: `uv run alembic upgrade head`
 
@@ -305,11 +316,55 @@ Fields: `id`, `event_id`, `room_id` (nullable), `booth_id` (nullable), `source_t
 
 ## Migration 028 — RTMPS relay mode (#749)
 
-Room fields: `program_ingest_mode` (`whip` default | `rtmps_relay`; binds the program
-key to its transport), nullable `program_relay_server` (normalized allow-listed RTMPS
+Room fields: `program_ingest_mode` (`whip` default | `rtmps` (extra RTMPS destination, #1087;
+no migration needed) | `rtmps_relay`; binds the program key to its transport), nullable `program_relay_server` (normalized allow-listed RTMPS
 URL), `program_relay_key_enc` (Fernet ciphertext of the YouTube stream key; write-only,
 never serialize or log) and `program_relay_updated_at`. Helpers live in
 `portal/program_relay.py` (`store_destination`, `clear_destination`, `destination`).
+
+## Migration 035 — per-language AI voice (#1005)
+
+`room_translation_languages.tts_enabled` (Boolean, default true, server default true)
+records whether an AI language is **AI voice** (spoken by floor TTS) or **AI captions** (`ai_text`)
+(translated for reading only). Room setup writes it; `portal/tts/worker.py` synthesizes
+only enabled languages with `tts_enabled`, and the listener page offers spoken
+translation only for them. `rooms.floor_tts_enabled` stays the room-wide switch and is
+on when at least one language is AI voice. Existing rows default to spoken, which keeps
+rooms whose TTS was already on unchanged.
+
+## Migration 034 — transactional email outbox (#962)
+
+`email_templates` stores draft and published subject/HTML for every registered
+notification type. `email_template_revisions` retains immutable published
+versions. `email_deliveries` contains the encrypted rendered subject and HTML,
+delivery status, retry lease and schedule fields, expiry, an optional
+idempotency key and an optional `auth_token_id`. That ties an email carrying a
+sign-in or invitation link to its `auth_tokens` row (a plain integer, not a
+foreign key, so the id survives the token's deletion), so the outbox suppresses
+it once the token is redeemed, revoked, expired or deleted. The worker in
+`portal/notifications.py` claims due rows, retries failed sends with back-off,
+marks pending rows past `expires_at` as expired, and erases the rendered
+subject and HTML of finished deliveries after 30 days (the audit row stays).
+No links or email content are shown in the administration history.
+`email_settings` holds one row (id 1) of branding shared by every email:
+`show_logo` (default true) and an optional https `logo_url` (empty means the
+VoxBento logo served by the site). No row means the defaults.
+
+## Migrations 036–038 — live booth session revocation
+
+Migration 036 adds nullable `users.sessions_valid_after`; Admin demotion and
+account deactivation advance it so existing booth sockets can be evicted.
+SQLite returns this value without timezone information; comparisons treat those
+values as UTC. Migration 037 adds nullable `invite_tokens.revoked_at`.
+Migration 038 adds a unique, non-null `invite_tokens.public_id`, backfilling
+existing invitations without changing their bearer link tokens.
+
+New participant JWTs carry that public ID as `token_id` for invitation revocation.
+Legacy participant JWTs without `token_id` remain compatible until expiry but
+cannot be individually matched to a revoked invitation. Apply migrations before
+starting the new portal image. `portal/websockets/revocation.py` pushes scoped
+closures; `portal/websockets/reaper.py` checks database state as a fallback.
+These mechanisms retain the supported single-process deployment model.
 
 ## Migration 027 — managed meeting agent
 

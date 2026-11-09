@@ -2,7 +2,7 @@
 
 Covers:
 - Admin sign-in redirect and logout flow
-- require_admin() guard (403 without cookie)
+- require_owner_or_coordinator() guard (403 without cookie)
 - CRUD operations for events, rooms, booths
 - Dashboard with live status
 - Booth detail with WHEP URL and participant roster
@@ -10,11 +10,14 @@ Covers:
 
 from __future__ import annotations
 
+import json
 import os
+import re
 
 os.environ["BOOTH_ACCESS_TOKEN"] = ""
 
 from datetime import datetime, timedelta, timezone
+from html.parser import HTMLParser
 
 import pytest
 
@@ -149,6 +152,42 @@ def _client():
     from fastapi_app import app
 
     return AsyncClient(transport=ASGITransport(app=app), base_url="http://test")
+
+
+class _InlineScripts(HTMLParser):
+    """Collect the attributes of every script a strict CSP would block: no `src` and not a JSON data block."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.found: list[dict[str, str | None]] = []
+
+    def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+        attributes = dict(attrs)
+        if tag == "script" and "src" not in attributes and attributes.get("type") != "application/json":
+            self.found.append(attributes)
+
+
+def _inline_scripts(html: str) -> list[dict[str, str | None]]:
+    parser = _InlineScripts()
+    parser.feed(html)
+    return parser.found
+
+
+def _booth_detail_config(html: str) -> dict:
+    """The JSON data block booth-detail.js reads on the booth page."""
+    match = re.search(r'<script type="application/json" id="booth-detail-config">(.*?)</script>', html, re.S)
+    assert match is not None
+    return json.loads(match.group(1))
+
+
+async def _update_row(model, row_id: int, **fields) -> None:
+    from portal.database import get_session
+
+    async with get_session() as s:
+        row = await s.get(model, row_id)
+        assert row is not None
+        for name, value in fields.items():
+            setattr(row, name, value)
 
 
 # ---------------------------------------------------------------------------
@@ -451,8 +490,8 @@ class TestStaleAdminToken:
         assert resp.status_code == 403
 
     @pytest.mark.anyio
-    async def test_demoted_admin_token_denied_on_super_admin_route(self, setup_db):
-        """Super-admin-only routes (e.g. /admin/users/) also honour the demotion."""
+    async def test_demoted_admin_token_denied_on_admin_route(self, setup_db):
+        """Admin-only routes (e.g. /admin/users/) also honour the demotion."""
         user = await self._make_admin()
         cookie = {"user_token": create_user_token(user_id=user.id, email=user.email, is_admin=True)}
 
@@ -469,8 +508,8 @@ class TestStaleAdminToken:
         assert resp.status_code == 403
 
     @pytest.mark.anyio
-    async def test_event_owner_denied_on_super_admin_route(self, seed_event):
-        """A normal event owner cannot reach super-admin-only routes (e.g. /admin/users/)."""
+    async def test_event_owner_denied_on_admin_route(self, seed_event):
+        """A normal event owner cannot reach Admin-only routes (e.g. /admin/users/)."""
         event, _, _ = seed_event
         from portal.database import create_user, get_session, set_event_membership
 
@@ -513,6 +552,15 @@ class TestRequireAdmin:
         async with _client() as c:
             resp = await c.get("/admin/", cookies=admin_cookie)
         assert resp.status_code == 200
+
+    @pytest.mark.anyio
+    async def test_confirm_popup_is_a_labelled_dialog(self, admin_cookie):
+        async with _client() as c:
+            resp = await c.get("/admin/", cookies=admin_cookie)
+        assert resp.status_code == 200
+        assert '<dialog id="custom-confirm-modal"' in resp.text
+        assert 'aria-labelledby="custom-confirm-message"' in resp.text
+        assert '<div id="custom-confirm-modal"' not in resp.text
 
     @pytest.mark.anyio
     async def test_invalid_cookie_rejected(self):
@@ -1024,7 +1072,7 @@ class TestEventCRUD:
 
     @pytest.mark.anyio
     async def test_delete_event_rejects_a_room_coordinator(self, admin_cookie, seed_event):
-        """require_admin admits a room_coordinator for the whole event, and deleting one
+        """require_owner_or_coordinator admits a room_coordinator for the whole event, and deleting one
         now destroys transcripts and OAuth grant state. Match the API-key routes and
         require an event owner."""
         from portal.auth import create_user_token
@@ -1263,7 +1311,7 @@ class TestRoomCRUD:
                 cookies=admin_cookie,
             )
         assert resp.status_code == 200
-        assert b"Audio Synchronization Delay (ms)" in resp.content
+        assert b"Listener delay (milliseconds)" in resp.content
         assert b'name="audio_delay_ms"' in resp.content
 
     @pytest.mark.anyio
@@ -1296,6 +1344,13 @@ class TestRoomCRUD:
     @pytest.mark.anyio
     async def test_room_vocabulary_upload_preview_and_export(self, admin_cookie, seed_event):
         event, room, _ = seed_event
+        from portal.database import get_room_by_id, get_session
+
+        # The glossary is part of the AI settings, shown when the room uses AI translation.
+        async with get_session() as session:
+            ai_room = await get_room_by_id(session, room.id)
+            ai_room.floor_transcription_enabled = True
+            ai_room.floor_translation_enabled = True
         csv_content = (
             "source_term,target_language,target_term,description,case_sensitive,match_type,priority\n"
             "Voxbento,all,Voxbento,Product name,true,exact,100\n"
@@ -1316,7 +1371,7 @@ class TestRoomCRUD:
 
             page = await c.get(upload.headers["location"], cookies=admin_cookie)
             assert page.status_code == 200
-            assert b"Imported 4 rows" in page.content
+            assert b"Added 4 terms" in page.content
             assert b"Voxbento" in page.content
             assert b"WebRTC" in page.content
 
@@ -1515,6 +1570,318 @@ class TestRoomCRUD:
         assert resp.json() == {"audio_delay_ms": 2000}
 
     @pytest.mark.anyio
+    async def test_subtitle_overlay_requires_join_code(self, seed_event):
+        event, room, booth = seed_event
+
+        from portal.database import get_session
+
+        async with get_session() as s:
+            db_event = await s.get(type(event), event.id)
+            assert db_event is not None
+            db_event.listener_join_code = "ROOM42"
+
+        path = f"/overlay/{event.slug}/{room.id}/{booth.language_code}"
+        async with _client() as c:
+            missing = await c.get(path)
+            wrong = await c.get(f"{path}?code=NOPE")
+            ok = await c.get(f"{path}?code=ROOM42&fontSize=48&position=top")
+            bad_room = await c.get(f"/overlay/{event.slug}/999999/{booth.language_code}?code=ROOM42")
+            bad_lang = await c.get(f"/overlay/{event.slug}/{room.id}/english?code=ROOM42")
+            no_booth = await c.get(f"/overlay/{event.slug}/{room.id}/fr?code=ROOM42")
+            floor_off = await c.get(f"/overlay/{event.slug}/{room.id}/floor?code=ROOM42")
+
+        assert missing.status_code == 403
+        assert wrong.status_code == 403
+        assert bad_room.status_code == 404
+        assert bad_lang.status_code == 404
+        assert no_booth.status_code == 404
+        assert floor_off.status_code == 404
+
+        # When floor_transcription_enabled is True but provider is 'none', floor overlay returns 404
+        async with get_session() as s:
+            db_room = await s.get(type(room), room.id)
+            assert db_room is not None
+            db_room.floor_transcription_enabled = True
+            db_room.floor_transcription_provider = "none"
+            await s.flush()
+
+        async with _client() as c:
+            floor_none = await c.get(f"/overlay/{event.slug}/{room.id}/floor?code=ROOM42")
+        assert floor_none.status_code == 404
+
+        assert ok.status_code == 200
+        assert f'data-booth-id="{event.slug}-{room.id}-{booth.language_code}"'.encode() in ok.content
+        assert b'data-token="' in ok.content
+        assert f"listener_code_{event.slug}" in ok.headers.get("set-cookie", "")
+        assert ok.headers["content-security-policy"] == "frame-ancestors 'self'"
+        assert ok.headers["cache-control"] == "no-store, private"
+
+    @pytest.mark.anyio
+    async def test_ws_captions_verifies_authorization_established_by_overlay(self, seed_event):
+        import re
+
+        from starlette.testclient import TestClient
+        from starlette.websockets import WebSocketDisconnect
+
+        from fastapi_app import app as fastapi_app
+
+        event, room, booth = seed_event
+
+        from portal.database import get_session
+
+        async with get_session() as s:
+            db_event = await s.get(type(event), event.id)
+            assert db_event is not None
+            db_event.listener_join_code = "ROOM42"
+
+        booth_id = f"{event.slug}-{room.id}-{booth.language_code}"
+        tc = TestClient(app=fastapi_app)
+
+        # 1. Unauthenticated direct connection without authorization is rejected with 4001
+        with pytest.raises(WebSocketDisconnect) as exc_info:
+            with tc.websocket_connect(f"/ws/captions/{booth_id}") as ws:
+                ws.receive_text()
+        assert exc_info.value.code == 4001
+
+        # 2. Join-code-protected overlay establishes authorization and delivers token
+        overlay_path = f"/overlay/{event.slug}/{room.id}/{booth.language_code}?code=ROOM42"
+        async with _client() as c:
+            ok = await c.get(overlay_path)
+        assert ok.status_code == 200
+        match = re.search(r'data-token="([^"]+)"', ok.text)
+        assert match is not None
+        overlay_token = match.group(1)
+        assert len(overlay_token) > 0
+
+        # 3. Connecting to captions WS with the overlay's established token succeeds
+        with tc.websocket_connect(f"/ws/captions/{booth_id}?token={overlay_token}") as ws:
+            ws.close()
+
+        # 4. Connecting with listener_code cookie succeeds
+        with tc.websocket_connect(f"/ws/captions/{booth_id}", cookies={f"listener_code_{event.slug}": "ROOM42"}) as ws:
+            ws.close()
+
+        # 5. Connecting with ?code=ROOM42 query param succeeds
+        with tc.websocket_connect(f"/ws/captions/{booth_id}?code=ROOM42") as ws:
+            ws.close()
+
+        # 6. Connecting with wrong code is rejected with 4001
+        with pytest.raises(WebSocketDisconnect) as exc_info:
+            with tc.websocket_connect(f"/ws/captions/{booth_id}?code=WRONG") as ws:
+                ws.receive_text()
+        assert exc_info.value.code == 4001
+
+    @pytest.mark.anyio
+    async def test_ws_captions_allows_anonymous_when_no_join_code(self, seed_event):
+        from starlette.testclient import TestClient
+
+        from fastapi_app import app as fastapi_app
+
+        event, room, booth = seed_event
+        booth_id = f"{event.slug}-{room.id}-{booth.language_code}"
+        tc = TestClient(app=fastapi_app)
+
+        # Anonymous caller is accepted when event has no join code
+        with tc.websocket_connect(f"/ws/captions/{booth_id}") as ws:
+            ws.close()
+
+    @pytest.mark.anyio
+    async def test_ws_captions_rate_limits_failed_join_codes(self, seed_event, monkeypatch):
+        from starlette.testclient import TestClient
+        from starlette.websockets import WebSocketDisconnect
+
+        from fastapi_app import app as fastapi_app
+        from portal.database import get_session
+        from portal.join_code_limit import JOIN_CODE_RATE_LIMIT, _join_code_attempts
+
+        event, room, booth = seed_event
+        async with get_session() as s:
+            db_event = await s.get(type(event), event.id)
+            assert db_event is not None
+            db_event.listener_join_code = "ROOM42"
+
+        booth_id = f"{event.slug}-{room.id}-{booth.language_code}"
+        tc = TestClient(app=fastapi_app)
+        _join_code_attempts.clear()
+        try:
+            codes = []
+            for _ in range(JOIN_CODE_RATE_LIMIT + 1):
+                with pytest.raises(WebSocketDisconnect) as exc_info:
+                    with tc.websocket_connect(f"/ws/captions/{booth_id}?code=WRONG") as ws:
+                        ws.receive_text()
+                codes.append(exc_info.value.code)
+            assert codes[:-1] == [4001] * JOIN_CODE_RATE_LIMIT
+            assert codes[-1] == 1008
+
+            # A matching guess must not bypass the exhausted attempt budget.
+            with pytest.raises(WebSocketDisconnect) as exc_info:
+                with tc.websocket_connect(f"/ws/captions/{booth_id}?code=ROOM42") as ws:
+                    ws.receive_text()
+            assert exc_info.value.code == 1008
+            import types
+
+            from portal import join_code_limit
+            now = join_code_limit.time.monotonic()
+            monkeypatch.setattr(join_code_limit, "time", types.SimpleNamespace(monotonic=lambda: now + 61))
+            with tc.websocket_connect(f"/ws/captions/{booth_id}?code=ROOM42") as ws:
+                ws.close()
+            assert not _join_code_attempts
+        finally:
+            _join_code_attempts.clear()
+
+    @pytest.mark.anyio
+    async def test_ws_captions_admits_signed_in_users_checked_in_database(self, seed_event):
+        from starlette.testclient import TestClient
+        from starlette.websockets import WebSocketDisconnect
+
+        from fastapi_app import app as fastapi_app
+        from portal.database import create_user, get_session
+
+        event, room, booth = seed_event
+        async with get_session() as s:
+            db_event = await s.get(type(event), event.id)
+            assert db_event is not None
+            db_event.listener_join_code = "ROOM42"
+            member = await create_user(s, email="member@example.com", display_name="Member", password_hash="x")
+            gone = await create_user(
+                s, email="former-admin@example.com", display_name="Former", password_hash="x", is_admin=True
+            )
+            gone.is_active = False
+
+        booth_id = f"{event.slug}-{room.id}-{booth.language_code}"
+        tc = TestClient(app=fastapi_app)
+
+        # A signed-in account with no booth role gets captions, as on the listener page.
+        member_token = create_user_token(user_id=member.id, email=member.email)
+        with tc.websocket_connect(f"/ws/captions/{booth_id}", cookies={"user_token": member_token}) as ws:
+            ws.close()
+
+        # A deactivated account is refused even though its token still claims admin.
+        gone_token = create_user_token(user_id=gone.id, email=gone.email, is_admin=True)
+        with pytest.raises(WebSocketDisconnect) as exc_info:
+            with tc.websocket_connect(f"/ws/captions/{booth_id}", cookies={"user_token": gone_token}) as ws:
+                ws.receive_text()
+        assert exc_info.value.code == 4001
+
+    @pytest.mark.anyio
+    @pytest.mark.parametrize(
+        ("enabled", "provider", "expected"),
+        [
+            (True, "local", True),
+            (True, "Local", True),
+            (True, "none", False),
+            (True, "NONE", False),
+            (True, "", False),
+            (False, "local", False),
+        ],
+    )
+    async def test_room_has_floor_captions(self, enabled, provider, expected):
+        from portal.models import Room
+
+        room = Room(floor_transcription_enabled=enabled, floor_transcription_provider=provider)
+        assert room.has_floor_captions is expected
+
+    @pytest.mark.anyio
+    async def test_event_detail_links_to_separate_caption_overlay_builder(self, admin_cookie, seed_event):
+        event, room, booth = seed_event
+
+        from portal.database import get_session
+
+        async with get_session() as s:
+            db_event = await s.get(type(event), event.id)
+            assert db_event is not None
+            db_event.listener_join_code = "ROOM42"
+
+        async with _client() as c:
+            overview = await c.get(f"/admin/events/{event.id}/", cookies=admin_cookie)
+            resp = await c.get(f"/admin/events/{event.id}/caption-overlays/", cookies=admin_cookie)
+
+        assert overview.status_code == 200
+        assert f"/admin/events/{event.id}/caption-overlays/" in overview.text
+        assert "subtitle-overlay-builder" not in overview.text
+        assert "js/overlay-builder.js" not in overview.text
+        assert resp.status_code == 200
+        assert b"id='subtitle-overlay-builder'" in resp.content
+        assert f"value='{room.id}/{booth.language_code}'".encode() in resp.content
+        assert b"js/overlay-builder.js" in resp.content
+        assert resp.headers["cache-control"] == "no-store"
+
+        # Floor option is absent if room provider is 'none' even if enabled
+        async with get_session() as s:
+            db_room = await s.get(type(room), room.id)
+            assert db_room is not None
+            db_room.floor_transcription_enabled = True
+            db_room.floor_transcription_provider = "none"
+            await s.flush()
+
+        async with _client() as c:
+            resp_none = await c.get(f"/admin/events/{event.id}/caption-overlays/", cookies=admin_cookie)
+        assert f"value='{room.id}/floor'".encode() not in resp_none.content
+
+        # Floor option appears once a valid provider is configured
+        async with get_session() as s:
+            db_room = await s.get(type(room), room.id)
+            assert db_room is not None
+            db_room.floor_transcription_provider = "local"
+            await s.flush()
+
+        async with _client() as c:
+            resp_local = await c.get(f"/admin/events/{event.id}/caption-overlays/", cookies=admin_cookie)
+        assert f"value='{room.id}/floor'".encode() in resp_local.content
+
+    @pytest.mark.anyio
+    async def test_subtitle_overlay_and_selector_channels_beyond_100(self, admin_cookie, seed_event):
+        """Booths and rooms beyond the first 100 are selectable and valid for overlay."""
+        from portal.database import create_booth, create_room, get_session
+
+        event, _, _ = seed_event
+
+        async with get_session() as s:
+            db_event = await s.get(type(event), event.id)
+            assert db_event is not None
+            db_event.listener_join_code = "ROOM42"
+
+            # Create 105 rooms; the 105th room has floor transcription and a booth
+            target_room = None
+            target_booth = None
+            for i in range(1, 106):
+                r = await create_room(s, event_id=event.id, display_name=f"Overflow Room {i}")
+                if i == 105:
+                    r.floor_transcription_enabled = True
+                    target_room = r
+                    target_booth = await create_booth(
+                        s,
+                        event_id=event.id,
+                        room_id=r.id,
+                        language_code="es",
+                        language_name="Spanish",
+                    )
+            await s.flush()
+
+        assert target_room is not None
+        assert target_booth is not None
+
+        # 1. Overlay route validates booth and floor channel beyond 100
+        booth_overlay = f"/overlay/{event.slug}/{target_room.id}/{target_booth.language_code}?code=ROOM42"
+        floor_overlay = f"/overlay/{event.slug}/{target_room.id}/floor?code=ROOM42"
+
+        async with _client() as c:
+            resp_booth = await c.get(booth_overlay)
+            resp_floor = await c.get(floor_overlay)
+            resp_admin = await c.get(f"/admin/events/{event.id}/caption-overlays/", cookies=admin_cookie)
+
+        assert resp_booth.status_code == 200
+        assert f'data-booth-id="{event.slug}-{target_room.id}-{target_booth.language_code}"'.encode() in resp_booth.content
+
+        assert resp_floor.status_code == 200
+        assert f'data-booth-id="{event.slug}-{target_room.id}-floor"'.encode() in resp_floor.content
+
+        # 2. Selector includes channels beyond the first 100
+        assert resp_admin.status_code == 200
+        assert f"value='{target_room.id}/{target_booth.language_code}'".encode() in resp_admin.content
+        assert f"value='{target_room.id}/floor'".encode() in resp_admin.content
+
+    @pytest.mark.anyio
     async def test_delete_room(self, admin_cookie, seed_event):
         event, room, _ = seed_event
         async with _client() as c:
@@ -1591,7 +1958,7 @@ class TestRoomCRUD:
         assert resp.status_code == 404
 
     @pytest.mark.anyio
-    async def test_delete_room_rejects_super_admin_event_mismatch(self, admin_cookie, room_scope_events):
+    async def test_delete_room_rejects_admin_event_mismatch(self, admin_cookie, room_scope_events):
         from portal.database import get_room_by_id, get_session
 
         scope = room_scope_events
@@ -1606,7 +1973,8 @@ class TestRoomCRUD:
             assert await get_room_by_id(s, scope["room_b"]) is not None
 
     @pytest.mark.anyio
-    async def test_delete_room_preserves_legacy_coordinator_access(self, room_scope_events):
+    async def test_room_coordinator_cannot_delete_room_on_legacy_path(self, room_scope_events):
+        # Managing rooms is an Event owner permission (#757), on /admin/ paths too.
         from portal.database import get_room_by_id, get_session
 
         scope = room_scope_events
@@ -1616,9 +1984,9 @@ class TestRoomCRUD:
                 cookies=scope["coordinator_cookie"],
                 follow_redirects=False,
             )
-        assert resp.status_code == 303
+        assert resp.status_code == 403
         async with get_session() as s:
-            assert await get_room_by_id(s, scope["room_a"]) is None
+            assert await get_room_by_id(s, scope["room_a"]) is not None
 
 
 # ---------------------------------------------------------------------------
@@ -1682,7 +2050,7 @@ class TestBoothCRUD:
                 follow_redirects=False,
             )
             assert resp.status_code == 303
-            assert resp.headers["location"].endswith(f"/setup/booths?room_id={room.id}&error=duplicate_language")
+            assert resp.headers["location"].endswith(f"/setup/rooms?room_id={room.id}&error=duplicate_language")
             page = await c.get(resp.headers["location"], cookies=admin_cookie)
         assert "That room already has a booth for that language." in page.text
 
@@ -1732,8 +2100,8 @@ class TestBoothCRUD:
                 cookies=admin_cookie,
                 follow_redirects=False,
             )
-        assert booths_page.status_code == 303
-        assert "duplicate_language" not in booths_page.headers["location"]
+        # A room that isn't part of the event is not found (#757), never reported as a duplicate.
+        assert booths_page.status_code == 404
         assert wizard.status_code == 303
         assert "duplicate_language" not in wizard.headers["location"]
 
@@ -1750,6 +2118,359 @@ class TestBoothCRUD:
         assert b"whep" in resp.content.lower()
 
     @pytest.mark.anyio
+    async def test_booth_detail_has_no_inline_script(self, admin_cookie, seed_event):
+        """The pickers live in booth-detail.js; the page only ships their data (#1081)."""
+        event, room, booth = seed_event
+        async with _client() as c:
+            resp = await c.get(
+                f"/admin/events/{event.id}/rooms/{room.id}/booths/{booth.id}/",
+                cookies=admin_cookie,
+            )
+        assert resp.status_code == 200
+        # Every script is external or a JSON data block, whatever attributes it carries.
+        assert _inline_scripts(resp.text) == []
+        assert "js/booth-detail.js" in resp.text
+        data = _booth_detail_config(resp.text)
+        assert {"code": "de", "name": "German"} in data["languages"]
+        assert data["selected_codes"] == []
+
+    @pytest.mark.anyio
+    async def test_booth_detail_config_carries_saved_translation_languages(self, admin_cookie, seed_event):
+        """Saved target languages reach the picker through the JSON config, and removed ones drop out (#1081)."""
+        event, room, booth = seed_event
+        url = f"/admin/events/{event.id}/rooms/{room.id}/booths/{booth.id}/"
+        async with _client() as c:
+            for languages in (["fr", "es"], ["fr"]):
+                saved = await c.post(
+                    f"{url}translation-settings",
+                    data={
+                        "translation_enabled": "true",
+                        "translation_provider": "openai",
+                        "translation_model": "gpt-4o-mini",
+                        "translation_languages": languages,
+                    },
+                    cookies=admin_cookie,
+                    follow_redirects=False,
+                )
+                assert saved.status_code == 303
+                page = await c.get(url, cookies=admin_cookie)
+                assert sorted(_booth_detail_config(page.text)["selected_codes"]) == sorted(languages)
+
+    @pytest.mark.anyio
+    async def test_inline_script_detector_flags_every_blocked_form(self):
+        for blocked in (
+            "<script>run()</script>",
+            '<SCRIPT type="text/javascript">run()</SCRIPT>',
+            '<script type="module">run()</script>',
+            '<script data-src="x">run()</script>',
+        ):
+            assert _inline_scripts(blocked), blocked
+        assert _inline_scripts('<script src="/static/js/a.js"></script>') == []
+        assert _inline_scripts('<script type="application/json" id="x">{}</script>') == []
+
+    @pytest.mark.anyio
+    async def test_booth_detail_owner_gets_one_tab_per_job(self, admin_cookie, seed_event):
+        event, room, booth = seed_event
+        url = f"/admin/events/{event.id}/rooms/{room.id}/booths/{booth.id}/"
+        async with _client() as c:
+            html = (await c.get(url, cookies=admin_cookie)).text
+        for tab in ("overview", "captions", "translations", "settings"):
+            assert f'data-booth-tab="{tab}"' in html
+            assert f'data-booth-panel="{tab}"' in html
+        # Each tab saves on its own, so the three old stacked "Save Settings" buttons are gone.
+        assert "Save Settings" not in html
+        for action, label in (
+            ("transcription-settings", "Save caption settings"),
+            ("translation-settings", "Save translation settings"),
+            ("edit", "Save booth details"),
+        ):
+            assert html.count(f'action="{url}{action}"') == 1
+            assert label in html
+        # The overlay link row from #1084 stays on the Overview tab.
+        assert "Subtitles Overlay (OBS / vMix)" in html
+
+    @pytest.mark.anyio
+    async def test_booth_detail_coordinator_sees_the_overview_only(self, room_scope_events):
+        scope = room_scope_events
+        url = f"/admin/events/{scope['event_a']}/rooms/{scope['room_a']}/booths/{scope['booth_a']}/"
+        async with _client() as c:
+            resp = await c.get(url, cookies=scope["coordinator_cookie"])
+        assert resp.status_code == 200
+        assert "Participant Roster" in resp.text
+        for owner_only in ("data-booth-tabs", "booth-detail.js", "Delete Booth", "transcription-settings"):
+            assert owner_only not in resp.text
+
+    @pytest.mark.anyio
+    async def test_booth_detail_engines_come_from_the_room_catalog(self, admin_cookie, seed_event):
+        from portal.crypto import encrypt_val
+        from portal.models import Event
+
+        event, room, booth = seed_event
+        url = f"/admin/events/{event.id}/rooms/{room.id}/booths/{booth.id}/"
+        async with _client() as c:
+            html = (await c.get(url, cookies=admin_cookie)).text
+        assert "Whisper (built in) — free, downloads the first time" in html
+        assert "NLLB (built in)" in html
+        assert "Deepgram Nova" not in html
+        # Services without a key are named once, in a hint for each kind.
+        assert html.count("appear here once you add their API key") == 2
+        # Cloud captions also need the event's switch, so the captions hint says so.
+        assert html.count("Enable External Transcription APIs") == 1
+
+        await _update_row(Event, event.id, encrypted_deepgram_api_key=encrypt_val("k"), transcription_api_enabled=True)
+        async with _client() as c:
+            html = (await c.get(url, cookies=admin_cookie)).text
+        assert "Deepgram Nova — uses your API key" in html
+
+    @pytest.mark.anyio
+    async def test_booth_detail_keeps_a_saved_model_that_is_no_longer_offered(self, admin_cookie, seed_event):
+        from portal.models import DBBooth
+
+        event, room, booth = seed_event
+        await _update_row(
+            DBBooth,
+            booth.id,
+            transcription_provider="elevenlabs",
+            transcription_model="scribe_v2",
+            translation_provider="anthropic",
+            translation_model="claude-3-haiku-20240307",
+        )
+        async with _client() as c:
+            html = (
+                await c.get(f"/admin/events/{event.id}/rooms/{room.id}/booths/{booth.id}/", cookies=admin_cookie)
+            ).text
+        # The old ElevenLabs name maps onto the current streaming model, selected once.
+        assert 'value="scribe_v2_realtime" data-provider="elevenlabs" selected' in html
+        assert 'value="scribe_v2"' not in html
+        # A saved model that is not offered stays selectable, so saving never swaps it silently.
+        assert (
+            'value="claude-3-haiku-20240307" data-provider="anthropic" selected>claude-3-haiku-20240307 (current)'
+            in html
+        )
+        # Its service has no key now: still selected, told how to keep it.
+        assert '<option value="anthropic" selected>Anthropic — add its API key to keep using it</option>' in html
+
+    @pytest.mark.anyio
+    async def test_saving_a_tab_returns_to_it_with_a_notice(self, admin_cookie, seed_event):
+        event, room, booth = seed_event
+        url = f"/admin/events/{event.id}/rooms/{room.id}/booths/{booth.id}/"
+        async with _client() as c:
+            translation = await c.post(
+                f"{url}translation-settings",
+                data={"translation_provider": "local", "translation_model": "nllb-200-distilled-600M"},
+                cookies=admin_cookie,
+                follow_redirects=False,
+            )
+            details = await c.post(
+                f"{url}edit",
+                data={"language_name": "English", "language_code": "en"},
+                cookies=admin_cookie,
+                follow_redirects=False,
+            )
+            pages = {
+                saved: (await c.get(f"{url}?saved={saved}", cookies=admin_cookie)).text
+                for saved in ("translations", "settings")
+            }
+        assert translation.headers["location"] == f"{url}?saved=translations#translations"
+        assert details.headers["location"] == f"{url}?saved=settings#settings"
+        assert "Translation settings saved." in pages["translations"]
+        assert "Booth details saved." in pages["settings"]
+
+    @pytest.mark.anyio
+    async def test_booth_detail_ignores_unknown_notice_keys(self, admin_cookie, seed_event):
+        event, room, booth = seed_event
+        url = f"/admin/events/{event.id}/rooms/{room.id}/booths/{booth.id}/"
+        async with _client() as c:
+            html = (await c.get(f"{url}?saved=<b>hi</b>&worker=restarted", cookies=admin_cookie)).text
+        assert "alert-success" not in html
+        assert "<b>hi</b>" not in html
+
+    @pytest.mark.anyio
+    async def test_saving_captions_says_what_happened_to_the_worker(self, admin_cookie, seed_event, monkeypatch):
+        from types import SimpleNamespace
+
+        from portal.routers import admin
+        from portal.transcription.worker import WorkerCapacityError
+
+        event, room, booth = seed_event
+        url = f"/admin/events/{event.id}/rooms/{room.id}/booths/{booth.id}/"
+        calls: list[str] = []
+
+        async def stop(*_args, **_kwargs):
+            calls.append("stop")
+
+        async def start(*_args, **_kwargs):
+            calls.append("start")
+
+        async def broadcast(*_args, **_kwargs):
+            pass
+
+        monkeypatch.setattr(admin, "stop_transcription_worker", stop)
+        monkeypatch.setattr(admin, "start_transcription_worker", start)
+        monkeypatch.setattr(admin, "broadcast_transcription", broadcast)
+
+        async def save(c, enabled: bool):
+            data = {"transcription_provider": "local", "transcription_model": "tiny"}
+            if enabled:
+                data["transcription_enabled"] = "true"
+            resp = await c.post(f"{url}transcription-settings", data=data, cookies=admin_cookie, follow_redirects=False)
+            assert resp.status_code == 303
+            location = resp.headers["location"]
+            page = await c.get(location.split("#")[0], cookies=admin_cookie)
+            return location, page.text
+
+        async with _client() as c:
+            # Nobody is live: nothing to restart, the settings wait for the next session.
+            location, page = await save(c, enabled=True)
+            assert location == f"{url}?saved=captions#captions"
+            assert "Caption settings saved. These settings are used the next time an interpreter goes live." in page
+            assert calls == []
+
+            # An interpreter is in the booth but not broadcasting: no stream to read, so no worker is started.
+            monkeypatch.setattr(
+                admin.booths,
+                "get_booth_sync",
+                lambda _bid: SimpleNamespace(active_interpreter_id="p1", ingest_status="disconnected", participants={}),
+            )
+            monkeypatch.setattr(admin, "active_workers", {})
+            location, page = await save(c, enabled=True)
+            assert location == f"{url}?saved=captions#captions"
+            assert "Caption settings saved. These settings are used the next time an interpreter goes live." in page
+            assert "The caption worker was restarted" not in page
+            assert calls == []
+
+            monkeypatch.setattr(
+                admin.booths,
+                "get_booth_sync",
+                lambda _bid: SimpleNamespace(active_interpreter_id="p1", ingest_status="connected", participants={}),
+            )
+            bid = admin.make_booth_id(event.slug, booth.room_id, booth.language_code)
+            monkeypatch.setattr(admin, "active_workers", {bid: object()})  # a worker is running
+            location, page = await save(c, enabled=True)
+            assert location == f"{url}?saved=captions&worker=kept#captions"
+            assert "The caption worker was restarted" not in page
+            assert "Nothing changed, so the caption worker kept running." in page
+            assert calls == []
+
+            await _update_row(type(booth), booth.id, transcription_model="base")
+            location, page = await save(c, enabled=True)
+            assert location == f"{url}?saved=captions&worker=restarted#captions"
+            assert "Caption settings saved. The caption worker was restarted with the new settings." in page
+            assert calls == ["stop", "start"]
+
+            location, page = await save(c, enabled=False)
+            assert location == f"{url}?saved=captions&worker=stopped#captions"
+            assert "The caption worker was stopped." in page
+            assert calls == ["stop", "start", "stop"]
+
+            # Captions were already off and stay off: say so instead of "next time an interpreter goes live".
+            location, page = await save(c, enabled=False)
+            assert location == f"{url}?saved=captions&worker=off#captions"
+            assert "Caption settings saved. Captions stay off." in page
+            assert "next time an interpreter" not in page
+            assert calls == ["stop", "start", "stop", "stop"]
+
+            # The worker cannot start (system at capacity): the save is kept and the page says so.
+            async def full(*_args, **_kwargs):
+                raise WorkerCapacityError("System at maximum capacity (10 concurrent transcription booths).")
+
+            monkeypatch.setattr(admin, "start_transcription_worker", full)
+            monkeypatch.setattr(admin, "active_workers", {})
+            location, page = await save(c, enabled=True)
+            assert location == f"{url}?saved=captions&worker=failed#captions"
+            assert "The caption worker could not be started" in page
+            assert calls == ["stop", "start", "stop", "stop", "stop"]
+
+            # The settings were saved but nothing is running, so saving again with no changes retries the start.
+            monkeypatch.setattr(admin, "start_transcription_worker", start)
+            location, page = await save(c, enabled=True)
+            assert location == f"{url}?saved=captions&worker=restarted#captions"
+            assert "The caption worker was restarted with the new settings." in page
+            assert calls == ["stop", "start", "stop", "stop", "stop", "stop", "start"]
+
+    @pytest.mark.anyio
+    async def test_captions_can_be_turned_off_when_the_saved_service_lost_its_key(self, admin_cookie, seed_event):
+        """Only turning captions on needs a working key; turning them off must never be blocked (#1081)."""
+        event, room, booth = seed_event
+        url = f"/admin/events/{event.id}/rooms/{room.id}/booths/{booth.id}/"
+        await _update_row(type(booth), booth.id, transcription_enabled=True, transcription_provider="deepgram", transcription_model="nova-2")
+        data = {"transcription_provider": "deepgram", "transcription_model": "nova-2"}
+        async with _client() as c:
+            # On with no key for the service: refused.
+            refused = await c.post(
+                f"{url}transcription-settings",
+                data={**data, "transcription_enabled": "true"},
+                cookies=admin_cookie,
+                follow_redirects=False,
+            )
+            # Off with the same service: saved, still the same service and model.
+            off = await c.post(f"{url}transcription-settings", data=data, cookies=admin_cookie, follow_redirects=False)
+            # A service or model name that does not exist is still rejected.
+            bogus = await c.post(
+                f"{url}transcription-settings",
+                data={"transcription_provider": "deepgram", "transcription_model": "nope"},
+                cookies=admin_cookie,
+                follow_redirects=False,
+            )
+        assert refused.status_code == 400
+        assert off.status_code == 303
+        assert bogus.status_code == 400
+        from portal.database import get_session
+
+        async with get_session() as sess:
+            saved = await sess.get(type(booth), booth.id)
+        assert saved.transcription_enabled is False
+        assert saved.transcription_provider == "deepgram"
+        assert saved.transcription_model == "nova-2"
+
+    @pytest.mark.anyio
+    async def test_booth_detail_shows_next_steps_until_the_booth_is_configured(self, admin_cookie, seed_event):
+        from portal.database import create_invite_token, get_session
+
+        event, room, booth = seed_event
+        url = f"/admin/events/{event.id}/rooms/{room.id}/booths/{booth.id}/"
+        async with _client() as c:
+            fresh = (await c.get(url, cookies=admin_cookie)).text
+            # Inviting an interpreter does not configure captions or translations, so the list stays.
+            async with get_session() as s:
+                await create_invite_token(s, booth_id=booth.id, role="interpreter")
+            invited = (await c.get(url, cookies=admin_cookie)).text
+            await c.post(
+                f"{url}transcription-settings",
+                data={
+                    "transcription_enabled": "true",
+                    "transcription_provider": "local",
+                    "transcription_model": "tiny",
+                },
+                cookies=admin_cookie,
+            )
+            configured = (await c.get(url, cookies=admin_cookie)).text
+        assert "Here's what's next" in fresh
+        assert 'data-booth-tab-link="captions"' in fresh
+        assert 'data-booth-tab-link="translations"' in fresh
+        assert "Here's what's next" in invited
+        assert "Here's what's next" not in configured
+
+    @pytest.mark.anyio
+    async def test_a_new_booth_offers_a_real_translation_service(self, admin_cookie, seed_event):
+        """A new booth has no translation service saved; the form must not post the text "None" (#1081)."""
+        event, room, booth = seed_event
+        url = f"/admin/events/{event.id}/rooms/{room.id}/booths/{booth.id}/"
+        async with _client() as c:
+            html = (await c.get(url, cookies=admin_cookie)).text
+            # Saving the tab with the first service it offers must work.
+            saved = await c.post(
+                f"{url}translation-settings",
+                data={"translation_provider": "local", "translation_model": "nllb-200-distilled-600M"},
+                cookies=admin_cookie,
+                follow_redirects=False,
+            )
+        assert 'value="None"' not in html
+        assert "None — add its API key" not in html
+        assert 'data-provider="None"' not in html
+        assert saved.status_code == 303
+
+    @pytest.mark.anyio
     async def test_booth_detail_shows_whep_url(self, admin_cookie, seed_event):
         event, room, booth = seed_event
         async with _client() as c:
@@ -1758,6 +2479,34 @@ class TestBoothCRUD:
                 cookies=admin_cookie,
             )
         assert b"testcon/1/en/whep" in resp.content
+
+    @pytest.mark.anyio
+    async def test_booth_and_room_pages_link_the_subtitle_overlay(self, admin_cookie, seed_event):
+        event, room, booth = seed_event
+        booth_page = f"/admin/events/{event.id}/rooms/{room.id}/booths/{booth.id}/"
+        room_page = f"/admin/events/{event.id}/rooms/{room.id}/"
+        overlay = f"/overlay/{event.slug}/{room.id}/{booth.language_code}?code=ROOM42".encode()
+
+        async with _client() as c:
+            no_code = await c.get(booth_page, cookies=admin_cookie)
+        assert b"Subtitles Overlay (OBS / vMix)" in no_code.content
+        assert b"Generate a listener join code" in no_code.content
+        assert b"/overlay/" not in no_code.content
+
+        from portal.database import get_session
+
+        async with get_session() as s:
+            db_event = await s.get(type(event), event.id)
+            assert db_event is not None
+            db_event.listener_join_code = "ROOM42"
+
+        async with _client() as c:
+            booth_resp = await c.get(booth_page, cookies=admin_cookie)
+            room_resp = await c.get(room_page, cookies=admin_cookie)
+        assert overlay in booth_resp.content
+        assert b'data-copy-target="overlay-url"' in booth_resp.content
+        assert overlay in room_resp.content
+        assert b"Captions overlay" in room_resp.content
 
     @pytest.mark.anyio
     async def test_booth_detail_shows_mediamtx_path(self, admin_cookie, seed_event):
@@ -1770,7 +2519,8 @@ class TestBoothCRUD:
         assert b"testcon/1/en" in resp.content
 
     @pytest.mark.anyio
-    async def test_booth_detail_shows_invite_tokens(self, admin_cookie, seed_event):
+    async def test_team_page_shows_booth_invite_links(self, admin_cookie, seed_event):
+        # Invite links moved from the booth page to the event's Team page (#757).
         event, room, booth = seed_event
         from portal.database import create_invite_token, get_session
 
@@ -1778,12 +2528,15 @@ class TestBoothCRUD:
             await create_invite_token(s, booth_id=booth.id, role="interpreter", label="Alice")
 
         async with _client() as c:
-            resp = await c.get(
+            booth_page = await c.get(
                 f"/admin/events/{event.id}/rooms/{room.id}/booths/{booth.id}/",
                 cookies=admin_cookie,
             )
-        assert b"Alice" in resp.content
-        assert b"interpreter" in resp.content.lower()
+            team_page = await c.get(f"/admin/events/{event.id}/team/", cookies=admin_cookie)
+        assert b"Alice" not in booth_page.content
+        assert b"/team/" in booth_page.content
+        assert b"Alice" in team_page.content
+        assert b"Interpreter" in team_page.content
 
     @pytest.mark.anyio
     async def test_delete_booth(self, admin_cookie, seed_event):
@@ -2526,17 +3279,18 @@ async def test_user_list_badge_uses_singular_for_one_user(admin_cookie):
     [
         "/admin/setup",
         "/admin/events/{event}/setup/rooms",
-        "/admin/events/{event}/setup/booths",
         "/admin/events/{event}/setup/invite",
+        "/admin/events/{event}/rooms/new",
+        "/admin/events/{event}/rooms/{room}/setup",
     ],
 )
 async def test_setup_wizard_pages_have_no_inline_styles(path, admin_cookie, seed_event):
     import re
 
-    event, _, _ = seed_event
+    event, room, _ = seed_event
 
     async with _client() as c:
-        resp = await c.get(path.format(event=event.id), cookies=admin_cookie)
+        resp = await c.get(path.format(event=event.id, room=room.id), cookies=admin_cookie)
 
     assert resp.status_code == 200
     assert not re.search(rb"\sstyle\s*=", resp.content, re.IGNORECASE)
@@ -2578,7 +3332,7 @@ async def test_admin_pages_have_a_toast_live_region(admin_cookie, seed_event):
     "path",
     [
         "/admin/events/{event}/",
-        "/admin/events/{event}/members/",
+        "/admin/events/{event}/team/",
         "/admin/events/{event}/api-settings/",
         "/admin/events/{event}/rooms/{room}/booths/{booth}/",
         "/admin/events/{event}/rooms/{room}/",

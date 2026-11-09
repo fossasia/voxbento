@@ -2,21 +2,24 @@
 
 Covers:
 - Repeated bad join codes from one client get throttled with 429
-- A valid join code succeeds and is not throttled
+- Further guesses, including correct codes, are blocked until the window expires
 - A client holding a valid session cookie reaches the listener page and is never throttled
 - Viewing the join page, and polling for the room audio delay, are not join-code attempts
 - A wrong code submitted through the listener_code_ cookie is still throttled
+- A stale cookie left from before a code regenerate costs one attempt, not one per poll, and the tab
+  recovers once the new code is entered
 """
 
 from __future__ import annotations
 
 import os
+import types
 
 os.environ["BOOTH_ACCESS_TOKEN"] = ""
 
 import pytest
 
-from portal.routers import listener as listener_router
+from portal import join_code_limit
 
 # ---------------------------------------------------------------------------
 # Fixtures
@@ -37,9 +40,9 @@ async def setup_db():
 @pytest.fixture(autouse=True)
 def reset_rate_limit_state():
     """Rate-limit state is a module-level dict shared across tests/clients."""
-    listener_router._join_code_attempts.clear()
+    join_code_limit._join_code_attempts.clear()
     yield
-    listener_router._join_code_attempts.clear()
+    join_code_limit._join_code_attempts.clear()
 
 
 @pytest.fixture
@@ -97,13 +100,18 @@ class TestListenerRateLimit:
             assert b"Too Many Attempts" in resp.content
 
     @pytest.mark.anyio
-    async def test_valid_code_succeeds_and_is_not_throttled(self, seed_event):
+    async def test_valid_guess_is_blocked_until_window_expires(self, seed_event, monkeypatch):
         event, _ = seed_event
         async with _client() as c:
             for _ in range(10):
                 resp = await c.get(f"/listener/{event.slug}?code=WRONGCODE")
                 assert resp.status_code == 200
 
+            resp = await c.get(f"/listener/{event.slug}?code=ROOM42")
+            assert resp.status_code == 429
+            assert 1 <= int(resp.headers["Retry-After"]) <= 60
+            now = join_code_limit.time.monotonic()
+            monkeypatch.setattr(join_code_limit, "time", types.SimpleNamespace(monotonic=lambda: now + 61))
             resp = await c.get(f"/listener/{event.slug}?code=ROOM42")
             assert resp.status_code == 200
             assert b"Invalid join code." not in resp.content
@@ -187,3 +195,60 @@ class TestListenerRateLimit:
                 resp = await c.get(f"/listener/{event.slug}/rooms/{room.id}/audio-delay")
                 assert resp.status_code == 200
                 assert resp.json() == {"audio_delay_ms": 0}
+
+    @pytest.mark.anyio
+    async def test_stale_cookie_after_regenerate_does_not_lock_out_same_ip(self, seed_event):
+        """A tab left open across a code regenerate keeps polling the audio delay with the old cookie."""
+        from portal.database import get_session
+        from portal.models import Event
+
+        event, room = seed_event
+        async with _client() as old_tab:
+            await old_tab.get(f"/listener/{event.slug}?code=ROOM42")
+            async with get_session() as s:
+                (await s.get(Event, event.id)).listener_join_code = "NEW999"
+
+            for _ in range(15):
+                resp = await old_tab.get(f"/listener/{event.slug}/rooms/{room.id}/audio-delay")
+                assert resp.status_code == 403
+            assert f"listener_code_{event.slug}" not in old_tab.cookies
+
+        async with _client() as new_listener:
+            resp = await new_listener.get(f"/listener/{event.slug}?code=NEW999")
+            assert resp.status_code == 200
+            assert b"Invalid join code." not in resp.content
+
+    @pytest.mark.anyio
+    async def test_stale_tab_recovers_once_the_new_code_is_entered(self, seed_event):
+        """The cleared tab keeps polling at no cost, so entering the new code in any tab brings it back."""
+        from portal.database import get_session
+        from portal.models import Event
+
+        event, room = seed_event
+        async with _client() as browser:
+            await browser.get(f"/listener/{event.slug}?code=ROOM42")
+            async with get_session() as s:
+                (await s.get(Event, event.id)).listener_join_code = "NEW999"
+            for _ in range(15):
+                resp = await browser.get(f"/listener/{event.slug}/rooms/{room.id}/audio-delay")
+                assert resp.status_code == 403
+
+            # The same browser joins again with the new code, e.g. from another tab.
+            await browser.get(f"/listener/{event.slug}?code=NEW999")
+            resp = await browser.get(f"/listener/{event.slug}/rooms/{room.id}/audio-delay")
+            assert resp.status_code == 200
+            assert resp.json() == {"audio_delay_ms": 0}
+
+    @pytest.mark.anyio
+    async def test_wrong_query_code_keeps_a_valid_cookie(self, seed_event):
+        """Only a failed cookie is cleared; a bad ?code= must not log out a listener whose cookie still works."""
+        event, room = seed_event
+        async with _client() as c:
+            await c.get(f"/listener/{event.slug}?code=ROOM42")
+            resp = await c.get(f"/listener/{event.slug}/rooms/{room.id}/audio-delay?code=WRONGCODE")
+            assert resp.status_code == 403
+            assert resp.json() == {"detail": "Listener access required"}
+            assert "set-cookie" not in resp.headers
+
+            resp = await c.get(f"/listener/{event.slug}/rooms/{room.id}/audio-delay")
+            assert resp.status_code == 200

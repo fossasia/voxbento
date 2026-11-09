@@ -9,6 +9,7 @@ from fastapi import WebSocket
 from portal.auth import can_perform_role
 from portal.booth_identity import booth_id_to_mediamtx_path
 from portal.booth_publish import TICKET_TTL_SECS, issue_ticket
+from portal.roles import INTERPRETER, can_set_active
 
 if TYPE_CHECKING:
     from portal.booth_state import BoothRegistry, Participant
@@ -84,7 +85,7 @@ class BoothProtocolCoordinator:
         of the new booth state.
         """
         display_name = data.get("display_name", "Interpreter")
-        role = data.get("role", "interpreter")
+        role = data.get("role", INTERPRETER)
         language = data.get("language") or session.language
         if not language:
             await ws.send_text(
@@ -123,6 +124,17 @@ class BoothProtocolCoordinator:
                 await ws.send_text(json.dumps({"type": "booth:error", "message": "room_id must be an integer."}))
                 return
 
+        # If an already-joined session sends booth:join with a different or omitted
+        # participant_id, remove the previous participant first so no stale record is leaked.
+        if session.participant_id is not None and participant_id != session.participant_id:
+            await self.booths.leave_participant(
+                session.booth_id,
+                session.participant_id,
+                session.language or "",
+                session.channel_id,
+            )
+            session.participant_id = None
+
         async def _send_joined(participant: Participant, state: dict) -> None:
             await ws.send_text(
                 json.dumps({"type": "booth:joined", "participant_id": participant.participant_id, "state": state})
@@ -139,6 +151,7 @@ class BoothProtocolCoordinator:
                 room_id=room_id,
                 before_broadcast=_send_joined,
                 reclaim=participant_id is not None and participant_id == session.participant_id,
+                joined_by=getattr(session, "session_key", None),
             )
         except (ValueError, PermissionError) as exc:
             await ws.send_text(json.dumps({"type": "booth:error", "message": str(exc)}))
@@ -148,7 +161,7 @@ class BoothProtocolCoordinator:
         session.language = language
         session.channel_id = channel_id
 
-        if role == "interpreter":
+        if role == INTERPRETER:
             import portal.webhooks.worker as _wh_worker
 
             await _wh_worker.enqueue_webhook(
@@ -234,7 +247,7 @@ class BoothProtocolCoordinator:
 
     async def handle_set_broadcast_unlocked(self, ws: WebSocket, session: Session, data: dict) -> None:
         """Handle managing the booth broadcast lock (Room Coordinators and admins only)."""
-        if session.granted_role not in ("room_coordinator", "event_owner", "super_admin"):
+        if not can_set_active(session.granted_role):
             await ws.send_text(
                 json.dumps({"type": "booth:error", "message": "Only Room Coordinators can manage broadcast lock."})
             )
@@ -246,7 +259,10 @@ class BoothProtocolCoordinator:
                 )
             )
             return
-        unlocked = bool(data.get("unlocked"))
+        unlocked = data.get("unlocked")
+        if not isinstance(unlocked, bool):
+            await ws.send_text(json.dumps({"type": "booth:error", "message": "unlocked must be a boolean."}))
+            return
         try:
             await self.booths.set_broadcast_unlocked(session.booth_id, unlocked, session.language, session.channel_id)
         except Exception as exc:

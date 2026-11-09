@@ -13,9 +13,11 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from portal.auth import require_user
+from portal.config import settings
 from portal.database import get_db_session
 from portal.globals import asset_version_context
 from portal.models import DeveloperAccount, OAuthAuditLog, OAuthClient, WebhookSubscription
+from portal.notifications import queue_notification
 from portal.user_menu import resolve_user_menu, user_menu_context
 
 logger = logging.getLogger(__name__)
@@ -184,6 +186,13 @@ async def apply_for_developer(
     )
     db.add(account)
     await db.flush()
+    await queue_notification(
+        db,
+        "developer_account",
+        str(user["email"]),
+        {"message": "We received your developer account request.", "login_url": f"{settings.public_base_url.rstrip('/')}/developer"},
+        idempotency_key=f"developer-account:{account.id}:received",
+    )
 
     return RedirectResponse(url="/developer", status_code=status.HTTP_303_SEE_OTHER)
 

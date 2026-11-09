@@ -96,15 +96,15 @@ Roles in Voxbento are scoped per event, and each role carries a distinct set of 
 
 | Role | What they can do |
 | --- | --- |
-| `listener` | View booths and listen to audio streams (receive-only) |
-| `support` | View booths, monitoring feed, and live states (observer; no chat or publish) |
-| `interpreter` | View booths, participate in booth coordination chat, and publish audio via WHIP when designated active |
-| `room_coordinator` | All interpreter permissions, plus assign active interpreters and manage live handoffs |
-| `event_owner` | All room_coordinator permissions, plus manage rooms, booths, and generate invite tokens |
-| `super_admin` | Global access across all events, user management, and system administration |
+| **Interpreter** | View booths, use the booth chat, and publish audio via WHIP when designated active |
+| **Room coordinator** | Everything an Interpreter can do, plus choose the active interpreter, use Mission Control and control floor transcription |
+| **Event owner** | Everything a Room coordinator can do, plus edit the event and manage its rooms, booths, team and keys |
+| **Admin** | Everything, in every event, plus managing users, Admins, hosting access and developer apps |
+
+See [Roles](../admin/members-and-roles) for the full table. Listening is open to everyone with the event link or join code and needs no role.
 
 :::tip
-Assign `interpreter` to interpreters, `room_coordinator` only to the booth room_coordinator managing handoffs, and `event_owner` only to the person responsible for setting up the event. Listeners do not need any elevated role.
+Give **Interpreter** to interpreters, **Room coordinator** only to the person running handoffs in a room, and **Event owner** only to people responsible for setting up the event.
 :::
 
 To remove a role, go to the event or booth detail page, find the user in the **Members** section, and click **Remove**.

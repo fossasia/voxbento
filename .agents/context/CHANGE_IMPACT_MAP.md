@@ -158,6 +158,14 @@ TTS manager, `program-delivery.js` and listener client. Preserve interpreter
 browser publishing. Update `docs/program-stream-ingest.md` and run native media
 smoke tests in addition to unit tests before production sign-off.
 
+Ingest modes (`rooms.program_ingest_mode`, constants in `portal/program_relay.py`):
+`whip`, `rtmps` (VoxBento as an extra RTMPS destination, no relay; operator switch
+`PROGRAM_RTMPS_ENABLED` via `docker-compose.rtmps.yml` / `setup-youtube-relay.sh --ingest-only`)
+and `rtmps_relay`. `RTMPS_MODES` decides the RTMPS transport (`publish_permitted`,
+`reserved_source`, `presented_secret` via `settings.rtmps_ingest_enabled`); relay-only paths
+(`relay_request`, `reconcile_once`, `program_relay.sync`) keep checking `RELAY_MODE` exactly.
+Session secrets from the browser sender never authorize RTMPS. Tests: `tests/test_program_rtmps.py`.
+
 ---
 
 ## 13. Modifying AI Interpretation Settings & Vocabulary
@@ -179,6 +187,8 @@ smoke tests in addition to unit tests before production sign-off.
 1. `portal/program_relay.py` — destination encryption/decryption, relay reconciliation, health checking
 2. `portal/routers/program_ingest.py` — relay mode endpoints (`PUT/DELETE .../program-relay`)
 3. `program-relay/relay.py` — standalone media relay service pulling RTSP and pushing RTMPS
-4. `docker-compose.relay.yml` — deployment definition for `program-relay` service
+4. `docker-compose.relay.yml` — deployment definition for `program-relay` service; selected by
+   `COMPOSE_FILE` in `.env` (written by `scripts/setup-youtube-relay.sh`), and `.github/workflows/deploy.yml`
+   refuses a deploy that would remove a running `program-relay`
 5. `portal/config.py` — relay configuration settings (`program_relay_*`)
 6. `docs/program-relay.md` — operational documentation and architecture notes

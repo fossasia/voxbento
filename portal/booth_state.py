@@ -3,7 +3,7 @@ from __future__ import annotations
 import asyncio
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
-from typing import Awaitable, Callable, Literal, Protocol
+from typing import Awaitable, Callable, Protocol
 from uuid import uuid4
 
 from portal.booth_identity import (
@@ -15,6 +15,7 @@ from portal.booth_identity import (
     validate_instance,
     validate_language_code,
 )
+from portal.roles import Role, can_go_live, can_set_active, role_label
 from portal.tasks import track_task
 
 
@@ -28,13 +29,11 @@ class BoothEventPublisher(Protocol):
         ...
 
 
-ParticipantRole = Literal[
-    "super_admin",
-    "event_owner",
-    "room_coordinator",
-    "interpreter",
-    "support",
-]
+# Booth roles come from portal.roles, the one place roles are defined (#757).
+ParticipantRole = Role
+
+# Every booth:state carries recent chat messages, so keep each one small.
+CHAT_MESSAGE_MAX_LENGTH = 1000
 
 
 def utc_now_iso() -> str:
@@ -53,6 +52,24 @@ class Participant:
     connected: bool = True
     joined_at: str = field(default_factory=utc_now_iso)
     updated_at: str = field(default_factory=utc_now_iso)
+    # Key of the session that joined (see portal.auth.booth_session_key). Server-only.
+    joined_by: str | None = field(default=None, repr=False)
+
+
+def participant_public_dict(participant: Participant) -> dict:
+    """A participant as sent to browsers, with what their role allows.
+
+    Clients use ``can_go_live`` / ``can_set_active`` instead of comparing role
+    names, so roles stay defined only in portal.roles.
+    """
+    public = asdict(participant)
+    del public["joined_by"]
+    return {
+        **public,
+        "role_label": role_label(participant.role),
+        "can_go_live": can_go_live(participant.role),
+        "can_set_active": can_set_active(participant.role),
+    }
 
 
 @dataclass
@@ -111,7 +128,7 @@ class Booth:
             "handoff_initiator_id": self.handoff_initiator_id,
             "broadcast_unlocked": self.broadcast_unlocked,
             "ingest_status": self.ingest_status,
-            "participants": [asdict(p) for p in self.participants.values()],
+            "participants": [participant_public_dict(p) for p in self.participants.values()],
             "chat_messages": [asdict(m) for m in self.chat_messages[-100:]],
         }
 
@@ -119,13 +136,12 @@ class Booth:
 def _pick_next_interpreter(booth: Booth) -> str | None:
     """Return the next active-interpreter-eligible participant ID, or None.
 
-    Any role with BOOTH_GO_LIVE permission qualifies: interpreter,
-    room_coordinator, event_owner, super_admin.  Mission control no longer
+    Any role that can go live qualifies (see portal.roles).  Mission control no longer
     calls booth:join (silent observer mode), so these roles will only be
     present when the participant is actually in the interpreter booth.
     """
     for p in booth.participants.values():
-        if p.role in ("interpreter", "room_coordinator", "event_owner", "super_admin"):
+        if can_go_live(p.role):
             return p.participant_id
     return None
 
@@ -246,12 +262,14 @@ class BoothRegistry:
         before_broadcast: Callable[[Participant, dict], Awaitable[None]] | None = None,
         *,
         reclaim: bool = False,
+        joined_by: str | None = None,
     ) -> tuple[Participant, dict]:
         """Add a participant, auto-assigning the active slot if it is free.
 
         An ID already present in the booth is honoured only with ``reclaim``
         (the caller's own socket already holds it); anyone else naming it gets a
         fresh ID instead of taking over that record, e.g. the active interpreter's.
+        ``joined_by`` records the session that joined, for checks made outside the socket.
         """
         async with self._lock:
             booth = self._get_or_create_booth(booth_id, language, channel_id, room_id=room_id)
@@ -263,25 +281,31 @@ class BoothRegistry:
                 role=role,
                 language=language.strip() or booth.language,
                 channel_id=channel_id.strip() or booth.channel_id,
+                joined_by=joined_by,
             )
             booth.participants[participant.participant_id] = participant
             # Auto-assign active slot to any role that can go live.
             # Mission control now uses silent-observer mode (no booth:join),
             # so only real interpreter-booth participants appear here.
-            if (
-                participant.role in ("interpreter", "room_coordinator", "event_owner", "super_admin")
-                and booth.active_interpreter_id is None
-            ):
+            if can_go_live(participant.role) and booth.active_interpreter_id is None:
                 booth.active_interpreter_id = participant.participant_id
             state = booth.as_public_dict()
             broadcast_lock = booth._broadcast_lock
 
         async with broadcast_lock:
+            before_err: Exception | None = None
             if before_broadcast is not None:
-                await before_broadcast(participant, state)
+                try:
+                    await before_broadcast(participant, state)
+                except Exception as exc:
+                    before_err = exc
 
-            if self._publisher is not None:
-                await self._publisher.broadcast_booth(booth_id, {"type": "booth:state", "state": state})
+            try:
+                if self._publisher is not None:
+                    await self._publisher.broadcast_booth(booth_id, {"type": "booth:state", "state": state})
+            finally:
+                if before_err is not None:
+                    raise before_err
 
         return participant, state
 
@@ -348,22 +372,24 @@ class BoothRegistry:
             state = booth.as_public_dict()
             broadcast_lock = booth._broadcast_lock
 
+        # Locking the booth must immediately stop everything tied to it: the
+        # transcription worker (which pulls audio independently of any browser)
+        # is torn down here so captions stop even if the interpreter's client is
+        # unresponsive. Publisher mic/ingest state is already reset inside
+        # set_broadcast_unlocked.
+        # Worker shutdown happens outside broadcast_lock so slow worker teardown
+        # does not block booth event serialization.
+        if not unlocked:
+            try:
+                from portal.transcription.worker import stop_transcription_worker
+
+                await stop_transcription_worker(booth_id)
+            except Exception as e:
+                import logging
+
+                logging.getLogger(__name__).warning("Failed to stop transcription on lock: %s", e)
+
         async with broadcast_lock:
-            # Locking the booth must immediately stop everything tied to it: the
-            # transcription worker (which pulls audio independently of any browser)
-            # is torn down here so captions stop even if the interpreter's client is
-            # unresponsive. Publisher mic/ingest state is already reset inside
-            # set_broadcast_unlocked.
-            if not unlocked:
-                try:
-                    from portal.transcription.worker import stop_transcription_worker
-
-                    await stop_transcription_worker(booth_id)
-                except Exception as e:
-                    import logging
-
-                    logging.getLogger(__name__).warning("Failed to stop transcription on lock: %s", e)
-
             if self._publisher is not None:
                 booth_err: Exception | None = None
                 try:
@@ -396,20 +422,30 @@ class BoothRegistry:
         language: str,
         channel_id: str,
     ) -> dict:
+        """Make *target_id* the active interpreter and take everyone else off air.
+
+        Only roles that can set active (room coordinators, event owners,
+        Admins) or the current active interpreter may do this. A passive
+        interpreter cannot name themselves here: that would take the mic from
+        whoever is live, so they have to use the handoff flow instead.
+
+        Raises ``ValueError`` if either participant is missing or the target
+        cannot go live, and ``PermissionError`` if the requester may not
+        reassign.
+        """
         async with self._lock:
             booth = self._get_or_create_booth(booth_id, language, channel_id)
             requester = booth.participants.get(requester_id)
             target = booth.participants.get(target_id)
             if requester is None or target is None:
                 raise ValueError("Requester or target participant does not exist in this booth.")
-            if target.role not in ("interpreter", "room_coordinator", "event_owner", "super_admin"):
-                raise ValueError("Only interpreters or admins can be set active.")
-            requester_is_admin = requester.role in ("room_coordinator", "event_owner", "super_admin")
+            if not can_go_live(target.role):
+                raise ValueError("Only people who can go live can be set active.")
+            requester_can_reassign = can_set_active(requester.role)
             requester_is_active = booth.active_interpreter_id == requester_id
-            requester_is_target = requester_id == target_id
-            if not requester_is_admin and not requester_is_active and not requester_is_target:
+            if not requester_can_reassign and not requester_is_active:
                 raise PermissionError(
-                    "Only coordinators/admins or the active interpreter can reassign another interpreter."
+                    "Only room coordinators, event owners, Admins or the active interpreter can reassign another interpreter."
                 )
             booth.active_interpreter_id = target_id
             # A direct reassignment supersedes any handoff in progress.
@@ -449,16 +485,13 @@ class BoothRegistry:
             requester = booth.participants.get(requester_id)
             if requester is None:
                 raise ValueError("Requester is not in this booth.")
-            if requester.role not in ("interpreter", "room_coordinator", "event_owner", "super_admin"):
+            if not can_go_live(requester.role):
                 raise PermissionError("Only interpreters and coordinators can initiate handoffs.")
             if booth.handoff_state != "idle":
                 raise ValueError("A handoff is already in progress.")
             # Need at least one other participant who can take over
             other_interpreters = [
-                p
-                for p in booth.participants.values()
-                if p.role in ("interpreter", "room_coordinator", "event_owner", "super_admin")
-                and p.participant_id != requester_id
+                p for p in booth.participants.values() if can_go_live(p.role) and p.participant_id != requester_id
             ]
             if not other_interpreters:
                 raise ValueError("No other interpreter in the booth to hand off to.")
@@ -507,7 +540,7 @@ class BoothRegistry:
                 # Active offered → passive accepts → passive becomes active
                 if booth.active_interpreter_id == acceptor_id:
                     raise ValueError("Active interpreter cannot accept an offer they did not initiate.")
-                if acceptor.role not in ("interpreter", "room_coordinator", "event_owner", "super_admin"):
+                if not can_go_live(acceptor.role):
                     raise PermissionError("Only interpreters and coordinators can take over the mic.")
                 new_active = acceptor_id
             elif booth.handoff_state == "requested":
@@ -576,6 +609,8 @@ class BoothRegistry:
             sender = booth.participants.get(sender_id)
             if sender is None:
                 raise ValueError("Sender is not registered in booth.")
+            if not isinstance(body, str):
+                raise ValueError("Message body must be a string.")
             message = ChatMessage(
                 message_id=uuid4().hex,
                 sender_id=sender_id,
@@ -584,6 +619,8 @@ class BoothRegistry:
             )
             if not message.body:
                 raise ValueError("Message body cannot be empty.")
+            if len(message.body) > CHAT_MESSAGE_MAX_LENGTH:
+                raise ValueError(f"Message must not exceed {CHAT_MESSAGE_MAX_LENGTH} characters.")
             booth.chat_messages.append(message)
             if len(booth.chat_messages) > 500:
                 booth.chat_messages = booth.chat_messages[-500:]
@@ -641,10 +678,9 @@ class BoothRegistry:
             ):
                 if value is not None and not isinstance(value, bool):
                     raise ValueError(f"{name} must be a boolean.")
-            from portal.roles import Permission, has_permission
 
             wants_publisher_state = mic_active is True or ingest_connected is True
-            if wants_publisher_state and not has_permission(participant.role, Permission.BOOTH_GO_LIVE):
+            if wants_publisher_state and not can_go_live(participant.role):
                 raise PermissionError("Your role does not permit publishing audio.")
             if wants_publisher_state and booth.active_interpreter_id != participant_id:
                 raise PermissionError("Only the active interpreter can mark mic or ingest active.")
@@ -678,17 +714,23 @@ class BoothRegistry:
         1. Participant's role must carry BOOTH_GO_LIVE permission.
         2. Participant must be the booth's active interpreter.
         """
-        from portal.roles import Permission, has_permission
 
         async with self._lock:
             booth = self._get_or_create_booth(booth_id, language, channel_id)
             participant = booth.participants.get(participant_id)
             if participant is None:
                 raise ValueError("Participant does not exist in booth.")
-            if not has_permission(participant.role, Permission.BOOTH_GO_LIVE):
+            if not can_go_live(participant.role):
                 raise PermissionError("Your role does not permit publishing audio.")
             if booth.active_interpreter_id != participant_id:
                 raise PermissionError("Only the active interpreter can publish audio.")
+
+    async def can_stop_live(self, booth_id: str, session_keys: set[str]) -> bool:
+        """True if nobody in the booth is live, or one of *session_keys* joined the live participant."""
+        async with self._lock:
+            booth = self._booths.get(booth_id)
+            active = booth.participants.get(booth.active_interpreter_id) if booth else None
+            return active is None or active.joined_by in session_keys
 
     async def list_booths_for_event(self, event_slug: str) -> list[dict]:
         """Return public snapshots of all booths belonging to *event_slug*."""
