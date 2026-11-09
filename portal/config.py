@@ -190,5 +190,11 @@ class Settings(BaseSettings):
             raise ValueError("public_base_url must not include a query string or fragment")
         return value
 
+    @field_validator("youtube_oauth_client_id", "youtube_oauth_client_secret")
+    @classmethod
+    def strip_youtube_oauth_client(cls, value: str) -> str:
+        """Trim pasted OAuth credentials so a whitespace-only value counts as unset."""
+        return value.strip()
+
 
 settings = Settings()

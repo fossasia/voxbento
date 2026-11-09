@@ -302,6 +302,16 @@ def test_production_requires_both_client_settings():
     ).validate_production_secrets()
     with pytest.raises(RuntimeError, match="YOUTUBE_OAUTH_CLIENT_ID and YOUTUBE_OAUTH_CLIENT_SECRET"):
         Settings(**base, youtube_oauth_client_id=CLIENT_ID).validate_production_secrets()
+    blank_secret = Settings(**base, youtube_oauth_client_id=CLIENT_ID, youtube_oauth_client_secret="  \t")
+    assert blank_secret.youtube_oauth_client_secret == ""
+    assert not blank_secret.youtube_connect_enabled
+    with pytest.raises(RuntimeError, match="YOUTUBE_OAUTH_CLIENT_ID and YOUTUBE_OAUTH_CLIENT_SECRET"):
+        blank_secret.validate_production_secrets()
+    padded = Settings(
+        _env_file=None, youtube_oauth_client_id=f" {CLIENT_ID}\n", youtube_oauth_client_secret=CLIENT_SECRET
+    )
+    assert padded.youtube_oauth_client_id == CLIENT_ID
+    assert padded.youtube_connect_enabled
     assert "test-client-secret" not in repr(Settings(_env_file=None, youtube_oauth_client_secret=CLIENT_SECRET))
 
 
