@@ -200,3 +200,46 @@ class TestCaptionAggregator:
 
         finals = [msg for bid, msg in received if msg.get("status") == "final"]
         assert [m["text"] for m in finals] == ["retry me"]
+
+    async def test_a_failed_final_restores_the_rest_of_its_batch(self):
+        """A chunk can produce two FinalCaptions in one dispatch batch — a
+        settled sentence then a force-finalised remainder past the word cap.
+        If the first fails the loop used to terminate and the second was lost.
+        Both must be restored so the next clear publishes them whole."""
+        from portal.transcription.caption_stream import FinalCaption
+
+        received = []
+        finals_seen = {"n": 0}
+
+        async def fail_first_final(booth_id, message):
+            if message.get("status") == "final":
+                finals_seen["n"] += 1
+                if finals_seen["n"] == 1:
+                    raise RuntimeError("broadcast dropped")
+            await collect_broadcasts(booth_id, message, received)
+
+        aggregator = CaptionAggregator(fail_first_final)
+        # Construct the two-finals batch by hand: a settled sentence followed
+        # by a force-finalised long remainder, exactly what chunk() produces
+        # when a split leaves 50+ words behind.
+        events = [
+            FinalCaption("b", "First sentence here.", "seg-1", seq=1, utterance_start_time=1000.0),
+            FinalCaption("b", " ".join(f"word{n}" for n in range(55)), "seg-2", seq=2, utterance_start_time=1005.0),
+        ]
+
+        with pytest.raises(RuntimeError):
+            await aggregator._dispatch(events)
+
+        # Both finals must now sit in the buffer awaiting a retry; the second
+        # would have been lost before the fix.
+        buffered = aggregator.states["b"].current_utterance
+        assert "First sentence here." in buffered
+        assert "word54" in buffered
+
+        # Draining to a real broadcast proves the combined caption actually
+        # reaches listeners.
+        await aggregator.handle_clear("b")
+        final_payloads = [m for _, m in received if m.get("status") == "final"]
+        assert any(
+            "First sentence here." in m["text"] and "word54" in m["text"] for m in final_payloads
+        ), "the batch-restored finals must publish together on retry"
