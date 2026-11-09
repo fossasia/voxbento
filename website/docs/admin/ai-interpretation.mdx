@@ -84,7 +84,7 @@ This keeps real-time prompts compact, minimizing LLM inference latency.
 
 Operators can point VoxBento at their own OpenAI-compatible `/v1/chat/completions` server (Ollama, llama.cpp `llama-server`, vLLM, LM Studio). Rooms and booths then get persona, style and glossary support without a cloud API key.
 
-The server address is set only in the server environment. Event owners can pick the service and one of the allowed models, but they can never enter a URL. A model that isn't on the list is never saved: the room forms fall back to the first listed model, and the booth form and the API v1 room update reject it.
+The server address is set only in the server environment. Event owners can pick the service and one of the allowed models, but they can never enter a URL, and no request is ever sent for a model that isn't on the list. Translation can only be turned on with a listed model: the room forms fall back to the first listed model, and the booth form and the API v1 room update reject any other. Turning translation off always works.
 
 1. Start a model, for example with Ollama:
 
@@ -102,6 +102,8 @@ The server address is set only in the server environment. Event owners can pick 
 
    Leave out `/chat/completions`, and spell each model exactly as the server names it (`ollama list`). A model the server doesn't have fails every segment with a `404` in the portal log. Set `SELF_HOSTED_LLM_API_KEY` only if your server requires a key.
 
+   With Docker Compose, put them in `.env` and run `docker compose up -d portal`. That recreates the container with the new values; `docker compose restart` keeps the old ones.
+
    From the Docker portal container, use `http://host.docker.internal:11434/v1`. Docker Desktop resolves that name itself. On Linux, also add `extra_hosts: ["host.docker.internal:host-gateway"]` to the portal service, and make Ollama listen on an address the container can reach (`OLLAMA_HOST`; it binds to `127.0.0.1` by default). Ollama has no authentication, so don't expose it beyond your own machine or network.
 
 3. Choose **Self-hosted LLM** as the service in the **Translation** card of the room's **AI settings** tab, or on the booth's **Translations** tab. If only the URL is set, the room setup page says `SELF_HOSTED_LLM_MODELS` is missing.
@@ -110,7 +112,7 @@ If you later remove the server or a model, rooms and booths that used it show it
 
 ### Reasoning models
 
-Reasoning models (for example `qwen3`, `deepseek-r1`, `gpt-oss`) think before they answer. VoxBento never shows that thinking to listeners: when a server returns it inside the answer as `<think>...</think>`, it is removed, and an answer that stops while still thinking counts as a failed segment. Replies are capped at 1024 tokens. The thinking takes time, so a reasoning model is usually slower than a plain instruct model of the same size.
+Reasoning models (for example `qwen3`, `deepseek-r1`, `gpt-oss`) think before they answer. VoxBento never shows that thinking to listeners: when a server returns it inside the answer as `<think>...</think>`, it is removed, and an answer that stops while still thinking counts as a failed segment. Replies are capped at 1024 tokens, and a reply cut off at that limit also counts as a failed segment. The thinking takes time, so a reasoning model is usually slower than a plain instruct model of the same size.
 
 ### Latency
 
