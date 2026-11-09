@@ -111,6 +111,11 @@ class CaptionStream:
         if tail:
             state.current_utterance = f"{event.text} {tail}"
             state.current_word_count = len(state.current_utterance.split())
+            # Keep the buffer's id (the newer utterance's identity is not ours
+            # to overwrite) but take the earlier start time, so program-playback
+            # timing stays pinned to when the restored speech began. The two
+            # times being equal is a no-op.
+            state.utterance_start_time = min(state.utterance_start_time, event.utterance_start_time)
             return
         state.current_utterance = event.text
         state.utterance_start_time = event.utterance_start_time
