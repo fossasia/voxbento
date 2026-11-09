@@ -34,7 +34,7 @@ def test_sqlite_files_ignored_by_git(pattern: str, sample_file: str) -> None:
         pytest.skip("git binary or .git repository not available")
 
     res = subprocess.run(
-        [git_bin, "check-ignore", "-v", sample_file],
+        [git_bin, "check-ignore", "-v", "--no-index", sample_file],
         cwd=ROOT,
         capture_output=True,
         text=True,
@@ -45,8 +45,8 @@ def test_sqlite_files_ignored_by_git(pattern: str, sample_file: str) -> None:
     # Verbose output format is: <source>:<lineno>:<pattern>\t<pathname>
     parts = res.stdout.strip().split("\t")
     assert len(parts) >= 2, f"Unexpected check-ignore output format: {res.stdout}"
-    source_info = parts[0].split(":")
-    assert len(source_info) >= 3, f"Unexpected source format in check-ignore: {parts[0]}"
+    source_info = parts[0].rsplit(":", 2)
+    assert len(source_info) == 3, f"Unexpected source format in check-ignore: {parts[0]}"
     matched_pattern = source_info[2]
     assert matched_pattern == pattern, (
         f"Expected '{sample_file}' to be ignored specifically by rule '{pattern}', "
