@@ -175,26 +175,22 @@ SPEECH_MODELS: dict[str, tuple[tuple[str, str], ...]] = {
     ),
     "atlascloud": (("bytedance/seed-asr-2.0", "Seed ASR 2.0"),),
     "nvidia": (("parakeet-rnnt", "Parakeet RNNT"), ("parakeet-ctc", "Parakeet CTC")),
-    "local": (("tiny", "Tiny, fastest"), ("base", "Base, more accurate but slower")),
+    "local": (
+        ("tiny", "Tiny, fastest"),
+        ("base", "Base, more accurate but slower"),
+        ("small", "Small, more accurate again"),
+        ("medium", "Medium, needs a strong server"),
+        ("large-v2", "Large v2, very accurate but slow"),
+        ("large-v3", "Large v3, the most accurate and the slowest"),
+    ),
 }
 
-# The larger built-in Whisper sizes a booth can use on top of the room's two.
-_LARGER_LOCAL_MODELS = (
-    ("small", "Small, more accurate again"),
-    ("medium", "Medium, needs a strong server"),
-    ("large-v2", "Large v2, very accurate but slow"),
-    ("large-v3", "Large v3, the most accurate and the slowest"),
-)
-
-
 def booth_speech_models() -> dict[str, tuple[tuple[str, str], ...]]:
-    """The caption models a booth can save: the room's list limited to what a booth accepts, plus the larger built-in sizes."""
-    models = {
+    """The caption models a booth can save: the room's list limited to what a booth accepts."""
+    return {
         provider: tuple((value, label) for value, label in options if value in ALLOWED_MODELS[ProviderEnum(provider)])
         for provider, options in SPEECH_MODELS.items()
     }
-    models["local"] += _LARGER_LOCAL_MODELS
-    return models
 
 
 _BRANDS = {
