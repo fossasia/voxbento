@@ -116,10 +116,10 @@ Reasoning models (for example `qwen3`, `deepseek-r1`, `gpt-oss`) think before th
 
 ### Latency
 
-Each caption segment gets 10 seconds for its translation request. A slower answer fails that segment for that language, the listener sees it marked as failed, and the next segment carries on. The portal stays responsive and rooms on other services are unaffected, but every room and language that uses the self-hosted server shares it, so requests queue on a busy server.
+The server has 10 seconds to send its answer once the request is sent, and each translation gets 12 seconds in total. A slower answer fails that segment for that language, the listener sees it marked as failed, and the next segment carries on. The portal stays responsive and rooms on other services are unaffected, but every room and language that uses the self-hosted server shares it, so requests queue on a busy server.
 
 - Pick the smallest instruct model that translates your languages well enough, and test it with real talks before the event, with as many rooms and languages running at once as you expect.
-- On CPU only, loading the model takes longer and requests that arrive together queue up, so more of them miss the 10 seconds.
+- On CPU only, loading the model takes longer and requests that arrive together queue up, so more of them miss the limit.
 - Ollama unloads a model after 5 minutes idle, and the next request waits for it to load again. Set `OLLAMA_KEEP_ALIVE=-1` to keep it loaded during the event.
 
 Measured on an Apple M5 with Ollama 0.40.15, through VoxBento's own request path with a persona, style and glossary entry:
