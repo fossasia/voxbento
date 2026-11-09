@@ -718,7 +718,7 @@ async def test_booth_left_on_a_removed_server_can_still_turn_translation_off(adm
 
 # ── API v1 ─────────────────────────────────────────────────────────────────
 
-API_TOKEN = "self-hosted-api-token"
+ACCESS_TOKEN = "self-hosted-access-token"
 
 
 @pytest.fixture
@@ -741,7 +741,7 @@ async def api_event(setup_db):
                 user_id=user.id,
                 event_id=event.id,
                 scopes=["rooms:write"],
-                access_token_hash=hash_token(API_TOKEN),
+                access_token_hash=hash_token(ACCESS_TOKEN),
                 expires_at=datetime.now(timezone.utc) + timedelta(hours=1),
             )
         )
@@ -751,7 +751,7 @@ async def api_event(setup_db):
 async def _put_room(body: dict):
     async with _client({}) as client:
         return await client.put(
-            "/api/v1/events/apicon/rooms/hall-1", json=body, headers={"Authorization": f"Bearer {API_TOKEN}"}
+            "/api/v1/events/apicon/rooms/hall-1", json=body, headers={"Authorization": f"Bearer {ACCESS_TOKEN}"}
         )
 
 
