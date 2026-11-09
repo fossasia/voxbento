@@ -284,7 +284,7 @@
           <select id="translation_model" name="translation_model">
             {% for provider, models in translation_models.items() %}
             {% for value, label in models %}
-            <option value="{{ value }}" data-provider="{{ provider }}" {% if booth.translation_model == value %}selected{% endif %}>{{ label }}</option>
+            <option value="{{ value }}" data-provider="{{ provider }}" {% if booth.translation_provider == provider and booth.translation_model == value %}selected{% endif %}>{{ label }}</option>
             {% endfor %}
             {% endfor %}
           </select>

@@ -2046,7 +2046,7 @@ BOOTH_SAVE_NOTICES = {
     "settings": "Booth details saved.",
 }
 BOOTH_WORKER_NOTICES = {
-    "restarted": "The caption worker was restarted with the new settings.",
+    "restarted": "The caption worker was restarted with the saved settings.",
     "stopped": "The caption worker was stopped.",
     "kept": "Nothing changed, so the caption worker kept running.",
     "off": "Captions stay off.",
@@ -2057,6 +2057,7 @@ BOOTH_ERROR_NOTICES = {
     "server": "That service is not available on this server. Pick another service and save again; nothing was changed.",
     "api_off": "External transcription is turned off for this event. Turn it on under API keys, or pick Local; nothing was changed.",
     "no_key": "That service has no API key on this event. Add its key under API keys, or pick another service; nothing was changed.",
+    "api_off_no_key": "External transcription is turned off for this event and that service has no API key. Turn it on and add the key under API keys, or pick Local; nothing was changed.",
 }
 BOOTH_IDLE_WORKER_NOTICE = "These settings are used the next time an interpreter goes live."
 
@@ -2520,13 +2521,10 @@ async def admin_transcription_settings(
             )
         if transcription_enabled and provider_enum != ProviderEnum.LOCAL:
             # Both are fixed on the API keys page, so say so on the Captions tab instead of showing a bare 400.
-            missing = (
-                "api_off"
-                if not event.transcription_api_enabled
-                else "no_key"
-                if not get_api_key(event, provider_enum)
-                else ""
-            )
+            # Name both when both are missing, so fixing one does not lead to a second refusal.
+            api_off = not event.transcription_api_enabled
+            no_key = not get_api_key(event, provider_enum)
+            missing = "api_off_no_key" if api_off and no_key else "api_off" if api_off else "no_key" if no_key else ""
             if missing:
                 return safe_redirect(
                     url=_booth_saved_url(request, event_id, room_id, booth_id, "captions", error=missing),

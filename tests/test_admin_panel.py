@@ -2355,7 +2355,7 @@ class TestBoothCRUD:
             await _update_row(type(booth), booth.id, transcription_model="base")
             location, page = await save(c, enabled=True)
             assert location == f"{url}?saved=captions&worker=restarted#captions"
-            assert "Caption settings saved. The caption worker was restarted with the new settings." in page
+            assert "Caption settings saved. The caption worker was restarted with the saved settings." in page
             assert calls == ["stop", "start"]
 
             location, page = await save(c, enabled=False)
@@ -2385,7 +2385,7 @@ class TestBoothCRUD:
             monkeypatch.setattr(admin, "start_transcription_worker", start)
             location, page = await save(c, enabled=True)
             assert location == f"{url}?saved=captions&worker=restarted#captions"
-            assert "The caption worker was restarted with the new settings." in page
+            assert "The caption worker was restarted with the saved settings." in page
             assert calls == ["stop", "start", "stop", "stop", "stop", "stop", "start"]
 
             # A dead worker left in the registry is not "kept running": saving again with no changes restarts it.
@@ -2453,6 +2453,37 @@ class TestBoothCRUD:
         assert on.status_code == 303
         assert on.headers["location"] == f"{url}?error=api_off#captions"
         assert "External transcription is turned off for this event" in page
+
+    @pytest.mark.anyio
+    async def test_captions_on_with_the_switch_off_and_no_key_names_both_problems(self, admin_cookie, seed_event):
+        event, room, booth = seed_event
+        url = f"/admin/events/{event.id}/rooms/{room.id}/booths/{booth.id}/"
+        async with _client() as c:
+            on = await c.post(
+                f"{url}transcription-settings",
+                data={"transcription_enabled": "true", "transcription_provider": "openai", "transcription_model": "whisper-1"},
+                cookies=admin_cookie,
+                follow_redirects=False,
+            )
+            page = (await c.get(on.headers["location"].split("#")[0], cookies=admin_cookie)).text
+        assert on.headers["location"] == f"{url}?error=api_off_no_key#captions"
+        assert "turned off for this event and that service has no API key" in page
+
+    @pytest.mark.anyio
+    async def test_saved_model_is_only_selected_under_the_saved_service(self, admin_cookie, seed_event, monkeypatch):
+        from portal.models import DBBooth
+        from portal.routers import admin
+
+        # The same model name offered by two services: only the saved service's option may be selected.
+        monkeypatch.setattr(admin, "TRANSLATION_MODELS", {"openai": ["shared-model"], "groq": ["shared-model"]})
+        event, room, booth = seed_event
+        await _update_row(DBBooth, booth.id, translation_provider="groq", translation_model="shared-model")
+        async with _client() as c:
+            html = (
+                await c.get(f"/admin/events/{event.id}/rooms/{room.id}/booths/{booth.id}/", cookies=admin_cookie)
+            ).text
+        assert 'data-provider="groq" selected>' in html
+        assert 'data-provider="openai" selected>' not in html
 
     @pytest.mark.anyio
     async def test_kept_service_uses_the_proper_brand_name(self, admin_cookie, seed_event):
