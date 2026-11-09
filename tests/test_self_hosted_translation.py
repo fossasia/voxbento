@@ -827,6 +827,17 @@ async def test_api_turns_off_self_hosted_after_the_server_is_removed(api_event, 
 
 
 @pytest.mark.anyio
+async def test_api_full_state_update_turns_off_a_room_whose_model_was_removed(api_event, monkeypatch, self_hosted):
+    room_state = {"name": "Hall", "translation_provider": "self_hosted", "translation_model": "qwen2.5:7b"}
+    await _put_room({**room_state, "enable_translation": True})
+    monkeypatch.setattr(settings, "self_hosted_llm_models", "llama3.2")
+
+    res = await _put_room({**room_state, "enable_translation": False})
+    assert res.status_code == 200, res.text
+    assert (await _api_room()).floor_translation_enabled is False
+
+
+@pytest.mark.anyio
 async def test_api_turning_translation_on_replaces_a_model_taken_off_the_list(api_event, monkeypatch, self_hosted):
     await _put_room({"name": "Hall", "translation_provider": "self_hosted", "translation_model": "qwen2.5:7b"})
     monkeypatch.setattr(settings, "self_hosted_llm_models", "llama3.2")

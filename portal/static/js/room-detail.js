@@ -68,8 +68,10 @@ function initAiSettings() {
     const savedModel = root.dataset.initialTranslationModel || '';
     const localNote = document.querySelector('[data-local-translation-note]');
     let catalog = null;
+    let loads = 0;
 
     async function loadModels() {
+      const load = ++loads;
       const provider = transProvider.value;
       if (localNote) localNote.hidden = provider !== 'local';
       transModel.replaceChildren(new Option('Recommended for this service', ''));
@@ -83,6 +85,8 @@ function initAiSettings() {
         console.error('Could not load translation models', err);
         catalog = {};
       }
+      // The service may have changed while the list was loading; only the latest call fills the list.
+      if (load !== loads) return;
       const models = [...(catalog[provider] || [])];
       const keep = provider === savedProvider ? savedModel : '';
       // Cloud services accept any model name, but a self-hosted model must be on the server's list.

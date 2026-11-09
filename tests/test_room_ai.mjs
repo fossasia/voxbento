@@ -94,4 +94,33 @@ for (const [provider, saved, listLoads, expected, selected] of [
   assert.deepEqual(added.map((opt) => opt.value), expected);
   assert.deepEqual(added.filter((opt) => opt.selected).map((opt) => opt.value), selected);
 }
+// Switching service while the model list loads must not leave the old service's models in the list.
+{
+  const added = [];
+  let onChange;
+  const transProvider = { value: 'self_hosted', addEventListener(type, handler) { onChange = handler; } };
+  const transModel = { replaceChildren(...opts) { added.length = 0; added.push(...opts); }, append(opt) { added.push(opt); } };
+  const elements = {
+    'room-detail': { dataset: { initialTranslationModel: 'qwen2.5:7b' } },
+    floor_translation_provider: transProvider,
+    floor_translation_model: transModel,
+  };
+  const pending = [];
+  vm.runInNewContext(roomDetail, {
+    console: { error() {} },
+    initTabs() {},
+    Option: class { constructor(text, value, defaultSelected, isSelected) { this.value = value; this.selected = Boolean(isSelected); } },
+    fetch: () => new Promise((resolve) => pending.push(resolve)),
+    document: { querySelector: () => null, querySelectorAll: () => [], getElementById: (id) => elements[id] },
+  });
+  transProvider.value = 'openai';
+  onChange();
+  const catalog = { self_hosted: ['llama3.2', 'qwen2.5:7b'], openai: ['gpt-4o-mini'] };
+  for (const resolve of pending) {
+    resolve({ ok: true, json: async () => catalog });
+    await new Promise(setImmediate);
+  }
+  assert.deepEqual(added.map((opt) => opt.value), ['', 'gpt-4o-mini']);
+  assert.deepEqual(added.filter((opt) => opt.selected).map((opt) => opt.value), []);
+}
 console.log('Room AI regression checks passed');
