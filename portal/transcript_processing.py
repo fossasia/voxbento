@@ -84,9 +84,17 @@ def _keeps_meaning(ch: str) -> bool:
     return ch.isalnum() or unicodedata.category(ch)[0] == "M"
 
 
+# An apostrophe or hyphen between two word characters is word-internal
+# ("don't", "it's", "well-known", "y'all") and must survive normalisation,
+# or splitting it with a space makes "don't don't..." read as "don t don t..."
+# and the repetition check misses it.
+_WORD_INTERNAL_PUNCT = re.compile(r"(?<=\w)[’'\-](?=\w)")
+
+
 def _normalise(text: str) -> str:
     """Case-fold and drop punctuation so phrase matching ignores styling."""
     folded = unicodedata.normalize("NFKC", text).casefold()
+    folded = _WORD_INTERNAL_PUNCT.sub("", folded)
     kept = "".join(ch if _keeps_meaning(ch) else " " for ch in folded)
     return " ".join(kept.split())
 
