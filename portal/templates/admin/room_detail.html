@@ -226,6 +226,16 @@
           </select>
         </div>
       </details>
+      {% if not uses_ai %}
+      {# A room with captions but no AI language has no translator settings, so the glossary switch lives here (#1164). #}
+      <input type="hidden" name="floor_ai_vocabulary_toggle" value="1">
+      <label class="rs-toggle">
+        <span class="rs-toggle-text"><span class="rs-toggle-title">Use the glossary</span>
+          <span class="hint">The built-in captions use the terms in the glossary below to spell these words correctly.</span>
+        </span>
+        <input type="checkbox" class="rs-switch" role="switch" name="floor_ai_vocabulary_enabled" id="floor_ai_vocabulary_enabled" {% if room.floor_ai_vocabulary_enabled %}checked{% endif %}>
+      </label>
+      {% endif %}
     </div>
 
     {% if uses_ai %}
@@ -275,7 +285,7 @@
         </div>
         <label class="rs-toggle">
           <span class="rs-toggle-text"><span class="rs-toggle-title">Use the glossary</span>
-            <span class="hint">Translate the terms below the way your glossary says.</span>
+            <span class="hint">Translate the terms below the way your glossary says. The built-in captions also use them to spell these words correctly.</span>
           </span>
           <input type="checkbox" class="rs-switch" role="switch" name="floor_ai_vocabulary_enabled" id="floor_ai_vocabulary_enabled" {% if room.floor_ai_vocabulary_enabled %}checked{% endif %}>
         </label>
@@ -323,12 +333,15 @@
     </div>
   </form>
 
-  {% if uses_ai %}
   <section class="room-card ai-vocabulary-card" aria-labelledby="ai-vocabulary-heading">
     <div class="room-card-head">
       <div>
         <h2 id="ai-vocabulary-heading">Glossary</h2>
+        {% if uses_ai %}
         <p class="room-card-sub">Names and terms the AI should always translate the same way, such as product names.</p>
+        {% else %}
+        <p class="room-card-sub">Names and terms the captions should spell correctly, such as product names.</p>
+        {% endif %}
       </div>
       <a class="btn btn-outline btn-sm" href="{{ management_prefix }}/events/{{ event.id }}/rooms/{{ room.id }}/ai-vocabulary/export">Download as CSV</a>
     </div>
@@ -348,7 +361,7 @@
         <div class="field">
           <label for="vocabulary_file">Glossary file (CSV)</label>
           <input type="file" id="vocabulary_file" name="vocabulary_file" accept=".csv,text/csv" required>
-          <span class="hint">A spreadsheet saved as CSV with the columns source_term, target_language and target_term. Up to 2 MB.</span>
+          <span class="hint">A spreadsheet saved as CSV with the columns source_term, target_language and target_term. Up to 2 MB.{% if not uses_ai %} For captions only, use <code>all</code> as target_language and repeat the term as target_term.{% endif %}</span>
         </div>
         <div class="field">
           <label for="import_mode">When uploading</label>
@@ -394,7 +407,6 @@
       <p class="ai-vocabulary-empty">No glossary yet.</p>
     {% endif %}
   </section>
-  {% endif %}
 {% endif %}
 </section>
 
