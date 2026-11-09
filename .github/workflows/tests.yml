@@ -120,10 +120,18 @@ jobs:
           ffmpeg -hide_banner -encoders | grep -qw libx264
 
       - name: Install pinned MediaMTX 1.18.2
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
           mkdir -p "$RUNNER_TEMP/mediamtx"
-          curl -fsSL https://github.com/bluenviron/mediamtx/releases/download/v1.18.2/mediamtx_v1.18.2_linux_amd64.tar.gz \
-            | tar -xz -C "$RUNNER_TEMP/mediamtx"
+          # Authenticated and retried: anonymous release downloads intermittently return 504.
+          for attempt in 1 2 3 4 5; do
+            gh release download v1.18.2 --repo bluenviron/mediamtx --pattern mediamtx_v1.18.2_linux_amd64.tar.gz \
+              --output "$RUNNER_TEMP/mediamtx.tar.gz" --clobber && break
+            [ "$attempt" -lt 5 ] || exit 1
+            sleep $((attempt * 5))
+          done
+          tar -xzf "$RUNNER_TEMP/mediamtx.tar.gz" -C "$RUNNER_TEMP/mediamtx"
           "$RUNNER_TEMP/mediamtx/mediamtx" --version | grep -qx v1.18.2
           echo "MEDIAMTX_TEST_BINARY=$RUNNER_TEMP/mediamtx/mediamtx" >> "$GITHUB_ENV"
 
