@@ -46,7 +46,7 @@ class CaptionAggregator:
         return self.stream.state_for(booth_id)
 
     async def _dispatch(self, events: list[CaptionEvent]) -> None:
-        for event in events:
+        for i, event in enumerate(events):
             if isinstance(event, PartialCaption):
                 await self.broadcast_callback(
                     event.booth_id,
@@ -62,8 +62,16 @@ class CaptionAggregator:
                 try:
                     await self._emit_final(event)
                 except Exception:
-                    # The buffer was cleared when the event was produced; put it
-                    # back so a failed publish does not lose the caption.
+                    # The buffer was cleared when the event was produced, so
+                    # put this one back. Any later FinalCaption in the same
+                    # batch (a chunk that split one sentence off and then
+                    # force-finalised a long remainder) has also been cleared
+                    # from the buffer by its own _finalise and would be lost if
+                    # the loop simply terminated — restore the pending ones in
+                    # reverse order, so prepend chains preserve chronological
+                    # order on the next publish.
+                    for pending in reversed([e for e in events[i + 1 :] if isinstance(e, FinalCaption)]):
+                        self.stream.restore(pending)
                     self.stream.restore(event)
                     raise
             elif isinstance(event, ClearCaption):
