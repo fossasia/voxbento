@@ -445,6 +445,67 @@ async def test_a_late_final_transcript_is_reported_and_does_not_hold_the_worker(
     assert "did not arrive in time" in caplog.text
 
 
+def _real_aggregator_feed(room_id=None):
+    """A feed over the real aggregator, with the captions it broadcasts."""
+    from portal.transcription.aggregator import CaptionAggregator
+
+    captions: list[dict] = []
+
+    async def broadcast(_booth_id, payload):
+        captions.append(payload)
+
+    return _CaptionFeed(CaptionAggregator(broadcast, room_id=room_id), "conf-1-hi"), captions
+
+
+@pytest.mark.anyio
+async def test_revised_long_utterance_is_not_published_twice():
+    """A corrected first word after forced finalization only publishes the new words."""
+    feed, captions = _real_aggregator_feed()
+    words = [f"word{i}" for i in range(50)]
+
+    await feed.handle({"event": "transcript.partial", "text": " ".join(words)})
+    await feed.handle({"event": "transcript.final", "text": " ".join(["corrected", *words[1:], "last"])})
+
+    assert _texts(captions, "final") == [" ".join(words), "last"]
+
+
+@pytest.mark.anyio
+async def test_a_different_passage_after_forced_finalization_is_published_in_full():
+    """Text that doesn't repeat the published words isn't mistaken for a revision."""
+    feed, captions = _real_aggregator_feed()
+
+    await feed.handle({"event": "transcript.partial", "text": " ".join(f"word{i}" for i in range(50))})
+    await feed.handle({"event": "transcript.final", "text": "an entirely new sentence"})
+
+    assert _texts(captions, "final")[-1] == "an entirely new sentence"
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize(
+    ("message", "expected"),
+    [
+        ({"event": "transcript.final", "text": "नमस्ते", "language": "hi-IN"}, "hi"),
+        ({"event": "transcript.partial", "text": " ".join(f"w{i}" for i in range(50)), "language": "ta-IN"}, "ta"),
+        ({"event": "transcript.final", "text": "hello"}, None),
+    ],
+)
+async def test_detected_language_reaches_translation(monkeypatch, message, expected):
+    """Normal and force-finalized segments both carry what Sarvam detected."""
+    from unittest.mock import AsyncMock
+
+    from portal.translations.worker import TranslationWorker
+
+    handle = AsyncMock()
+    monkeypatch.setattr("portal.database.save_transcript_segment", AsyncMock(return_value=7))
+    monkeypatch.setattr(TranslationWorker, "handle_translation", handle)
+
+    feed, _captions = _real_aggregator_feed(room_id=1)
+    await feed.handle(message)
+    await asyncio.sleep(0.05)
+
+    assert handle.await_args.kwargs["detected_language"] == expected
+
+
 @pytest.mark.anyio
 async def test_failure_after_the_audio_ended_is_logged(monkeypatch, caplog):
     """A connection failure during the final wait is reported."""

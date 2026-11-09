@@ -42,7 +42,14 @@ class TranslationWorker:
         self.broadcast_callback = broadcast_callback
 
     async def handle_translation(
-        self, room_id: int, segment_id: int, text: str, booth_id_str: str, uuid_segment_id: str = "", seq: int = 0
+        self,
+        room_id: int,
+        segment_id: int,
+        text: str,
+        booth_id_str: str,
+        uuid_segment_id: str = "",
+        seq: int = 0,
+        detected_language: str | None = None,
     ):
         """Called when a finalized STT segment is saved. Fires off LLM requests for enabled target languages."""
         from sqlalchemy import select
@@ -79,7 +86,8 @@ class TranslationWorker:
                 provider = room.floor_translation_provider
                 model = room.floor_translation_model
                 enabled_langs = [lang for lang in room.translation_languages if lang.enabled]
-                source_lang_code = room.floor_language_code
+                # A language the room names wins; auto-detecting rooms use what the provider heard.
+                source_lang_code = room.floor_language_code or detected_language
             else:
                 # Booth translation
                 booth = await session.scalar(

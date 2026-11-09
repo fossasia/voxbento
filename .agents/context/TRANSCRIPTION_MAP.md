@@ -109,7 +109,7 @@ Jitsi Meet Floor Conference
 | `deepgram` | `DeepgramProvider` | `nova-2` | `deepgram_api_key` | WebSocket streaming (with `numerals=true` for interpretation) |
 | `nvidia` | `NVIDIAProvider` | `parakeet-rnnt`, `parakeet-ctc` | `nvidia_api_key` | Riva gRPC |
 | `elevenlabs` | `ElevenLabsProvider` | `scribe_v2` | `elevenlabs_api_key` | — |
-| `sarvam` | `SarvamProvider` | `saaras:v3-realtime` | `sarvam_api_key` | WebSocket streaming; languages limited to `SARVAM_LANGUAGE_CODES`, enforced by `speech_language_problem` at configuration time |
+| `sarvam` | `SarvamProvider` | `saaras:v3-realtime` | `sarvam_api_key` | WebSocket streaming; languages limited to `SARVAM_LANGUAGE_CODES`, enforced by `speech_language_problem` at configuration time; in `auto` mode the detected language reaches translation through `CaptionState.source_language` |
 
 API keys are stored encrypted on the `events` table (`encrypted_*_api_key` columns).
 `get_api_key(event, ProviderEnum.X)` decrypts via `portal.crypto.decrypt_val`.

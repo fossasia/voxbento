@@ -485,3 +485,40 @@ async def test_download_status_failure_preserves_inference_timeout(db_data, mock
     assert all(call.args[7] == "Bonjour" and call.args[8] is None for call in bundle.call_args_list)
     assert "PermissionError" in caplog.text
     assert "private model path" not in caplog.text
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize(("room_language", "expected"), [(None, "Hindi"), ("en", "English")])
+async def test_translation_source_prefers_the_room_then_the_detected_language(
+    db_data, mock_broadcast, room_language, expected
+):
+    """An auto-detecting room labels the source with what was heard; a named language still wins."""
+    async with get_session() as session:
+        (await session.get(Room, db_data["room"].id)).floor_language_code = room_language
+
+    worker = TranslationWorker(mock_broadcast)
+    sources = []
+
+    async def fake_call_llm(provider, model, api_key, text, lang_name, source_lang_name, **kwargs):
+        sources.append(source_lang_name)
+        return "translated"
+
+    async def fake_synthesize(room_id, text, lang_code):
+        return b"fake_audio"
+
+    with patch.object(worker, "_call_llm", new=fake_call_llm):
+        with patch("portal.tts.worker.synthesize", new=fake_synthesize):
+            with patch("portal.websockets.manager.tts_manager.has_listeners", return_value=True):
+                with patch("portal.websockets.manager.TTSConnectionManager.broadcast_bundle", new_callable=AsyncMock):
+                    await worker.handle_translation(
+                        room_id=db_data["room"].id,
+                        segment_id=db_data["segment"].id,
+                        text="translate me",
+                        booth_id_str="floor",
+                        uuid_segment_id="uuid",
+                        seq=1,
+                        detected_language="hi",
+                    )
+
+    assert sources
+    assert set(sources) == {expected}

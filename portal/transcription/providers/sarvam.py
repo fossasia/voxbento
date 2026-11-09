@@ -6,6 +6,7 @@ import asyncio
 import base64
 import json
 import logging
+from difflib import SequenceMatcher
 from urllib.parse import urlencode
 
 import websockets
@@ -23,6 +24,7 @@ FINAL_WAIT_SECS = 5.0  # After "end", how long to wait for the last transcript.
 STABLE_AFTER_SECS = 10.0  # A session this old was not rejected, so the outage is over.
 BACKOFF_BASE_SECS = 1.0
 BACKOFF_MAX_SECS = 30.0
+MIN_REVISION_OVERLAP = 0.6  # Share of published words a later transcript must repeat to be the same passage.
 
 
 class _SarvamRejected(Exception):
@@ -77,10 +79,21 @@ class _CaptionFeed:
         self.committed = ""
 
     def _unpublished(self, text: str) -> str:
-        """Drop the part of this utterance that forced finalization already published."""
-        if self.committed and text.startswith(self.committed):
-            return text[len(self.committed) :].strip()
-        return text
+        """Drop the words forced finalization already published, even if Sarvam has since revised some."""
+        if not self.committed:
+            return text
+        published, words = self.committed.split(), text.split()
+        matcher = SequenceMatcher(None, published, words, autojunk=False)
+        blocks = [block for block in matcher.get_matching_blocks() if block.size]
+        if sum(block.size for block in blocks) < MIN_REVISION_OVERLAP * len(published):
+            return text  # A different passage, not a revision of what was published.
+        last = blocks[-1]
+        return " ".join(words[last.b + len(published) - last.a :])
+
+    def _note_language(self, language: object) -> None:
+        """Keep the language Sarvam detected in auto mode, as the short code translation expects."""
+        if isinstance(language, str) and language:
+            self.aggregator.note_source_language(self.booth_id, language.split("-")[0].lower())
 
     async def _partial(self, text: str) -> None:
         """Show an interim caption and note what the aggregator force-finalized."""
@@ -104,6 +117,8 @@ class _CaptionFeed:
         """Publish a transcript or act on a Sarvam error; every other event is ignored."""
         event = message.get("event")
         text = message.get("text")
+        if event in {"transcript.partial", "transcript.final"}:
+            self._note_language(message.get("language"))
         if event == "transcript.partial" and isinstance(text, str):
             await self._partial(text.strip())
         elif event == "transcript.final" and isinstance(text, str):
