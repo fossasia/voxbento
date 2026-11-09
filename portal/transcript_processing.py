@@ -119,6 +119,18 @@ def has_overlong_word(text: str) -> bool:
     )
 
 
+def has_repeated_single_character(text: str) -> bool:
+    """A run of 10+ copies of the same printable character.
+
+    Unspaced scripts (CJK, Thai, ...) are exempt from has_overlong_word and
+    appear as one token, so the word-level repetition check cannot see
+    "你" * 50; this one can. Latin equivalents like "aaaaa..." fall under
+    has_overlong_word as well, so the rule is uniform across scripts.
+    """
+    chars = [ch for ch in text if not ch.isspace()]
+    return len(chars) >= _REPEAT_LIMIT and len(set(chars)) == 1
+
+
 def hallucination_reason(text: str, *, complete_turn: bool = True) -> str | None:
     """Why a finalised transcript looks invented, or None if it looks spoken.
 
@@ -137,6 +149,11 @@ def hallucination_reason(text: str, *, complete_turn: bool = True) -> str | None
         return "no printable content"
     if has_overlong_word(stripped):
         return "overlong word"
+    # Runs through, e.g., Chinese or Thai, where the whole thing is one
+    # whitespace-delimited token and the word-level repetition check above
+    # cannot see it.
+    if has_repeated_single_character(stripped):
+        return "repeated word"
 
     normalised = _normalise(stripped)
     if not normalised:
