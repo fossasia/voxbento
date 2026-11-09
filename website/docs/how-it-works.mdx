@@ -430,8 +430,8 @@ so overlapping requests cannot use the same token twice. Account authentication 
 the JWT issuance time against that cutoff on HTTP requests, booth pages and booth
 WebSocket connections. User JWT issuance retains fractional seconds so the fresh
 recovery session works even when it is issued in the same second as the cutoff.
-Password and magic-link sign-ins bind that issuance time and a session-cutoff
-version to the credential snapshot, so an in-flight sign-in cannot bypass a
+Password, magic-link and hosting-invitation sign-ins bind that issuance time and a
+session-cutoff version to the credential snapshot, so an in-flight sign-in cannot bypass a
 concurrent recovery, including while the reset is waiting to commit.
 Existing booth sockets are closed after the transaction commits; reconnecting
 with the old token cannot renew its authorization. Listener pages and hosting
@@ -445,6 +445,9 @@ than an Admin claim saved at sign-in. Each subscription rechecks its credentials
 before sending a text/audio bundle, at most once every 5 seconds, so existing connections
 stop receiving within that window after access is revoked or the token expires. Listener and invitation credentials
 keep their existing scope checks, including independent listener-code access.
+A listener-code recheck only confirms that the code the socket connected with is still
+the event's code. It is not counted as a join-code guess, so failed guesses from other
+clients on the same IP cannot close an accepted subscription; a regenerated code still does.
 An unrelated or revoked account cookie does not hide a separately valid invitation
 cookie. Invitation authorization reads current revocation state before delivery;
 TTS subscribers are checked concurrently so one slow check does not hold up others,
