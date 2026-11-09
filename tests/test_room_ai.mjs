@@ -94,8 +94,9 @@ for (const [provider, saved, listLoads, expected, selected] of [
   assert.deepEqual(added.map((opt) => opt.value), expected);
   assert.deepEqual(added.filter((opt) => opt.selected).map((opt) => opt.value), selected);
 }
-// Switching service while the model list loads must not leave the old service's models in the list.
-{
+// Switching service while the model list loads must not leave the old service's models in the list,
+// whichever load finishes first. A newer load that fails must not throw away a list that loaded.
+for (const [reverse, newerFails] of [[false, false], [true, false], [false, true]]) {
   const added = [];
   let onChange;
   const transProvider = { value: 'self_hosted', addEventListener(type, handler) { onChange = handler; } };
@@ -116,8 +117,8 @@ for (const [provider, saved, listLoads, expected, selected] of [
   transProvider.value = 'openai';
   onChange();
   const catalog = { self_hosted: ['llama3.2', 'qwen2.5:7b'], openai: ['gpt-4o-mini'] };
-  for (const resolve of pending) {
-    resolve({ ok: true, json: async () => catalog });
+  for (const [i, resolve] of (reverse ? [...pending.entries()].reverse() : [...pending.entries()])) {
+    resolve(newerFails && i === 1 ? { ok: false } : { ok: true, json: async () => catalog });
     await new Promise(setImmediate);
   }
   assert.deepEqual(added.map((opt) => opt.value), ['', 'gpt-4o-mini']);
