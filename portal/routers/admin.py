@@ -168,6 +168,7 @@ from portal.team import parse_place as parse_team_place
 from portal.team import remove_assignment as remove_team_assignment
 from portal.team import revoke_invite_link as revoke_team_invite_link
 from portal.transcription import ALLOWED_MODELS, ProviderConfig, ProviderEnum, get_api_key
+from portal.transcription.providers.sarvam import SARVAM_LANGUAGE_MAP
 from portal.transcription.worker import start_transcription_worker, stop_transcription_worker
 from portal.translations.constants import TRANSLATION_MODELS, TranslationProviderEnum
 from portal.translations.vocabulary import (
@@ -1241,11 +1242,13 @@ async def admin_event_api_settings_post(
     nvidia_api_key: str | None = Form(None),
     elevenlabs_api_key: str | None = Form(None),
     atlascloud_api_key: str | None = Form(None),
+    sarvam_api_key: str | None = Form(None),
     clear_openai_api_key: bool | None = Form(False),
     clear_deepgram_api_key: bool | None = Form(False),
     clear_nvidia_api_key: bool | None = Form(False),
     clear_elevenlabs_api_key: bool | None = Form(False),
     clear_atlascloud_api_key: bool | None = Form(False),
+    clear_sarvam_api_key: bool | None = Form(False),
     translation_openai_api_key: str | None = Form(None),
     openrouter_api_key: str | None = Form(None),
     gemini_api_key: str | None = Form(None),
@@ -1271,6 +1274,7 @@ async def admin_event_api_settings_post(
                     ("encrypted_nvidia_api_key", nvidia_api_key, clear_nvidia_api_key),
                     ("encrypted_elevenlabs_api_key", elevenlabs_api_key, clear_elevenlabs_api_key),
                     ("encrypted_atlascloud_api_key", atlascloud_api_key, clear_atlascloud_api_key),
+                    ("encrypted_sarvam_api_key", sarvam_api_key, clear_sarvam_api_key),
                     (
                         "encrypted_translation_openai_api_key",
                         translation_openai_api_key,
@@ -1632,6 +1636,16 @@ async def admin_edit_room(request: Request, event_id: int, room_id: int):
             room.relay_booth_id = relay_booth_id
 
         if not form_section or form_section == "transcription":
+            if (
+                floor_transcription_enabled
+                and floor_transcription_provider == "sarvam"
+                and floor_language_code
+                and floor_language_code not in SARVAM_LANGUAGE_MAP
+            ):
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"Floor language '{floor_language_code}' is not supported by Sarvam AI.",
+                )
             room.floor_transcription_enabled = floor_transcription_enabled
             room.floor_transcription_provider = floor_transcription_provider
             room.floor_transcription_model = floor_transcription_model
@@ -2398,6 +2412,15 @@ async def admin_transcription_settings(
                 raise HTTPException(
                     status_code=400, detail=f"API key for {transcription_provider} is not configured on the event."
                 )
+        if (
+            bool(transcription_enabled)
+            and provider_enum == ProviderEnum.SARVAM
+            and db_booth.language_code not in SARVAM_LANGUAGE_MAP
+        ):
+            raise HTTPException(
+                status_code=400,
+                detail=f"Booth language '{db_booth.language_code}' is not supported by Sarvam AI.",
+            )
         old_enabled = db_booth.transcription_enabled
         old_provider = db_booth.transcription_provider
         old_model = db_booth.transcription_model

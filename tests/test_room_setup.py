@@ -135,6 +135,7 @@ def test_without_keys_only_self_hosted_engines_are_offered():
         "Deepgram",
         "ElevenLabs",
         "OpenAI",
+        "Sarvam AI",
         "Atlas Cloud",
         "NVIDIA",
         "Anthropic",
