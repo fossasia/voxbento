@@ -30,6 +30,7 @@ function createWhepClient() {
   let _audioEl = null;
   let _audioDelayMs = 0;
   let currentStream = null;
+  let playbackBlocked = false;
   let delayedAudio = {
     context: null,
     source: null,
@@ -52,6 +53,27 @@ function createWhepClient() {
       audioActive:    _audioDelayMs > 0 ? isDelayedAudioActive() : (_audioEl ? !_audioEl.paused && _audioEl.srcObject !== null : false),
       whepUrl:        _whepUrl,
       retrying:       retrying,
+      playbackBlocked: isPlaybackBlocked(),
+    });
+  }
+
+  function isPlaybackBlocked() {
+    if (_audioDelayMs > 0 && delayedAudio.context) {
+      return delayedAudio.context.state === 'suspended';
+    }
+    return playbackBlocked;
+  }
+
+  function playAudioEl() {
+    _audioEl.play().then(() => {
+      playbackBlocked = false;
+      emitState();
+    }).catch((err) => {
+      log('Autoplay blocked: ' + err.message);
+      if (err && err.name === 'NotAllowedError') {
+        playbackBlocked = true;
+        emitState();
+      }
     });
   }
 
@@ -73,7 +95,10 @@ function createWhepClient() {
   function resumeDelayedContext() {
     const ctx = delayedAudio.context;
     if (!ctx || ctx.state !== 'suspended') return;
-    ctx.resume().then(removeResumeHandler).catch((err) => {
+    ctx.resume().then(() => {
+      removeResumeHandler();
+      emitState();
+    }).catch((err) => {
       log('AudioContext resume blocked: ' + err.message);
     });
   }
@@ -86,6 +111,7 @@ function createWhepClient() {
     }
     if (!delayedAudio.context || delayedAudio.context.state === 'closed') {
       delayedAudio.context = new AudioCtor();
+      delayedAudio.context.onstatechange = emitState;
     }
     if (delayedAudio.context.state === 'suspended' && !delayedAudio.resumeHandler) {
       delayedAudio.resumeHandler = resumeDelayedContext;
@@ -113,6 +139,7 @@ function createWhepClient() {
     if (closeContext && delayedAudio.context) {
       const ctx = delayedAudio.context;
       delayedAudio.context = null;
+      ctx.onstatechange = null;
       if (ctx.state !== 'closed') {
         ctx.close().catch((err) => log('AudioContext close failed: ' + err.message));
       }
@@ -124,7 +151,7 @@ function createWhepClient() {
     currentStream = stream;
     _audioEl.muted = false;
     _audioEl.srcObject = stream;
-    _audioEl.play().catch((err) => log('Autoplay blocked: ' + err.message));
+    playAudioEl();
   }
 
   function attachDelayedStream(stream) {
@@ -337,10 +364,18 @@ function createWhepClient() {
       emitState();
     },
 
+    resume() {
+      resumeDelayedContext();
+      if (_audioEl && _audioEl.srcObject && _audioEl.paused) {
+        playAudioEl();
+      }
+    },
+
     /** Tear down the session. */
     stop() {
       cleanup();
       retrying = false;
+      playbackBlocked = false;
       emitState();
     },
   };

@@ -198,6 +198,8 @@ var translationLangSelect = document.getElementById("translation-lang-select");
 
 var audioEl = document.getElementById("audio-player");
 var statusEl = document.getElementById("status");
+var tapToListenBtn = document.getElementById("tap-to-listen-btn");
+var whepPlaybackBlocked = false;
 var captionsWs = null;
 var captionsRetryTimer = null;
 var captionsRetryDelayMs = 1000;
@@ -237,9 +239,32 @@ function showAudioPlayer(show) {
   }
 }
 
+function ttsPlaybackBlocked() {
+  return ttsWs !== null && audioCtx !== null && audioCtx.state === "suspended";
+}
+
+function updateTapToListen() {
+  if (tapToListenBtn) {
+    tapToListenBtn.hidden = !(whepPlaybackBlocked || ttsPlaybackBlocked());
+  }
+}
+
+if (tapToListenBtn) {
+  tapToListenBtn.addEventListener("click", function () {
+    WhepListener.resume();
+    if (audioCtx && audioCtx.state === "suspended") {
+      audioCtx.resume().then(updateTapToListen);
+    }
+  });
+}
+
 function onState(s) {
-  whepAudioLive = s.peerConnection === "connected" && s.audioActive;
-  if (whepAudioLive) {
+  whepPlaybackBlocked = Boolean(s.playbackBlocked) && s.peerConnection === "connected";
+  updateTapToListen();
+  whepAudioLive = s.peerConnection === "connected" && s.audioActive && !whepPlaybackBlocked;
+  if (whepPlaybackBlocked) {
+    setStatus("Ready — tap to listen", "waiting");
+  } else if (whepAudioLive) {
     setStatus("Live (WebRTC)", "live");
     showAudioPlayer(true);
   } else if (s.peerConnection === "connecting" || s.ice === "checking") {
@@ -319,6 +344,8 @@ function stopCurrentStream() {
   }
   showAudioPlayer(false);
   audioEl.muted = false;
+  whepPlaybackBlocked = false;
+  updateTapToListen();
   resetCaptions();
 
   setStatus("Waiting for selection...", "waiting");
@@ -329,6 +356,7 @@ function startTtsWs(roomId, langCode, boothId, audioDelayMs) {
   stopTtsWs();
   if (!audioCtx) {
     audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+    audioCtx.onstatechange = updateTapToListen;
   }
   if (audioCtx.state === "suspended") {
     audioCtx.resume();
@@ -357,6 +385,7 @@ function startTtsWs(roomId, langCode, boothId, audioDelayMs) {
     boothId;
   ttsWs = new WebSocket(wsUrl);
   ttsWs.binaryType = "arraybuffer";
+  updateTapToListen();
 
   ttsWs.onmessage = function (event) {
     if (event.data instanceof ArrayBuffer) {
