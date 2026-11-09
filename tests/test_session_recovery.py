@@ -368,6 +368,60 @@ def test_reset_cookie_cannot_skip_password_on_hosting_invite(recovery):
     assert client.get("/admin/users/").status_code == 200
 
 
+@pytest.mark.parametrize("cutoff_before_accept", [False, True])
+def test_hosting_invite_snapshot_cannot_mint_valid_session_after_recovery(recovery, monkeypatch, cutoff_before_accept):
+    import hashlib
+
+    import portal.routers.auth as routes
+    from portal.models import TOKEN_TYPE_HOSTING_INVITE
+
+    client, (_, target, _, _, _) = recovery
+    raw_invite = "overlapping-hosting-invite"
+
+    async def invite():
+        async with get_session() as db:
+            await create_auth_token(
+                db,
+                user_id=target.id,
+                token_type=TOKEN_TYPE_HOSTING_INVITE,
+                jti=hashlib.sha256(raw_invite.encode()).hexdigest(),
+            )
+
+    asyncio.run(invite())
+    original = routes.get_session
+
+    @asynccontextmanager
+    async def reset_after_snapshot():
+        # The request reads the invite and the old password hash, then a reset commits
+        # before the invite is claimed and the session cookie is issued.
+        async with original() as db:
+            execute = db.execute
+
+            async def execute_then_reset(statement, *args, **kwargs):
+                result = await execute(statement, *args, **kwargs)
+                db.execute = execute
+                async with get_session() as reset_db:
+                    row = await get_user_by_id(reset_db, target.id)
+                    row.password_hash = "replaced-password-hash"
+                    row.sessions_valid_after = datetime.now(timezone.utc) - timedelta(
+                        seconds=5 if cutoff_before_accept else 0
+                    )
+                return result
+
+            db.execute = execute_then_reset
+            yield db
+
+    monkeypatch.setattr(routes, "get_session", reset_after_snapshot)
+    response = client.post(
+        f"/invite/accept/{raw_invite}",
+        data={"password": "old-recovery-password"},
+        headers={"Origin": "https://testserver"},
+        follow_redirects=False,
+    )
+    assert response.status_code == 303
+    assert client.get("/admin/users/", follow_redirects=False).status_code == 403
+
+
 @pytest.mark.parametrize("channel", ["tts", "booth"])
 @pytest.mark.parametrize("revoked_invite", [False, True])
 def test_revoked_account_cookie_does_not_override_valid_invite(recovery, channel, revoked_invite):

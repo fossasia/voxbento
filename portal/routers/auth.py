@@ -1004,6 +1004,9 @@ async def invite_accept_submit(request: Request, token: str):
     form = await request.form()
     submitted_password = form.get("password", "")
 
+    # Bind the new session to the credentials checked below, as /login does, so a reset
+    # that commits while this request runs still signs it out.
+    authenticated_at = utc_now()
     try:
         async with get_session() as session:
             tok_stmt = (
@@ -1026,6 +1029,7 @@ async def invite_accept_submit(request: Request, token: str):
 
             is_signed_in_as_user = _extract_cookie_user_id(request, user) == str(user.id)
             has_existing_password = bool(user.password_hash)
+            session_version = user_session_version(user)
 
             if has_existing_password and not user.email_verified:
                 raise HTTPException(
@@ -1133,6 +1137,8 @@ async def invite_accept_submit(request: Request, token: str):
         email=email,
         display_name=display_name,
         is_admin=is_admin,
+        issued_at=authenticated_at,
+        session_version=session_version,
     )
     response = safe_redirect("/workspace/")
     set_auth_cookie(response, jwt_token)
