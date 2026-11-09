@@ -2133,11 +2133,15 @@ async def admin_booth_detail(request: Request, event_id: int, room_id: int, boot
         request=request,
         name="admin/booth_detail.html",
         context={
-            "sarvam_supported": speech_language_problem("sarvam", db_booth.language_code) is None,
             "event": event,
             "room": room,
             "booth": db_booth,
             "catalog": engine_catalog(event),
+            "speech_engines": [
+                engine
+                for engine in engine_catalog(event).speech
+                if not speech_language_problem(engine.provider, db_booth.language_code)
+            ],
             "speech_models": speech_models,
             "saved_speech_model": saved_speech_model,
             "translation_models": translation_models,

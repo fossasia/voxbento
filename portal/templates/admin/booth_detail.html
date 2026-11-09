@@ -178,59 +178,6 @@
     {% endif %}
   </div>
 
-  <div class="token-form-card token-form-card--spaced">
-    <h3>Transcription Settings</h3>
-    <div class="form-row">
-      <div class="form-group form-group--grow">
-        <label for="transcription_enabled" class="checkbox-label">
-          <input type="checkbox" id="transcription_enabled" name="transcription_enabled" value="true" {% if booth.transcription_enabled %}checked{% endif %}>
-          <strong>Enable Live Transcription</strong>
-        </label>
-        <p class="form-help form-help--spaced">
-          When enabled, a background worker will consume the RTSP feed and generate live captions. Turn off to save CPU/RAM.
-        </p>
-      </div>
-      <div class="form-group form-group--grow">
-        <label for="transcription_provider">Transcription Provider</label>
-        <select id="transcription_provider" name="transcription_provider" class="input">
-          <option value="local" {% if booth.transcription_provider == 'local' %}selected{% endif %}>Local CPU (Faster-Whisper)</option>
-          {% if event.transcription_api_enabled %}
-          <option value="openai" {% if booth.transcription_provider == 'openai' %}selected{% endif %}>OpenAI</option>
-          <option value="deepgram" {% if booth.transcription_provider == 'deepgram' %}selected{% endif %}>Deepgram</option>
-          <option value="nvidia" {% if booth.transcription_provider == 'nvidia' %}selected{% endif %}>NVIDIA Parakeet</option>
-          <option value="elevenlabs" {% if booth.transcription_provider == 'elevenlabs' %}selected{% endif %}>ElevenLabs</option>
-          <option value="atlascloud" {% if booth.transcription_provider == 'atlascloud' %}selected{% endif %}>Atlas Cloud</option>
-          {% if sarvam_supported %}
-          <option value="sarvam" {% if booth.transcription_provider == 'sarvam' %}selected{% endif %}>Sarvam AI (Indian languages)</option>
-          {% endif %}
-          {% else %}
-          <option disabled>External APIs disabled in Event settings</option>
-          {% endif %}
-        </select>
-      </div>
-      <div class="form-group form-group--grow">
-        <label for="transcription_model">Model Variant</label>
-        <select id="transcription_model" name="transcription_model" class="input">
-          <option value="tiny" data-provider="local" {% if booth.transcription_model == 'tiny' %}selected{% endif %}>Local: tiny (Fastest)</option>
-          <option value="base" data-provider="local" {% if booth.transcription_model == 'base' %}selected{% endif %}>Local: base</option>
-          <option value="small" data-provider="local" {% if booth.transcription_model == 'small' %}selected{% endif %}>Local: small</option>
-          <option value="medium" data-provider="local" {% if booth.transcription_model == 'medium' %}selected{% endif %}>Local: medium</option>
-          <option value="large-v2" data-provider="local" {% if booth.transcription_model == 'large-v2' %}selected{% endif %}>Local: large-v2</option>
-          <option value="large-v3" data-provider="local" {% if booth.transcription_model == 'large-v3' %}selected{% endif %}>Local: large-v3 (Accurate/Slow)</option>
-          <option value="gpt-realtime-whisper" data-provider="openai" {% if booth.transcription_model == 'gpt-realtime-whisper' %}selected{% endif %}>OpenAI: gpt-realtime-whisper</option>
-          <option value="gpt-4o-transcribe" data-provider="openai" {% if booth.transcription_model == 'gpt-4o-transcribe' %}selected{% endif %}>OpenAI: gpt-4o-transcribe</option>
-          <option value="gpt-4o-mini-transcribe" data-provider="openai" {% if booth.transcription_model == 'gpt-4o-mini-transcribe' %}selected{% endif %}>OpenAI: gpt-4o-mini-transcribe</option>
-          <option value="whisper-1" data-provider="openai" {% if booth.transcription_model == 'whisper-1' %}selected{% endif %}>OpenAI: whisper-1</option>
-          <option value="nova-2" data-provider="deepgram" {% if booth.transcription_model == 'nova-2' %}selected{% endif %}>Deepgram: nova-2</option>
-          <option value="parakeet-rnnt" data-provider="nvidia" {% if booth.transcription_model == 'parakeet-rnnt' %}selected{% endif %}>NVIDIA: parakeet-rnnt</option>
-          <option value="parakeet-ctc" data-provider="nvidia" {% if booth.transcription_model == 'parakeet-ctc' %}selected{% endif %}>NVIDIA: parakeet-ctc</option>
-          <option value="scribe_v2_realtime" data-provider="elevenlabs" {% if booth.transcription_model == 'scribe_v2_realtime' or booth.transcription_model == 'scribe_v2' %}selected{% endif %}>ElevenLabs: scribe_v2_realtime (Streaming)</option>
-          <option value="bytedance/seed-asr-2.0" data-provider="atlascloud" {% if booth.transcription_model == 'bytedance/seed-asr-2.0' %}selected{% endif %}>Atlas Cloud: Seed ASR 2.0</option>
-          <option value="saaras:v3-realtime" data-provider="sarvam" {% if booth.transcription_model == 'saaras:v3-realtime' %}selected{% endif %}>Sarvam: saaras:v3-realtime (Streaming)</option>
-        </select>
-      </div>
-      <div class="form-group form-group-btn">
-        <button type="submit" class="btn btn-primary">Save Settings</button>
   {% if is_event_owner %}
   <div class="tm-pointer">
     <p><strong>Interpreters, coordinators and invite links</strong> for this booth are managed on the event's Team page.</p>
@@ -262,7 +209,7 @@
             {% if not catalog.find("speech", booth.transcription_provider) %}
             <option value="{{ booth.transcription_provider }}" selected>{{ booth.transcription_provider | capitalize }} — add its API key to keep using it</option>
             {% endif %}
-            {% for engine in catalog.speech %}
+            {% for engine in speech_engines %}
             <option value="{{ engine.provider }}" {% if booth.transcription_provider == engine.provider %}selected{% endif %}>{{ engine.label }} — {{ engine.note }}</option>
             {% endfor %}
           </select>

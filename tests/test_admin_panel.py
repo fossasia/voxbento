@@ -3427,3 +3427,23 @@ async def test_booth_language_cannot_change_to_one_its_provider_lacks(admin_cook
     assert accepted.status_code == 303
     async with get_session() as session:
         assert (await get_booth_by_id(session, booth.id)).language_code == "hi"
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize(("language", "offered"), [("hi", True), ("de", False)])
+async def test_booth_captions_offer_sarvam_only_for_its_languages(admin_cookie, seed_event, language, offered):
+    from portal.crypto import encrypt_val
+    from portal.database import get_booth_by_id, get_event_by_id, get_session
+
+    event, room, booth = seed_event
+    async with get_session() as session:
+        stored_event = await get_event_by_id(session, event.id)
+        stored_event.transcription_api_enabled = True
+        stored_event.encrypted_sarvam_api_key = encrypt_val("sarvam-secret")
+        (await get_booth_by_id(session, booth.id)).language_code = language
+
+    async with _client() as c:
+        page = await c.get(f"/admin/events/{event.id}/rooms/{room.id}/booths/{booth.id}/", cookies=admin_cookie)
+
+    assert page.status_code == 200
+    assert ('<option value="sarvam"' in page.text) is offered

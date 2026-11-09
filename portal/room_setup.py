@@ -23,8 +23,7 @@ from portal.config import settings
 from portal.database import create_booth, delete_booth, list_booths_for_room
 from portal.models import DBBooth, Event, Room, RoomTranslationLanguage
 from portal.roles import INTERPRETER
-from portal.transcription.constants import speech_language_supported
-from portal.transcription.constants import ALLOWED_MODELS, ProviderEnum
+from portal.transcription.constants import ALLOWED_MODELS, ProviderEnum, speech_language_supported
 from portal.translations.constants import NLLB_LANGUAGE_MAP
 from portal.tts.constants import DEEPGRAM_VOICE_MAPPING, SUPERTONIC_SUPPORTED_LANGS
 from portal.utils import _make_jitsi_url
