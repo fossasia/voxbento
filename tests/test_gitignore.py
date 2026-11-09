@@ -11,21 +11,24 @@ import pytest
 ROOT = Path(__file__).resolve().parent.parent
 GITIGNORE = ROOT / ".gitignore"
 
-SIDECAR_PATTERNS = [
+SQLITE_PATTERNS = [
+    ("*.db", "interpretation.db"),
     ("*.db-shm", "interpretation.db-shm"),
     ("*.db-wal", "interpretation.db-wal"),
     ("*.db-journal", "interpretation.db-journal"),
 ]
 
 
-def test_sqlite_sidecar_patterns_defined_in_gitignore() -> None:
+def test_sqlite_patterns_defined_in_gitignore() -> None:
+    """Verify that SQLite database and sidecar patterns are explicitly listed in .gitignore."""
     lines = {line.strip() for line in GITIGNORE.read_text(encoding="utf-8").splitlines()}
-    for pattern, _ in SIDECAR_PATTERNS:
+    for pattern, _ in SQLITE_PATTERNS:
         assert pattern in lines, f"Expected {pattern} to be defined in .gitignore"
 
 
-@pytest.mark.parametrize(("pattern", "sample_file"), SIDECAR_PATTERNS)
-def test_sqlite_sidecar_files_ignored_by_git(pattern: str, sample_file: str) -> None:
+@pytest.mark.parametrize(("pattern", "sample_file"), SQLITE_PATTERNS)
+def test_sqlite_files_ignored_by_git(pattern: str, sample_file: str) -> None:
+    """Verify that sample SQLite database and sidecar files are matched by git check-ignore."""
     git_bin = shutil.which("git")
     if not git_bin or not (ROOT / ".git").exists():
         pytest.skip("git binary or .git repository not available")
@@ -49,4 +52,3 @@ def test_sqlite_sidecar_files_ignored_by_git(pattern: str, sample_file: str) -> 
         f"Expected '{sample_file}' to be ignored specifically by rule '{pattern}', "
         f"but matched '{matched_pattern}' instead"
     )
-
