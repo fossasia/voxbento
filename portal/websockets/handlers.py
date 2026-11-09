@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import logging
+import secrets
 from datetime import datetime, timezone
 
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
@@ -313,7 +314,9 @@ async def ws_captions(websocket: WebSocket, booth_id: str) -> None:
         listener_manager.remove(websocket, booth_id)
 
 
-async def _authorize_tts(websocket: WebSocket, room_id: int, language_code: str, booth_id: str) -> None:
+async def _authorize_tts(
+    websocket: WebSocket, room_id: int, language_code: str, booth_id: str, *, recheck: bool = False
+) -> None:
     """Authorize a TTS WebSocket subscription before accept.
 
     The subscription key is (room_id, target language, source booth_id).
@@ -437,8 +440,16 @@ async def _authorize_tts(websocket: WebSocket, room_id: int, language_code: str,
     if cookie_code:
         async with get_session() as db_session:
             ev = await get_event_by_slug(db_session, event_slug)
-            if not ev or not ev.listener_join_code or cookie_code != ev.listener_join_code:
+            if not ev or not ev.listener_join_code:
                 raise WSAuthError("Invalid listener join code.")
+        if recheck:
+            # The connection was accepted with this code, so a recheck only confirms it is still the
+            # event's code. It is not a guess: other clients' bad guesses from the same IP must not close it.
+            if not secrets.compare_digest(cookie_code, ev.listener_join_code):
+                raise WSAuthError("Invalid listener join code.")
+            return
+        if cookie_code != ev.listener_join_code:
+            raise WSAuthError("Invalid listener join code.")
         return
 
     raise WSAuthError("Unauthorized.")
@@ -454,7 +465,7 @@ async def ws_tts(websocket: WebSocket, room_id: int, language_code: str, booth_i
         return
 
     async def authorize() -> None:
-        await _authorize_tts(websocket, room_id, language_code, booth_id)
+        await _authorize_tts(websocket, room_id, language_code, booth_id, recheck=True)
 
     await websocket.accept()
     tts_manager.add(websocket, room_id, language_code, booth_id, authorize=authorize)

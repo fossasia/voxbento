@@ -287,6 +287,37 @@ def test_revoked_user_cookie_does_not_override_valid_listener_code(recovery):
         assert socket.receive_bytes().endswith(b"private-pcm")
 
 
+def test_tts_listener_code_recheck_ignores_other_guesses_but_follows_code_changes(recovery):
+    from portal.join_code_limit import JOIN_CODE_RATE_LIMIT, JoinCodeThrottled, _join_code_attempts, verify_join_code
+
+    client, (_, _, event, room, _) = recovery
+
+    async def set_code(code):
+        async with get_session() as db:
+            row = await db.get(Event, event.id)
+            row.listener_join_code = code
+
+    asyncio.run(set_code("venue-listener-code"))
+    client.cookies.set("listener_code_recovery-test", "venue-listener-code")
+    try:
+        with client.websocket_connect(tts_path(room)) as socket:
+            # Someone else at the venue, behind the same IP, spends the whole guess budget.
+            for _ in range(JOIN_CODE_RATE_LIMIT):
+                verify_join_code("testclient", "wrong-guess", "venue-listener-code")
+            with pytest.raises(JoinCodeThrottled):
+                verify_join_code("testclient", "wrong-guess", "venue-listener-code")
+            broadcast(client, room)
+            assert socket.receive_bytes().endswith(b"private-pcm")
+
+            asyncio.run(set_code("regenerated-listener-code"))
+            broadcast(client, room)
+            with pytest.raises(WebSocketDisconnect) as exc:
+                socket.receive_bytes()
+            assert exc.value.code == 4003
+    finally:
+        _join_code_attempts.clear()
+
+
 def test_revoking_one_tts_subscriber_preserves_other_listeners(recovery):
     client, (actor, target, event, room, _) = recovery
     token = old_token(target)
