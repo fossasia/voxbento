@@ -278,9 +278,9 @@ class TestRestore:
         assert stream.state_for("b").utterance_start_time == started
 
     def test_restore_does_not_overwrite_a_newer_segments_identity(self, stream, clock):
-        """When a provider interleaves, a newer partial's id and timing must
-        survive the restore of an older failed final — otherwise the next
-        final publishes the newer text under the older id and start time."""
+        """When a provider interleaves, a newer partial's id must survive the
+        restore of an older failed final — otherwise the next final publishes
+        the newer text under the older id."""
         clock.now = 1000.0
         stream.partial("b", "older")
         stale_event = stream.final("b", "older")[0]
@@ -289,14 +289,39 @@ class TestRestore:
         stream.partial("b", "newer")
         newer_state = stream.state_for("b")
         new_id = newer_state.segment_id
-        new_start = newer_state.utterance_start_time
 
         stream.restore(stale_event)
 
         assert newer_state.segment_id == new_id
-        assert newer_state.utterance_start_time == new_start
         # The restored text is still carried along so no sentence is lost.
         assert newer_state.current_utterance == "older newer"
+
+    def test_restore_takes_the_earlier_start_time(self, stream, clock):
+        """Program playback uses the start time to position the caption on the
+        timeline, so the restored speech's earlier start is what should pin."""
+        clock.now = 1000.0
+        stream.partial("b", "older")
+        stale_event = stream.final("b", "older")[0]
+
+        clock.now = 1050.0
+        stream.partial("b", "newer")
+
+        stream.restore(stale_event)
+        assert stream.state_for("b").utterance_start_time == 1000.0
+
+    def test_restore_does_not_regress_a_later_start_time(self, stream, clock):
+        """Same protection in the other direction: a restored event with a
+        later start must not overwrite a buffer that began earlier."""
+        clock.now = 1000.0
+        stream.partial("b", "older in buffer")
+
+        clock.now = 1050.0
+        # Create a later-started event artificially.
+        from portal.transcription.caption_stream import FinalCaption
+
+        later = FinalCaption("b", "later", "seg-x", seq=1, utterance_start_time=1050.0)
+        stream.restore(later)
+        assert stream.state_for("b").utterance_start_time == 1000.0
 
     def test_restore_leaves_a_chunk_remainder_under_the_new_segment_id(self, stream):
         """After _finalise, state.segment_id is already the id for the next
