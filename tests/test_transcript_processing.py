@@ -147,6 +147,21 @@ def test_latin_garbage_is_still_capped_alongside_unspaced_text():
     assert has_overlong_word("x" * (MAX_WORD_LENGTH + 1)) is True
 
 
+@pytest.mark.parametrize("ch", ["你", "の", "ก"])
+def test_single_character_repetition_in_unspaced_scripts_is_rejected(ch):
+    """The whole sentence is one token in these scripts, so the word-level
+    repetition check cannot see it; a dedicated character-level check must."""
+    text = ch * 50
+    assert is_hallucination(text) is True
+    assert is_hallucination(text, complete_turn=False) is True
+
+
+def test_short_single_character_runs_in_unspaced_scripts_still_pass():
+    """Legitimate speech never actually looks like this, but the threshold
+    matches the word-level rule for consistency."""
+    assert is_hallucination("你" * 5) is False
+
+
 def test_combining_marks_survive_normalisation():
     """Stripping marks mangles Devanagari and Thai and can fake a repeated word."""
     hindi = "यह सम्मेलन कृत्रिम बुद्धिमत्ता के बारे में है"
