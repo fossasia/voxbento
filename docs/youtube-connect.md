@@ -37,8 +37,11 @@ Policies, and VoxBento does not try.
    channel, stores the **encrypted** refresh token and returns to the room page.
    Signing in again with the same channel keeps every room's broadcast. Signing in
    with a *different* channel clears every room's broadcast and, for every room that
-   was linked to one, its saved stream key, including a key pasted by hand. After
-   switching channels, choose each room's broadcast again (or paste its key again).
+   was linked to one, its saved relay destination: both the server URL and the stream
+   key, including values entered by hand. After switching channels, choose each room's
+   broadcast again, or enter its server URL and stream key again. An empty server URL
+   means YouTube's primary RTMPS server, so a room that used a custom server needs both
+   values restored.
 3. **Use this broadcast** (`PUT …/rooms/{room_id}/youtube/broadcast`) accepts a
    broadcast from the list or a pasted link. VoxBento checks the broadcast is on the
    connected channel and has a stream bound in YouTube Studio, then saves it on the
@@ -73,8 +76,10 @@ Sign in with YouTube is off until both variables below are set.
    publish the app to avoid that.
 3. Create an **OAuth client ID** of type *Web application* with the authorised
    redirect URI `{PUBLIC_BASE_URL}/youtube/oauth/callback`, for example
-   `https://voxbento.com/youtube/oauth/callback`. It must match `PUBLIC_BASE_URL`
-   exactly.
+   `https://voxbento.com/youtube/oauth/callback`. Register the full callback URI, not
+   `PUBLIC_BASE_URL` alone: VoxBento removes any trailing slash from `PUBLIC_BASE_URL`,
+   appends `/youtube/oauth/callback`, and Google refuses sign-in with
+   `redirect_uri_mismatch` unless the registered URI matches that result exactly.
 4. Set the environment variables and restart the portal:
 
 | Variable | Default | Description |
@@ -108,11 +113,14 @@ Create a second OAuth client (or add a redirect URI) for
 | GET | `/workspace/events/{event_id}/youtube/broadcasts` | `{broadcasts: [{id, title, scheduled_start, life_cycle_status, latency_preference}]}`, live first; 409 when access was revoked |
 | PUT | `/workspace/events/{event_id}/rooms/{room_id}/youtube/broadcast` | `{broadcast}` → `{broadcast_id, title, life_cycle_status, stream_bound, destination_configured}`; 422 bad link / not on channel / no bound stream, 409 sign in again, 502 YouTube unavailable |
 | DELETE | `/workspace/events/{event_id}/rooms/{room_id}/youtube/broadcast` | unlinks; a saved relay destination stays until the owner removes it |
-| DELETE | `/workspace/events/{event_id}/youtube` | revokes the token at Google, forgets the channel and every room's broadcast |
+| DELETE | `/workspace/events/{event_id}/youtube` | forgets the channel and every room's broadcast; Google revocation is best effort and skipped for a shared channel (see [Revoking access](#revoking-access)) |
 
-All routes are event-owner only (`require_event_owner`), answer `Cache-Control: no-store`,
-and return 404 while the feature is off (except the status route). PUT and DELETE check
-`Origin` against `PUBLIC_BASE_URL`.
+The workspace routes are event-owner only (`require_event_owner`) and return 404 while the
+feature is off (except the status route). Their JSON responses, and the callback's redirects
+back to the room page, answer `Cache-Control: no-store`; the callback's error responses
+(400 expired or mismatched state, 403 another user or no ownership) are the portal's
+standard error pages, which do not set that header and carry no token or code. PUT and DELETE check `Origin` against
+`PUBLIC_BASE_URL`.
 
 ## Data stored
 
@@ -134,10 +142,12 @@ redacts `code=` on `/youtube/oauth/callback` because the path contains `/oauth/`
 
 Listing broadcasts costs two `liveBroadcasts.list` calls (more only for a channel with
 over 50 active or upcoming broadcasts; at most four pages per status); linking costs one
-`liveBroadcasts.list` and one `liveStreams.list`. While a room page is open, its status
-refreshes at most once per `YOUTUBE_STATUS_CACHE_SECS` (60 s by default) per room, with one
+`liveBroadcasts.list` and one `liveStreams.list`. While a room page is open, each room's
+status is cached for `YOUTUBE_STATUS_CACHE_SECS` (60 s by default); a refresh costs one
 `liveBroadcasts.list` call, plus one `liveStreams.list` call only when the broadcast is ready
-or (about to go) live. After Google reports the project's quota or rate limit, the room shows
+or (about to go) live. The cache is a duration, not a hard rate limit: signing in again,
+unlinking or disconnecting clears it, so the next status check can ask YouTube
+before the interval is up. Linking a different broadcast also skips the cached status. After Google reports the project's quota or rate limit, the room shows
 that message and VoxBento stops asking for five minutes. List calls are cheap reads (see
 Google's quota calculator) against the project's daily quota, 10,000 units by default.
 
@@ -152,7 +162,10 @@ must be gone.
 
 Disconnect keeps each room's saved stream key, so a relay that is running keeps sending
 to YouTube. To stop it, click **Remove** next to the stream key in the room's relay
-settings, or switch the room to another audio source.
+settings, or switch the room to another audio source. Stopping the relay is retried every
+few seconds until the relay service confirms it, so if the relay service is unreachable
+forwarding can continue briefly after the key is removed. If YouTube Studio still shows the
+stream receiving data after a minute, ask the operator to check the `program-relay` service.
 
 Organisers can also remove access at any time at
 [myaccount.google.com/permissions](https://myaccount.google.com/permissions); VoxBento then
