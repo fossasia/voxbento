@@ -59,6 +59,15 @@ The Overview tab shows the following information:
 | **Active Interpreter** | The display name of the interpreter currently marked as active. |
 | **Participant Roster** | All users currently connected to the booth WebSocket, with their roles. |
 
+## Active Interpreter and Portal Restarts
+
+When a booth has several interpreters, one is the **active interpreter** and the only one who can go live. Voxbento remembers who that is, so a portal restart (a deploy, a crash) does not hand the slot to whichever interpreter reconnects first.
+
+- After a restart, the interpreter who was active keeps the slot for 2 minutes. When they open the booth again, they are the active interpreter again. They still go live the usual way, with a fresh publish ticket.
+- Other interpreters can join the booth meanwhile. They stay passive, and a coordinator can still choose someone else as active at any time.
+- If the previous active interpreter does not come back within 2 minutes, the first interpreter who joined takes the slot.
+- Only who was active is remembered. Roles still come from each person's own session, and the booth chat is not kept.
+
 ## WHIP and WHEP URLs
 
 Voxbento uses two WebRTC signalling endpoints for each booth:

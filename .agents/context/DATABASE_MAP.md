@@ -89,6 +89,8 @@ Cascade: deletes rooms + booths when event is deleted.
 | `transcription_provider` | String(20) | Default `'local'`; validated against `ProviderEnum` |
 | `transcription_model` | String(20) | Default `'tiny'`; validated against `ALLOWED_MODELS` |
 | `broadcast_unlocked` | Boolean | Default False; allows unauthenticated ingest |
+| `active_interpreter_session_key` | String(80) nullable | `booth_session_key` (`user:<id>` or `invite:<sub>`) of the active interpreter, written by `portal/booth_store.py`; reserved for that session for 2 minutes after a restart (#1165). Never a socket `participant_id` |
+| `active_interpreter_since` | DateTime(tz) nullable | When it was stored; entries older than 24 h are ignored and cleared at startup |
 | `translation_enabled` | Boolean | Default False |
 | `translation_provider` | String(50) nullable | — |
 | `translation_model` | String(100) nullable | — |

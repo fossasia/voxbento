@@ -24,6 +24,7 @@
 **Problem:** All booth state (active interpreter, participants, chat) lives in process memory. A portal restart loses all active sessions.
 **Impact:** High during live events — active interpreters are silently dropped.
 **Fix:** Either use Redis for booth state, or persist essential state to DB and recover on startup.
+**Status (#1165):** the active-interpreter choice is now stored in `booths.active_interpreter_session_key` (`portal/booth_store.py`) and reserved for that session for 2 minutes after a restart. Participants and booth chat are still in memory only.
 
 ---
 
