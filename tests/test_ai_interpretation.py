@@ -341,10 +341,13 @@ def test_term_protection_resolves_overlaps_and_matching_rules():
         "[1] で会いましょう", ("X",)
     )
     assert protect_terms("我们在AI时代", [entry("AI", "IA")]) == ProtectedSegment("我们在 [1] 时代", ("IA",))
+    # The documented trade-off: there a term also matches inside a longer word, "ブース" (booth) in "ブースター"
+    # (booster), which whole-word matching rules out for "AI" in "said".
+    assert protect_terms("ブースターを使う", [entry("ブース", "X")]) == ProtectedSegment("[1] ターを使う", ("X",))
 
-    # Case sensitivity is respected.
+    # Case sensitivity is respected, and the target term keeps the glossary's casing.
     segment = protect_terms("US ships USB to us", [entry("US", "les États-Unis", "exact", case_sensitive=True)])
-    assert segment == ProtectedSegment("[1] ships USB to us", ("les États-Unis",))
+    assert segment == ProtectedSegment("[1] ships USB to us", ("les États-Unis",), frozenset({1}))
 
     # Case folding maps back onto the original text, even when it changes the length.
     segment = protect_terms("Die Straße und die STRASSE", [entry("strasse", "rue", "exact")])
@@ -368,13 +371,59 @@ def test_restore_terms_requires_each_placeholder_exactly_once():
     assert restore_terms("La [1] utilise [2] 【1】.", segment) is None
     assert restore_terms("La [1] utilise ［2］.", segment) is None
 
-    # A lowercase term that opens a sentence takes a capital; other terms keep their casing.
+
+def test_restored_terms_take_a_capital_only_when_they_open_a_sentence():
+    # An ordinary lowercase term that opens a sentence takes a capital; "iPhone" keeps its own casing.
     segment = ProtectedSegment("[1] opens. Then the [2] closes for [3].", ("cabine", "cabine", "iPhone"))
     assert (
         restore_terms("[1] ouvre. Puis la [2] ferme pour [3].", segment)
         == "Cabine ouvre. Puis la cabine ferme pour iPhone."
     )
     assert restore_terms("[3] ouvre la [1] et la [2].", segment) == "iPhone ouvre la cabine et la cabine."
+    segment = protect_terms("Booth opens.", [VocabularyEntryInput("booth", "fr", "cabine")])
+    assert restore_terms("[1] ouvre.", segment) == "Cabine ouvre."
+
+    ordinary = ProtectedSegment("", ("cabine", "cabine"))
+    # Real sentence ends, including spaced French punctuation and opening marks.
+    assert restore_terms("Il est là. [1] ouvre ? [2] ferme.", ordinary) == "Il est là. Cabine ouvre ? Cabine ferme."
+    assert restore_terms("« [1] ouvre », dit-il. ¿[2] cierra?", ordinary) == "« Cabine ouvre », dit-il. ¿Cabine cierra?"
+    # Initials and abbreviations do not end a sentence.
+    assert restore_terms("Voir p. ex. [1] ici, puis [2].", ordinary) == "Voir p. ex. cabine ici, puis cabine."
+    assert restore_terms("See e.g. [1] or i.e. [2].", ordinary) == "See e.g. cabine or i.e. cabine."
+    assert restore_terms("Siehe z. B. [1] und [2].", ordinary) == "Siehe z. B. cabine und cabine."
+    assert restore_terms("Voir p. ex. [1]. [2] ouvre ensuite.", ordinary) == "Voir p. ex. cabine. Cabine ouvre ensuite."
+
+
+@pytest.mark.parametrize(
+    ("source_term", "target_term", "case_sensitive"),
+    [("npm", "npm", False), ("Voxbento", "voxbento", False), ("PR", "pull request", True)],
+)
+def test_keep_as_is_and_case_sensitive_terms_keep_their_casing(source_term, target_term, case_sensitive):
+    entry = VocabularyEntryInput(source_term, "fr", target_term, case_sensitive=case_sensitive)
+    segment = protect_terms(f"{source_term} is fast.", [entry])
+
+    # The glossary's casing wins, even at the start of a sentence.
+    assert segment.exact_case == frozenset({1})
+    assert restore_terms("[1] est rapide.", segment) == f"{target_term} est rapide."
+
+
+def test_restore_terms_trims_spaces_inside_unspaced_scripts():
+    def restore(translated: str, *terms: str) -> str | None:
+        return restore_terms(translated, ProtectedSegment("", terms))
+
+    # NLLB can keep the spaces around a placeholder; between Chinese or Japanese characters they do not belong.
+    assert restore("我们在 [1] 见面", "展台") == "我们在展台见面"
+    assert restore("在 [1].", "展台") == "在展台."
+    assert restore("欢迎来到 [1]。", "展台") == "欢迎来到展台。"
+    assert restore("[1] で会いましょう", "ブース") == "ブースで会いましょう"
+    assert restore("通訳は [1] にいます", "ブース") == "通訳はブースにいます"
+    assert restore("我们在 [1] 和 [2] 见面", "展台", "大厅") == "我们在展台和大厅见面"
+    # Spaces stay wherever either side is not written without spaces.
+    assert restore("Nous sommes à la [1] ici.", "cabine") == "Nous sommes à la cabine ici."
+    assert restore("我们使用 [1] 直播", "MediaMTX") == "我们使用 MediaMTX 直播"
+    assert restore("Meet me at [1] today.", "展台") == "Meet me at 展台 today."
+    # Thai has no spaces between words but does use them between phrases, so they are not trimmed.
+    assert restore("ฉันชอบ [1] มาก", "บูธ") == "ฉันชอบ บูธ มาก"
 
 
 def test_prompt_stays_within_its_size_budget():

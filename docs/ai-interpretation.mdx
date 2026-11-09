@@ -72,7 +72,10 @@ time a local translation runs with either configured. Select a cloud provider fo
 Glossary entries do apply, through term protection: each whole-word match in the segment, even for
 `phrase` entries, is replaced with a numbered placeholder (`[1]`, `[2]`, …) before translation and
 with the entry's target term afterwards. In Chinese, Japanese, Thai and other scripts written without
-spaces, a term is replaced wherever it appears. If a placeholder comes back missing, duplicated or
+spaces, a term is replaced wherever it appears, even inside a longer word: `ブース` (booth) also matches
+the start of `ブースター` (booster), and the fallback cannot detect the wrong translation that results.
+Whole-word matching prevents this in other scripts (`AI` is never replaced inside `said`), so keep
+glossary terms for these scripts specific. If a placeholder comes back missing, duplicated or
 changed, the segment is translated again without the glossary, so listeners never see a placeholder.
 Segments that already contain bracketed numbers are translated without the glossary.
 

@@ -213,14 +213,19 @@ def _term_matches(entry: AIVocabularyEntry, transcript_text: str) -> bool:
 # 95% of segments; "⟦1⟧" is not in its vocabulary and never survives. Matched loosely, so a
 # mangled copy such as "[ 1]", "[01]", "［1］" or "【1】" is caught instead of shown to listeners.
 TERM_PLACEHOLDER = re.compile(r"[\[［【]\s*\d+\s*[\]］】]")
+_SPACED_PLACEHOLDER = re.compile(rf"(\s?)({TERM_PLACEHOLDER.pattern})(\s?)")
+# Chinese and Japanese, which never put a space between two of their characters.
+_CJK_SCRIPTS = ("CJK", "HIRAGANA", "KATAKANA")
 # Scripts written without spaces between words, where a term can start or end anywhere.
-_UNSPACED_SCRIPTS = ("CJK", "HIRAGANA", "KATAKANA", "THAI", "LAO", "KHMER", "MYANMAR")
+_UNSPACED_SCRIPTS = (*_CJK_SCRIPTS, "THAI", "LAO", "KHMER", "MYANMAR")
 
 
 @dataclass(frozen=True)
 class ProtectedSegment:
     text: str
     target_terms: tuple[str, ...]
+    # Placeholder numbers whose target term keeps the glossary's casing, even when it opens a sentence.
+    exact_case: frozenset[int] = frozenset()
 
 
 def _in_word(char: str) -> bool:
@@ -228,10 +233,35 @@ def _in_word(char: str) -> bool:
     return char.isalnum() or char == "_" or unicodedata.category(char).startswith("M")
 
 
+def _in_scripts(char: str, scripts: tuple[str, ...]) -> bool:
+    return bool(char) and unicodedata.name(char, "").startswith(scripts)
+
+
 def _cuts_word(edge: str, neighbour: str) -> bool:
     """Whether a match would cut a word apart between its ``edge`` character and the ``neighbour`` outside it."""
-    unspaced = any(unicodedata.name(char, "").startswith(_UNSPACED_SCRIPTS) for char in (edge, neighbour))
-    return _in_word(neighbour) and not unspaced
+    return _in_word(neighbour) and not any(_in_scripts(char, _UNSPACED_SCRIPTS) for char in (edge, neighbour))
+
+
+def _keeps_case(entry: VocabularyEntryInput | AIVocabularyEntry) -> bool:
+    # "Keep as is" entries (npm -> npm) and case-sensitive ones are written exactly as the glossary says.
+    return entry.case_sensitive or entry.target_term.casefold() == entry.source_term.casefold()
+
+
+def _opens_sentence(before: str) -> bool:
+    """Whether a placeholder that follows ``before`` starts a sentence of the translation."""
+    # Opening quotes and marks such as "«" or "¿" are not words.
+    words = [word for word in before.split() if any(char.isalnum() for char in word) or word[-1] in ".!?"]
+    if not words:
+        return True
+    last = words[-1].rstrip("\"'»”’)")
+    if last.endswith(("!", "?")):
+        return True
+    if not last.endswith("."):
+        return False
+    stem = last[:-1]
+    # Initials and abbreviations such as "M.", "e.g.", "z. B." or "p. ex." do not end a sentence.
+    after_initial = len(words) > 1 and len(words[-2]) == 2 and words[-2][0].isalpha() and words[-2][1] == "."
+    return not ((len(stem) == 1 and stem.isalpha()) or "." in stem or (after_initial and stem.islower()))
 
 
 def find_term_spans(entry: VocabularyEntryInput | AIVocabularyEntry, text: str) -> list[tuple[int, int]]:
@@ -273,21 +303,21 @@ def protect_terms(text: str, entries: Iterable[VocabularyEntryInput | AIVocabula
         return ProtectedSegment(text, ())
     spans = sorted(
         (
-            (start, end, rank, entry.target_term)
+            (start, end, rank, entry.target_term, _keeps_case(entry))
             for rank, entry in enumerate(entries)
             for start, end in find_term_spans(entry, text)
         ),
         # The longest match wins an overlap; ties go to the entry the resolver ranked first.
         key=lambda span: (span[0] - span[1], span[2], span[0]),
     )
-    chosen: list[tuple[int, int, int, str]] = []
+    chosen: list[tuple[int, int, int, str, bool]] = []
     for span in spans:
         if all(span[1] <= other[0] or span[0] >= other[1] for other in chosen):
             chosen.append(span)
     chosen.sort()
     parts: list[str] = []
     cursor = 0
-    for number, (start, end, _, _) in enumerate(chosen, 1):
+    for number, (start, end, _, _, _) in enumerate(chosen, 1):
         # A placeholder only touches a letter in text written without spaces. Spacing it there keeps NLLB
         # from gluing it to a word of the translation ("We met at[1]").
         before = " " if start > 0 and _in_word(text[start - 1]) else ""
@@ -295,25 +325,38 @@ def protect_terms(text: str, entries: Iterable[VocabularyEntryInput | AIVocabula
         parts += (text[cursor:start], f"{before}[{number}]{after}")
         cursor = end
     parts.append(text[cursor:])
-    return ProtectedSegment("".join(parts), tuple(span[3] for span in chosen))
+    return ProtectedSegment(
+        "".join(parts),
+        tuple(span[3] for span in chosen),
+        frozenset(number for number, span in enumerate(chosen, 1) if span[4]),
+    )
 
 
 def restore_terms(translated: str, segment: ProtectedSegment) -> str | None:
     """Swap placeholders for target terms, or return None unless each one came back intact, exactly once."""
-    placeholders = [f"[{number}]" for number in range(1, len(segment.target_terms) + 1)]
-    if sorted(TERM_PLACEHOLDER.findall(translated)) != sorted(placeholders):
+    numbers = {f"[{number}]": number for number in range(1, len(segment.target_terms) + 1)}
+    if sorted(TERM_PLACEHOLDER.findall(translated)) != sorted(numbers):
         return None
-    targets = dict(zip(placeholders, segment.target_terms))
 
     def target_term(match: re.Match[str]) -> str:
-        term = targets[match.group(0)]
-        # A lowercase term that opens a sentence ("[1] ouvre…") takes a capital; "iPhone" stays as written.
-        sentence_so_far = re.split(r"[.!?]\s", translated[: match.start()])[-1]
-        if term.islower() and not any(char.isalnum() for char in sentence_so_far):
-            return term.capitalize()
-        return term
+        space_before, placeholder, space_after = match.groups()
+        number = numbers[placeholder]
+        term = segment.target_terms[number - 1]
+        # A lowercase term that opens a sentence ("[1] ouvre…") takes a capital, unless the glossary fixes its
+        # casing ("npm"); "iPhone" is not lowercase, so it always stays as written.
+        if term.islower() and number not in segment.exact_case and _opens_sentence(translated[: match.start(2)]):
+            term = term.capitalize()
+        # NLLB can keep the spaces around a placeholder, which do not belong between two Chinese or Japanese
+        # characters ("我们在 展台 见面"). Thai and the like do use spaces, between phrases.
+        char_before = translated[match.start() - 1 : match.start()]
+        char_after = translated[match.end() : match.end() + 1]
+        if _in_scripts(term[:1], _CJK_SCRIPTS) and _in_scripts(char_before, _CJK_SCRIPTS):
+            space_before = ""
+        if _in_scripts(term[-1:], _CJK_SCRIPTS) and _in_scripts(char_after, _CJK_SCRIPTS):
+            space_after = ""
+        return space_before + term + space_after
 
-    return TERM_PLACEHOLDER.sub(target_term, translated)
+    return _SPACED_PLACEHOLDER.sub(target_term, translated)
 
 
 async def resolve_vocabulary_entries(
