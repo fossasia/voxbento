@@ -514,6 +514,11 @@ def test_revoked_account_cookie_does_not_override_valid_invite(recovery, channel
         else:
             socket.send_json({"type": "booth:join", "display_name": "Invited interpreter"})
             assert socket.receive_json()["type"] == "booth:joined"
+            # The test client cancels the server task on close. Leave and wait for the state it sends
+            # so the join's database writes are done first; a cancel mid-write can hang the client.
+            socket.send_json({"type": "booth:leave"})
+            states = [socket.receive_json()["type"] for _ in range(2)]
+            assert states == ["booth:state", "booth:state"]
 
 
 @pytest.mark.anyio
