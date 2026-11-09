@@ -5,6 +5,7 @@ import csv
 import io
 import itertools
 import re
+import unicodedata
 from collections.abc import Iterable
 from dataclasses import dataclass
 
@@ -210,8 +211,10 @@ def _term_matches(entry: AIVocabularyEntry, transcript_text: str) -> bool:
 
 # NLLB keeps "[1]" to "[15]" as single tokens and copies them through unchanged in about
 # 95% of segments; "⟦1⟧" is not in its vocabulary and never survives. Matched loosely, so a
-# mangled copy such as "[ 1]" or "[01]" is caught instead of shown to listeners.
-TERM_PLACEHOLDER = re.compile(r"\[\s*\d+\s*\]")
+# mangled copy such as "[ 1]", "[01]", "［1］" or "【1】" is caught instead of shown to listeners.
+TERM_PLACEHOLDER = re.compile(r"[\[［【]\s*\d+\s*[\]］】]")
+# Scripts written without spaces between words, where a term can start or end anywhere.
+_UNSPACED_SCRIPTS = ("CJK", "HIRAGANA", "KATAKANA", "THAI", "LAO", "KHMER", "MYANMAR")
 
 
 @dataclass(frozen=True)
@@ -220,25 +223,47 @@ class ProtectedSegment:
     target_terms: tuple[str, ...]
 
 
+def _in_word(char: str) -> bool:
+    # Combining marks (accents, Indic vowel signs) are part of the letter they follow.
+    return char.isalnum() or char == "_" or unicodedata.category(char).startswith("M")
+
+
+def _cuts_word(edge: str, neighbour: str) -> bool:
+    """Whether a match would cut a word apart between its ``edge`` character and the ``neighbour`` outside it."""
+    unspaced = any(unicodedata.name(char, "").startswith(_UNSPACED_SCRIPTS) for char in (edge, neighbour))
+    return _in_word(neighbour) and not unspaced
+
+
 def find_term_spans(entry: VocabularyEntryInput | AIVocabularyEntry, text: str) -> list[tuple[int, int]]:
     """Where ``entry`` occurs in ``text`` as whole words, folded as in ``_term_matches``.
 
     Phrase entries are matched inside words when picking glossary lines for a prompt, but
-    replacing such a match would cut the surrounding word apart ("AI" in "said").
+    replacing such a match would cut the surrounding word apart ("AI" in "said"). Chinese,
+    Japanese and other scripts written without spaces have no word boundaries to keep.
     """
     term = entry.source_term if entry.case_sensitive else entry.source_term.casefold()
     if not term:
         return []
     pieces = [char if entry.case_sensitive else char.casefold() for char in text]
+    folded = "".join(pieces)
     # Case folding can lengthen the text ("ß" -> "ss"), so map folded offsets back to the original ones.
     offsets = dict(zip(itertools.accumulate(map(len, pieces), initial=0), range(len(text) + 1)))
-    return [
-        (offsets[match.start()], offsets[match.end()])
-        for match in re.finditer(rf"(?<!\w){re.escape(term)}(?!\w)", "".join(pieces))
+    spans = []
+    for match in re.finditer(re.escape(term), folded):
+        start, end = match.span()
         # A match that starts or ends inside a folded character cannot be cut out without taking letters
         # the term did not match; that occurrence is translated as usual.
-        if match.start() in offsets and match.end() in offsets
-    ]
+        if start not in offsets or end not in offsets:
+            continue
+        if start > 0 and _cuts_word(folded[start], folded[start - 1]):
+            continue
+        # A combining mark after the match belongs to its last letter, whatever the script.
+        if end < len(folded) and (
+            unicodedata.category(folded[end]).startswith("M") or _cuts_word(folded[end - 1], folded[end])
+        ):
+            continue
+        spans.append((offsets[start], offsets[end]))
+    return spans
 
 
 def protect_terms(text: str, entries: Iterable[VocabularyEntryInput | AIVocabularyEntry]) -> ProtectedSegment:
@@ -263,7 +288,11 @@ def protect_terms(text: str, entries: Iterable[VocabularyEntryInput | AIVocabula
     parts: list[str] = []
     cursor = 0
     for number, (start, end, _, _) in enumerate(chosen, 1):
-        parts += (text[cursor:start], f"[{number}]")
+        # A placeholder only touches a letter in text written without spaces. Spacing it there keeps NLLB
+        # from gluing it to a word of the translation ("We met at[1]").
+        before = " " if start > 0 and _in_word(text[start - 1]) else ""
+        after = " " if end < len(text) and _in_word(text[end]) else ""
+        parts += (text[cursor:start], f"{before}[{number}]{after}")
         cursor = end
     parts.append(text[cursor:])
     return ProtectedSegment("".join(parts), tuple(span[3] for span in chosen))
@@ -275,7 +304,16 @@ def restore_terms(translated: str, segment: ProtectedSegment) -> str | None:
     if sorted(TERM_PLACEHOLDER.findall(translated)) != sorted(placeholders):
         return None
     targets = dict(zip(placeholders, segment.target_terms))
-    return TERM_PLACEHOLDER.sub(lambda match: targets[match.group(0)], translated)
+
+    def target_term(match: re.Match[str]) -> str:
+        term = targets[match.group(0)]
+        # A lowercase term that opens a sentence ("[1] ouvre…") takes a capital; "iPhone" stays as written.
+        sentence_so_far = re.split(r"[.!?]\s", translated[: match.start()])[-1]
+        if term.islower() and not any(char.isalnum() for char in sentence_so_far):
+            return term.capitalize()
+        return term
+
+    return TERM_PLACEHOLDER.sub(target_term, translated)
 
 
 async def resolve_vocabulary_entries(

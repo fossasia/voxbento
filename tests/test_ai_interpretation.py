@@ -328,6 +328,20 @@ def test_term_protection_resolves_overlaps_and_matching_rules():
     segment = protect_terms("He said they maintain AI tools", [entry("AI", "IA")])
     assert segment == ProtectedSegment("He said they maintain [1] tools", ("IA",))
 
+    # A combining mark belongs to the letter before it: "cafe" is not cut out of a decomposed "café",
+    # nor "बूथ" (booth) out of "बूथों" (booths).
+    assert protect_terms("café time", [entry("cafe", "X")]) == ProtectedSegment("café time", ())
+    assert protect_terms("हम बूथों पर", [entry("बूथ", "X")]) == ProtectedSegment("हम बूथों पर", ())
+    assert protect_terms("हम बूथ पर", [entry("बूथ", "X")]) == ProtectedSegment("हम [1] पर", ("X",))
+
+    # Scripts written without spaces have no word boundaries; spacing the placeholder there keeps NLLB from
+    # gluing it to a word of the translation.
+    assert protect_terms("我们在展台见面", [entry("展台", "stand")]) == ProtectedSegment("我们在 [1] 见面", ("stand",))
+    assert protect_terms("ブースで会いましょう", [entry("ブース", "X")]) == ProtectedSegment(
+        "[1] で会いましょう", ("X",)
+    )
+    assert protect_terms("我们在AI时代", [entry("AI", "IA")]) == ProtectedSegment("我们在 [1] 时代", ("IA",))
+
     # Case sensitivity is respected.
     segment = protect_terms("US ships USB to us", [entry("US", "les États-Unis", "exact", case_sensitive=True)])
     assert segment == ProtectedSegment("[1] ships USB to us", ("les États-Unis",))
@@ -351,6 +365,16 @@ def test_restore_terms_requires_each_placeholder_exactly_once():
     # Mangled or zero-padded copies are not placeholders and must never reach listeners.
     assert restore_terms("La [1] utilise [ 2].", segment) is None
     assert restore_terms("La [01] utilise [2].", segment) is None
+    assert restore_terms("La [1] utilise [2] 【1】.", segment) is None
+    assert restore_terms("La [1] utilise ［2］.", segment) is None
+
+    # A lowercase term that opens a sentence takes a capital; other terms keep their casing.
+    segment = ProtectedSegment("[1] opens. Then the [2] closes for [3].", ("cabine", "cabine", "iPhone"))
+    assert (
+        restore_terms("[1] ouvre. Puis la [2] ferme pour [3].", segment)
+        == "Cabine ouvre. Puis la cabine ferme pour iPhone."
+    )
+    assert restore_terms("[3] ouvre la [1] et la [2].", segment) == "iPhone ouvre la cabine et la cabine."
 
 
 def test_prompt_stays_within_its_size_budget():
