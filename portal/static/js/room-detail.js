@@ -81,6 +81,7 @@ function initAiSettings() {
         if (!catalog) {
           const res = await fetch('/api/admin/providers/translation/models');
           if (res.ok) catalog = await res.json();
+          else console.error('Could not load translation models', res.status);
         }
       } catch (err) {
         console.error('Could not load translation models', err);
