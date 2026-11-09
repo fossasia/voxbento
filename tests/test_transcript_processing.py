@@ -162,6 +162,24 @@ def test_short_single_character_runs_in_unspaced_scripts_still_pass():
     assert is_hallucination("你" * 5) is False
 
 
+@pytest.mark.parametrize("text", [
+    " ".join(["don't"] * 12),
+    " ".join(["it's"] * 10),
+    " ".join(["y'all"] * 12),
+    " ".join(["well-known"] * 10),
+])
+def test_contractions_and_hyphens_preserve_word_identity_for_repetition(text):
+    """_normalise used to split 'don't' into 'don t', so the repetition check
+    saw {don, t} and missed 50 copies of a contraction entirely."""
+    assert is_hallucination(text) is True
+
+
+@pytest.mark.parametrize("text", ["don't do that", "it's fine", "y'all take care", "a well-known case"])
+def test_contractions_and_hyphens_do_not_create_false_repeats(text):
+    """The preservation must not make everything else look like a repetition."""
+    assert is_hallucination(text) is False
+
+
 def test_combining_marks_survive_normalisation():
     """Stripping marks mangles Devanagari and Thai and can fake a repeated word."""
     hindi = "यह सम्मेलन कृत्रिम बुद्धिमत्ता के बारे में है"
