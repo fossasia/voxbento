@@ -34,3 +34,9 @@ Describe how you tested these changes.
 ## Additional Notes
 
 <!-- Any extra context, concerns, or information -->
+
+<!-- If AI wrote or significantly shaped this PR, with or without an agent, end
+your part of the description (above any bot-generated summary) with one line
+naming only the tools you used:
+Created with <Model> in <Harness>, run from <Environment>.
+Without an agent, name just the model: Created with <Model>. -->
