@@ -4,7 +4,7 @@ import asyncio
 import json
 import re
 from pathlib import Path
-from typing import Any
+from typing import Any, TypedDict
 
 import jwt
 from fastapi import APIRouter, HTTPException, Query, Request, status
@@ -164,16 +164,27 @@ async def listen_event_page(request: Request, event_slug: str, code: str | None 
     return response
 
 
-@router.get("/listener/{event_slug}/rooms/{room_id}/audio-delay")
+class RoomAudioDelay(TypedDict):
+    audio_delay_ms: int
+
+
+@router.get("/listener/{event_slug}/rooms/{room_id}/audio-delay", response_model=RoomAudioDelay)
 async def listener_room_audio_delay(
     request: Request, event_slug: str, room_id: int, code: str | None = None
-) -> dict[str, int]:
+) -> RoomAudioDelay | JSONResponse:
+    """Current audio delay for a room, polled by the listener page so organizer changes apply live."""
     async with get_session() as session:
         ev = await get_event_by_slug(session, event_slug)
         if not ev:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Event not found")
         if not await has_listener_access(request, event_slug, ev.listener_join_code, code):
-            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Listener access required")
+            denied = JSONResponse(status_code=status.HTTP_403_FORBIDDEN, content={"detail": "Listener access required"})
+            cookie_name = f"listener_code_{event_slug}"
+            if not code and cookie_name in request.cookies:
+                # Open tabs poll this every 3s, so a cookie left over from before the code was
+                # regenerated would spend the venue's shared per-IP budget on every poll.
+                denied.delete_cookie(cookie_name, httponly=True)
+            return denied
         room = await get_room_by_id(session, room_id)
         if room is None or room.event_id != ev.id:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Room not found")
