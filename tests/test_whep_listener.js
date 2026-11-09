@@ -51,6 +51,7 @@ class FakePeerConnection {
 let failFetch = true;
 const context = vm.createContext({
   RTCPeerConnection: FakePeerConnection,
+  AbortController,
   fetch: () => failFetch
     ? Promise.reject(new Error('WHEP endpoint unreachable'))
     : Promise.resolve({ ok: true, headers: { get: () => null }, text: async () => 'v=0' }),

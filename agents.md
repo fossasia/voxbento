@@ -94,7 +94,7 @@ VoxBento is a production-grade **browser-first interpretation booth console** fo
 | `portal/static/js/admin.js` | Admin panel JS helpers |
 | `mediamtx.yml` | MediaMTX config — WHIP/WHEP paths, RTSP, Control API, `overridePublisher` |
 | `docker-compose.yml` | portal + mediamtx + jitsi-web/prosody/jicofo/jvb |
-| `alembic/versions/` | 40 migrations (001–040); run `uv run alembic upgrade head` |
+| `alembic/versions/` | 41 migrations (001–041); run `uv run alembic upgrade head` |
 
 ---
 
@@ -192,7 +192,7 @@ Booth WHIP publishing is authenticated (#783): MediaMTX forwards the `Authorizat
 server-derived path) and re-checks that the holder is still the active interpreter and that Mission Control has
 broadcast unlocked. Anonymous publishes get 401. A `booth:join` naming another socket's `participant_id` gets a fresh ID.
 
-Caption feed: `/ws/captions/{booth_id}` receives `caption`, `translated_caption` and public `booth:state`. `ws_captions` validates query JWTs: listener tokens are event-scoped, participant tokens are booth-scoped, and user tokens require a currently active account. Without a query token, events with a listener join code require that code, an active user session, or a scoped invite. Code attempts share a bounded pre-verification budget across listener/overlay HTTP and caption WS paths (`portal/join_code_limit.py`); excess guesses close with 1008. Events without a join code retain public caption access with the anonymous connection cap. Rejections are accepted then closed with 4001 (missing/invalid credentials) or 4003 (scope mismatch), so browsers can distinguish them from transport failures. `booth:state` carries only `booth_id`, `event_slug`, `room_id`, `language_code`, `broadcast_unlocked` and `ingest_status`, never participants or booth chat. Overlay reconnects obtain a fresh listener token through `/overlay/.../session`, which rechecks the account/code and channel.
+Caption feed: `/ws/captions/{booth_id}` receives `caption`, `translated_caption` and public `booth:state`. `ws_captions` validates query JWTs: listener tokens are event-scoped, participant tokens are booth-scoped, and user tokens require a currently active account. Without a query token, events with a listener join code require that code, an active user session, or a scoped invite. Code attempts share a bounded pre-verification budget across listener/overlay HTTP, caption WS and TTS WS paths (`portal/join_code_limit.py`); excess caption guesses close with 1008, and excess TTS guesses are refused like any other TTS authorization failure. The audio-delay poll clears a listener code cookie that no longer matches, so tabs left open across a code regenerate do not spend the budget on every poll. Events without a join code retain public caption access with the anonymous connection cap. Rejections are accepted then closed with 4001 (missing/invalid credentials) or 4003 (scope mismatch), so browsers can distinguish them from transport failures. `booth:state` carries only `booth_id`, `event_slug`, `room_id`, `language_code`, `broadcast_unlocked` and `ingest_status`, never participants or booth chat. Overlay reconnects obtain a fresh listener token through `/overlay/.../session`, which rechecks the account/code and channel.
 
 Direct-push TTS feed: `/ws/tts/{room_id}/{language_code}/{booth_id}` — pre-authorized binary bundle stream (version byte, length-prefixed JSON header, optional 24 kHz PCM audio). Translation text is delivered concurrently over the captions feed and inside TTS bundle headers.
 
@@ -231,18 +231,17 @@ Max concurrent workers: 10 (`MAX_TOTAL_WORKERS`).
 - Verify the PR's base branch is `dev` before reporting it as ready. Do not rely on
   GitHub's default branch or target `main` unless the user explicitly requests it.
 
-## AI-Assisted Pull Requests
+## AI Attribution Rules
 
-When a PR is created or substantially authored by an AI coding assistant, include an
-**AI Attribution** section in the PR description:
+1. **PR Authoring**: When AI wrote or significantly shaped a PR (with or without an agent), put one attribution line at the end of the part of the description you wrote, above any bot-generated summary (Sourcery, CodeRabbit):
+   `Created with <Model> in <Harness/IDE>, run from <Environment>.`
+   (e.g., `Created with Claude Opus 4.6 in Claude Code, run from T3 Code.`, `Created with Gemini in Antigravity.` or, without an agent, `Created with ChatGPT.`).
+   Name only the tools you actually used; leave out a model, harness or environment you do not know rather than guessing.
+   The Agent Attribution workflow adds or moves this line to that spot when it finds AI co-author trailers, so do not add a second copy.
+2. **PR Reviews**: When reviewing a PR with AI (inline comments, review summaries, or change requests), include attribution at the end of the review comment or summary:
+   `Reviewed with <Model> in <Harness/IDE>, run from <Environment>.`
+   (e.g., `Reviewed with Claude Opus 4.6 in Claude Code, run from T3 Code.` or `Reviewed with Gemini in Antigravity.`).
 
-```
-## AI Attribution
-
-This PR was created with the assistance of **<Model Name>** (e.g. Claude Sonnet 4.6).
-```
-
-- Always name the specific model (e.g. "Claude Sonnet 4.6", "Gemini 2.5 Pro").
 - "AI-assisted" means the AI wrote or significantly shaped the code, commit messages,
   or PR description — not just that it answered a question.
 - Human reviewers should validate AI-generated diffs with the same rigour as any other PR.
