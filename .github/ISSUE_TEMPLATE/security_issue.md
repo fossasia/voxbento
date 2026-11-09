@@ -8,7 +8,7 @@ assignees: ''
 ---
 
 ## 🛑 Security Issue Reporting
-If you have discovered a security vulnerability, please do NOT report it here if it is critical. Instead, email the maintainers directly.
+If you have discovered a security vulnerability, please do NOT report it here. Instead, email the maintainers directly, as described in the [security policy](https://github.com/fossasia/voxbento/security/policy). Use this template only for security hardening that is not exploitable, such as a missing header or a weak default.
 
 ## Describe the Security Issue
 A clear and concise description of the security vulnerability.
