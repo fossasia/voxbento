@@ -53,6 +53,9 @@ def get_api_key(event: Event, provider: ProviderEnum) -> str | None:
 @dataclass
 class ProviderConfig:
     api_key: str | None
+    # The event glossary's source terms, most important first, for providers that can bias recognition
+    # (#1164). Filled once when the worker starts; empty means no biasing.
+    terms: tuple[str, ...] = ()
 
     def get_key(self) -> str | None:
         return self.api_key
