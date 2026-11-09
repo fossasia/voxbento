@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 import unicodedata
 
 # Whisper invents speech from silence, breath and room noise. The decoder-level
