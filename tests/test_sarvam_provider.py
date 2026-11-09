@@ -20,6 +20,7 @@ MODEL = "saaras:v3-realtime"
 
 
 def _audio_process(audio: bytes = b"", *, eof: bool = True) -> SimpleNamespace:
+    """A stand-in ffmpeg process whose stdout holds this audio."""
     reader = asyncio.StreamReader()
     reader.feed_data(audio)
     if eof:
@@ -35,6 +36,7 @@ class FakeSarvam:
         self.connections = []
 
     async def __call__(self, ws):
+        """Play the next scripted session on this connection."""
         session = SimpleNamespace(ws=ws, request=ws.request, received=[])
         self.connections.append(session)
         await self.sessions.pop(0)(session)
@@ -64,6 +66,7 @@ async def _read_until_end(session):
 
 
 async def _run(url, monkeypatch, audio, language="hi", timeout=5.0):
+    """Run the provider against the mock server and return what it broadcast."""
     monkeypatch.setattr(sarvam, "SARVAM_WS_URL", url)
     monkeypatch.setattr(sarvam, "BACKOFF_BASE_SECS", 0.01)
     captions: list[dict] = []
@@ -79,6 +82,7 @@ async def _run(url, monkeypatch, audio, language="hi", timeout=5.0):
 
 
 def _texts(captions, status):
+    """The caption texts with this status."""
     return [c["text"] for c in captions if c["status"] == status]
 
 
@@ -105,6 +109,7 @@ def test_sarvam_is_registered():
 
 @pytest.mark.anyio
 async def test_streams_audio_and_maps_partial_and_final(monkeypatch):
+    """Audio goes out in whole frames and transcripts come back as captions."""
     frame = bytes(range(256)) * 13  # 3328 bytes: one whole 3200-byte frame and a 128-byte tail.
 
     async def session(s):
@@ -138,6 +143,7 @@ async def test_streams_audio_and_maps_partial_and_final(monkeypatch):
 
 @pytest.mark.anyio
 async def test_floor_language_uses_auto_detect(monkeypatch):
+    """An empty language asks Sarvam to detect it."""
     async def session(s):
         await _read_until_end(s)
 
@@ -158,6 +164,7 @@ async def test_unsupported_language_never_connects(monkeypatch):
 
 @pytest.mark.anyio
 async def test_reconnects_after_a_drop_and_publishes_the_unfinished_caption(monkeypatch):
+    """A dropped session reconnects without losing the caption in progress."""
     held = asyncio.Event()
 
     async def dropped(s):
@@ -194,6 +201,7 @@ async def test_reconnects_after_a_drop_and_publishes_the_unfinished_caption(monk
 
 @pytest.mark.anyio
 async def test_fatal_error_reconnects_and_never_logs_the_key_or_provider_text(monkeypatch, caplog):
+    """A fatal error logs its code and status, never the key."""
     async def rejected(s):
         await s.ws.send(
             json.dumps(
@@ -278,6 +286,7 @@ async def test_text_published_by_forced_finalization_is_not_repeated():
 
 
 def test_room_setup_rejects_a_language_sarvam_cannot_transcribe():
+    """Guided setup names the unsupported language."""
     from starlette.datastructures import FormData
 
     from portal.room_setup import Engine, EngineCatalog, parse_plan
@@ -293,6 +302,7 @@ def test_room_setup_rejects_a_language_sarvam_cannot_transcribe():
 
 
 def test_engine_offered_only_once_the_event_has_a_key():
+    """Sarvam stays locked until the event has its key."""
     from portal.crypto import encrypt_val
     from portal.models import Event
     from portal.room_setup import engine_catalog
@@ -343,6 +353,7 @@ def test_pipeline_reports_an_unsupported_language():
 
 
 def test_backoff_attempts_stop_growing_at_the_cap():
+    """The exponent can't overflow however long an outage lasts."""
     link = _LinkHealth("conf-1-hi")
     for _ in range(2000):
         assert link.failed("boom") <= sarvam.BACKOFF_MAX_SECS
@@ -388,6 +399,7 @@ async def test_malformed_messages_are_skipped_without_ending_the_session(caplog)
 
 @pytest.mark.anyio
 async def test_stopping_the_worker_publishes_the_unfinished_caption(monkeypatch):
+    """Cancelling the worker still publishes what was said."""
     spoke = asyncio.Event()
 
     async def session(s):
@@ -417,7 +429,25 @@ async def test_stopping_the_worker_publishes_the_unfinished_caption(monkeypatch)
 
 
 @pytest.mark.anyio
+async def test_a_late_final_transcript_is_reported_and_does_not_hold_the_worker(monkeypatch, caplog):
+    """The wait after the audio ends is bounded, and running out of time is logged."""
+
+    async def session(s):
+        await _read_until_end(s)
+        await asyncio.sleep(30)
+
+    monkeypatch.setattr(sarvam, "FINAL_WAIT_SECS", 0.05)
+    fake = FakeSarvam(session)
+    with caplog.at_level(logging.WARNING, logger=sarvam.__name__):
+        async with fake as url:
+            await _run(url, monkeypatch, b" " * 3200)
+
+    assert "did not arrive in time" in caplog.text
+
+
+@pytest.mark.anyio
 async def test_failure_after_the_audio_ended_is_logged(monkeypatch, caplog):
+    """A connection failure during the final wait is reported."""
     async def session(s):
         await _read_until_end(s)
         await s.ws.close(code=1011)

@@ -192,6 +192,9 @@ class SarvamProvider(TranscriptionProvider):
                     done, _ = await asyncio.wait({receiver}, timeout=FINAL_WAIT_SECS)
                     if receiver in done:
                         receiver.result()
+                    else:
+                        # Bounded so a silent server can't hold the worker; run_stream publishes the last partial.
+                        logger.warning("[%s] Sarvam's last transcript did not arrive in time", feed.booth_id)
                     return True
                 receiver.result()
                 return False
