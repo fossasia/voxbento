@@ -73,8 +73,6 @@ VoxBento isolates the real-time media plane from application coordination. Media
    Control Plane: FastAPI + WebSockets + SQLite/PostgreSQL (Booth State, Auth, Coordination)
 ```
 
-Password recovery signs out earlier account sessions and invalidates outstanding magic links. Sign in again after a reset. Private TTS connections recheck current account or invitation access at most every 5 seconds while bundles are sent and disconnect when that access is revoked; valid listener codes and invitations remain independent of account cookies.
-
 ---
 
 ## 🚀 Quick Start
