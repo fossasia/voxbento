@@ -31,7 +31,7 @@
   <a href="{{ management_prefix }}/events/{{ event.id }}/rooms/" class="tile">
     <span class="tile-icon">🏛️</span>
     <span class="tile-title">Rooms &amp; booths</span>
-    <span class="tile-desc">{{ rooms|length }} room{{ 's' if rooms|length != 1 else '' }} · {{ booths|length }} booth{{ 's' if booths|length != 1 else '' }}</span>
+    <span class="tile-desc">Manage rooms and interpreter booths · {{ rooms|length }} room{{ 's' if rooms|length != 1 else '' }} · {{ booths|length }} booth{{ 's' if booths|length != 1 else '' }}</span>
   </a>
   {% if is_event_owner %}
   <a href="{{ management_prefix }}/events/{{ event.id }}/team/" class="tile">
