@@ -6,7 +6,7 @@ import logging
 import os
 import threading
 import time
-from collections.abc import Sequence
+from collections.abc import Awaitable, Sequence
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
@@ -17,7 +17,15 @@ if TYPE_CHECKING:
 from huggingface_hub.utils import LocalEntryNotFoundError
 from tqdm.auto import tqdm
 
-from portal.translations.constants import NLLB_LANGUAGE_MAP
+from portal.translations.constants import NLLB_LANGUAGE_MAP, TranslationProviderEnum
+from portal.translations.engine import (
+    EngineKind,
+    Language,
+    TranslationContext,
+    TranslationEngine,
+    TranslationRows,
+    translate_each,
+)
 from portal.translations.providers.base import TranslationProvider
 from portal.translations.vocabulary import protect_terms, restore_terms
 
@@ -222,12 +230,48 @@ def start_eviction_loop():
             pass
 
 
-class LocalProvider(TranslationProvider):
+class LocalProvider(TranslationProvider, TranslationEngine):
+    """NLLB through CTranslate2, in the portal process."""
+
+    kind = EngineKind.CT2_SEQ2SEQ
+
     #: Set once the operator has been told the interpretation settings do not apply here.
     _warned_unsupported_settings = False
 
     def __init__(self):
         start_eviction_loop()
+
+    async def translate_batch(
+        self,
+        source: Language,
+        targets: Sequence[Language],
+        texts: Sequence[str],
+        context: TranslationContext,
+        *,
+        model: str,
+        api_key: str | None = None,
+    ) -> TranslationRows:
+        """One model call per text and target; a language NLLB lacks is ``None`` in its column.
+
+        A call is one forward pass, or two when the model drops a glossary placeholder and
+        the text is translated again without it.
+        """
+
+        def translate_one(text: str, target: Language) -> Awaitable[str | None]:
+            return self.translate(
+                provider_name=TranslationProviderEnum.LOCAL.value,
+                text=text,
+                target_lang_name=target.name,
+                target_lang_code=target.code,
+                source_lang_name=source.name,
+                model=model,
+                api_key=api_key,
+                persona=context.persona,
+                style=context.style,
+                vocabulary_entries=context.vocabulary_for(target),
+            )
+
+        return await translate_each(translate_one, targets, texts)
 
     async def translate(
         self,
