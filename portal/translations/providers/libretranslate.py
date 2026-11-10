@@ -35,17 +35,21 @@ def language_to_iso(language_name: str) -> str | None:
     """Best-effort ISO 639-1 code for a human-readable language name, or None.
 
     LibreTranslate takes ISO 639-1 (``en``, ``fr``, ``zh``). A caller that already has
-    a two-letter code can pass that through here; everything else is resolved with pycountry.
+    a two-letter code can pass that through here, as can a regional tag such as
+    ``pt-BR`` or ``zh_Hans``: the primary subtag is used. Everything else is resolved
+    with pycountry.
     """
     if not language_name:
         return None
     import pycountry
 
     lookup = language_name.strip()
-    if len(lookup) == 2 and lookup.isalpha():
-        return lookup.lower()
+    # Normalise regional/script tags (pt-BR, zh_Hans, en_US) to their primary subtag.
+    primary = lookup.split("-", 1)[0].split("_", 1)[0]
+    if len(primary) == 2 and primary.isalpha():
+        return primary.lower()
     try:
-        lang = pycountry.languages.lookup(lookup)
+        lang = pycountry.languages.lookup(primary)
     except LookupError:
         return None
     return getattr(lang, "alpha_2", None)
@@ -84,7 +88,9 @@ class LibreTranslateProvider(TranslationProvider):
         if not target:
             logger.error("LibreTranslate: missing target language code for %r", target_lang_name)
             return None
-        source = language_to_iso(source_lang_name) or "en"
+        # Unknown source names use LibreTranslate's "auto" detection rather than silently
+        # claiming the text is English; the server guesses and returns detectedLanguage.
+        source = language_to_iso(source_lang_name) or "auto"
 
         payload: _LibreTranslateRequest = {
             "q": text,

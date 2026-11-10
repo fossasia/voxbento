@@ -126,6 +126,9 @@ def test_base_url_is_normalized(url, expected):
         "http://user:secret@libre.example.org",
         "http://libre.example.org?key=secret",
         "http://libre.example.org#frag",
+        # Trailing '?' or '#' with an empty query/fragment still breaks the appended /translate path.
+        "http://libre.example.org?",
+        "http://libre.example.org#",
         "http://bad host:5000",
         "http://bad%20host:5000",
         "http://libre.internal:0",
@@ -197,6 +200,9 @@ def test_libretranslate_is_keyless_in_worker():
         ("Chinese", "zh"),
         ("en", "en"),
         ("DE", "de"),
+        ("pt-BR", "pt"),
+        ("zh-Hans", "zh"),
+        ("en_US", "en"),
         ("", None),
         ("Klingon", None),
     ],
@@ -315,7 +321,7 @@ async def test_unreachable_or_slow_server_is_logged(libre, caplog, error, logged
 
 
 @pytest.mark.anyio
-async def test_source_defaults_to_english_when_name_is_unknown(libre, libre_server):
+async def test_source_falls_back_to_auto_when_name_is_unknown(libre, libre_server):
     requests, _ = libre_server
     result = await LibreTranslateProvider().translate(
         provider_name="libretranslate",
@@ -326,8 +332,26 @@ async def test_source_defaults_to_english_when_name_is_unknown(libre, libre_serv
         model=LIBRETRANSLATE_MODEL_ID,
         api_key=None,
     )
+    # LibreTranslate's "auto" lets its own detector pick the language rather than mislabel
+    # non-English text as English.
     assert result == "Hallo Welt"
-    assert json.loads(requests[0].content)["source"] == "en"
+    assert json.loads(requests[0].content)["source"] == "auto"
+
+
+@pytest.mark.anyio
+async def test_source_normalises_regional_codes(libre, libre_server):
+    requests, _ = libre_server
+    result = await LibreTranslateProvider().translate(
+        provider_name="libretranslate",
+        text="Olá mundo",
+        target_lang_name="German",
+        target_lang_code="de",
+        source_lang_name="pt-BR",
+        model=LIBRETRANSLATE_MODEL_ID,
+        api_key=None,
+    )
+    assert result == "Hallo Welt"
+    assert json.loads(requests[0].content)["source"] == "pt"
 
 
 @pytest.mark.anyio
@@ -359,6 +383,8 @@ def test_not_offered_when_unset(unset):
 
 
 def test_offered_after_nllb_with_a_fixed_model(libre):
+    from portal.translations.registry import NLLB_200_DISTILLED_600M
+
     catalog = engine_catalog(_event())
     providers = [e.provider for e in catalog.translation]
     assert providers[-1] == "libretranslate"
@@ -366,7 +392,10 @@ def test_offered_after_nllb_with_a_fixed_model(libre):
     assert engine.model == LIBRETRANSLATE_MODEL_ID
     assert engine.label == "LibreTranslate"
     # New rooms still default to NLLB, which comes before LibreTranslate.
-    assert blank_plan(catalog).translation_engine == "local"
+    plan = blank_plan(catalog)
+    assert plan.translation_engine == "local"
+    nllb = catalog.find("translation", "local")
+    assert nllb.model == NLLB_200_DISTILLED_600M.id
 
 
 # ── Routes ─────────────────────────────────────────────────────────────────
@@ -457,6 +486,11 @@ async def test_room_form_cannot_choose_the_server_address(admin_room, libre, lib
 @pytest.mark.anyio
 async def test_unset_server_hides_the_option_from_the_room_form(admin_room, unset):
     cookie, event_id, room_id = admin_room
+    async with _client(cookie) as client:
+        page = (await client.get(f"/admin/events/{event_id}/rooms/{room_id}/")).text
+    # The page must not render LibreTranslate as a selectable translation service.
+    assert 'value="libretranslate"' not in page
+    # And a save attempt that names it anyway doesn't stick.
     room = await _save_ai(cookie, event_id, room_id, floor_translation_model=LIBRETRANSLATE_MODEL_ID)
     assert room.floor_translation_provider != "libretranslate"
 

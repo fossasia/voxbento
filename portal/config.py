@@ -256,6 +256,10 @@ class Settings(BaseSettings):
         value = value.strip().rstrip("/")
         if not value:
             return ""
+        # A trailing '?' or '#' has empty parsed.query/parsed.fragment but still breaks
+        # the appended '/translate' path; reject them before parsing.
+        if "?" in value or "#" in value:
+            raise ValueError("libretranslate_base_url must not include a query string or fragment")
         parsed = urlparse(value)
         if parsed.scheme not in {"http", "https"} or not parsed.hostname:
             raise ValueError("libretranslate_base_url must be an http(s) URL such as http://localhost:5000")
@@ -264,8 +268,8 @@ class Settings(BaseSettings):
         # Reading the port raises ValueError for one that isn't a number in 0-65535.
         if parsed.port == 0:
             raise ValueError("libretranslate_base_url port must be between 1 and 65535")
-        if parsed.username or parsed.password or parsed.query or parsed.fragment:
-            raise ValueError("libretranslate_base_url must not include credentials, a query string or a fragment")
+        if parsed.username or parsed.password:
+            raise ValueError("libretranslate_base_url must not include credentials")
         if parsed.path.endswith("/translate"):
             raise ValueError("libretranslate_base_url is the base URL; leave out /translate")
         return value
