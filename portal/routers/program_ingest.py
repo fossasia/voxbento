@@ -34,12 +34,14 @@ class IngestChange(BaseModel):
     action: Literal["enable", "rotate", "revoke", "disable", "sync"]
     sync_offset_ms: int = Field(default=0, ge=0, le=120000)
     # Only read on "enable": the transport the new credential is bound to.
-    mode: Literal["whip", "rtmps_relay"] = "whip"
+    mode: Literal["whip", "rtmps", "rtmps_relay"] = "whip"
 
 
 class RelayDestination(BaseModel):
-    server_url: str = Field(min_length=1, max_length=255)
-    stream_key: str = Field(min_length=1, max_length=128, repr=False)
+    # Omitted means YouTube's primary RTMPS ingest; most organizers only paste the stream key.
+    server_url: str | None = Field(default=None, max_length=255)
+    # Room for a full "<server>/<key>" URL pasted into the key field.
+    stream_key: str = Field(min_length=1, max_length=400, repr=False)
 
 
 class SenderSessionRequest(BaseModel):
@@ -125,7 +127,10 @@ async def ingest_status(event_id: int, room_id: int) -> JSONResponse:
                 "warnings": warnings,
                 "mode": room.program_ingest_mode,
                 "relay_available": settings.program_ingest_enabled and settings.program_relay_enabled,
-                "rtmps_server": _rtmps_server(event.slug, room_id),
+                "rtmps_available": settings.rtmps_ingest_enabled,
+                # The reconciler's last call to the relay service failed: the operator must start it.
+                "relay_service_down": settings.program_relay_enabled and program_relay.list_outage.failures > 0,
+                "rtmps_server": _rtmps_server(event.slug, room_id) if settings.rtmps_ingest_enabled else "",
                 # Write-only: only the non-secret server URL and the change time are ever returned.
                 "destination": {
                     "configured": bool(room.program_relay_server and room.program_relay_key_enc),
@@ -161,8 +166,10 @@ async def ingest_change(request: Request, event_id: int, room_id: int, change: I
         raise HTTPException(409, "Program ingest must first be enabled by the server operator")
     if change.action == "enable" and change.mode == program_relay.RELAY_MODE and not settings.program_relay_enabled:
         raise HTTPException(409, "YouTube relay mode must first be enabled by the server operator")
+    if change.action == "enable" and change.mode == program_relay.RTMPS_MODE and not settings.rtmps_ingest_enabled:
+        raise HTTPException(409, "RTMPS ingest must first be enabled by the server operator")
     secret = None
-    relay_mode = False
+    rtmps_mode = False
     cleanup_pending = False
     async with room_lock(room_id):
         async with get_session() as session:
@@ -193,7 +200,7 @@ async def ingest_change(request: Request, event_id: int, room_id: int, change: I
                     raise HTTPException(
                         502, "Could not confirm floor source shutdown; no credential was issued. Retry."
                     ) from None
-            relay_mode = room.program_ingest_mode == program_relay.RELAY_MODE
+            rtmps_mode = room.program_ingest_mode in program_relay.RTMPS_MODES
 
         if change.action == "revoke":
             async with get_session() as session:
@@ -211,7 +218,7 @@ async def ingest_change(request: Request, event_id: int, room_id: int, change: I
                         type(exc).__name__,
                     )
     body = {"secret": secret}
-    if secret and relay_mode:
+    if secret and rtmps_mode:
         body["stream_key"] = f"floor?key={secret}"
     if cleanup_pending:
         body["cleanup_pending"] = True
@@ -255,7 +262,7 @@ async def sender_session_start(
     )
 
 
-@router.delete(SENDER_PATH, dependencies=[Depends(require_event_owner)])
+@router.delete(SENDER_PATH, dependencies=[Depends(require_event_owner), Depends(require_admin_csrf)])
 async def sender_session_stop(
     request: Request,
     event_id: int,
@@ -279,7 +286,7 @@ async def sender_session_stop(
 RELAY_PATH = "/admin/events/{event_id}/rooms/{room_id}/program-relay"
 
 
-@router.put(RELAY_PATH, dependencies=[Depends(require_event_owner)])
+@router.put(RELAY_PATH, dependencies=[Depends(require_event_owner), Depends(require_admin_csrf)])
 async def relay_destination_set(
     request: Request, event_id: int, room_id: int, destination: RelayDestination
 ) -> JSONResponse:
@@ -304,7 +311,7 @@ async def relay_destination_set(
     return JSONResponse({"configured": True, "server_url": server_url}, headers={"Cache-Control": "no-store"})
 
 
-@router.delete(RELAY_PATH, dependencies=[Depends(require_event_owner)])
+@router.delete(RELAY_PATH, dependencies=[Depends(require_event_owner), Depends(require_admin_csrf)])
 async def relay_destination_clear(request: Request, event_id: int, room_id: int) -> JSONResponse:
     """Revoke the stored YouTube destination and stop the room's relay."""
     _check_origin(request)

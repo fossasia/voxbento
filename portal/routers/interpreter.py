@@ -8,8 +8,9 @@ from fastapi.templating import Jinja2Templates
 from sqlalchemy import or_, select
 from sqlalchemy.orm import joinedload
 
-from portal.auth import get_booth_sessions, resolve_booth_role
+from portal.auth import get_booth_sessions, is_invite_token_revoked, resolve_booth_role, resolve_session_user
 from portal.booth_identity import make_booth_id, make_mediamtx_path
+from portal.booth_state import DISPLAY_NAME_MAX_LENGTH
 from portal.config import settings
 from portal.database import (
     get_booth_by_id,
@@ -46,6 +47,8 @@ async def interpreter_landing_page(request: Request) -> Any:
 
     user_sess = sessions.get("user_token")
     invite_sess = sessions.get("session_token")
+    if user_sess and await resolve_session_user(user_sess) is None:
+        user_sess = None
 
     if user_sess and user_sess.get("sub"):
         try:
@@ -123,6 +126,10 @@ async def interpreter_landing_page(request: Request) -> Any:
                         }
         except ValueError:
             pass
+
+    if invite_sess and "event_slug" in invite_sess and "language_code" in invite_sess and "room_id" in invite_sess:
+        if invite_sess.get("token_id") is not None and await is_invite_token_revoked(str(invite_sess["token_id"])):
+            invite_sess = None
 
     if invite_sess and "event_slug" in invite_sess and "language_code" in invite_sess and "room_id" in invite_sess:
         bid = make_booth_id(invite_sess["event_slug"], invite_sess["room_id"], invite_sess["language_code"])
@@ -230,7 +237,8 @@ async def interpreter_booth_by_identity(
     default_jitsi_url = _make_jitsi_url(settings.effective_jitsi_base_url, settings.default_jitsi_room)
     final_jitsi_url = room_jitsi_url or default_jitsi_url
     user_sess = sessions.get("user_token", {})
-    display_name = user_sess.get("display_name", "") or user_sess.get("email", "")
+    # booth:join rejects longer names, and the email fallback can be up to 320 characters.
+    display_name = (user_sess.get("display_name") or user_sess.get("email") or "")[:DISPLAY_NAME_MAX_LENGTH]
     return templates.TemplateResponse(
         request=request,
         name="interpreter_booth.html",

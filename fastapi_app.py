@@ -1,10 +1,11 @@
 from __future__ import annotations
 
+import asyncio
 import logging
 from contextlib import asynccontextmanager
 from pathlib import Path
 
-from fastapi import Depends, FastAPI, Request
+from fastapi import Depends, FastAPI, Request, status
 from fastapi.encoders import jsonable_encoder
 from fastapi.exceptions import RequestValidationError
 from fastapi.openapi.docs import get_swagger_ui_html
@@ -14,21 +15,25 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from starlette.exceptions import HTTPException as StarletteHTTPException
 from starlette.middleware.base import BaseHTTPMiddleware
+from unilimit.integrations.fastapi import RateLimitExceeded, setup
 
 from portal import meeting_source, program_ingest
 from portal.auth import (
     ADMIN_CSRF_COOKIE,
     generate_admin_csrf_token,
     get_csrf_session_id,
+    is_cookie_secure,
     is_valid_admin_csrf_token,
     require_owner_or_coordinator,
 )
 from portal.config import settings
 from portal.exceptions import RedirectRequired
 from portal.globals import asset_version_context
+from portal.rate_limit import auth_rate_limiter, login_limiter, token_rate_limiter
 from portal.routers.admin import router as admin_router
 from portal.routers.api import router as api_router
 from portal.routers.api_v1 import router as api_v1_router
+from portal.routers.attendance import router as attendance_router
 from portal.routers.auth import router as auth_router
 from portal.routers.demo import router as demo_router
 from portal.routers.developer import router as developer_router
@@ -39,6 +44,7 @@ from portal.routers.oauth import router as oauth_router
 from portal.routers.program_ingest import router as program_ingest_router
 from portal.routers.public import router as public_router
 from portal.routers.webhooks import router as webhooks_router
+from portal.security_headers import SecurityHeadersMiddleware, apply_security_headers, forwarded_https
 from portal.websockets.handlers import router as ws_router
 from portal.workspace_routing import WorkspaceRoutingMiddleware
 
@@ -51,11 +57,23 @@ templates = Jinja2Templates(
 )
 
 
+async def _rate_limit_cleanup_loop(interval_seconds: float = 300.0) -> None:
+    """Periodically purge expired rate limit entries to prevent unbounded memory growth."""
+    while True:
+        await asyncio.sleep(interval_seconds)
+        for name, limiter in (("auth", auth_rate_limiter), ("token", token_rate_limiter)):
+            try:
+                await limiter.cleanup()
+            except Exception:
+                logging.exception("Rate limit cleanup error (%s)", name)
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     import httpx
 
     import portal.globals as pg
+    from portal.globals import booths
     from portal.tts import demo_gen as dg
     from portal.tts.demo_gen import ensure_demo_generated
 
@@ -74,38 +92,37 @@ async def lifespan(app: FastAPI):
         finally:
             dg._generating = False
 
-    import asyncio
-
     import portal.notifications as _notifications_mod
     import portal.webhooks.worker as _webhook_worker_mod
 
     # Reference via module attribute so test-time monkey-patching of
     # portal.webhooks.worker.webhook_worker_loop is respected.
+    import portal.websockets.reaper as _reaper_mod
+    from portal.websockets.manager import manager
+
+    manager.set_membership_checker(_reaper_mod.check_booth_memberships)
+    manager.set_token_checker(_reaper_mod.check_booth_tokens)
+    reaper_task = asyncio.create_task(_reaper_mod.session_reaper_loop())
+
     webhook_task = asyncio.create_task(_webhook_worker_mod.webhook_worker_loop())
     notification_task = asyncio.create_task(_notifications_mod.notification_worker_loop())
+    rate_limit_cleanup_task = asyncio.create_task(_rate_limit_cleanup_loop())
     ingest_task = asyncio.create_task(program_ingest.reconcile_loop()) if settings.program_ingest_enabled else None
     meeting_task = asyncio.create_task(meeting_source.reconcile_loop())
+    attendance_task = asyncio.create_task(booths.attendance.run())
 
     dg.track_task(asyncio.create_task(_gen()))
 
     logging.getLogger("uvicorn.access").addFilter(_UvicornTokenRedactor())
     logging.getLogger("uvicorn.access").addFilter(_HealthCheckFilter())
     yield
-    import contextlib
 
-    webhook_task.cancel()
-    notification_task.cancel()
-    meeting_task.cancel()
-    with contextlib.suppress(asyncio.CancelledError):
-        await meeting_task
+    tasks_to_cancel = [reaper_task, webhook_task, notification_task, rate_limit_cleanup_task, meeting_task, attendance_task]
     if ingest_task:
-        ingest_task.cancel()
-        with contextlib.suppress(asyncio.CancelledError):
-            await ingest_task
-    with contextlib.suppress(asyncio.CancelledError):
-        await webhook_task
-    with contextlib.suppress(asyncio.CancelledError):
-        await notification_task
+        tasks_to_cancel.append(ingest_task)
+    for task in tasks_to_cancel:
+        task.cancel()
+    await asyncio.gather(*tasks_to_cancel, return_exceptions=True)
 
     if pg.shared_http_client:
         await pg.shared_http_client.aclose()
@@ -132,7 +149,7 @@ class _UvicornTokenRedactor(logging.Filter):
 
         lowered = message.casefold()
         if self._TOKEN_RE.search(message) and any(
-            x in lowered for x in ["/api/", "/embed/", "/ws/", "/oauth/", "/internal/"]
+            x in lowered for x in ["/api/", "/embed/", "/overlay/", "/ws/", "/oauth/", "/internal/"]
         ):
             if isinstance(record.msg, str):
                 record.msg = self._TOKEN_RE.sub(r"\1[REDACTED]", record.msg)
@@ -144,29 +161,34 @@ class _UvicornTokenRedactor(logging.Filter):
         return True
 
 
+# Pages and APIs of the signed-in management area. A CSRF token is issued for these only, so
+# public pages, listener traffic and static files never pay for decoding the session cookie.
+_CSRF_PATH_PREFIXES = (
+    "/admin",
+    "/api/admin",
+    "/workspace",
+    "/api/workspace",
+    "/mission-control",
+    "/api/rooms",
+    "/account",
+)
+
+
+def _is_management_path(path: str) -> bool:
+    return any(path == prefix or path.startswith(f"{prefix}/") for prefix in _CSRF_PATH_PREFIXES)
+
+
 class AdminCSRFMiddleware(BaseHTTPMiddleware):
+    """Keep a session-bound CSRF token in an HttpOnly cookie and on ``request.state`` for templates."""
+
     async def dispatch(self, request: Request, call_next):
-        path = request.url.path
-        is_admin_request = (
-            path == "/admin"
-            or path.startswith("/admin/")
-            or path == "/api/admin"
-            or path.startswith("/api/admin/")
-            or path == "/workspace"
-            or path.startswith("/workspace/")
-            or path == "/api/workspace"
-            or path.startswith("/api/workspace/")
-            or path.startswith("/api/rooms/")
-            or path == "/account"
-            or path.startswith("/account/")
-        )
-
         csrf_token = request.cookies.get(ADMIN_CSRF_COOKIE, "")
-        session_id = get_csrf_session_id(request)
-        replace_csrf_cookie = is_admin_request and not is_valid_admin_csrf_token(csrf_token, session_id)
-
-        if replace_csrf_cookie:
-            csrf_token = generate_admin_csrf_token(session_id)
+        replace_csrf_cookie = False
+        if _is_management_path(request.url.path):
+            session_id = get_csrf_session_id(request)
+            if not is_valid_admin_csrf_token(csrf_token, session_id):
+                csrf_token = generate_admin_csrf_token(session_id)
+                replace_csrf_cookie = True
 
         request.state.admin_csrf_token = csrf_token
         response = await call_next(request)
@@ -176,10 +198,7 @@ class AdminCSRFMiddleware(BaseHTTPMiddleware):
                 key=ADMIN_CSRF_COOKIE,
                 value=csrf_token,
                 httponly=True,
-                secure=(
-                    request.url.scheme == "https"
-                    or request.headers.get("x-forwarded-proto", "").split(",")[0].strip() == "https"
-                ),
+                secure=is_cookie_secure(request),
                 samesite="lax",
             )
 
@@ -189,6 +208,8 @@ class AdminCSRFMiddleware(BaseHTTPMiddleware):
 app = FastAPI(title="Voxbento", version="1.0.0", lifespan=lifespan, docs_url=None, redoc_url=None, openapi_url=None)
 app.add_middleware(WorkspaceRoutingMiddleware)
 app.add_middleware(AdminCSRFMiddleware)
+app.add_middleware(SecurityHeadersMiddleware)
+setup(app, login_limiter)
 
 
 @app.get("/docs", include_in_schema=False)
@@ -293,6 +314,44 @@ async def http_exception_handler(request: Request, exc: StarletteHTTPException):
     return JSONResponse({"detail": exc.detail}, status_code=exc.status_code, headers=headers)
 
 
+@app.exception_handler(RateLimitExceeded)
+async def unilimit_rate_limit_exceeded_handler(request: Request, exc: RateLimitExceeded):
+    headers = dict(exc.headers) if hasattr(exc, "headers") and exc.headers else {}
+    if request.url.path == "/login":
+        form_data: dict[str, str] = {}
+        try:
+            form = await request.form()
+            email = form.get("email", "")
+            next_url = form.get("next_url", "")
+            form_data = {
+                "email": email.strip().lower() if isinstance(email, str) else "",
+                "next_url": next_url if isinstance(next_url, str) else "",
+            }
+        except Exception as parse_exc:
+            logging.debug("Could not parse login form on rate limit rejection: %s", parse_exc)
+        return templates.TemplateResponse(
+            request=request,
+            name="login.html",
+            context={
+                "error": "Too many attempts. Try again later.",
+                "email": form_data.get("email", ""),
+                "next_url": form_data.get("next_url", ""),
+            },
+            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+            headers=headers,
+        )
+    if "text/html" in request.headers.get("accept", ""):
+        detail_msg = getattr(exc, "detail", "Too Many Requests")
+        return templates.TemplateResponse(
+            request, "429.html", {"request": request, "detail": detail_msg}, status_code=429, headers=headers
+        )
+    return JSONResponse(
+        {"detail": getattr(exc, "detail", "Too Many Requests")},
+        status_code=getattr(exc, "status_code", status.HTTP_429_TOO_MANY_REQUESTS),
+        headers=headers,
+    )
+
+
 @app.exception_handler(Exception)
 async def general_exception_handler(request: Request, exc: Exception):
     import logging
@@ -302,10 +361,15 @@ async def general_exception_handler(request: Request, exc: Exception):
 
     logging.exception("Unhandled Server Error:")
     if "text/html" in request.headers.get("accept", ""):
-        return templates.TemplateResponse(
+        response = templates.TemplateResponse(
             request, "500.html", {"request": request, "detail": "Internal Server Error"}, status_code=500
         )
-    return JSONResponse({"detail": "Internal Server Error"}, status_code=500)
+    else:
+        response = JSONResponse({"detail": "Internal Server Error"}, status_code=500)
+    # Unhandled-error responses are built outside the middleware stack, so add the headers here.
+    is_https = request.url.scheme == "https" or forwarded_https(request.headers)
+    apply_security_headers(response.headers, path=request.url.path, is_https=is_https)
+    return response
 
 
 app.mount("/static", StaticFiles(directory=_BASE_DIR / "portal" / "static"), name="static")
@@ -327,6 +391,7 @@ app.include_router(api_v1_router)
 app.include_router(admin_router)
 app.include_router(program_ingest_router)
 app.include_router(meeting_source_router)
+app.include_router(attendance_router)
 
 app.include_router(demo_router)
 

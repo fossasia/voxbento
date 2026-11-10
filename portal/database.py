@@ -45,6 +45,7 @@ from portal.models import (
     TranscriptSegment,
     UsageMetric,
     User,
+    generate_public_id,
     generate_token,
     utc_now,
 )
@@ -300,7 +301,7 @@ async def list_rooms_for_event(
     event_id: int,
     *,
     search: str | None = None,
-    limit: int = 100,
+    limit: int | None = 100,
     offset: int = 0,
 ) -> list[Room]:
     from sqlalchemy.orm import selectinload
@@ -309,7 +310,11 @@ async def list_rooms_for_event(
     if search and search.strip():
         escaped_search = search.strip().replace("\\", "\\\\").replace("%", r"\%").replace("_", r"\_")
         query = query.where(Room.display_name.ilike(f"%{escaped_search}%", escape="\\"))
-    query = query.order_by(Room.created_at).limit(limit).offset(offset)
+    query = query.order_by(Room.created_at)
+    if limit is not None:
+        query = query.limit(limit)
+    if offset:
+        query = query.offset(offset)
 
     result = await session.execute(query)
     return list(result.scalars().all())
@@ -389,23 +394,29 @@ async def list_booths_for_event(
     session: AsyncSession,
     event_id: int,
     *,
-    limit: int = 100,
+    limit: int | None = 100,
     offset: int = 0,
 ) -> list[DBBooth]:
     from sqlalchemy.orm import selectinload
 
-    result = await session.execute(
+    query = (
         select(DBBooth)
+        .join(Room, Room.id == DBBooth.room_id)
         .options(
             joinedload(DBBooth.event),
             joinedload(DBBooth.room),
             selectinload(DBBooth.translation_languages),
         )
-        .where(DBBooth.event_id == event_id)
+        # A booth must belong to the room's event; keep inconsistent rows out of every list.
+        .where(DBBooth.event_id == event_id, DBBooth.event_id == Room.event_id)
         .order_by(DBBooth.language_code)
-        .limit(limit)
-        .offset(offset),
     )
+    if limit is not None:
+        query = query.limit(limit)
+    if offset:
+        query = query.offset(offset)
+
+    result = await session.execute(query)
     return list(result.scalars().all())
 
 
@@ -424,12 +435,14 @@ async def list_all_booths_for_events(
 
     result = await session.execute(
         select(DBBooth)
+        .join(Room, Room.id == DBBooth.room_id)
         .options(
             joinedload(DBBooth.event),
             joinedload(DBBooth.room),
             selectinload(DBBooth.translation_languages),
         )
-        .where(DBBooth.event_id.in_(event_ids))
+        # A booth must belong to the room's event; keep inconsistent rows out of every list.
+        .where(DBBooth.event_id.in_(event_ids), DBBooth.event_id == Room.event_id)
         .order_by(DBBooth.event_id, DBBooth.room_id, DBBooth.language_code),
     )
     booths_by_event: dict[int, list[DBBooth]] = {eid: [] for eid in event_ids}
@@ -443,8 +456,10 @@ async def list_booths_for_room(session: AsyncSession, room_id: int) -> list[DBBo
 
     result = await session.execute(
         select(DBBooth)
+        .join(Room, Room.id == DBBooth.room_id)
         .options(joinedload(DBBooth.event), selectinload(DBBooth.translation_languages))
-        .where(DBBooth.room_id == room_id)
+        # A booth must belong to the room's event; keep inconsistent rows out of every list.
+        .where(DBBooth.room_id == room_id, DBBooth.event_id == Room.event_id)
         .order_by(DBBooth.language_code),
     )
     return list(result.scalars().all())
@@ -481,9 +496,11 @@ async def create_invite_token(
     label: str = "",
     expires_at: datetime | None = None,
     created_by: str = "",
+    public_id: str | None = None,
 ) -> InviteToken:
     token = InviteToken(
         token=generate_token(),
+        public_id=public_id or generate_public_id(),
         booth_id=booth_id,
         role=role,
         label=label,
@@ -500,6 +517,15 @@ async def get_invite_token(session: AsyncSession, token_str: str) -> InviteToken
         select(InviteToken)
         .options(joinedload(InviteToken.booth).joinedload(DBBooth.event))
         .where(InviteToken.token == token_str),
+    )
+    return result.scalar_one_or_none()
+
+
+async def get_invite_token_by_public_id(session: AsyncSession, public_id: str) -> InviteToken | None:
+    result = await session.execute(
+        select(InviteToken)
+        .options(joinedload(InviteToken.booth).joinedload(DBBooth.event))
+        .where(InviteToken.public_id == public_id),
     )
     return result.scalar_one_or_none()
 
@@ -570,6 +596,7 @@ async def update_user(
     email_verified: bool | None = None,
     is_admin: bool | None = None,
     is_active: bool | None = None,
+    last_sign_in_at: datetime | None = None,
 ) -> User | None:
     user = await get_user_by_id(session, user_id)
     if user:
@@ -581,7 +608,18 @@ async def update_user(
             user.is_admin = is_admin
         if is_active is not None:
             user.is_active = is_active
-        await session.flush()
+        if last_sign_in_at is not None:
+            await session.execute(
+                sa.update(User)
+                .where(User.id == user_id)
+                .where(or_(User.last_sign_in_at.is_(None), User.last_sign_in_at < last_sign_in_at))
+                .values(last_sign_in_at=last_sign_in_at)
+                .execution_options(synchronize_session=False)
+            )
+            await session.flush()
+            await session.refresh(user)
+        else:
+            await session.flush()
     return user
 
 
@@ -642,6 +680,7 @@ USER_SORT_COLUMNS = {
     "email_verified": User.email_verified,
     "is_active": User.is_active,
     "created_at": User.created_at,
+    "last_sign_in_at": User.last_sign_in_at,
 }
 
 
@@ -1071,8 +1110,20 @@ async def redeem_auth_token(session: AsyncSession, jti: str, expected_type: str)
     if tok.token_type != expected_type:
         raise ValueError("Invalid token type.")
 
-    tok.used_at = datetime.now(tz=timezone.utc)
-    await session.flush()
+    now = datetime.now(tz=timezone.utc)
+    result = await session.execute(
+        sa.update(AuthToken)
+        .where(
+            AuthToken.jti == jti,
+            AuthToken.token_type == expected_type,
+            AuthToken.used_at.is_(None),
+            AuthToken.expires_at > now,
+        )
+        .values(used_at=now)
+        .execution_options(synchronize_session="fetch")
+    )
+    if result.rowcount != 1:
+        raise ValueError("Token has already been used or has expired.")
     return tok
 
 
@@ -1118,7 +1169,7 @@ async def save_transcript_segment(booth_id_str: str, text: str, room_id: int | N
             await session.flush()
             return segment.id
     except Exception as e:
-        logger.error(f"Failed to save transcript segment: {e}")
+        logger.error("Failed to save transcript segment: %s", e, exc_info=True)
         return None
 
 

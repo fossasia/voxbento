@@ -14,13 +14,15 @@ from urllib.parse import parse_qsl, urlencode, urlparse, urlunparse
 import jwt
 import sqlalchemy as sa
 from fastapi import APIRouter, Body, Depends, HTTPException, Request, Response, status
-from fastapi.responses import JSONResponse, RedirectResponse
+from fastapi.responses import RedirectResponse
 from fastapi.templating import Jinja2Templates
 from sqlalchemy.exc import DBAPIError, IntegrityError, OperationalError
 from sqlalchemy.ext.asyncio import AsyncSession
+from unilimit.integrations.fastapi import RateLimit
 
 from portal.auth import (
     ADMIN_CSRF_COOKIE,
+    PASSWORD_TOO_LONG_MESSAGE,
     create_participant_token,
     create_token,
     create_user_token,
@@ -28,9 +30,13 @@ from portal.auth import (
     generate_admin_csrf_token,
     get_current_user,
     hash_password,
+    is_cookie_secure,
+    password_too_long,
     require_admin_csrf,
     require_user,
     resolve_request_principal,
+    user_session_is_valid,
+    user_session_version,
     verify_password,
 )
 from portal.config import settings
@@ -47,16 +53,19 @@ from portal.database import (
     get_user_by_id,
     redeem_auth_token,
     redeem_invite_token,
+    revoke_auth_tokens,
     update_user,
 )
 from portal.globals import _JS_CACHE_BUST, asset_version_context
 from portal.hosting_requests import format_event_dates, parse_hosting_request_form
 from portal.models import HOSTING_REQUEST_GRANTED, TOKEN_TYPE_HOSTING_INVITE, AuthToken, User, utc_now
 from portal.notifications import queue_notification
-from portal.rate_limit import check_rate_limit
+from portal.rate_limit import check_rate_limit, login_email_rule, login_ip_rule, login_limiter
+from portal.registration_protection import limit_registration, verify_registration_challenge
 from portal.schemas.auth import TokenRequest, TokenResponse
 from portal.user_menu import resolve_user_menu, user_menu_context
 from portal.utils import safe_redirect, verify_same_origin
+from portal.websockets.manager import REASON_SESSION_EXPIRED, manager
 
 _BASE_DIR = Path(__file__).resolve().parent.parent
 templates = Jinja2Templates(
@@ -68,7 +77,13 @@ logger = logging.getLogger(__name__)
 
 # Hash of a fixed throwaway value; it is only used when no stored password
 # exists, and the user-state checks below still reject the login.
-_DUMMY_PASSWORD_HASH = "$2b$12$OEvt/xgDNq5iYebPcyO6L.ntTqE5qjv39rH/iPdAnvHg33d2vcG4e"
+_DUMMY_PASSWORD_HASH = "$2b$12$OEvt/xgDNq5iYebPcyO6L.ntTqE5qjv39rH/iPdAnvHg33d2vcG4e"  # nosec B105 # timing-only dummy; never grants access
+
+
+def _is_retryable_sign_in_write_conflict(exc: DBAPIError) -> bool:
+    """Return whether a SQLite snapshot or lock conflict can be retried safely."""
+    message = str(exc).lower()
+    return any(marker in message for marker in ("busy", "locked", "snapshot"))
 
 
 async def _queue_verification_email(
@@ -82,7 +97,7 @@ async def _queue_verification_email(
     them now could leave the person with no working link if this email fails.
     """
     token_val = secrets.token_hex(32)
-    auth_token = await create_auth_token(session, jti=token_val, user_id=user_id, token_type="verification")  # nosec B105
+    auth_token = await create_auth_token(session, jti=token_val, user_id=user_id, token_type="verification")  # nosec B106 # token purpose; jti is randomly generated
     await queue_notification(
         session,
         "verification",
@@ -114,18 +129,13 @@ def _registration_success(request: Request, email: str) -> object:
     )
 
 
-def _is_cookie_secure(request: Request) -> bool:
-    if request.url.scheme == "https" or request.headers.get("x-forwarded-proto") == "https":
-        return True
-    return bool(settings.public_base_url.startswith("https://") and not settings.debug)
-
-
-def set_auth_cookie(response: Response, token: str) -> None:
+def set_auth_cookie(request: Request, response: Response, token: str) -> None:
     """Set the user authentication cookie with standard settings."""
     response.set_cookie(
         key="user_token",
         value=token,
         httponly=True,
+        secure=is_cookie_secure(request),
         samesite="lax",
         max_age=settings.jwt_expiry_seconds,
     )
@@ -142,7 +152,7 @@ def set_admin_csrf_cookie(response: Response, request: Request, session_token: s
         key=ADMIN_CSRF_COOKIE,
         value=generate_admin_csrf_token(str(session_id)),
         httponly=True,
-        secure=_is_cookie_secure(request),
+        secure=is_cookie_secure(request),
         samesite="lax",
     )
 
@@ -173,6 +183,7 @@ async def join_via_invite(request: Request, token: str) -> RedirectResponse:
         event_slug=tok.booth.event.slug,
         room_id=tok.booth.room_id,
         language_code=tok.booth.language_code,
+        token_id=tok.public_id,
     )
 
     redirect_url = "/interpreter"
@@ -182,7 +193,7 @@ async def join_via_invite(request: Request, token: str) -> RedirectResponse:
         key="session_token",
         value=jwt_token,
         httponly=True,
-        secure=_is_cookie_secure(request),
+        secure=is_cookie_secure(request),
         samesite="lax",
         max_age=settings.jwt_expiry_seconds,
     )
@@ -200,7 +211,32 @@ async def check_email_api(request: Request):
     # oracle. These constant legacy fields keep older login pages on the
     # authentication path without exposing real account state; they are
     # compatibility sentinels, not facts about this email address.
-    return {"status": "ok", "exists": True, "has_password": True}
+    return {"status": "ok", "exists": True, "has_password": True}  # nosec B105 # boolean compatibility sentinel
+
+
+def render_registration(
+    request: Request,
+    *,
+    errors: list[str] | None = None,
+    email: str = "",
+    display_name: str = "",
+    status_code: int = 200,
+    headers: dict[str, str] | None = None,
+):
+    return templates.TemplateResponse(
+        request=request,
+        name="register.html",
+        context={
+            "js_version": _JS_CACHE_BUST,
+            "errors": errors or [],
+            "email": email,
+            "display_name": display_name,
+            "turnstile_enabled": settings.registration_turnstile_enabled,
+            "turnstile_site_key": settings.turnstile_site_key,
+        },
+        status_code=status_code,
+        headers=headers,
+    )
 
 
 @router.get("/register")
@@ -208,11 +244,15 @@ async def register_page(request: Request):
     current_user = await get_current_user(request)
     if current_user:
         return safe_redirect(url="/account", status_code=status.HTTP_303_SEE_OTHER)
-    return templates.TemplateResponse(request=request, name="register.html", context={"js_version": _JS_CACHE_BUST})
+    return render_registration(request)
 
 
 @router.post("/register")
 async def register_submit(request: Request):
+    try:
+        limit_registration(request)
+    except HTTPException as exc:
+        return render_registration(request, errors=[exc.detail], status_code=exc.status_code, headers=exc.headers)
     form = await request.form()
     email = form.get("email", "").strip().lower()
     display_name = form.get("display_name", "").strip()
@@ -229,10 +269,18 @@ async def register_submit(request: Request):
         errors.append("Password cannot be blank or only whitespace.")
     elif password_raw and len(password_raw) < 8:
         errors.append("Password must be at least 8 characters.")
+    elif password_raw and password_too_long(password_raw):
+        errors.append(PASSWORD_TOO_LONG_MESSAGE)
     elif password_raw and password_raw != password_confirm:
         errors.append("Passwords do not match.")
 
     if not errors:
+        try:
+            await verify_registration_challenge(form.get("cf-turnstile-response"))
+        except HTTPException as exc:
+            return render_registration(
+                request, errors=[exc.detail], email=email, display_name=display_name, status_code=exc.status_code
+            )
         # Run the expensive password work for every valid submission, even
         # when the address already exists. The result is only persisted for a
         # newly-created account.
@@ -280,10 +328,11 @@ async def register_submit(request: Request):
             await _queue_verification_email(session, email, user.id)
             return _registration_success(request, email)
 
-    return templates.TemplateResponse(
-        request=request,
-        name="register.html",
-        context={"errors": errors, "email": email, "display_name": display_name, "js_version": _JS_CACHE_BUST},
+    return render_registration(
+        request,
+        errors=errors,
+        email=email,
+        display_name=display_name,
         status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
     )
 
@@ -296,7 +345,7 @@ async def verify_email_route(request: Request, token: str):
             user = await get_user_by_id(session, auth_token.user_id)
             if user is None or not user.is_active:
                 raise ValueError("Invalid verification link.")
-            user = await update_user(session, auth_token.user_id, email_verified=True)
+            user = await update_user(session, auth_token.user_id, email_verified=True, last_sign_in_at=utc_now())
             await queue_notification(
                 session,
                 "onboarding",
@@ -314,7 +363,7 @@ async def verify_email_route(request: Request, token: str):
                 key="user_token",
                 value=jwt_token,
                 httponly=True,
-                secure=_is_cookie_secure(request),
+                secure=is_cookie_secure(request),
                 samesite="lax",
                 max_age=settings.jwt_expiry_seconds,
             )
@@ -336,21 +385,40 @@ async def user_login_page(request: Request, next: str = "", email: str = "", swi
     )
 
 
-@router.post("/login")
+async def get_login_identity(request: Request) -> str | None:
+    """Resolve login identity (normalized email) from form data for rate limiting."""
+    try:
+        form = await request.form()
+        email = form.get("email", "")
+        if isinstance(email, str):
+            email = email.strip().lower()
+            return email or None
+    except Exception as exc:
+        logger.debug("Could not parse form email for rate limit identity: %s", exc)
+    return None
+
+
+@router.post(
+    "/login",
+    dependencies=[
+        Depends(
+            RateLimit(
+                login_ip_rule,
+                login_email_rule,
+                identity=get_login_identity,
+                limiter=login_limiter,
+            )
+        )
+    ],
+)
 async def user_login_submit(request: Request):
     form = await request.form()
     email = form.get("email", "").strip().lower()
     password = form.get("password", "")
     next_url = form.get("next_url", "")
 
-    if not check_rate_limit("login", email, max_requests=10, window_seconds=3600):
-        return templates.TemplateResponse(
-            request=request,
-            name="login.html",
-            context={"error": "Too many attempts. Try again later.", "email": email, "next_url": next_url},
-            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
-        )
-
+    # Bind this session to the credential snapshot, before any database await.
+    authenticated_at = utc_now()
     async with get_session() as session:
         user = await get_user_by_email(session, email)
 
@@ -365,15 +433,29 @@ async def user_login_submit(request: Request):
         )
 
     jwt_token = create_user_token(
-        user_id=user.id, email=user.email, display_name=user.display_name, is_admin=user.is_admin
+        user_id=user.id,
+        email=user.email,
+        display_name=user.display_name,
+        is_admin=user.is_admin,
+        issued_at=authenticated_at,
+        session_version=user_session_version(user),
     )
+    for attempt in range(3):
+        try:
+            async with get_session() as session:
+                await update_user(session, user.id, last_sign_in_at=utc_now())
+            break
+        except (OperationalError, DBAPIError) as exc:
+            if attempt == 2 or not _is_retryable_sign_in_write_conflict(exc):
+                raise
+            await asyncio.sleep(0)
     redirect_to = next_url if next_url else "/account"
     response = safe_redirect(url=redirect_to, status_code=status.HTTP_303_SEE_OTHER)
     response.set_cookie(
         key="user_token",
         value=jwt_token,
         httponly=True,
-        secure=_is_cookie_secure(request),
+        secure=is_cookie_secure(request),
         samesite="lax",
         max_age=settings.jwt_expiry_seconds,
     )
@@ -406,7 +488,7 @@ async def request_magic_link(request: Request):
                 session,
                 jti=token_val,
                 user_id=user.id,
-                token_type="magic_link",  # nosec B105
+                token_type="magic_link",  # nosec B106 # token purpose; jti is randomly generated
             )
             # The link signs in only the browser that opens it (#929); nothing here is
             # returned to the requesting browser.
@@ -423,32 +505,12 @@ async def request_magic_link(request: Request):
                 auth_token_id=auth_tok.id,
             )
 
-        jwt_token = create_user_token(
-            user_id=user.id, email=user.email, display_name=user.display_name, is_admin=user.is_admin
-        )
-        response = JSONResponse(
-            {
-                "authenticated": True,
-                "email": user.email,
-                "user_id": user.id,
-            }
-        )
-        response.set_cookie(
-            key="user_token",
-            value=jwt_token,
-            httponly=True,
-            secure=_is_cookie_secure(request),
-            samesite="lax",
-            max_age=settings.jwt_expiry_seconds,
-        )
-        set_admin_csrf_cookie(response, request, jwt_token)
-        # Clear poll_verifier cookie as authentication is complete
-        response.delete_cookie("poll_verifier")
-        return response
+    return {"status": "ok"}
 
 
 @router.get("/auth/magic/{token}")
 async def redeem_magic_link(request: Request, token: str, next: str | None = None):
+    authenticated_at = utc_now()
     async with get_session() as session:
         try:
             auth_token = await redeem_auth_token(session, token, "magic_link")
@@ -458,7 +520,7 @@ async def redeem_magic_link(request: Request, token: str, next: str | None = Non
 
             # If they log in via magic link, we can implicitly consider their email verified
             if not user.email_verified:
-                await update_user(session, user.id, email_verified=True)
+                await update_user(session, user.id, email_verified=True, last_sign_in_at=utc_now())
                 await queue_notification(
                     session,
                     "onboarding",
@@ -467,9 +529,16 @@ async def redeem_magic_link(request: Request, token: str, next: str | None = Non
                     scheduled_at=utc_now() + timedelta(minutes=15),
                     idempotency_key=f"onboarding:{user.id}",
                 )
+            else:
+                await update_user(session, user.id, last_sign_in_at=utc_now())
 
             jwt_token = create_user_token(
-                user_id=user.id, email=user.email, display_name=user.display_name, is_admin=user.is_admin
+                user_id=user.id,
+                email=user.email,
+                display_name=user.display_name,
+                is_admin=user.is_admin,
+                issued_at=authenticated_at,
+                session_version=user_session_version(user),
             )
 
             def _is_local_oauth_path(u: str | None) -> bool:
@@ -503,7 +572,7 @@ async def redeem_magic_link(request: Request, token: str, next: str | None = Non
                 key="user_token",
                 value=jwt_token,
                 httponly=True,
-                secure=_is_cookie_secure(request),
+                secure=is_cookie_secure(request),
                 samesite="lax",
                 max_age=settings.jwt_expiry_seconds,
             )
@@ -513,7 +582,7 @@ async def redeem_magic_link(request: Request, token: str, next: str | None = Non
                 value="1",
                 max_age=15,
                 httponly=False,
-                secure=_is_cookie_secure(request),
+                secure=is_cookie_secure(request),
                 samesite="lax",
             )
             return response
@@ -539,7 +608,7 @@ async def forgot_password_request(request: Request):
                 session,
                 jti=token_val,
                 user_id=user.id,
-                token_type="password_reset",  # nosec B105
+                token_type="password_reset",  # nosec B106 # token purpose; jti is randomly generated
             )
             await queue_notification(
                 session,
@@ -559,7 +628,7 @@ async def reset_password_page(request: Request, token: str):
     async with get_session() as session:
         tok = await get_auth_token(session, token)
         error = None
-        if tok is None or tok.token_type != "password_reset":
+        if tok is None or tok.token_type != "password_reset":  # nosec B105 # token purpose discriminator
             error = "Invalid reset link."
         elif tok.is_expired:
             error = "This reset link has expired."
@@ -570,7 +639,7 @@ async def reset_password_page(request: Request, token: str):
             return templates.TemplateResponse(
                 request=request,
                 name="reset_password.html",
-                context={"token": token, "error": error, "token_invalid": True},
+                context={"token": token, "error": error, "token_invalid": True},  # nosec B105 # boolean template flag
                 status_code=status.HTTP_400_BAD_REQUEST,
             )
 
@@ -582,11 +651,16 @@ async def reset_password_submit(request: Request, token: str):
     form = await request.form()
     password = form.get("password", "")
 
+    error = None
     if len(password) < 8:
+        error = "Password must be at least 8 characters"
+    elif password_too_long(password):
+        error = PASSWORD_TOO_LONG_MESSAGE
+    if error:
         return templates.TemplateResponse(
             request=request,
             name="reset_password.html",
-            context={"token": token, "error": "Password must be at least 8 characters"},
+            context={"token": token, "error": error},
             status_code=status.HTTP_400_BAD_REQUEST,
         )
 
@@ -598,18 +672,28 @@ async def reset_password_submit(request: Request, token: str):
                 return templates.TemplateResponse(
                     request=request,
                     name="reset_password.html",
-                    context={"token": token, "error": str(e), "token_invalid": True},
+                    context={"token": token, "error": str(e), "token_invalid": True},  # nosec B105 # boolean template flag
                     status_code=status.HTTP_400_BAD_REQUEST,
                 )
 
             pw_hash = hash_password(password)
+            reset_user = await get_user_by_id(session, auth_token.user_id)
+            if reset_user is None:
+                raise ValueError("User not found.")
+            if not reset_user.is_active:
+                raise HTTPException(status_code=403, detail="Account deactivated")
             user = await update_user(session, auth_token.user_id, password_hash=pw_hash)
             if user is None:
                 raise ValueError("User not found.")
+            user.sessions_valid_after = utc_now()
+            await revoke_auth_tokens(session, user_id=user.id, token_type="magic_link")  # nosec B106
+            await update_user(session, user.id, last_sign_in_at=utc_now())
             await _queue_password_notice(session, user.email, user.id, "Your VoxBento password was reset.")
             jwt_token = create_user_token(
                 user_id=user.id, email=user.email, display_name=user.display_name, is_admin=user.is_admin
             )
+    except HTTPException:
+        raise
     except Exception:
         logger.exception("Failed to complete password reset for token")
         return templates.TemplateResponse(
@@ -622,12 +706,14 @@ async def reset_password_submit(request: Request, token: str):
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
         )
 
+    await asyncio.shield(manager.close_user_sessions(user.id, reason=REASON_SESSION_EXPIRED))
+
     response = safe_redirect(url="/account", status_code=status.HTTP_303_SEE_OTHER)
     response.set_cookie(
         key="user_token",
         value=jwt_token,
         httponly=True,
-        secure=_is_cookie_secure(request),
+        secure=is_cookie_secure(request),
         samesite="lax",
         max_age=settings.jwt_expiry_seconds,
     )
@@ -651,7 +737,7 @@ ACCOUNT_NOTICES = {
     "profile_saved": "Your display name was saved.",
     "password_changed": "Your password was changed.",
     "password_set": "Your password was set. You can now sign in with it or with an email link.",
-    "password_removed": "Your password was removed. Sign in with a link sent to your email from now on.",
+    "password_removed": "Your password was removed. Sign in with a link sent to your email from now on.",  # nosec B105 # UI notice
 }
 DISPLAY_NAME_MAX = 200
 _CONTROL_CHARS = re.compile(r"[\x00-\x1f\x7f]")
@@ -819,6 +905,8 @@ async def set_password_api(request: Request):
 
     if not isinstance(password, str) or len(password) < 8:
         raise HTTPException(status_code=400, detail="Password must be at least 8 characters")
+    if password_too_long(password):
+        raise HTTPException(status_code=400, detail=PASSWORD_TOO_LONG_MESSAGE)
 
     async with get_session() as session:
         user = await get_user_by_id(session, int(user_token["sub"]))
@@ -864,14 +952,16 @@ async def remove_password_api(request: Request):
     return {"status": "ok"}
 
 
-def _extract_cookie_user_id(request: Request) -> str | None:
+def _extract_cookie_user_id(request: Request, user: User) -> str | None:
     cookie = request.cookies.get("user_token")
     if not cookie:
         return None
     try:
         payload = decode_token(cookie)
         sub = payload.get("sub")
-        return str(sub) if sub is not None else None
+        if payload.get("user") and str(sub) == str(user.id) and user_session_is_valid(user, payload):
+            return str(sub)
+        return None
     except jwt.PyJWTError:
         return None
     except Exception as exc:
@@ -909,7 +999,7 @@ async def invite_accept_page(request: Request, token: str):
                 },
             )
 
-        is_signed_in_as_user = _extract_cookie_user_id(request) == str(user.id)
+        is_signed_in_as_user = _extract_cookie_user_id(request, user) == str(user.id)
         has_password = bool(user.password_hash)
 
         return templates.TemplateResponse(
@@ -936,6 +1026,9 @@ async def invite_accept_submit(request: Request, token: str):
     form = await request.form()
     submitted_password = form.get("password", "")
 
+    # Bind the new session to the credentials checked below, as /login does, so a reset
+    # that commits while this request runs still signs it out.
+    authenticated_at = utc_now()
     try:
         async with get_session() as session:
             tok_stmt = (
@@ -956,8 +1049,9 @@ async def invite_accept_submit(request: Request, token: str):
             if user is None or not user.is_active:
                 raise HTTPException(status_code=403, detail="Account is deactivated.")
 
-            is_signed_in_as_user = _extract_cookie_user_id(request) == str(user.id)
+            is_signed_in_as_user = _extract_cookie_user_id(request, user) == str(user.id)
             has_existing_password = bool(user.password_hash)
+            session_version = user_session_version(user)
 
             if has_existing_password and not user.email_verified:
                 raise HTTPException(
@@ -976,6 +1070,8 @@ async def invite_accept_submit(request: Request, token: str):
                 display_name = form.get("display_name", "").strip()
                 if len(submitted_password) < 8:
                     raise HTTPException(status_code=400, detail="Password must be at least 8 characters.")
+                if password_too_long(submitted_password):
+                    raise HTTPException(status_code=400, detail=PASSWORD_TOO_LONG_MESSAGE)
                 if submitted_password != raw_confirm:
                     raise HTTPException(status_code=400, detail="Passwords do not match.")
                 user.password_hash = hash_password(submitted_password)
@@ -1000,6 +1096,8 @@ async def invite_accept_submit(request: Request, token: str):
 
             # Perform account activation and hosting grant in the same transaction
             user.can_host = True
+            if not is_signed_in_as_user:
+                await update_user(session, user.id, last_sign_in_at=utc_now())
             user.hosting_revoked_at = None
             user.hosting_requested_at = None
             await close_open_hosting_request(session, user.id, status=HOSTING_REQUEST_GRANTED, decided_by_user_id=None)
@@ -1061,8 +1159,10 @@ async def invite_accept_submit(request: Request, token: str):
         email=email,
         display_name=display_name,
         is_admin=is_admin,
+        issued_at=authenticated_at,
+        session_version=session_version,
     )
     response = safe_redirect("/workspace/")
-    set_auth_cookie(response, jwt_token)
+    set_auth_cookie(request, response, jwt_token)
     set_admin_csrf_cookie(response, request, jwt_token)
     return response

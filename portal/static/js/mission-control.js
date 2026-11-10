@@ -145,7 +145,10 @@ function renderFloorCaptions(room) {
     start.disabled = true;
     stop.disabled = true;
     try {
-      const res = await fetch(`/api/rooms/${room.id}/floor-transcription/${action}`, { method: 'POST' });
+      const res = await fetch(`/api/rooms/${room.id}/floor-transcription/${action}`, {
+        method: 'POST',
+        headers: { 'X-CSRF-Token': document.querySelector('meta[name="csrf-token"]')?.content || '' },
+      });
       if (!res.ok) {
         const body = await res.json().catch(() => ({}));
         showToast(body.detail || `Couldn't ${action} the floor captions.`, 'error');
@@ -189,7 +192,7 @@ function connectWs(boothId) {
     try { data = JSON.parse(e.data); } catch { return; }
 
     if (data.type === 'booth:state') {
-      entry.state = { ...data.state, room_name: entry.state.room_name };
+      entry.state = { ...data.state, room_name: data.state.room_name ?? entry.state.room_name };
       renderCard(boothId);
     }
     // Silently ignore booth:joined — we do not join as a participant.

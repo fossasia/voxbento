@@ -1,4 +1,5 @@
 const card = document.getElementById('program-ingest');
+const csrfToken = () => document.querySelector('meta[name="csrf-token"]')?.content || '';
 const status = document.getElementById('program-status');
 const secret = document.getElementById('program-secret');
 const offset = document.getElementById('program-offset');
@@ -6,9 +7,13 @@ const stateBadge = document.getElementById('program-state-badge');
 const warning = document.getElementById('program-warning');
 const relayRisk = document.getElementById('program-relay-risk');
 const relayRadio = document.getElementById('program-mode-relay');
+const rtmpsRadio = document.getElementById('program-mode-rtmps');
 const destinationForm = document.getElementById('program-relay-destination');
 const destinationStatus = document.getElementById('program-destination-status');
 const relayKey = document.getElementById('program-relay-key');
+const relayServer = document.getElementById('program-relay-server');
+const fullUrlRow = document.getElementById('program-full-url-row');
+const fullUrl = document.getElementById('program-full-url');
 let busy = false;
 let modeChosen = false;
 let latest = null;
@@ -39,7 +44,40 @@ const healthLabels = {
   processing: 'Processing',
 };
 
-const modeLabels = {whip: 'independent outputs (WHIP)', rtmps_relay: 'YouTube relay (RTMPS)'};
+const modeLabels = {
+  whip: 'OBS streaming to YouTube itself',
+  rtmps: 'Streaming tool sends VoxBento an extra stream',
+  rtmps_relay: 'VoxBento forwarding to YouTube',
+};
+
+// Both RTMPS modes take the OBS-style server and stream key.
+const RTMPS_MODES = ['rtmps', 'rtmps_relay'];
+
+// Per-mode wording; RTMPS modes call the credential a "stream key", as OBS and YouTube do.
+const streamKeyWords = {rotate: 'New stream key', revoke: 'Revoke stream key', expires: 'Stream key expires'};
+const credentialWords = {
+  whip: {rotate: 'Rotate token', revoke: 'Revoke token', expires: 'Token expires'},
+  rtmps: streamKeyWords,
+  rtmps_relay: streamKeyWords,
+};
+
+const confirmations = {
+  enable: 'This switches the room to this source and stops VoxBento hearing the room any other way.',
+  rotate: 'This creates a new credential. The encoder disconnects until you paste the new one.',
+  revoke: 'This disconnects the encoder now and the current credential stops working.',
+  disable: 'This disconnects the encoder and switches the room back to the online meeting.',
+};
+
+function formatTime(value) {
+  if (!value) return null;
+  // Timestamps are UTC; SQLite returns them without an offset, which Date would read as local.
+  const date = new Date(/[zZ]|[+-]\d\d:\d\d$/.test(value) ? value : `${value}Z`);
+  return Number.isNaN(date.getTime()) ? value : date.toLocaleString();
+}
+
+function setStep(name, status) {
+  card.querySelectorAll(`[data-step="${name}"]`).forEach(step => { step.dataset.status = status; });
+}
 
 function selectedMode() {
   return card.querySelector('input[name="program-mode"]:checked')?.value || 'whip';
@@ -47,15 +85,45 @@ function selectedMode() {
 
 function applyMode(mode) {
   card.querySelectorAll('[data-mode-panel]').forEach(panel => {
-    panel.hidden = panel.dataset.modePanel !== mode;
+    panel.hidden = !panel.dataset.modePanel.split(' ').includes(mode);
   });
-  relayRisk.hidden = mode !== 'rtmps_relay';
-  document.getElementById('program-monitor-step').textContent = mode === 'rtmps_relay' ? '3' : '2';
+  const relay = mode === 'rtmps_relay';
+  const streamKey = RTMPS_MODES.includes(mode);
+  relayRisk.hidden = !relay;
+  document.getElementById('program-connect-step').textContent = relay ? '2' : '1';
+  document.getElementById('program-monitor-step').textContent = relay ? '3' : '2';
+  document.getElementById('program-monitor-title').textContent = relay ? 'Go live and check' : 'Monitor the feed';
+  document.getElementById('program-connect-title').textContent = mode === 'rtmps' ? 'Connect your streaming tool' : 'Connect OBS';
+  const words = credentialWords[mode];
+  card.querySelector('[data-ingest-action="rotate"]').textContent = words.rotate;
+  card.querySelector('[data-ingest-action="revoke"]').textContent = words.revoke;
+  document.getElementById('program-expires-label').textContent = words.expires;
   const enable = card.querySelector('[data-ingest-action="enable"]');
+  const help = document.getElementById('program-enable-help');
   if (latest?.enabled && latest.mode !== mode) {
-    enable.textContent = `Switch to ${modeLabels[mode]} and create credential`;
+    enable.textContent = `Switch to ${modeLabels[mode]}`;
+    help.textContent = 'Creates a new credential and stops VoxBento hearing the room any other way.';
+  } else if (latest?.enabled && latest.credential_present) {
+    enable.textContent = streamKey ? 'Create a new stream key' : 'Create a new token';
+    help.textContent = 'Only needed if you lost it. The encoder disconnects until you paste the new one.';
   } else {
-    enable.textContent = mode === 'rtmps_relay' ? 'Enable relay ingest and create stream key' : 'Enable ingest and create token';
+    enable.textContent = streamKey ? 'Create stream key' : 'Enable ingest and create token';
+    help.textContent = 'Room-specific and shown only once. Valid for 30 days.';
+  }
+}
+
+function renderSteps(data) {
+  const ingestUp = data.health.ingest.state === 'connected';
+  if (selectedMode() === 'rtmps_relay') {
+    const relayMode = data.enabled && data.mode === 'rtmps_relay';
+    const saved = data.destination.configured;
+    setStep('destination', saved ? 'done' : 'current');
+    setStep('connect', relayMode && ingestUp ? 'done' : saved ? 'current' : 'todo');
+    setStep('monitor', relayMode && data.health.relay.state === 'live' ? 'done' : relayMode && ingestUp ? 'current' : 'todo');
+  } else {
+    const modeActive = data.enabled && data.mode === selectedMode();
+    setStep('connect', modeActive && ingestUp ? 'done' : 'current');
+    setStep('monitor', modeActive && data.health.processing.state === 'processing' ? 'done' : modeActive && ingestUp ? 'current' : 'todo');
   }
 }
 
@@ -67,34 +135,57 @@ function renderHealth(stage, value) {
 }
 
 function renderStatus(data) {
-  const stateLabel = stateLabels[data.state] || data.state;
-  stateBadge.textContent = stateLabel;
-  stateBadge.dataset.state = data.state;
+  const stateLabel = data.state === 'waiting' && data.mode === 'rtmps'
+    ? 'Waiting for your streaming tool'
+    : stateLabels[data.state] || data.state;
+  // In relay mode YouTube delivery is what the organizer watches; captions have their own row.
+  const youtubeLive = data.enabled && data.mode === 'rtmps_relay' && data.health.relay.state === 'live';
+  stateBadge.textContent = youtubeLive ? 'Live on YouTube' : stateLabel;
+  stateBadge.dataset.state = youtubeLive ? 'processing' : data.state;
   status.textContent = data.reason ? `${stateLabel}. ${data.reason}` : stateLabel;
   document.getElementById('program-codecs').textContent = data.codecs.join(', ') || 'None detected';
-  document.getElementById('program-connected').textContent = data.last_connected_at || 'Never';
-  document.getElementById('program-disconnected').textContent = data.last_disconnected_at || 'Never';
-  document.getElementById('program-expires').textContent = data.expires_at || 'Not created';
+  document.getElementById('program-connected').textContent = formatTime(data.last_connected_at) || 'Never';
+  document.getElementById('program-disconnected').textContent = formatTime(data.last_disconnected_at) || 'Never';
+  document.getElementById('program-expires').textContent = formatTime(data.expires_at) || 'Not created';
   renderHealth('ingest', data.health.ingest);
   renderHealth('relay', data.health.relay);
   renderHealth('processing', data.health.processing);
+  renderSteps(data);
 
   const destination = data.destination;
   destinationStatus.textContent = destination.configured
-    ? `Configured for ${destination.server_url}. Updated ${destination.updated_at}.`
-    : 'Not configured. YouTube receives nothing until a destination is saved.';
-  document.getElementById('program-relay-clear').disabled = !destination.configured;
+    ? `Saved ${formatTime(destination.updated_at)} for ${destination.server_url}. The key can't be shown again; paste a new one to replace it.`
+    : 'Not saved yet. YouTube receives nothing until you save a stream key.';
+  relayKey.placeholder = destination.configured ? 'Saved — paste a new key to replace it' : 'xxxx-xxxx-xxxx-xxxx-xxxx';
+  document.getElementById('program-relay-save').textContent = destination.configured ? 'Replace stream key' : 'Save stream key';
+  document.getElementById('program-relay-clear').disabled = !destination.configured || !data.relay_available;
 
+  const relaySelected = selectedMode() === 'rtmps_relay';
+  const rtmpsSelected = RTMPS_MODES.includes(selectedMode());
   const warnings = [...data.warnings];
   if (!data.available) warnings.push('Ask the server operator to enable authenticated program ingest.');
-  if (selectedMode() === 'rtmps_relay' && !data.relay_available) {
-    warnings.push('YouTube relay mode is not enabled on this server.');
+  if (relaySelected && data.relay_available && data.relay_service_down) {
+    warnings.push('The YouTube relay service on the server is not responding. Ask the server operator to check the program-relay container.');
+  }
+  if (rtmpsSelected && data.rtmps_available && !data.rtmps_server) {
+    warnings.push('The server has no public RTMPS address yet. Ask the server operator to set PROGRAM_RTMPS_PUBLIC_BASE.');
   }
   warning.hidden = warnings.length === 0;
   document.getElementById('program-warning-title').textContent = data.available
     ? 'Program ingest needs attention'
     : 'Program ingest is not available yet';
-  document.getElementById('program-warnings').textContent = warnings.join(' ');
+  const list = document.getElementById('program-warnings');
+  list.replaceChildren(...warnings.map(text => {
+    const item = document.createElement('li');
+    item.textContent = text;
+    return item;
+  }));
+}
+
+function updateFullUrl() {
+  const show = secret.value !== '' && secret.dataset.kind === 'stream_key';
+  fullUrlRow.hidden = !show;
+  fullUrl.value = show ? `${document.getElementById('program-rtmps-server').value}/${secret.value}` : '';
 }
 
 async function copyField(input, button, successLabel) {
@@ -135,6 +226,9 @@ async function refresh() {
       card.querySelector(`input[name="program-mode"][value="${data.mode}"]`).checked = true;
     }
     relayRadio.disabled = !data.relay_available;
+    document.getElementById('program-relay-unavailable').hidden = data.relay_available;
+    rtmpsRadio.disabled = !data.rtmps_available;
+    document.getElementById('program-rtmps-unavailable').hidden = data.rtmps_available;
     applyMode(selectedMode());
     document.getElementById('program-endpoint').value = data.endpoint;
     document.getElementById('program-rtmps-server').value = data.rtmps_server;
@@ -142,12 +236,14 @@ async function refresh() {
     card.querySelectorAll('[data-ingest-action]').forEach(button => {
       const action = button.dataset.ingestAction;
       const relayBlocked = action === 'enable' && selectedMode() === 'rtmps_relay' && !data.relay_available;
-      button.disabled = (['enable', 'rotate'].includes(action) && !data.available) || relayBlocked ||
+      const rtmpsBlocked = action === 'enable' && selectedMode() === 'rtmps' && !data.rtmps_available;
+      button.disabled = (['enable', 'rotate'].includes(action) && !data.available) || relayBlocked || rtmpsBlocked ||
         (['rotate', 'revoke', 'disable'].includes(action) && !data.enabled);
     });
     destinationForm.querySelectorAll('input, button[type="submit"]').forEach(item => {
       item.disabled = !data.relay_available;
     });
+    updateFullUrl();
   } catch (error) {
     console.error('Program ingest status unavailable', error);
     status.textContent = 'Status unavailable. Check your connection and try again.';
@@ -155,13 +251,15 @@ async function refresh() {
 }
 
 function showSecret(data) {
-  const relay = Boolean(data.stream_key);
-  secret.value = relay ? data.stream_key : data.secret;
-  document.getElementById('program-secret-label').textContent = relay ? 'Stream key' : 'Bearer token';
-  document.getElementById('program-secret-help').textContent = relay
-    ? 'Paste this into OBS as the Stream Key. It expires in 30 days.'
+  const streamKey = Boolean(data.stream_key);
+  secret.value = streamKey ? data.stream_key : data.secret;
+  secret.dataset.kind = streamKey ? 'stream_key' : 'token';
+  document.getElementById('program-secret-label').textContent = streamKey ? 'Stream key' : 'Bearer token';
+  document.getElementById('program-secret-help').textContent = streamKey
+    ? 'Paste this as the Stream Key in OBS or your streaming tool. Copy it now: it is shown only once and expires in 30 days.'
     : 'Paste this into OBS as the Bearer Token. It expires in 30 days.';
   document.getElementById('program-secret-panel').hidden = false;
+  updateFullUrl();
 }
 
 card.querySelectorAll('input[name="program-mode"]').forEach(radio => {
@@ -176,16 +274,20 @@ card.querySelectorAll('[data-ingest-action]').forEach(button => {
   button.addEventListener('click', async () => {
     const action = button.dataset.ingestAction;
     const mode = selectedMode();
+    // Creating the first credential for a room already in this mode disconnects nothing.
+    const firstCredential = action === 'enable' && latest?.enabled && latest.mode === mode && !latest.credential_present;
     const relayNotice = action === 'enable' && mode === 'rtmps_relay'
-      ? ' In relay mode a VoxBento outage interrupts YouTube.'
+      ? ' While VoxBento forwards to YouTube, a VoxBento outage interrupts YouTube.'
       : '';
-    if (action !== 'sync' && !window.confirm(`This changes the floor source or credential and disconnects the current floor stream.${relayNotice} Continue?`)) return;
+    if (action !== 'sync' && !firstCredential && !window.confirm(`${confirmations[action]}${relayNotice} Continue?`)) return;
     if (!offset.reportValidity()) return;
     busy = true;
     let shouldRefresh = false;
     card.querySelectorAll('button').forEach(item => { item.disabled = true; });
     secret.value = '';
     secret.type = 'password';
+    fullUrl.type = 'password';
+    updateFullUrl();
     document.getElementById('program-reveal').textContent = 'Show';
     document.getElementById('program-secret-panel').hidden = true;
     try {
@@ -193,7 +295,7 @@ card.querySelectorAll('[data-ingest-action]').forEach(button => {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
-          'X-CSRF-Token': document.querySelector('meta[name="csrf-token"]')?.content || ''
+          'X-CSRF-Token': csrfToken()
         },
         body: JSON.stringify({action, sync_offset_ms: Number(offset.value), mode}),
       });
@@ -245,33 +347,25 @@ destinationForm.addEventListener('submit', async event => {
   event.preventDefault();
   if (!destinationForm.reportValidity()) return;
   const saved = await changeDestination(() => fetch(card.dataset.relayUrl, {
-    method: 'PUT',
-    headers: {
-      'Content-Type': 'application/json',
-      'X-CSRF-Token': document.querySelector('meta[name="csrf-token"]')?.content || ''
-    },
-    body: JSON.stringify({
-      server_url: document.getElementById('program-relay-server').value,
-      stream_key: relayKey.value,
-    }),
+    method: 'PUT', headers: {'Content-Type': 'application/json', 'X-CSRF-Token': csrfToken()},
+    body: JSON.stringify({server_url: relayServer.value.trim() || null, stream_key: relayKey.value.trim()}),
   }), 'YouTube destination update failed');
   if (saved) relayKey.value = '';
 });
 
 document.getElementById('program-relay-clear').addEventListener('click', async () => {
   if (destinationPending || busy) return;
-  if (!window.confirm('Remove the YouTube destination? The relay stops and YouTube stops receiving this room.')) return;
-  await changeDestination(() => fetch(card.dataset.relayUrl, {
-    method: 'DELETE',
-    headers: {
-      'X-CSRF-Token': document.querySelector('meta[name="csrf-token"]')?.content || ''
-    }
-  }), 'YouTube destination removal failed');
+  if (!window.confirm('Remove the saved YouTube stream key? Forwarding stops and YouTube stops receiving this room.')) return;
+  await changeDestination(() => fetch(card.dataset.relayUrl, {method: 'DELETE', headers: {'X-CSRF-Token': csrfToken()}}), 'YouTube destination removal failed');
 });
 
 document.getElementById('program-reveal').addEventListener('click', () => {
   secret.type = secret.type === 'password' ? 'text' : 'password';
+  fullUrl.type = secret.type;
   document.getElementById('program-reveal').textContent = secret.type === 'password' ? 'Show' : 'Hide';
+});
+document.getElementById('program-copy-full-url').addEventListener('click', async () => {
+  await copyField(fullUrl, document.getElementById('program-copy-full-url'), 'Copied');
 });
 document.getElementById('program-copy').addEventListener('click', async () => {
   await copyField(secret, document.getElementById('program-copy'), 'Copied');
@@ -282,7 +376,7 @@ document.getElementById('program-copy-endpoint').addEventListener('click', async
 document.getElementById('program-copy-rtmps').addEventListener('click', async () => {
   await copyField(document.getElementById('program-rtmps-server'), document.getElementById('program-copy-rtmps'), 'Server copied');
 });
-window.addEventListener('pagehide', () => { secret.value = ''; relayKey.value = ''; });
+window.addEventListener('pagehide', () => { secret.value = ''; fullUrl.value = ''; relayKey.value = ''; });
 refresh();
 const refreshTimer = setInterval(refresh, 5000);
 window.addEventListener('pagehide', () => clearInterval(refreshTimer));

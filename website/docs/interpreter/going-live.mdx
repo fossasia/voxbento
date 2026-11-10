@@ -71,6 +71,8 @@ Start speaking. The floor audio from the Jitsi iframe plays in your headset so y
 ### Mic Mute / Unmute
 
     Toggle your mic on or off at any time without stopping the stream. Use this for brief pauses — coughing, notes, transitions — without going fully offline.
+
+    If your microphone is muted outside Voxbento (a keyboard mute key, the operating system's input mute, or a headset button), Voxbento shows **Muted by your device** and coordinators in Mission Control see you as **Muted** until you unmute the device. This relies on your browser reporting the mute, which Chrome and Edge do for most devices.
   
 
   ### VU Meter
@@ -124,3 +126,10 @@ The top-left indicator returns to **OFF LIVE**. You remain in the booth as a par
 :::warning
 Do not refresh the page while live — this will briefly interrupt the stream. If you need to recover, click **UNMUTE** again after the page reloads. Coordinators can reassign the active interpreter if an unexpected disconnection occurs.
 :::
+## If your connection drops
+
+The booth reconnects on its own. The connection badge shows **Reconnecting…** and the booth retries after about one second, then waits longer between attempts (up to 15 seconds), and retries straight away when your network comes back. You don't need to refresh the page.
+
+While you are disconnected, the booth may hand the active role to your backup interpreter. When you reconnect you rejoin as yourself: if you are still the active interpreter your broadcast carries on, otherwise your microphone stops so only one interpreter is live.
+
+If your session has expired or your access to the booth was removed, the booth stops retrying and tells you so. Reload the page and sign in again.

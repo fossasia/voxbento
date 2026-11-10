@@ -66,6 +66,7 @@ VoxBento is a production-grade **browser-first interpretation booth console** fo
 |---|---|
 | `fastapi_app.py` | Application lifespan, router aggregation, global exception handlers |
 | `portal/routers/` | All HTTP routes (pages, admin, REST API), Jinja2 template rendering |
+| `portal/room_setup.py` | Room plan parsing, available AI services, booth/translation-language reconciliation, and room summaries |
 | `portal/workspace_routing.py` | `/workspace` handler mapping, legacy organizer redirects, management URL/template namespace helpers |
 | `portal/websockets/` | WebSocket connection manager, message handlers (`_handle_join`, etc.) |
 | `portal/booth_state.py` | In-memory `BoothRegistry`, `Booth`, `Participant`, handoff policy, chat history |
@@ -84,14 +85,16 @@ VoxBento is a production-grade **browser-first interpretation booth console** fo
 | `portal/program_ingest.py` | Floor authorization and reconciliation for Program Stream Ingest |
 | `portal/program_relay.py` | YouTube RTMPS destination management and relay health convergence |
 | `portal/outage_log.py` | `OutageLog` — reconcile loops log a repeating failure once per outage, not per tick |
+| `portal/attendance.py` | `AttendanceTracker` — interpreter visits and interpreting time from booth state, batched writes to `interpreter_attendance` (#1215) |
 | `portal/user_admin.py` | Administrative access rules, user flags (`can_host`, `is_admin`, `is_active`, `email_verified`) |
 | `portal/templates/` | Jinja2 HTML — `base.html`, `interpreter_booth.html`, `listener-event.html`, `admin/` |
+| `portal/static/css/tokens.css` | Shared design tokens (`--vb-*` colours, radii, shadows, fonts), linked first on every page; new CSS uses these instead of new hex values |
 | `portal/static/js/interpreter-booth.js` | Booth UI — WebRTC/WHIP, WebSocket, Jitsi iframe, mic controls, level meter |
 | `portal/static/js/whep-listener.js` | WHEP playback client — RTCPeerConnection, auto-reconnect with exponential back-off |
 | `portal/static/js/admin.js` | Admin panel JS helpers |
 | `mediamtx.yml` | MediaMTX config — WHIP/WHEP paths, RTSP, Control API, `overridePublisher` |
 | `docker-compose.yml` | portal + mediamtx + jitsi-web/prosody/jicofo/jvb |
-| `alembic/versions/` | 31 migrations (001–031); run `uv run alembic upgrade head` |
+| `alembic/versions/` | 38 migrations (001–038); run `uv run alembic upgrade head` |
 
 ---
 
@@ -99,7 +102,7 @@ VoxBento is a production-grade **browser-first interpretation booth console** fo
 
 1. **One active publisher per language channel.** MediaMTX enforces `overridePublisher: yes`; Python enforces via `BoothRegistry`.
 2. **Interpreter mic audio never routes to `AudioContext.destination`.** No local loopback.
-3. **Interpreter ingest remains browser-only WHIP.** Explicit exception: room-scoped Program Stream Ingest (#690) accepts authenticated HTTPS WHIP from an external encoder, and its operator-enabled relay mode (#749) accepts room-authenticated RTMPS (never plaintext RTMP) and pushes it to an allow-listed YouTube RTMPS destination from the dedicated `program-relay` service. No YouTube pulling, no unauthenticated or plaintext RTMP, no SRT. Floor ownership is `jitsi_bot` or `program_ingest`; never last-publisher-wins.
+3. **Interpreter ingest remains browser-only WHIP.** Explicit exception: room-scoped Program Stream Ingest (#690) accepts authenticated HTTPS WHIP from an external encoder, and its operator-enabled RTMPS ingest accepts room-authenticated RTMPS (never plaintext RTMP), either as an independent extra destination (#1087) or, in relay mode (#749), pushed to an allow-listed YouTube RTMPS destination by the dedicated `program-relay` service. No YouTube pulling, no unauthenticated or plaintext RTMP, no SRT. Floor ownership is `jitsi_bot` or `program_ingest`; never last-publisher-wins.
 4. **Jitsi is monitoring only** — receive-only iframe. Not the ingest transport.
 5. **No framework.** Frontend is plain ES modules in `portal/static/js/`. No Vue, React, jQuery, inline `<script>` blocks.
 6. **No Flask, Socket.IO, aiortc.**
@@ -189,7 +192,8 @@ Booth WHIP publishing is authenticated (#783): MediaMTX forwards the `Authorizat
 server-derived path) and re-checks that the holder is still the active interpreter and that Mission Control has
 broadcast unlocked. Anonymous publishes get 401. A `booth:join` naming another socket's `participant_id` gets a fresh ID.
 
-Caption feed: `/ws/captions/{booth_id}` — receives `caption`, `translated_caption` + `booth:state` messages (protected by `resolve_ws_auth` when `BOOTH_ACCESS_TOKEN` is configured).
+Caption feed: `/ws/captions/{booth_id}` receives `caption`, `translated_caption` and public `booth:state`. `ws_captions` validates query JWTs: listener tokens are event-scoped, participant tokens are booth-scoped, and user tokens require a currently active account. Without a query token, events with a listener join code require that code, an active user session, or a scoped invite. Code attempts share a bounded pre-verification budget across listener/overlay HTTP, caption WS and TTS WS paths (`portal/join_code_limit.py`); excess caption guesses close with 1008, and excess TTS guesses are refused like any other TTS authorization failure. The audio-delay poll clears a listener code cookie that no longer matches, so tabs left open across a code regenerate do not spend the budget on every poll. Events without a join code retain public caption access with the anonymous connection cap. Rejections are accepted then closed with 4001 (missing/invalid credentials) or 4003 (scope mismatch), so browsers can distinguish them from transport failures. `booth:state` carries only `booth_id`, `event_slug`, `room_id`, `language_code`, `broadcast_unlocked` and `ingest_status`, never participants or booth chat. Overlay reconnects obtain a fresh listener token through `/overlay/.../session`, which rechecks the account/code and channel.
+
 Direct-push TTS feed: `/ws/tts/{room_id}/{language_code}/{booth_id}` — pre-authorized binary bundle stream (version byte, length-prefixed JSON header, optional 24 kHz PCM audio). Translation text is delivered concurrently over the captions feed and inside TTS bundle headers.
 
 ---
@@ -200,7 +204,7 @@ Direct-push TTS feed: `/ws/tts/{room_id}/{language_code}/{booth_id}` — pre-aut
 MediaMTX RTSP (8554) → ffmpeg PCM → TranscriptionProvider → CaptionAggregator → WebSocket broadcast
 ```
 
-Providers: `local` (faster-whisper, CPU), `openai` (whisper-1/realtime), `deepgram` (nova-2), `nvidia` (Parakeet), `elevenlabs` (scribe_v2).
+Providers: `local` (faster-whisper, CPU), `openai` (whisper-1/realtime), `deepgram` (nova-2), `atlascloud` (Seed ASR 2.0 async predictions), `nvidia` (Parakeet), `elevenlabs` (scribe_v2).
 Worker lifecycle: `start_transcription_worker` / `stop_transcription_worker` in `portal/transcription/worker.py`.
 Max concurrent workers: 10 (`MAX_TOTAL_WORKERS`).
 
@@ -217,6 +221,30 @@ Max concurrent workers: 10 (`MAX_TOTAL_WORKERS`).
 | MediaMTX ICE/UDP | 8189 | UDP |
 | Jitsi Web | 8443 / 8080 | HTTPS / HTTP |
 | JVB | 10000 | UDP |
+
+---
+
+## Pull Request Target Branch
+
+- Create feature and fix branches from `dev`, and target all pull requests to `dev`.
+- Always specify the base explicitly when creating a PR: `gh pr create --base dev`.
+- Verify the PR's base branch is `dev` before reporting it as ready. Do not rely on
+  GitHub's default branch or target `main` unless the user explicitly requests it.
+
+## AI Attribution Rules
+
+1. **PR Authoring**: When AI wrote or significantly shaped a PR (with or without an agent), put one attribution line at the end of the part of the description you wrote, above any bot-generated summary (Sourcery, CodeRabbit):
+   `Created with <Model> in <Harness/IDE>, run from <Environment>.`
+   (e.g., `Created with Claude Opus 4.6 in Claude Code, run from T3 Code.`, `Created with Gemini in Antigravity.` or, without an agent, `Created with ChatGPT.`).
+   Name only the tools you actually used; leave out a model, harness or environment you do not know rather than guessing.
+   The Agent Attribution workflow adds or moves this line to that spot when it finds AI co-author trailers, so do not add a second copy.
+2. **PR Reviews**: When reviewing a PR with AI (inline comments, review summaries, or change requests), include attribution at the end of the review comment or summary:
+   `Reviewed with <Model> in <Harness/IDE>, run from <Environment>.`
+   (e.g., `Reviewed with Claude Opus 4.6 in Claude Code, run from T3 Code.` or `Reviewed with Gemini in Antigravity.`).
+
+- "AI-assisted" means the AI wrote or significantly shaped the code, commit messages,
+  or PR description — not just that it answered a question.
+- Human reviewers should validate AI-generated diffs with the same rigour as any other PR.
 
 ---
 
@@ -260,24 +288,52 @@ Program relay (#749): `portal/program_relay.py` owns the YouTube destination
 service (`program-relay/relay.py`, the media plane; `docker-compose.relay.yml`);
 migration 028 adds `program_ingest_mode`, which binds the program key to WHIP or RTMPS.
 Never log, return or forward FFmpeg text containing the destination. Read
-`docs/program-relay.md` before changing relay mode.
+`docs/program-relay.md` before changing relay mode. Relay deployments select the override
+with `COMPOSE_FILE` in `.env` (`scripts/setup-youtube-relay.sh`); the deploy workflow must
+never remove a running `program-relay`.
 
 ---
 
 ## Documentation Requirements
 
-Every PR that adds, removes, or changes a feature **must** update these files in the same commit:
+Keep documentation scoped to the change. Routine feature PRs, bug fixes, and
+refactors **must not update `README.md` by default**. The README is a stable
+project overview and quick start, not a feature changelog or a home for detailed
+UI walkthroughs, provider options, implementation notes, or rollout instructions.
 
-- `README.md` — operational usage and setup
-- `website/docs/how-it-works.mdx` — system design
-- `agents.md` (this file) — guardrails, if they changed
-- Relevant context file in `.agents/context/` — if the change affects routes, DB schema, or transcription
+Update `README.md` only when explicitly requested, to correct an existing factual
+error or broken link, or when a change makes its installation or quick-start
+instructions inaccurate. Keep those edits minimal; document feature details in
+the relevant `website/docs/` page or focused `docs/` guide instead.
 
-Do not defer documentation to a follow-up PR.
+Update documentation in the same PR when the change affects what it describes:
+
+- Relevant `website/docs/` pages or `docs/` guides — changed usage, configuration,
+  or operational procedures.
+- `website/docs/how-it-works.mdx` — changed system design only.
+- `agents.md` — changed agent guardrails or invariants only.
+- Relevant `.agents/context/` files — changed routes, DB schema, transcription,
+  or module ownership.
+
+Do not add unrelated documentation edits just to satisfy a checklist, and do not
+append feature summaries to the README or agent guide for every PR.
+
+Password reset invalidates earlier account sessions using `users.sessions_valid_after`
+in the password/reset-token transaction. HTTP authorization and booth role resolution
+must enforce that cutoff against JWT issuance time; reconnecting never refreshes it.
+TTS checks current account authorization at connect and rechecks it at most every 5 seconds
+while bundles are sent, including revocation of existing subscriptions. Keep independent listener and invite access scoped.
 
 Password sign-in requires `User.email_verified`; everyone, admins included, signs in
 at `/login` (`login` rate-limit bucket, 10 attempts per normalized email per hour).
 `/admin/login` only redirects to `/login?next=/admin/`.
+
+Registration protection lives in `portal/registration_protection.py`. Throttle
+by the ASGI-resolved client IP, never raw forwarding headers. When
+`REGISTRATION_TURNSTILE_ENABLED` is true, validate Cloudflare success, hostname
+and `register` action before signup side effects; service failures must reject
+the signup. Turnstile defaults off for compatible rollout. See
+`docs/registration-protection.md` for configuration and proxy trust.
 
 Production deployments validate a separate candidate checkout before advancing
 the live checkout. Portal source and dependencies must come from the built image,

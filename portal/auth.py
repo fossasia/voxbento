@@ -17,17 +17,80 @@ from portal.config import settings
 from portal.database import get_db_session
 from portal.models import User
 from portal.roles import ADMIN, EVENT_OWNER, INTERPRETER, ROLE_RANK, ROOM_COORDINATOR, highest_role, is_at_least
+from portal.security_headers import forwarded_https
 
 logger = logging.getLogger(__name__)
 
 security = HTTPBearer(auto_error=False)
 
+_REVOKED_TOKEN_CACHE: dict[str, tuple[float, bool]] = {}
+
+
+def invalidate_token_revocation_cache(token_str: str | None = None) -> None:
+    """Invalidate the short-lived in-memory cache for revoked tokens."""
+    if token_str is None:
+        _REVOKED_TOKEN_CACHE.clear()
+    else:
+        _REVOKED_TOKEN_CACHE.pop(str(token_str), None)
+
+
+async def is_invite_token_revoked(token_str: str, ttl: float = 5.0) -> bool:
+    """Check if an invite token is revoked in the database with a short TTL cache."""
+    import asyncio
+    import time
+    now_mono = time.monotonic()
+    key = str(token_str)
+    cached = _REVOKED_TOKEN_CACHE.get(key)
+    if cached is not None and (now_mono - cached[0] < ttl):
+        return cached[1]
+
+    from portal.database import get_invite_token_by_public_id, get_session
+    for attempt in range(2):
+        try:
+            async with get_session() as session:
+                tok = await get_invite_token_by_public_id(session, key)
+                revoked = (tok is None) or (tok.revoked_at is not None)
+                _REVOKED_TOKEN_CACHE[key] = (now_mono, revoked)
+                return revoked
+        except Exception:
+            if attempt == 0:
+                logger.warning(
+                    "Transient error checking token revocation for public_id %s; retrying once", key
+                )
+                await asyncio.sleep(0.05)
+                continue
+            logger.exception(
+                "Error checking token revocation for public_id %s after retry; failing closed", key
+            )
+            # Fail closed on database errors without poisoning the cache
+            return True
+    return True
+
+
+# bcrypt only uses the first 72 bytes of a password, and bcrypt 5 raises
+# ValueError for anything longer, so longer passwords are rejected up front.
+PASSWORD_MAX_BYTES = 72
+PASSWORD_TOO_LONG_MESSAGE = (
+    f"Password must be at most {PASSWORD_MAX_BYTES} bytes. "
+    "Accented letters and other non-ASCII characters count as more than one byte."
+)
+
+
+def password_too_long(password: str) -> bool:
+    return len(password.encode()) > PASSWORD_MAX_BYTES
+
 
 def hash_password(password: str) -> str:
+    # Callers check password_too_long() first and show a form error; this guard keeps a
+    # missed check from surfacing bcrypt's own ValueError.
+    if password_too_long(password):
+        raise ValueError(PASSWORD_TOO_LONG_MESSAGE)
     return bcrypt.hashpw(password.encode(), bcrypt.gensalt()).decode()
 
 
 def verify_password(password: str, password_hash: str) -> bool:
+    if password_too_long(password):
+        return False
     return bcrypt.checkpw(password.encode(), password_hash.encode())
 
 
@@ -41,7 +104,15 @@ def create_token() -> str:
     return jwt.encode(payload, settings.effective_jwt_secret, algorithm="HS256")
 
 
-def create_participant_token(*, booth_id: int, role: str, event_slug: str, room_id: int, language_code: str) -> str:
+def create_participant_token(
+    *,
+    booth_id: int,
+    role: str,
+    event_slug: str,
+    room_id: int,
+    language_code: str,
+    token_id: str | int | None = None,
+) -> str:
     """Create a JWT with role claims for a participant who joined via invite link."""
     now = datetime.now(timezone.utc)
     payload = {
@@ -52,6 +123,7 @@ def create_participant_token(*, booth_id: int, role: str, event_slug: str, room_
         "event_slug": event_slug,
         "room_id": room_id,
         "language_code": language_code,
+        "token_id": str(token_id) if token_id is not None else None,
         "iat": now,
         "exp": now + timedelta(seconds=settings.jwt_expiry_seconds),
     }
@@ -60,7 +132,7 @@ def create_participant_token(*, booth_id: int, role: str, event_slug: str, room_
 
 # Listening is open to everyone with the event link or join code; it is not a
 # role (#757). Listener tokens are marked with this "kind" instead.
-LISTENER_TOKEN_KIND = "listener"
+LISTENER_TOKEN_KIND = "listener"  # nosec B105 # token kind discriminator, not a credential
 
 
 def is_listener_token(payload: dict | None) -> bool:
@@ -114,7 +186,40 @@ class WSAuthError(Exception):
     pass
 
 
-async def _current_user(payload: dict) -> User | None:
+def token_issued_at(payload: dict) -> datetime | None:
+    issued_at = payload.get("iat")
+    if isinstance(issued_at, bool) or not isinstance(issued_at, (int, float)):
+        return None
+    try:
+        return datetime.fromtimestamp(issued_at, timezone.utc)
+    except (ValueError, OverflowError, OSError):
+        return None
+
+
+def user_session_version(user: User) -> str:
+    """Stable credential-snapshot version, including SQLite's naive UTC dates."""
+    cutoff = user.sessions_valid_after
+    if cutoff is None:
+        return ""
+    return cutoff.replace(tzinfo=timezone.utc).isoformat() if cutoff.tzinfo is None else cutoff.isoformat()
+
+
+def user_session_is_valid(user: User | None, payload: dict) -> bool:
+    """Honor account revocation for every consumer of a user session."""
+    if user is None or not user.is_active:
+        return False
+    if "session_version" in payload and payload["session_version"] != user_session_version(user):
+        return False
+    cutoff = user.sessions_valid_after
+    if cutoff is None:
+        return True
+    if cutoff.tzinfo is None:
+        cutoff = cutoff.replace(tzinfo=timezone.utc)
+    issued_at = token_issued_at(payload)
+    return issued_at is not None and issued_at > cutoff
+
+
+async def resolve_session_user(payload: dict) -> User | None:
     """Resolve the live ``User`` row for a decoded ``user_token`` payload.
 
     Authorization must reflect current database state, not the claims frozen
@@ -123,8 +228,8 @@ async def _current_user(payload: dict) -> User | None:
     on its own would let a demoted, deactivated, or deleted administrator keep
     full access until the token expires.
 
-    Returns the ``User`` only when the row still exists **and** is active;
-    otherwise ``None`` (which every caller treats as "not authorised").
+    Returns the ``User`` only when the row exists, is active, and the session
+    was issued after any account revocation cutoff; otherwise ``None``.
     """
     sub = payload.get("sub")
     if not sub:
@@ -137,9 +242,7 @@ async def _current_user(payload: dict) -> User | None:
 
     async with get_session() as db_session:
         user = await get_user_by_id(db_session, user_id)
-    if user is None or not user.is_active:
-        return None
-    return user
+    return user if user_session_is_valid(user, payload) else None
 
 
 async def load_membership_scope(db_session: AsyncSession, user_id: int) -> dict[str, set[int]]:
@@ -200,7 +303,7 @@ async def resolve_request_principal(request: Request, db_session: AsyncSession) 
                         from portal.database import get_user_by_id
 
                         found = await get_user_by_id(db_session, uid)
-                        if found and found.is_active:
+                        if user_session_is_valid(found, payload):
                             user = found
                     except (ValueError, TypeError):
                         user = None
@@ -573,9 +676,30 @@ async def get_access_flags(
     return flags
 
 
-def create_user_token(*, user_id: int, email: str, display_name: str = "", is_admin: bool = False) -> str:
+def is_cookie_secure(request: Request) -> bool:
+    """Whether cookies set on this response should carry the ``Secure`` flag.
+
+    True for direct or proxied HTTPS requests; otherwise only when the configured public URL
+    is HTTPS outside debug mode, so plain-HTTP local development keeps working.
+    """
+    if request.url.scheme == "https" or forwarded_https(request.headers):
+        return True
+    return bool(settings.public_base_url.lower().startswith("https://") and not settings.debug)
+
+
+def create_user_token(
+    *,
+    user_id: int,
+    email: str,
+    display_name: str = "",
+    is_admin: bool = False,
+    issued_at: datetime | None = None,
+    session_version: str | None = None,
+) -> str:
     """Create a JWT for a registered user session."""
     now = datetime.now(timezone.utc)
+    # Datetime JWT claims lose fractional seconds, invalidating a fresh recovery
+    # cookie when the cutoff was written earlier in the same second.
     payload = {
         "sub": str(user_id),
         "jti": secrets.token_urlsafe(32),
@@ -583,9 +707,11 @@ def create_user_token(*, user_id: int, email: str, display_name: str = "", is_ad
         "display_name": display_name,
         "is_admin": is_admin,
         "user": True,
-        "iat": now,
+        "iat": (issued_at or now).timestamp(),
         "exp": now + timedelta(seconds=settings.jwt_expiry_seconds),
     }
+    if session_version is not None:
+        payload["session_version"] = session_version
     return jwt.encode(payload, settings.effective_jwt_secret, algorithm="HS256")
 
 
@@ -600,7 +726,7 @@ async def get_current_user(request: Request) -> dict | None:
         return None
     if not payload.get("user"):
         return None
-    if await _current_user(payload) is None:
+    if await resolve_session_user(payload) is None:
         return None
     return payload
 
@@ -756,6 +882,8 @@ async def resolve_ws_auth(websocket: WebSocket, booth_id: str) -> dict:
     sessions = get_booth_sessions(websocket)
     user_sess = sessions.get("user_token")
     invite_sess = sessions.get("session_token")
+    if user_sess and invite_sess and user_sess.get("user") and await resolve_session_user(user_sess) is None:
+        user_sess = None
     if user_sess and (user_sess.get("is_admin") or user_sess.get("admin")):
         payload = user_sess
     elif user_sess and invite_sess:
@@ -821,6 +949,12 @@ async def resolve_ws_auth(websocket: WebSocket, booth_id: str) -> dict:
             await websocket.close(code=4003)
             raise WSAuthError("Participant cookie scope does not match booth_id.")
 
+    token_id = payload.get("token_id")
+    if token_id is not None:
+        if await is_invite_token_revoked(str(token_id)):
+            await websocket.close(code=4003)
+            raise WSAuthError("Invitation revoked.")
+
     return payload
 
 
@@ -852,13 +986,18 @@ async def resolve_booth_role(
     for sess in session_list:
         # 1. Admin: trust the account's current state, not the claim in the token.
         if sess.get("sub") and sess.get("user"):
-            if await user_is_active_admin(sess["sub"]):
-                roles.append(ADMIN)
+            user = await resolve_session_user(sess)
+            if user is None:
+                continue
+            if user.is_admin:
+                return ADMIN
         elif sess.get("is_admin") or sess.get("admin"):
             roles.append(ADMIN)
 
         # 2. Direct role claim (e.g. invite token or mock payload)
         if "role" in sess:
+            if sess.get("token_id") is not None and await is_invite_token_revoked(str(sess["token_id"])):
+                continue
             role = sess["role"]
             scope_matches = True
             token_event = sess.get("event_slug")
@@ -930,18 +1069,6 @@ async def resolve_booth_role(
                 logger.exception("Failed to resolve booth role from database")
 
     return highest_role(roles)
-
-
-async def user_is_active_admin(user_id: object) -> bool:
-    from portal.database import get_session, get_user_by_id
-
-    try:
-        uid = int(user_id)  # type: ignore[call-overload]
-    except (TypeError, ValueError):
-        return False
-    async with get_session() as db_session:
-        user = await get_user_by_id(db_session, uid)
-    return bool(user and user.is_admin and user.is_active)
 
 
 def can_perform_role(granted_role: str | None, requested_role: str) -> bool:

@@ -11,12 +11,14 @@
 |---|---|---|---|---|
 | GET | `/` | open | `home.html` | Landing page; no event or booth lists; navbar links personalised if logged in |
 | GET | `/local` | open | `local.html` | VoxBento Local desktop console download page with client OS detection & release links |
+| GET | `/sitemap.xml` | open | — | XML sitemap; canonical URLs use `PUBLIC_BASE_URL` (default `https://voxbento.com`), not request `Host`; trailing slashes stripped, path prefix preserved, URLs XML-escaped |
 | GET | `/healthz` | open | — | JSON: `{ok, server, mediamtx_ok}` |
 | GET | `/register` | open | `register.html` | Redirects to `/account` if already logged in |
 | POST | `/register` | open | `register.html` | Creates user, sets `user_token` cookie → `/account`; if `password` is set, `password_confirm` must match (422 otherwise) |
 | GET | `/login` | open | `login.html` | Redirects to `/account` or `?next=` if logged in |
 | POST | `/login` | open | `login.html` | Verifies bcrypt, sets `user_token` cookie |
 | GET | `/logout` | open | — | Deletes `user_token` cookie → `/` |
+| POST | `/auth/reset/{token}` | password-reset token | `reset_password.html` on error | Redeems token, changes password and advances the account session cutoff atomically; closes previous booth sockets after commit and sets a fresh `user_token` |
 | GET | `/account` | user | `account.html` | Account (#767): Profile (display name), Hosting events (Request access / Request sent / has access), Developer API (apply / pending / approved / rejected / suspended), Sign-in (change, set or remove password). Roles live on My events (`/workspace/`) |
 | POST | `/account/profile` | user + same-origin | — | Changes `display_name` (whitespace collapsed, 1–200 chars, no control characters) → `/account?success=profile_saved`, or `?error=display_name` |
 | POST | `/api/auth/set-password` | user | — | JSON `{password, current_password}`; `current_password` is required when the user already has a password (403 otherwise); min 8 chars |
@@ -27,13 +29,35 @@
 
 ---
 
+Signup protection: `POST /register` allows 20 attempts per resolved client IP
+per minute (`REGISTRATION_REQUESTS_PER_MINUTE`); excess attempts return 429 with
+`Retry-After: 60`. With `REGISTRATION_TURNSTILE_ENABLED=true`, a Cloudflare token
+validated for the configured hostname and `register` action is required before
+account/email side effects (403 if rejected, 503 if unavailable). The optional
+widget and errors render in `register.html`; see `portal/registration_protection.py`
+and `docs/registration-protection.md`. Other routes are unaffected.
+
+User-token authentication checks the current active account and rejects JWTs
+issued at or before `users.sessions_valid_after`. Password reset advances that
+cutoff in the same transaction as the password change and token redemption.
+It also invalidates outstanding magic sign-in links. Password and magic-link
+sign-ins timestamp the credential read and bind the cutoff version, so an
+in-flight sign-in cannot outlive a concurrent recovery. The interpreter lobby
+and account-authenticated caption subscriptions enforce the same cutoff.
+Booth connections retain JWT issuance time for the session reaper, not their
+connection time. Hosting-invite password bypasses require a current user session;
+matching the JWT subject alone is insufficient. A valid invitation or listener-code
+credential remains usable alongside a revoked account cookie.
+
 ## Booth & Listener Pages
 
 | Method | Path | Auth | Template | Notes |
 |---|---|---|---|---|
 | GET | `/interpreter/{event_slug}/{language_code}` | session or user | `interpreter_booth.html` | **Preferred URL**; resolves Jitsi URL, relay WHEP, mediamtx path |
 | GET | `/interpreter/{booth_id}` | session or user | `interpreter_booth.html` | Legacy free-form booth ID; no event scope |
-| GET | `/listener/{event_slug}` | session or user | `listener-event.html` | Lists rooms/booths for event with WHEP URLs |
+| GET | `/listener/{event_slug}` | current user session or valid listener join code | `listener-event.html` | Lists rooms/booths for event with WHEP URLs; optional `room` and `lang` query params preselect a room and language (kept through the join form); revoked user cookies fall back to the join form |
+| GET | `/overlay/{event_slug}/{room_id}/{language_code}` | join code or current user session | `overlay.html` | Transparent OBS/vMix subtitle layer; booths, floor, and translation-only channels |
+| GET | `/overlay/{event_slug}/{room_id}/{language_code}/session` | join code or current user session | JSON | Revalidates access/channel and issues a fresh caption token; no-store |
 
 ---
 
@@ -53,13 +77,29 @@
 
 ---
 
+## OAuth API v1 event provisioning
+
+`POST /api/v1/events/` requires `events:write` and current management access.
+An existing slug outside the token's event scope returns 403 unless the active
+user currently owns that event, so a client can retry an event it created.
+Removed or demoted public-client owners and inactive accounts get 403 before any
+event or membership changes. New-event creation checks and locks
+the grant's original event; a deleted authorizing event returns 404. Active Admins
+and trusted confidential clients retain their management access.
+
+`DELETE /api/v1/events/{event_slug}/rooms/{eventyay_room_id}` requires
+`rooms:write` and current event-management access. It uses the shared
+room-deletion helper to clear self-relay and incoming relay references and delete
+dependent data. Publishing booths return 409; missing or foreign events/rooms
+return 404; successful deletion returns 204.
+
 ## WebSocket Endpoints
 
 | Path | Auth | Protocol |
 |---|---|---|
 | `/ws/booth/{booth_id}` | optional JWT via `?token=` + cookies (`session_token` or `user_token`) | See WebSocket Protocol in `REPOSITORY_CONTEXT.md` |
-| `/ws/captions/{booth_id}` | protected via `resolve_ws_auth` (requires `BOOTH_ACCESS_TOKEN` check, valid JWT via `?token=` or session cookies `user_token`/`session_token` in production; open in dev when unset) | Receives `booth:state`, `caption`, and `translated_caption` messages; listener captions feed. Supports `{event_slug}-{room_id}-{language_code}` (`floor-{room_id}` allowed only in unauthenticated dev) |
-| `/ws/tts/{room_id}/{language_code}/{booth_id}` | pre-authorized (JWT query param, session token, or listener join code cookie) | Receives framed binary bundle messages (1-byte version `0x01`, 4-byte big-endian header length `L`, `L`-byte UTF-8 JSON header, optional 24 kHz 16-bit mono PCM payload) |
+| `/ws/captions/{booth_id}` | optional JWT via `?token=` (always validated; user tokens must belong to an active account issued after its session cutoff); listener token, join code (cookie or `?code=`), or current user session required when event has `listener_join_code`; events without a join code retain public caption access with an anonymous connection cap | Receives `booth:state` (listener-safe live/lock status, sent on connect and on change), `caption`, and `translated_caption` messages; listener captions feed. Supports `{event_slug}-{room_id}-{language_code}` (`floor-{room_id}` allowed only in unauthenticated dev). Closes 1011 when the session lookup fails so clients can retry |
+| `/ws/tts/{room_id}/{language_code}/{booth_id}` | JWT query param, session/user token, or listener join code cookie (a cookie code spends the shared join-code budget when connecting); current account state and session cutoff checked for user tokens, credentials rechecked at most every 5 s while bundles are sent (a listener-code recheck only compares the code and spends no budget); a failed DB check withholds the bundle | Receives framed binary bundle messages (1-byte version `0x01`, 4-byte big-endian header length `L`, `L`-byte UTF-8 JSON header, optional 24 kHz 16-bit mono PCM payload) |
 
 ---
 
@@ -89,11 +129,18 @@ with `?error=invalid_role&role=…` and the page explains why.
 | GET | `/admin/events/` | `admin/event_list.html` | Search by event slug or display name with `?search=`; blank queries show all events; `%` and `_` are literal; pagination URL-encodes the term and clamps out-of-range pages |
 | POST | `/admin/events/` | — | Creates event (slug + display_name) |
 | GET | `/admin/events/{event_id}/` | `admin/event_detail.html` | Event + rooms + booths |
+| GET | `/admin/events/{event_id}/caption-overlays/` | `admin/caption_overlays.html` | Owner-only caption preview, appearance and OBS/vMix URLs; canonical `/workspace` mapping; no-store; linked from event quick actions |
+| GET | `/admin/events/{event_id}/attendance/` | `admin/attendance.html` | Owner-only interpreter attendance (#1215): join/leave, time in booth, interpreting time; `day`/`booth` filters, days in the `vb_tz` cookie's time zone; canonical `/workspace` mapping; no-store |
+| GET | `/admin/events/{event_id}/attendance/export` | CSV | Owner-only per-visit CSV (UTC) honouring the same filters; formula cells neutralized |
 | GET | `/admin/events/{event_id}/api-settings/` | `admin/api_settings.html` | View encrypted API keys |
 | POST | `/admin/events/{event_id}/api-settings` | — | Update transcription API keys (Fernet-encrypted) |
 | POST | `/admin/events/{event_id}/delete` | — | Cascade-deletes event |
 | GET | `/admin/events/{event_id}/rooms/` | `admin/room_list.html` | Supports optional `search` query parameter to filter rooms server-side against `Room.display_name` (case-insensitive `ilike` match with SQL wildcard escaping for `%`, `_`, and `\\`). |
 | POST | `/admin/events/{event_id}/rooms/` | — | Creates room; auto-generates Jitsi URL |
+| GET/POST | `/admin/events/{event_id}/rooms/new` | `admin/room_setup.html` | Guided room creation: spoken/listener languages, interpreter/AI delivery, captions and voice; owner-only, POST requires same origin; `?from=setup` returns to the Rooms & languages wizard step |
+| GET/POST | `/admin/events/{event_id}/rooms/{room_id}/setup` | `admin/room_setup.html` | Owner-only edit of the same room plan; POST requires same origin and checks room/event scope; preserves live booths and explicitly retained same-language booths |
+| GET/POST | `/admin/events/{event_id}/setup/rooms` | `admin/wizard_rooms.html` | Rooms & languages step; GET links to guided room creation, legacy POST still creates a room |
+| GET/POST | `/admin/events/{event_id}/setup/booths` | — | Legacy GET redirects to Rooms & languages; legacy POST still creates a booth in this event and redirects there |
 | GET | `/admin/events/{event_id}/rooms/{room_id}/` | `admin/room_detail.html` | Room + booths |
 | POST | `/admin/events/{event_id}/rooms/{room_id}/edit` | — | Updates jitsi_url + relay_booth_id |
 | POST | `/admin/events/{event_id}/rooms/{room_id}/ai-vocabulary/upload` | — | Upload CSV glossary entries for room AI interpretation |
@@ -134,12 +181,13 @@ with `?error=invalid_role&role=…` and the page explains why.
 
 | Module | Owns |
 |---|---|
-| `portal/routers/public.py` | Home page, health check, registration |
+| `portal/routers/public.py` | Home page, sitemap, health check, registration |
 | `portal/routers/auth.py` | Login, logout, invite-token validation, and user profile page |
 | `portal/routers/interpreter.py` | Booth UI route |
 | `portal/routers/listener.py` | WHEP listener UI route |
 | `portal/routers/api.py` | Booth state REST API, WHIP URL generation |
 | `portal/routers/admin.py` | Shared event-management handlers and system-admin routes |
+| `portal/room_setup.py` | Room plan parsing, available AI services, booth/translation-language reconciliation, and room summaries; uses existing tables |
 | `portal/workspace_routing.py` | `/workspace` handler mapping, legacy organizer redirects, and template URL context |
 | `portal/websockets/manager.py` | `ws_booth` and `ws_captions` endpoints |
 | `portal/websockets/handlers.py` | Specific `_handle_*` logic for WS messages |
@@ -168,16 +216,22 @@ with `?error=invalid_role&role=…` and the page explains why.
 
 ## Program relay routes (#749)
 
-- `POST .../program-ingest` also accepts `mode` (`whip` | `rtmps_relay`) on enable;
-  relay-mode enable/rotate responses add `stream_key` (`floor?key=<secret>`). Status
-  adds `mode`, `relay_available`, `rtmps_server`, write-only `destination`
+- `POST .../program-ingest` also accepts `mode` (`whip` | `rtmps` | `rtmps_relay`) on enable
+  (`rtmps`, #1087: VoxBento as an extra RTMPS destination, no relay; 409 until the operator
+  enables RTMPS ingest). Enable/rotate responses in either RTMPS mode add `stream_key`
+  (`floor?key=<secret>`). Status adds `mode`, `rtmps_available`, `relay_available`,
+  `relay_service_down` (last relay-service call failed), `rtmps_server` (empty while RTMPS
+  ingest is off), write-only `destination`
   (`configured`, `server_url`, `updated_at`) and `health.{ingest,relay,processing}`.
 - `PUT/DELETE /workspace/events/{event_id}/rooms/{room_id}/program-relay`: event-owner,
-  origin-checked. PUT `{server_url, stream_key}` validates RTMPS + allow-listed host and
+  origin-checked. PUT `{server_url?, stream_key}` (server defaults to YouTube's primary RTMPS
+  ingest; a full `<server>/<key>` URL in `stream_key` is split; YouTube's `rtmp://a|b.rtmp.youtube.com`
+  is rewritten to its RTMPS host) validates RTMPS + allow-listed host and
   stores the key encrypted (422 invalid, 409 relay disabled). DELETE clears it and stops
   the relay (202 + `cleanup_pending` if the relay service is unreachable).
-- `/internal/media-auth` accepts `protocol: rtmp` only for relay-mode rooms with query
-  exactly `key=<secret>`; WHIP is refused for relay-mode rooms.
+- `/internal/media-auth` accepts `protocol: rtmp` only for `rtmps` and relay-mode rooms with
+  query exactly `key=<secret>` (never a browser-sender session secret); WHIP is refused for
+  both RTMPS modes, and publishes for soft-deleted events are refused.
 - `program-relay` service (private, `Authorization: Bearer $PROGRAM_RELAY_CONTROL_SECRET`):
   `GET /relays`, `PUT /relays/{room_id}` `{source, destination, fingerprint}`,
   `DELETE /relays/{room_id}`, unauthenticated `GET /healthz`.
@@ -200,6 +254,12 @@ with `?error=invalid_role&role=…` and the page explains why.
   the legacy `running`, `stage` and `bot_reachable` fields with their original
   meaning: `stage` is the raw floor-bot stage (`launching`, `in_meeting`, `dead`, …;
   `unknown` when the service is unreachable); the managed lifecycle is in `state`.
+
+`POST /oauth/token` accepts an optional `event` slug for the authorization-code
+grant. A mismatch is rejected before code consumption or membership grants.
+Successful code and refresh responses include `event`. Clients must send the
+event retained by their server to enable this check; omission preserves legacy
+behavior. See `website/docs/api/authentication.mdx` for integration rollout.
 
 `POST /login` requires verified email and uses the `login` rate-limit bucket:
 10 attempts per normalized email per hour. There is no separate admin sign-in form.

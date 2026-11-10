@@ -7,6 +7,7 @@ import math
 import re
 import secrets
 import urllib.parse
+from collections.abc import Iterable, Sequence
 from dataclasses import dataclass
 from datetime import timedelta
 from pathlib import Path
@@ -20,6 +21,7 @@ from sqlalchemy import delete, func, select
 from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import joinedload
+from starlette.datastructures import FormData
 
 from portal import meeting_source
 from portal import roles as roles_module
@@ -105,6 +107,7 @@ from portal.models import (
     TOKEN_TYPE_MAGIC_LINK,
     AIVocabularyEntry,
     AuthToken,
+    BoothMembership,
     BoothTranslationLanguage,
     DBBooth,
     EmailDelivery,
@@ -112,6 +115,8 @@ from portal.models import (
     Event,
     EventMembership,
     HostingRequest,
+    Room,
+    RoomMembership,
     RoomTranslationLanguage,
     TranscriptSegment,
     TranscriptTranslation,
@@ -131,9 +136,35 @@ from portal.notifications import (
     save_email_branding,
     template_content,
 )
+from portal.overlay_channels import overlay_channels
 from portal.program_ingest import room_lock
 from portal.rate_limit import check_rate_limit
 from portal.roles import EVENT_OWNER, assignment_error, role_label
+from portal.room_setup import (
+    AI_VOICE,
+    EngineCatalog,
+    RoomPlan,
+    RoomSummary,
+    apply_plan,
+    blank_plan,
+    booth_speech_models,
+    brand_name,
+    default_jitsi_url,
+    engine_catalog,
+    load_snapshot,
+    parse_plan,
+    room_audio_choice,
+    server_unavailable_reason,
+    summarize,
+)
+from portal.room_setup import ALL_LANGUAGES as ROOM_ALL_LANGUAGES
+from portal.room_setup import COMMON_LANGUAGES as ROOM_COMMON_LANGUAGES
+from portal.room_setup import DELIVERY_EXPLANATIONS as ROOM_DELIVERY_EXPLANATIONS
+from portal.room_setup import DELIVERY_HINTS as ROOM_DELIVERY_HINTS
+from portal.room_setup import DELIVERY_LABELS as ROOM_DELIVERY_LABELS
+from portal.room_setup import SPEECH_MODELS as ROOM_SPEECH_MODELS
+from portal.room_setup import VOICE_PRESETS as ROOM_VOICE_PRESETS
+from portal.room_setup import language_name as room_language_name
 from portal.team import ROLE_CHOICES as TEAM_ROLE_CHOICES
 from portal.team import TeamError, load_team
 from portal.team import add_member as add_team_member
@@ -142,7 +173,14 @@ from portal.team import parse_place as parse_team_place
 from portal.team import remove_assignment as remove_team_assignment
 from portal.team import revoke_invite_link as revoke_team_invite_link
 from portal.transcription import ALLOWED_MODELS, ProviderConfig, ProviderEnum, get_api_key
-from portal.transcription.worker import start_transcription_worker, stop_transcription_worker
+from portal.transcription.worker import (
+    State,
+    WorkerCapacityError,
+    active_workers,
+    start_transcription_worker,
+    stop_transcription_worker,
+    wait_for_worker_start,
+)
 from portal.translations.constants import TRANSLATION_MODELS, TranslationProviderEnum
 from portal.translations.vocabulary import (
     VocabularyOverlapIndex,
@@ -151,12 +189,14 @@ from portal.translations.vocabulary import (
     serialize_vocabulary_csv,
     validate_vocabulary_scope,
 )
+from portal.tts.worker import invalidate_config as invalidate_tts_config
 from portal.user_admin import ERROR_MESSAGES as USER_ADMIN_ERRORS
 from portal.user_admin import FIELDS as USER_ACCESS_FIELDS
 from portal.user_admin import AccessChange, UserAdminError, delete_user_account, is_last_active_admin, set_user_access
 from portal.user_menu import resolve_user_menu, user_menu_context
 from portal.utils import _check_mediamtx, _make_jitsi_url, get_client_ip, safe_redirect, verify_same_origin
-from portal.websockets.manager import broadcast_transcription
+from portal.websockets.manager import broadcast_transcription, manager
+from portal.websockets.revocation import revoke_booths_for_deleted_entity, revoke_membership_push
 from portal.workspace_routing import management_template_context, management_url
 
 _BASE_DIR = Path(__file__).resolve().parent.parent
@@ -168,6 +208,7 @@ templates = Jinja2Templates(
 )
 # Templates read role names and labels from portal.roles (#757).
 templates.env.globals["roles"] = roles_module
+templates.env.globals["brand_name"] = brand_name
 templates.env.filters["role_label"] = role_label
 
 
@@ -305,7 +346,7 @@ async def admin_emails(
     )
 
 
-@router.post("/admin/emails/branding", dependencies=[Depends(require_admin)])
+@router.post("/admin/emails/branding", dependencies=[Depends(require_admin), Depends(require_admin_csrf)])
 async def admin_email_branding(
     request: Request,
     show_logo: str = Form(""),
@@ -338,7 +379,7 @@ async def admin_email_preview(key: str, db: AsyncSession = Depends(get_db_sessio
     )
 
 
-@router.post("/admin/emails/{key}/draft", dependencies=[Depends(require_admin)])
+@router.post("/admin/emails/{key}/draft", dependencies=[Depends(require_admin), Depends(require_admin_csrf)])
 async def admin_email_save_draft(
     key: str,
     request: Request,
@@ -359,7 +400,7 @@ async def admin_email_save_draft(
     return safe_redirect(url=f"/admin/emails/{safe_key}/?saved=1", status_code=status.HTTP_303_SEE_OTHER)
 
 
-@router.post("/admin/emails/{key}/publish", dependencies=[Depends(require_admin)])
+@router.post("/admin/emails/{key}/publish", dependencies=[Depends(require_admin), Depends(require_admin_csrf)])
 async def admin_email_publish(
     key: str,
     request: Request,
@@ -376,7 +417,7 @@ async def admin_email_publish(
     return safe_redirect(url=f"/admin/emails/{safe_key}/?published=1", status_code=status.HTTP_303_SEE_OTHER)
 
 
-@router.post("/admin/emails/{key}/test", dependencies=[Depends(require_admin)])
+@router.post("/admin/emails/{key}/test", dependencies=[Depends(require_admin), Depends(require_admin_csrf)])
 async def admin_email_test(
     key: str,
     request: Request,
@@ -395,31 +436,6 @@ async def admin_email_test(
     )
     return safe_redirect(url=f"/admin/emails/{safe_key}/?test=1", status_code=status.HTTP_303_SEE_OTHER)
 
-# Common languages offered in the guided setup wizard booth picker.
-COMMON_LANGUAGES: list[tuple[str, str]] = [
-    ("en", "English"),
-    ("es", "Spanish"),
-    ("fr", "French"),
-    ("de", "German"),
-    ("zh", "Chinese"),
-    ("ar", "Arabic"),
-    ("pt", "Portuguese"),
-    ("ru", "Russian"),
-    ("ja", "Japanese"),
-    ("hi", "Hindi"),
-    ("it", "Italian"),
-    ("ko", "Korean"),
-    ("nl", "Dutch"),
-    ("tr", "Turkish"),
-    ("pl", "Polish"),
-    ("uk", "Ukrainian"),
-    ("vi", "Vietnamese"),
-    ("id", "Indonesian"),
-    ("th", "Thai"),
-    ("sv", "Swedish"),
-]
-
-
 def _slugify(text: str) -> str:
     """Derive a URL-safe event slug from free text."""
     slug = re.sub(r"[^a-z0-9]+", "-", text.strip().lower())
@@ -436,8 +452,12 @@ async def _room_has_booth_language(session: AsyncSession, room_id: int, language
 async def _create_booth_unless_duplicate(
     *, event_id: int, room_id: int, language_code: str, language_name: str
 ) -> bool:
+    """Create a booth for a room unless a booth with that language already exists."""
     try:
         async with get_session() as session:
+            room = await get_room_by_id(session, room_id)
+            if room is None or room.event_id != event_id:
+                raise ValueError(f"Room {room_id} does not belong to event {event_id}.")
             if await _room_has_booth_language(session, room_id, language_code):
                 return False
             await create_booth(
@@ -543,7 +563,7 @@ async def mission_control_grid(request: Request, event_slug: str, user=Depends(r
             {
                 "id": room.id,
                 "name": room.display_name,
-                "floor_captions": bool(room.floor_transcription_enabled) and room.floor_transcription_provider != "none",
+                "floor_captions": room.has_floor_captions,
                 "floor_source": room.floor_source or "jitsi_bot",
             }
             for room in await list_rooms_for_event(session, event.id)
@@ -585,7 +605,7 @@ async def admin_logout():
 @router.get("/workspace")
 @router.get("/workspace/")
 async def my_events_page(request: Request):
-    """ "My events": every event the signed-in person has a role in (#766)."""
+    """"My events": every event the signed-in person has a role in (#766)."""
     principal = request.state.principal
     user = principal["user"]
     if user is None:
@@ -804,6 +824,20 @@ async def admin_setup_create_event(request: Request, principal: dict = Depends(r
     )
 
 
+def _live_booth_codes(event_slug: str, room_id: int, codes: Iterable[str]) -> frozenset[str]:
+    live = set()
+    for code in codes:
+        mem_booth = booths.get_booth_sync(make_booth_id(event_slug, room_id, code))
+        if mem_booth is not None and mem_booth.ingest_status == "connected":
+            live.add(code)
+    return frozenset(live)
+
+
+async def _room_summaries(session: AsyncSession, event: Event, rooms: Sequence[Room]) -> dict[int, RoomSummary]:
+    catalog = engine_catalog(event)
+    return {room.id: summarize(room, await load_snapshot(session, room, catalog)) for room in rooms}
+
+
 @router.get("/admin/events/{event_id}/setup/rooms", dependencies=[Depends(require_event_owner)])
 async def admin_setup_rooms(request: Request, event_id: int):
     admin_flags = await get_access_flags(request, event_id=event_id)
@@ -812,15 +846,17 @@ async def admin_setup_rooms(request: Request, event_id: int):
         if event is None:
             raise HTTPException(status_code=404, detail="Event not found.")
         rooms = await list_rooms_for_event(session, event_id)
+        summaries = await _room_summaries(session, event, rooms)
     return templates.TemplateResponse(
-        request=request, name="admin/wizard_rooms.html", context={"event": event, "rooms": rooms, **admin_flags}
+        request=request,
+        name="admin/wizard_rooms.html",
+        context={"event": event, "rooms": rooms, "summaries": summaries, **admin_flags},
     )
 
 
-@router.post(
-    "/admin/events/{event_id}/setup/rooms", dependencies=[Depends(require_event_owner), Depends(require_admin_csrf)]
-)
+@router.post("/admin/events/{event_id}/setup/rooms", dependencies=[Depends(require_event_owner), Depends(require_admin_csrf)])
 async def admin_setup_add_room(request: Request, event_id: int):
+    # Compatibility for forms opened before room setup was consolidated.
     form = await request.form()
     display_name = form.get("display_name", "").strip()
     if display_name:
@@ -838,70 +874,241 @@ async def admin_setup_add_room(request: Request, event_id: int):
     )
 
 
-@router.get("/admin/events/{event_id}/setup/booths", dependencies=[Depends(require_event_owner)])
-async def admin_setup_booths(request: Request, event_id: int):
-    admin_flags = await get_access_flags(request, event_id=event_id)
+@router.post("/admin/events/{event_id}/setup/booths", dependencies=[Depends(require_event_owner), Depends(require_admin_csrf)])
+async def admin_setup_add_booth(request: Request, event_id: int):
+    """Add a booth to a room during event setup."""
     async with get_session() as session:
         event = await get_event_by_id(session, event_id)
         if event is None:
             raise HTTPException(status_code=404, detail="Event not found.")
-        rooms = await list_rooms_for_event(session, event_id)
-        booths_by_room = {room.id: await list_booths_for_room(session, room.id) for room in rooms}
-    return templates.TemplateResponse(
-        request=request,
-        name="admin/wizard_booths.html",
-        context={
-            "event": event,
-            "rooms": rooms,
-            "booths_by_room": booths_by_room,
-            "common_languages": COMMON_LANGUAGES,
-            **admin_flags,
-        },
-    )
-
-
-@router.post(
-    "/admin/events/{event_id}/setup/booths", dependencies=[Depends(require_event_owner), Depends(require_admin_csrf)]
-)
-async def admin_setup_add_booth(request: Request, event_id: int):
     form = await request.form()
     room_id_str = form.get("room_id", "").strip()
     language_code = form.get("language_code", "").strip().lower()
     language_name = form.get("language_name", "").strip()
     error = None
     room = None
-    if room_id_str.isdigit():
-        async with get_session() as session:
-            room = await get_room_by_id(session, int(room_id_str))
-    if room is not None and room.event_id != event_id:
-        # Only this event's rooms; the wizard just shows the form again.
-        room_id_str = ""
-    if room_id_str and language_code:
+    room_id = None
+    if not room_id_str:
+        error = "room_required"
+    else:
+        try:
+            room_id = int(room_id_str)
+        except ValueError:
+            room_id = None
+        # Keep the id inside a 32-bit SQL integer before it reaches the database.
+        if room_id is not None and 0 < room_id <= 2**31 - 1:
+            async with get_session() as session:
+                room = await get_room_by_id(session, room_id)
+        else:
+            room_id = None
+        if room is None or room.event_id != event_id:
+            # A malformed or foreign room must be reported, not silently ignored.
+            room_id_str = ""
+            error = "room_not_found"
+    if error is None and not language_code:
+        error = "language_required"
+    if error is None:
         if not language_name:
             lang = pycountry.languages.get(alpha_2=language_code)
             language_name = lang.name if lang else language_code.upper()
         try:
             created = await _create_booth_unless_duplicate(
                 event_id=event_id,
-                room_id=int(room_id_str),
+                room_id=room.id,
                 language_code=language_code,
                 language_name=language_name,
             )
             if not created:
                 error = "duplicate_language"
-        except Exception as e:
-            logger.warning(f"Error creating booth in setup wizard: {e}")
+        except (ValueError, SQLAlchemyError) as e:
+            logger.warning("Error creating booth in setup wizard: %s", e)
+            error = "booth_create_failed"
 
     query = {}
     if room_id_str:
         query["room_id"] = room_id_str
     if error:
         query["error"] = error
-    redirect_url = management_url(request, f"events/{event_id}/setup/booths")
+    redirect_url = management_url(request, f"events/{event_id}/setup/rooms")
     if query:
         redirect_url += f"?{urllib.parse.urlencode(query)}"
 
     return safe_redirect(url=redirect_url, status_code=status.HTTP_303_SEE_OTHER)
+
+
+@router.get("/admin/events/{event_id}/setup/booths", dependencies=[Depends(require_event_owner)])
+async def admin_setup_booths(request: Request, event_id: int):
+    """Booths are now chosen inside each room's setup; old links land on the Rooms step."""
+    return safe_redirect(
+        url=management_url(request, f"events/{event_id}/setup/rooms"),
+        status_code=status.HTTP_303_SEE_OTHER,
+    )
+
+
+def _room_setup_response(
+    request: Request,
+    *,
+    event: Event,
+    room: Room | None,
+    plan: RoomPlan,
+    catalog: EngineCatalog,
+    admin_flags: dict,
+    errors: Sequence[str] = (),
+    booth_codes: Sequence[str] = (),
+    live_codes: frozenset[str] = frozenset(),
+    from_setup: bool = False,
+    status_code: int = status.HTTP_200_OK,
+) -> Response:
+    chosen = [code for code, _ in plan.languages]
+    chip_codes = list(dict.fromkeys([code for code, _ in ROOM_COMMON_LANGUAGES] + chosen))
+    return templates.TemplateResponse(
+        request=request,
+        name="admin/room_setup.html",
+        context={
+            "event": event,
+            "room": room,
+            "plan": plan,
+            "catalog": catalog,
+            "errors": errors,
+            "chip_languages": [(code, room_language_name(code)) for code in chip_codes],
+            "all_languages": ROOM_ALL_LANGUAGES,
+            "common_languages": ROOM_COMMON_LANGUAGES,
+            "common_codes": [code for code, _ in ROOM_COMMON_LANGUAGES],
+            "language_name": room_language_name,
+            "delivery_labels": ROOM_DELIVERY_LABELS,
+            "delivery_hints": ROOM_DELIVERY_HINTS,
+            "delivery_explanations": ROOM_DELIVERY_EXPLANATIONS,
+            "booth_codes": list(booth_codes),
+            "live_codes": sorted(live_codes),
+            "from_setup": from_setup,
+            **admin_flags,
+        },
+        status_code=status_code,
+    )
+
+
+@router.get("/admin/events/{event_id}/rooms/new", dependencies=[Depends(require_event_owner)])
+async def admin_room_setup_new(request: Request, event_id: int, source: str | None = Query(None, alias="from")):
+    admin_flags = await get_access_flags(request, event_id=event_id)
+    async with get_session() as session:
+        event = await get_event_by_id(session, event_id)
+        if event is None:
+            raise HTTPException(status_code=404, detail="Event not found.")
+    catalog = engine_catalog(event)
+    return _room_setup_response(
+        request,
+        event=event,
+        room=None,
+        plan=blank_plan(catalog),
+        catalog=catalog,
+        admin_flags=admin_flags,
+        from_setup=source == "setup",
+    )
+
+
+@router.post("/admin/events/{event_id}/rooms/new", dependencies=[Depends(require_event_owner), Depends(require_admin_csrf)])
+async def admin_room_setup_create(request: Request, event_id: int):
+    if not verify_same_origin(request):
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Invalid request origin.")
+    form = await request.form()
+    from_setup = form.get("from") == "setup"
+    async with get_session() as session:
+        event = await get_event_by_id(session, event_id)
+        if event is None:
+            raise HTTPException(status_code=404, detail="Event not found.")
+        catalog = engine_catalog(event)
+        plan, errors = parse_plan(form, catalog)
+        if errors:
+            admin_flags = await get_access_flags(request, event_id=event_id)
+            return _room_setup_response(
+                request,
+                event=event,
+                room=None,
+                plan=plan,
+                catalog=catalog,
+                admin_flags=admin_flags,
+                errors=errors,
+                from_setup=from_setup,
+                status_code=status.HTTP_400_BAD_REQUEST,
+            )
+        room = await create_room(
+            session,
+            event_id=event_id,
+            display_name=plan.display_name,
+            jitsi_url=default_jitsi_url(event.slug, plan.display_name),
+        )
+        await apply_plan(session, event, room, plan, catalog)
+        room_id = room.id
+    target = f"events/{event_id}/setup/rooms" if from_setup else f"events/{event_id}/rooms/{room_id}/?created=1"
+    return safe_redirect(url=management_url(request, target), status_code=status.HTTP_303_SEE_OTHER)
+
+
+@router.get("/admin/events/{event_id}/rooms/{room_id}/setup", dependencies=[Depends(require_event_owner)])
+async def admin_room_setup_edit(request: Request, event_id: int, room_id: int):
+    source = request.query_params.get("from")
+    admin_flags = await get_access_flags(request, event_id=event_id, room_id=room_id)
+    async with get_session() as session:
+        event = await get_event_by_id(session, event_id)
+        if event is None:
+            raise HTTPException(status_code=404, detail="Event not found.")
+        room = await room_in_event(session, event_id, room_id)
+        catalog = engine_catalog(event)
+        snapshot = await load_snapshot(session, room, catalog)
+    live = _live_booth_codes(event.slug, room_id, snapshot.booth_codes)
+    return _room_setup_response(
+        request,
+        event=event,
+        room=room,
+        plan=snapshot.plan,
+        catalog=catalog,
+        admin_flags=admin_flags,
+        booth_codes=snapshot.booth_codes,
+        live_codes=live,
+        from_setup=source == "setup",
+    )
+
+
+@router.post("/admin/events/{event_id}/rooms/{room_id}/setup", dependencies=[Depends(require_event_owner), Depends(require_admin_csrf)])
+async def admin_room_setup_save(request: Request, event_id: int, room_id: int):
+    if not verify_same_origin(request):
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Invalid request origin.")
+    form = await request.form()
+    from_setup = form.get("from") == "setup"
+    async with room_lock(room_id), get_session() as session:
+        event = await get_event_by_id(session, event_id)
+        if event is None:
+            raise HTTPException(status_code=404, detail="Event not found.")
+        room = await room_in_event(session, event_id, room_id)
+        catalog = engine_catalog(event)
+        booth_codes = [b.language_code for b in await list_booths_for_room(session, room_id)]
+        plan, errors = parse_plan(form, catalog, existing_booth_codes=booth_codes)
+        live = _live_booth_codes(event.slug, room_id, booth_codes)
+        if errors:
+            admin_flags = await get_access_flags(request, event_id=event_id, room_id=room_id)
+            return _room_setup_response(
+                request,
+                event=event,
+                room=room,
+                plan=plan,
+                catalog=catalog,
+                admin_flags=admin_flags,
+                errors=errors,
+                booth_codes=booth_codes,
+                live_codes=live,
+                from_setup=from_setup,
+                status_code=status.HTTP_400_BAD_REQUEST,
+            )
+        result = await apply_plan(session, event, room, plan, catalog, live_booth_codes=live)
+    # The session has committed: drop the old voice settings so AI text languages stop speaking now.
+    invalidate_tts_config(room_id)
+    query = {"updated": "1"}
+    if result.kept_live_booths:
+        query["kept_live"] = ",".join(result.kept_live_booths)
+    target = f"events/{event_id}/setup/rooms" if from_setup else f"events/{event_id}/rooms/{room_id}/?{urllib.parse.urlencode(query)}"
+    return safe_redirect(
+        url=management_url(request, target),
+        status_code=status.HTTP_303_SEE_OTHER,
+    )
 
 
 @router.get("/admin/events/{event_id}/setup/invite", dependencies=[Depends(require_event_owner)])
@@ -929,9 +1136,7 @@ async def admin_setup_invite(request: Request, event_id: int, success: str | Non
     )
 
 
-@router.post(
-    "/admin/events/{event_id}/setup/invite", dependencies=[Depends(require_event_owner), Depends(require_admin_csrf)]
-)
+@router.post("/admin/events/{event_id}/setup/invite", dependencies=[Depends(require_event_owner), Depends(require_admin_csrf)])
 async def admin_setup_add_invite(request: Request, event_id: int):
     form = await request.form()
     email = form.get("email", "").strip()
@@ -947,9 +1152,7 @@ async def admin_setup_add_invite(request: Request, event_id: int):
                 await set_event_membership(session, user_id=user.id, event_id=event_id, role=role)
             except ValueError:
                 return safe_redirect(
-                    url=management_url(
-                        request, f"events/{event_id}/setup/invite?error=invalid_role&role={urllib.parse.quote(role)}"
-                    ),
+                    url=management_url(request, f"events/{event_id}/setup/invite?error=invalid_role&role={urllib.parse.quote(role)}"),
                     status_code=status.HTTP_303_SEE_OTHER,
                 )
             event = await get_event_by_id(session, event_id)
@@ -964,10 +1167,7 @@ async def admin_setup_add_invite(request: Request, event_id: int):
     )
 
 
-@router.post(
-    "/admin/events/{event_id}/regenerate_join_code/",
-    dependencies=[Depends(require_event_owner), Depends(require_admin_csrf)],
-)
+@router.post("/admin/events/{event_id}/regenerate_join_code/", dependencies=[Depends(require_event_owner), Depends(require_admin_csrf)])
 async def admin_regenerate_join_code(request: Request, event_id: int):
     async with get_session() as session:
         event = await get_event_by_id(session, event_id)
@@ -985,8 +1185,9 @@ async def admin_event_detail(request: Request, event_id: int):
         event = await get_event_by_id(session, event_id)
         if event is None:
             raise HTTPException(status_code=404, detail="Event not found.")
-        rooms = await list_rooms_for_event(session, event_id)
-        db_booths = await list_booths_for_event(session, event_id)
+        rooms = await list_rooms_for_event(session, event_id, limit=None)
+        db_booths = await list_booths_for_event(session, event_id, limit=None)
+        summaries = await _room_summaries(session, event, rooms)
     # Keep each room's booths together, in the same order as the Rooms list.
     room_order = {room.id: index for index, room in enumerate(rooms)}
     db_booths.sort(key=lambda b: (room_order.get(b.room_id, len(room_order)), b.language_code))
@@ -1002,10 +1203,33 @@ async def admin_event_detail(request: Request, event_id: int):
         context={
             "event": event,
             "rooms": rooms,
+            "summaries": summaries,
             "booths": booth_statuses,
             "live_count": sum((1 for bs in booth_statuses if bs["is_live"])),
             **admin_flags,
         },
+    )
+
+
+@router.get("/admin/events/{event_id}/caption-overlays/", dependencies=[Depends(require_event_owner)])
+async def admin_event_caption_overlays(request: Request, event_id: int):
+    admin_flags = await get_access_flags(request, event_id=event_id)
+    async with get_session() as session:
+        event = await get_event_by_id(session, event_id)
+        if event is None:
+            raise HTTPException(status_code=404, detail="Event not found.")
+        rooms = await list_rooms_for_event(session, event_id, limit=None)
+        db_booths = await list_booths_for_event(session, event_id, limit=None)
+    return templates.TemplateResponse(
+        request=request,
+        name="admin/caption_overlays.html",
+        context={
+            "event": event,
+            "rooms": rooms,
+            "overlay_channels": overlay_channels(rooms, db_booths),
+            **admin_flags,
+        },
+        headers={"Cache-Control": "no-store"},
     )
 
 
@@ -1021,9 +1245,7 @@ async def admin_event_api_settings_get(request: Request, event_id: int):
     )
 
 
-@router.post(
-    "/admin/events/{event_id}/api-settings", dependencies=[Depends(require_event_owner), Depends(require_admin_csrf)]
-)
+@router.post("/admin/events/{event_id}/api-settings", dependencies=[Depends(require_event_owner), Depends(require_admin_csrf)])
 async def admin_event_api_settings_post(
     request: Request,
     event_id: int,
@@ -1032,10 +1254,12 @@ async def admin_event_api_settings_post(
     deepgram_api_key: str | None = Form(None),
     nvidia_api_key: str | None = Form(None),
     elevenlabs_api_key: str | None = Form(None),
+    atlascloud_api_key: str | None = Form(None),
     clear_openai_api_key: bool | None = Form(False),
     clear_deepgram_api_key: bool | None = Form(False),
     clear_nvidia_api_key: bool | None = Form(False),
     clear_elevenlabs_api_key: bool | None = Form(False),
+    clear_atlascloud_api_key: bool | None = Form(False),
     translation_openai_api_key: str | None = Form(None),
     openrouter_api_key: str | None = Form(None),
     gemini_api_key: str | None = Form(None),
@@ -1060,6 +1284,7 @@ async def admin_event_api_settings_post(
                     ("encrypted_deepgram_api_key", deepgram_api_key, clear_deepgram_api_key),
                     ("encrypted_nvidia_api_key", nvidia_api_key, clear_nvidia_api_key),
                     ("encrypted_elevenlabs_api_key", elevenlabs_api_key, clear_elevenlabs_api_key),
+                    ("encrypted_atlascloud_api_key", atlascloud_api_key, clear_atlascloud_api_key),
                     (
                         "encrypted_translation_openai_api_key",
                         translation_openai_api_key,
@@ -1080,13 +1305,12 @@ async def admin_event_api_settings_post(
     )
 
 
-@router.post(
-    "/admin/events/{event_id}/delete", dependencies=[Depends(require_event_owner), Depends(require_admin_csrf)]
-)
+@router.post("/admin/events/{event_id}/delete", dependencies=[Depends(require_event_owner), Depends(require_admin_csrf)])
 async def admin_delete_event(request: Request, event_id: int):
     """Delete an event by ID, returning 404 if missing or redirecting with an error alert on database failure."""
     try:
         async with get_session() as session:
+            await revoke_booths_for_deleted_entity(session, level="event", target_id=event_id)
             deleted = await delete_event(session, event_id)
             if not deleted:
                 raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Event not found.")
@@ -1111,20 +1335,22 @@ async def admin_room_list(request: Request, event_id: int, search: str | None = 
         if event is None:
             raise HTTPException(status_code=404, detail="Event not found.")
         rooms = await list_rooms_for_event(session, event_id, search=search_val)
-        room_data = []
-        for room in rooms:
-            room_booths = await list_booths_for_room(session, room.id)
-            room_data.append({"room": room, "booth_count": len(room_booths)})
+        room_data = [{"room": room} for room in rooms]
+        summaries = await _room_summaries(session, event, rooms)
     return templates.TemplateResponse(
         request=request,
         name="admin/room_list.html",
-        context={"event": event, "room_data": room_data, "search": search_val or "", **admin_flags},
+        context={
+            "event": event,
+            "room_data": room_data,
+            "summaries": summaries,
+            "search": search_val or "",
+            **admin_flags,
+        },
     )
 
 
-@router.post(
-    "/admin/events/{event_id}/rooms/", dependencies=[Depends(require_event_owner), Depends(require_admin_csrf)]
-)
+@router.post("/admin/events/{event_id}/rooms/", dependencies=[Depends(require_event_owner), Depends(require_admin_csrf)])
 async def admin_create_room(request: Request, event_id: int):
     form = await request.form()
     display_name = form.get("display_name", "").strip()
@@ -1135,11 +1361,7 @@ async def admin_create_room(request: Request, event_id: int):
         )
     async with get_session() as session:
         ev = await get_event_by_id(session, event_id)
-        jitsi_url = None
-        if ev:
-            clean_name = re.sub("[^a-zA-Z0-9]+", "", display_name)
-            room_id_str = f"Voxbento-{ev.slug}-{clean_name}"
-            jitsi_url = _make_jitsi_url(settings.effective_jitsi_base_url, room_id_str)
+        jitsi_url = default_jitsi_url(ev.slug, display_name) if ev else None
         await create_room(session, event_id=event_id, display_name=display_name, jitsi_url=jitsi_url)
     return safe_redirect(
         url=management_url(request, f"events/{event_id}/rooms/"), status_code=status.HTTP_303_SEE_OTHER
@@ -1241,6 +1463,8 @@ async def admin_room_detail(request: Request, event_id: int, room_id: int):
         if room is None or room.event_id != event_id:
             raise HTTPException(status_code=404, detail="Room not found.")
         db_booths = await list_booths_for_room(session, room_id)
+        catalog = engine_catalog(event)
+        snapshot = await load_snapshot(session, room, catalog)
         vocabulary_entries = list(
             await session.scalars(
                 select(AIVocabularyEntry)
@@ -1257,13 +1481,11 @@ async def admin_room_detail(request: Request, event_id: int, room_id: int):
     clean_name = re.sub("[^a-zA-Z0-9]+", "", room.display_name)
     room_id_str = f"Voxbento-{event.slug}-{clean_name}"
     fallback_jitsi_url = _make_jitsi_url(settings.effective_jitsi_base_url, room_id_str)
-    translation_languages_dataset = [
-        {"code": lang.alpha_2, "name": lang.name} for lang in pycountry.languages if hasattr(lang, "alpha_2")
-    ]
-    translation_languages_dataset.sort(key=lambda x: x["name"])
-    enabled_translation_language_codes = [lang.language_code for lang in room.translation_languages if lang.enabled]
     async with get_session() as session:
         memberships = await list_memberships_for_room(session, room_id)
+    kept_live = [
+        room_language_name(code) for code in request.query_params.get("kept_live", "").split(",") if code.strip()
+    ]
     return templates.TemplateResponse(
         request=request,
         name="admin/room_detail.html",
@@ -1271,9 +1493,25 @@ async def admin_room_detail(request: Request, event_id: int, room_id: int):
             "event": event,
             "room": room,
             "booths": booth_statuses,
+            "summary": summarize(room, snapshot),
+            "booths_by_code": {bs["db"].language_code: bs for bs in booth_statuses},
+            "overlay_urls": {
+                ch.code: _overlay_url(event, room.id, ch.code) for ch in overlay_channels([room], db_booths)
+            },
+            "room_overlay_channels": overlay_channels([room], db_booths),
+            "floor_overlay_url": _overlay_url(event, room.id, "floor") if room.has_floor_captions else None,
+            "just_created": request.query_params.get("created") == "1",
+            "just_updated": request.query_params.get("updated") == "1",
+            "kept_live_languages": kept_live,
             "fallback_jitsi_url": fallback_jitsi_url,
-            "translation_languages_dataset": translation_languages_dataset,
-            "enabled_translation_language_codes": enabled_translation_language_codes,
+            "catalog": catalog,
+            "audio_choice": room_audio_choice(room),
+            "speech_models": ROOM_SPEECH_MODELS,
+            "voice_presets": ROOM_VOICE_PRESETS,
+            "ai_language_names": [room_language_name(code) for code in snapshot.plan.ai_languages],
+            "voice_language_names": [
+                room_language_name(code) for code, delivery in snapshot.plan.languages if delivery == AI_VOICE
+            ],
             "vocabulary_entries": vocabulary_entries,
             "vocabulary_imported": request.query_params.get("vocab_imported"),
             "vocabulary_warnings": request.query_params.get("vocab_warnings"),
@@ -1284,10 +1522,7 @@ async def admin_room_detail(request: Request, event_id: int, room_id: int):
     )
 
 
-@router.get(
-    "/admin/events/{event_id}/rooms/{room_id}/sender/",
-    dependencies=[Depends(require_event_owner)],
-)
+@router.get("/admin/events/{event_id}/rooms/{room_id}/sender/", dependencies=[Depends(require_event_owner)])
 async def admin_room_sender(request: Request, event_id: int, room_id: int):
     """Standalone program audio sender, meant to stay open on the sound-desk machine."""
     async with get_session() as session:
@@ -1297,18 +1532,21 @@ async def admin_room_sender(request: Request, event_id: int, room_id: int):
         room = await get_room_by_id(session, room_id)
         if room is None or room.event_id != event_id:
             raise HTTPException(status_code=404, detail="Room not found.")
+        db_booths = await list_booths_for_room(session, room_id)
+        channels = overlay_channels([room], db_booths)
     return templates.TemplateResponse(
         request=request,
         name="admin/program_sender.html",
-        context={"event": event, "room": room},
+        context={
+            "event": event,
+            "room": room,
+            "overlay_links": [(channel, _overlay_url(event, room.id, channel.code)) for channel in channels],
+        },
         headers={"Cache-Control": "no-store"},
     )
 
 
-@router.get(
-    "/admin/events/{event_id}/rooms/{room_id}/transcripts/",
-    dependencies=[Depends(require_owner_or_coordinator)],
-)
+@router.get("/admin/events/{event_id}/rooms/{room_id}/transcripts/", dependencies=[Depends(require_owner_or_coordinator)])
 async def admin_room_transcripts(request: Request, event_id: int, room_id: int):
     async with get_session() as session:
         event = await get_event_by_id(session, event_id)
@@ -1326,11 +1564,43 @@ async def admin_room_transcripts(request: Request, event_id: int, room_id: int):
     )
 
 
-@router.post(
-    "/admin/events/{event_id}/rooms/{room_id}/edit",
-    dependencies=[Depends(require_event_owner), Depends(require_admin_csrf)],
-)
+def _apply_ai_settings(room: Room, form: FormData, catalog: EngineCatalog) -> None:
+    """Save the room page's AI settings: services, models, voice and translator instructions.
+
+    What a room offers (captions on or off, which languages use AI) belongs to the room setup
+    form, so this never switches anything on or off. A service the event can't use, or one
+    left out of the form, keeps the room's current choice.
+    """
+    speech = catalog.find("speech", str(form.get("floor_transcription_provider", "")))
+    if speech:
+        model = str(form.get("floor_transcription_model", ""))
+        allowed = {value for value, _ in ROOM_SPEECH_MODELS.get(speech.provider, ())}
+        room.floor_transcription_provider = speech.provider
+        room.floor_transcription_model = model if model in allowed else speech.model
+
+    translation = catalog.find("translation", str(form.get("floor_translation_provider", "")))
+    if translation:
+        model = str(form.get("floor_translation_model", "")).strip()[:100]
+        if translation.provider == TranslationProviderEnum.SELF_HOSTED.value:
+            model = settings.self_hosted_llm_model_or_default(model) or ""
+        room.floor_translation_provider = translation.provider
+        room.floor_translation_model = model or translation.model
+    if "floor_ai_interpreter_persona" in form:
+        room.floor_ai_interpreter_persona = str(form.get("floor_ai_interpreter_persona", "")).strip() or None
+        room.floor_ai_interpretation_style = str(form.get("floor_ai_interpretation_style", "")).strip() or None
+        room.floor_ai_vocabulary_enabled = form.get("floor_ai_vocabulary_enabled") == "on"
+
+    voice = catalog.find("voice", str(form.get("floor_tts_provider", "")))
+    if voice:
+        room.floor_tts_provider = voice.provider
+        preset = str(form.get("floor_tts_voice", "")).strip().upper()
+        if preset in {value for value, _ in ROOM_VOICE_PRESETS}:
+            room.floor_tts_voice = preset
+
+
+@router.post("/admin/events/{event_id}/rooms/{room_id}/edit", dependencies=[Depends(require_event_owner), Depends(require_admin_csrf)])
 async def admin_edit_room(request: Request, event_id: int, room_id: int):
+    """Update settings and configuration for an event room."""
     form = await request.form()
     form_section = form.get("form_section", "").strip()
     display_name = form.get("display_name", "").strip()
@@ -1339,12 +1609,17 @@ async def admin_edit_room(request: Request, event_id: int, room_id: int):
     relay_booth_id = int(relay_booth_id_str) if relay_booth_id_str and relay_booth_id_str.lower() != "none" else None
     audio_delay_ms = parse_audio_delay_ms(form.get("audio_delay_ms", "0"))
     floor_transcription_enabled = form.get("floor_transcription_enabled") == "on"
-    floor_transcription_provider = form.get("floor_transcription_provider", "local").strip()
+    floor_transcription_provider = form.get("floor_transcription_provider", "local").strip().lower() or "none"
     floor_transcription_model = form.get("floor_transcription_model", "tiny").strip()
     floor_language_code = form.get("floor_language_code", "").strip() or None
     floor_translation_enabled = form.get("floor_translation_enabled") == "on"
     floor_translation_provider = form.get("floor_translation_provider", "").strip() or None
     floor_translation_model = form.get("floor_translation_model", "").strip() or None
+    if floor_translation_provider == TranslationProviderEnum.SELF_HOSTED.value:
+        # Turning translation off must still work after the server setting is removed.
+        if floor_translation_enabled and form_section in ("", "translation") and not settings.self_hosted_llm_enabled:
+            raise HTTPException(status_code=400, detail="Self-hosted translation is not configured on this server")
+        floor_translation_model = settings.self_hosted_llm_model_or_default(floor_translation_model)
     floor_translation_languages = form.getlist("floor_translation_languages")
     floor_ai_interpreter_persona = form.get("floor_ai_interpreter_persona", "").strip() or None
     floor_ai_interpretation_style = form.get("floor_ai_interpretation_style", "").strip() or None
@@ -1358,56 +1633,66 @@ async def admin_edit_room(request: Request, event_id: int, room_id: int):
         floor_tts_voice = "M1"
     async with get_session() as session:
         room = await get_room_by_id(session, room_id)
-        if room and room.event_id == event_id:
-            if not form_section or form_section == "general":
-                if display_name:
-                    room.display_name = display_name
-                room.jitsi_url = jitsi_url if jitsi_url else None
-                room.audio_delay_ms = audio_delay_ms
+        if room is None or room.event_id != event_id:
+            raise HTTPException(status_code=404, detail="Room not found.")
 
-            if not form_section or form_section == "relay":
-                # The relay booth must be one of this event's booths.
-                if relay_booth_id is not None:
-                    relay_booth = await get_booth_by_id(session, relay_booth_id)
-                    if relay_booth is None or relay_booth.event_id != event_id:
-                        raise HTTPException(status_code=404, detail="Relay booth not found.")
-                room.relay_booth_id = relay_booth_id
+        if not form_section or form_section == "general":
+            if display_name:
+                room.display_name = display_name
+            room.jitsi_url = jitsi_url if jitsi_url else None
+            room.audio_delay_ms = audio_delay_ms
 
-            if not form_section or form_section == "transcription":
-                room.floor_transcription_enabled = floor_transcription_enabled
-                room.floor_transcription_provider = floor_transcription_provider
-                room.floor_transcription_model = floor_transcription_model
-                room.floor_language_code = floor_language_code
+        if not form_section or form_section == "relay":
+            if relay_booth_id is not None:
+                relay_booth = await get_booth_by_id(session, relay_booth_id)
+                if relay_booth is None or relay_booth.event_id != event_id:
+                    raise HTTPException(status_code=404, detail="Booth not found.")
+                relay_room = await get_room_by_id(session, relay_booth.room_id)
+                if relay_room is None or relay_room.event_id != event_id:
+                    raise HTTPException(status_code=404, detail="Booth not found.")
+            room.relay_booth_id = relay_booth_id
 
-            if not form_section or form_section == "translation":
-                room.floor_translation_enabled = floor_translation_enabled
-                room.floor_translation_provider = floor_translation_provider
-                room.floor_translation_model = floor_translation_model
-                room.floor_ai_interpreter_persona = floor_ai_interpreter_persona
-                room.floor_ai_interpretation_style = floor_ai_interpretation_style
-                room.floor_ai_vocabulary_enabled = floor_ai_vocabulary_enabled
+        if not form_section or form_section == "transcription":
+            room.floor_transcription_enabled = floor_transcription_enabled
+            room.floor_transcription_provider = floor_transcription_provider
+            room.floor_transcription_model = floor_transcription_model
+            room.floor_language_code = floor_language_code
 
-                existing_langs = {lang.language_code: lang for lang in room.translation_languages}
-                requested_codes = set(floor_translation_languages)
-                for code, lang in existing_langs.items():
-                    if code not in requested_codes:
-                        lang.enabled = False
-                for code in requested_codes:
-                    if code in existing_langs:
-                        existing_langs[code].enabled = True
-                    else:
-                        lang_obj = pycountry.languages.get(alpha_2=code)
-                        lang_name = lang_obj.name if lang_obj else code
-                        new_lang = RoomTranslationLanguage(
-                            room_id=room_id, language_code=code, language_name=lang_name, enabled=True
-                        )
-                        session.add(new_lang)
+        if not form_section or form_section == "translation":
+            room.floor_translation_enabled = floor_translation_enabled
+            room.floor_translation_provider = floor_translation_provider
+            room.floor_translation_model = floor_translation_model
+            room.floor_ai_interpreter_persona = floor_ai_interpreter_persona
+            room.floor_ai_interpretation_style = floor_ai_interpretation_style
+            room.floor_ai_vocabulary_enabled = floor_ai_vocabulary_enabled
 
-            if not form_section or form_section == "tts":
-                room.floor_tts_enabled = floor_tts_enabled
-                room.floor_tts_provider = floor_tts_provider
-                room.floor_tts_voice = floor_tts_voice
-            await session.flush()
+            existing_langs = {lang.language_code: lang for lang in room.translation_languages}
+            requested_codes = set(floor_translation_languages)
+            for code, lang in existing_langs.items():
+                if code not in requested_codes:
+                    lang.enabled = False
+            for code in requested_codes:
+                if code in existing_langs:
+                    existing_langs[code].enabled = True
+                else:
+                    lang_obj = pycountry.languages.get(alpha_2=code)
+                    lang_name = lang_obj.name if lang_obj else code
+                    new_lang = RoomTranslationLanguage(
+                        room_id=room_id, language_code=code, language_name=lang_name, enabled=True
+                    )
+                    session.add(new_lang)
+
+        if not form_section or form_section == "tts":
+            room.floor_tts_enabled = floor_tts_enabled
+            room.floor_tts_provider = floor_tts_provider
+            room.floor_tts_voice = floor_tts_voice
+
+        if form_section == "ai":
+            event = await get_event_by_id(session, event_id)
+            if event is None:
+                raise HTTPException(status_code=404, detail="Event not found.")
+            _apply_ai_settings(room, form, engine_catalog(event))
+        await session.flush()
     return safe_redirect(
         url=management_url(request, f"events/{event_id}/rooms/{room_id}/"),
         status_code=status.HTTP_303_SEE_OTHER,
@@ -1555,7 +1840,9 @@ async def admin_delete_ai_vocabulary(request: Request, event_id: int, room_id: i
 
 @router.get("/api/admin/providers/translation/models", dependencies=[Depends(require_owner_or_coordinator)])
 async def get_translation_models():
-    return TRANSLATION_MODELS
+    if not settings.self_hosted_llm_enabled:
+        return TRANSLATION_MODELS
+    return {**TRANSLATION_MODELS, TranslationProviderEnum.SELF_HOSTED.value: list(settings.self_hosted_llm_model_list)}
 
 
 MAX_AUDIO_DELAY_MS = 10_000
@@ -1591,9 +1878,7 @@ async def admin_list_api_keys(request: Request, event_id: int):
         ]
 
 
-@router.post(
-    "/admin/api/events/{event_id}/api-keys", dependencies=[Depends(require_event_owner), Depends(require_admin_csrf)]
-)
+@router.post("/admin/api/events/{event_id}/api-keys", dependencies=[Depends(require_event_owner), Depends(require_admin_csrf)])
 async def admin_create_api_key(request: Request, event_id: int, data: APIKeyCreateRequest):
     if not data.name or not data.name.strip():
         raise HTTPException(status_code=400, detail="API Key name cannot be blank.")
@@ -1623,10 +1908,7 @@ async def admin_create_api_key(request: Request, event_id: int, data: APIKeyCrea
         }
 
 
-@router.delete(
-    "/admin/api/events/{event_id}/api-keys/{key_id}",
-    dependencies=[Depends(require_event_owner), Depends(require_admin_csrf)],
-)
+@router.delete("/admin/api/events/{event_id}/api-keys/{key_id}", dependencies=[Depends(require_event_owner), Depends(require_admin_csrf)])
 async def admin_delete_api_key(request: Request, event_id: int, key_id: int):
     async with get_session() as session:
         success = await revoke_api_key(session, key_id, event_id)
@@ -1638,10 +1920,7 @@ async def admin_delete_api_key(request: Request, event_id: int, key_id: int):
 # Legacy room-scoped API retained for coordinators and scripts. It drives the
 # same managed meeting agent as the room page, so the reconcile loop owns retries
 # and starts the floor worker once audio arrives.
-@router.post(
-    "/api/rooms/{room_id}/floor-transcription/start",
-    dependencies=[Depends(require_room_event_access), Depends(require_admin_csrf)],
-)
+@router.post("/api/rooms/{room_id}/floor-transcription/start", dependencies=[Depends(require_room_event_access), Depends(require_admin_csrf)])
 async def api_start_floor_transcription(room_id: int):
     async with room_lock(room_id), get_session() as session:
         room = await get_room_by_id(session, room_id)
@@ -1661,10 +1940,7 @@ async def api_start_floor_transcription(room_id: int):
     return {"status": "started"}
 
 
-@router.post(
-    "/api/rooms/{room_id}/floor-transcription/stop",
-    dependencies=[Depends(require_room_event_access), Depends(require_admin_csrf)],
-)
+@router.post("/api/rooms/{room_id}/floor-transcription/stop", dependencies=[Depends(require_room_event_access), Depends(require_admin_csrf)])
 async def api_stop_floor_transcription(room_id: int):
     async with room_lock(room_id), get_session() as session:
         room = await get_room_by_id(session, room_id)
@@ -1701,15 +1977,13 @@ async def api_floor_transcription_status(room_id: int):
     return body
 
 
-@router.post(
-    "/admin/events/{event_id}/rooms/{room_id}/delete",
-    dependencies=[Depends(require_event_owner), Depends(require_admin_csrf)],
-)
+@router.post("/admin/events/{event_id}/rooms/{room_id}/delete", dependencies=[Depends(require_event_owner), Depends(require_admin_csrf)])
 async def admin_delete_room(request: Request, event_id: int, room_id: int):
     async with get_session() as session:
         room = await get_room_by_id(session, room_id)
         if room is None or room.event_id != event_id:
             raise HTTPException(status_code=404, detail="Room not found.")
+        await revoke_booths_for_deleted_entity(session, level="room", target_id=room_id)
         await delete_room(session, room_id)
     return safe_redirect(
         url=management_url(request, f"events/{event_id}/rooms/"), status_code=status.HTTP_303_SEE_OTHER
@@ -1740,10 +2014,7 @@ async def admin_booth_list(request: Request, event_id: int, room_id: int):
     )
 
 
-@router.post(
-    "/admin/events/{event_id}/rooms/{room_id}/booths/",
-    dependencies=[Depends(require_event_owner), Depends(require_admin_csrf)],
-)
+@router.post("/admin/events/{event_id}/rooms/{room_id}/booths/", dependencies=[Depends(require_event_owner), Depends(require_admin_csrf)])
 async def admin_create_booth(request: Request, event_id: int, room_id: int):
     form = await request.form()
     language_code = form.get("language_code", "").strip().lower()
@@ -1773,20 +2044,85 @@ async def admin_create_booth(request: Request, event_id: int, room_id: int):
     )
 
 
-@router.get(
-    "/admin/events/{event_id}/rooms/{room_id}/booths/{booth_id}/", dependencies=[Depends(require_owner_or_coordinator)]
-)
+def _overlay_url(event: Event, room_id: int, language_code: str) -> str | None:
+    """Absolute OBS / vMix subtitle overlay URL for a caption channel; None until the event has a join code."""
+    if not event.listener_join_code:
+        return None
+    query = urllib.parse.urlencode({"code": event.listener_join_code})
+    return f"{settings.public_base_url.rstrip('/')}/overlay/{event.slug}/{room_id}/{language_code}?{query}"
+
+
+# What the booth page says after a save. Only these keys are read from the redirect's query string.
+BOOTH_SAVE_NOTICES = {
+    "captions": "Caption settings saved.",
+    "translations": "Translation settings saved.",
+    "settings": "Booth details saved.",
+}
+BOOTH_WORKER_NOTICES = {
+    "restarted": "The caption worker was restarted with the saved settings.",
+    "stopped": "The caption worker was stopped.",
+    "kept": "Nothing changed, so the caption worker kept running.",
+    "off": "Captions stay off.",
+    "failed": "The caption worker could not be started, so there are no live captions right now. Try saving again in a moment.",
+}
+BOOTH_ERROR_NOTICES = {
+    "model": "That caption model is no longer supported. Pick another model and save again; nothing was changed.",
+    "server": "That service is not available on this server. Pick another service and save again; nothing was changed.",
+    "api_off": "External transcription is turned off for this event. Turn it on under API keys, or pick Local; nothing was changed.",
+    "no_key": "That service has no API key on this event. Add its key under API keys, or pick another service; nothing was changed.",
+    "api_off_no_key": "External transcription is turned off for this event and that service has no API key. Turn it on and add the key under API keys, or pick Local; nothing was changed.",
+}
+BOOTH_IDLE_WORKER_NOTICE = "These settings are used the next time an interpreter goes live."
+
+
+def _kept_speech_hint(event: Event, catalog: EngineCatalog, provider: str) -> str:
+    """What to do to keep using a saved caption service that is no longer offered."""
+    if catalog.unavailable_reasons.get(provider):
+        return "not available on this server"
+    try:
+        has_key = bool(get_api_key(event, ProviderEnum(provider)))
+    except ValueError:  # a provider name this version no longer knows
+        has_key = False
+    if has_key and not event.transcription_api_enabled:
+        return "turn on external transcription to keep using it"
+    return "add its API key to keep using it"
+
+
+def _booth_saved_notice(request: Request) -> str | None:
+    saved = BOOTH_SAVE_NOTICES.get(request.query_params.get("saved", ""))
+    if saved is None:
+        return None
+    if request.query_params.get("saved") != "captions":
+        return saved
+    worker = BOOTH_WORKER_NOTICES.get(request.query_params.get("worker", ""), BOOTH_IDLE_WORKER_NOTICE)
+    return f"{saved} {worker}"
+
+
+def _booth_error_notice(request: Request) -> str | None:
+    return BOOTH_ERROR_NOTICES.get(request.query_params.get("error", ""))
+
+
+def _booth_saved_url(
+    request: Request, event_id: int, room_id: int, booth_id: int, saved: str, worker: str = "", error: str = ""
+) -> str:
+    """Back to the booth page on the tab that was saved, with a note on what happened."""
+    if error:
+        query = urllib.parse.urlencode({"error": error})
+        return management_url(request, f"events/{event_id}/rooms/{room_id}/booths/{booth_id}/?{query}#{saved}")
+    query = urllib.parse.urlencode({"saved": saved, **({"worker": worker} if worker else {})})
+    return management_url(request, f"events/{event_id}/rooms/{room_id}/booths/{booth_id}/?{query}#{saved}")
+
+
+@router.get("/admin/events/{event_id}/rooms/{room_id}/booths/{booth_id}/", dependencies=[Depends(require_owner_or_coordinator)])
 async def admin_booth_detail(request: Request, event_id: int, room_id: int, booth_id: int):
     admin_flags = await get_access_flags(request, event_id=event_id, room_id=room_id)
     async with get_session() as session:
         event = await get_event_by_id(session, event_id)
         if event is None:
             raise HTTPException(status_code=404, detail="Event not found.")
-        room = await get_room_by_id(session, room_id)
-        if room is None or room.event_id != event_id:
-            raise HTTPException(status_code=404, detail="Room not found.")
+        room = await room_in_event(session, event_id, room_id)
         db_booth = await get_booth_by_id(session, booth_id)
-        if db_booth is None or db_booth.room_id != room_id:
+        if db_booth is None or db_booth.event_id != event_id or db_booth.room_id != room_id:
             raise HTTPException(status_code=404, detail="Booth not found.")
         tokens = await list_tokens_for_booth(session, booth_id)
         users = await list_users(session)
@@ -1806,6 +2142,38 @@ async def admin_booth_detail(request: Request, event_id: int, room_id: int, boot
     ]
     translation_languages_dataset.sort(key=lambda x: x["name"])
     enabled_translation_language_codes = [lang.language_code for lang in db_booth.translation_languages if lang.enabled]
+    # Coordinators only see the Overview tab, so only event owners need the engine catalog and model lists.
+    catalog = None
+    speech_models: dict = {}
+    translation_models: dict = {}
+    saved_speech_model = db_booth.transcription_model
+    kept_speech_hint = ""
+    if admin_flags["is_event_owner"]:
+        # The saved model stays selectable even when it is no longer offered, so saving never swaps it silently.
+        speech_models = {provider: list(models) for provider, models in booth_speech_models().items()}
+        translation_models = {
+            provider: [(model, model) for model in models] for provider, models in TRANSLATION_MODELS.items()
+        }
+        # Booths saved before the streaming ElevenLabs model was named scribe_v2_realtime still say scribe_v2.
+        saved_speech_model = db_booth.transcription_model
+        if saved_speech_model == "scribe_v2":
+            saved_speech_model = "scribe_v2_realtime"
+        for models, saved_provider, saved_model in (
+            (speech_models, db_booth.transcription_provider, saved_speech_model),
+            (translation_models, db_booth.translation_provider, db_booth.translation_model),
+        ):
+            if not saved_provider:  # a new booth has no translation service saved yet
+                continue
+            offered = models.setdefault(saved_provider, [])
+            if saved_model and saved_model not in {value for value, _ in offered}:
+                offered.append((saved_model, f"{saved_model} (current)"))
+        if settings.self_hosted_llm_enabled:
+            # Set after the step above: a self-hosted model the server no longer lists can't be saved, so it isn't offered.
+            translation_models[TranslationProviderEnum.SELF_HOSTED.value] = [
+                (model, model) for model in settings.self_hosted_llm_model_list
+            ]
+        catalog = engine_catalog(event)
+        kept_speech_hint = _kept_speech_hint(event, catalog, db_booth.transcription_provider)
     return templates.TemplateResponse(
         request=request,
         name="admin/booth_detail.html",
@@ -1813,9 +2181,18 @@ async def admin_booth_detail(request: Request, event_id: int, room_id: int, boot
             "event": event,
             "room": room,
             "booth": db_booth,
+            "catalog": catalog,
+            "kept_speech_hint": kept_speech_hint,
+            "speech_models": speech_models,
+            "saved_speech_model": saved_speech_model,
+            "translation_models": translation_models,
+            "saved_notice": _booth_saved_notice(request),
+            "error_notice": _booth_error_notice(request),
+            "show_next_steps": not (db_booth.transcription_enabled or db_booth.translation_enabled),
             "booth_id": bid,
             "mediamtx_path": mediamtx_path,
             "whep_url": whep_url,
+            "overlay_url": _overlay_url(event, db_booth.room_id, db_booth.language_code),
             "is_live": is_live,
             "participants": participants,
             "active_interpreter": active_interpreter,
@@ -1830,20 +2207,19 @@ async def admin_booth_detail(request: Request, event_id: int, room_id: int, boot
     )
 
 
-@router.post(
-    "/admin/events/{event_id}/rooms/{room_id}/members/",
-    dependencies=[Depends(require_event_owner), Depends(require_admin_csrf)],
-)
+@router.post("/admin/events/{event_id}/rooms/{room_id}/members/", dependencies=[Depends(require_event_owner), Depends(require_admin_csrf)])
 async def admin_add_room_member(request: Request, event_id: int, room_id: int):
+    """Add or update a room membership assignment for a user."""
+    async with get_session() as session:
+        await room_in_event(session, event_id, room_id)
     form = await request.form()
     email = form.get("email", "").strip()
     role = form.get("role", "").strip()
     if role and assignment_error(role, "room"):
         return invalid_role_redirect(request, f"events/{event_id}/rooms/{room_id}/", role)
-    async with get_session() as session:
-        await room_in_event(session, event_id, room_id)
     if email:
         async with get_session() as session:
+            room = await room_in_event(session, event_id, room_id)
             user = await get_user_by_email(session, email)
             if not user:
                 display_name = email.split("@")[0]
@@ -1853,9 +2229,9 @@ async def admin_add_room_member(request: Request, event_id: int, room_id: int):
             if role:
                 try:
                     await set_room_membership(session, user_id=uid, room_id=room_id, role=role)
+                    await revoke_membership_push(session, user_id=uid, level="room", target_id=room_id)
                     # Send invite
                     event = await get_event_by_id(session, event_id)
-                    room = await get_room_by_id(session, room_id)
                     if event and room:
                         target_url = "/account"
                         await _send_admin_invite(
@@ -1863,10 +2239,7 @@ async def admin_add_room_member(request: Request, event_id: int, room_id: int):
                         )
                 except ValueError:
                     return safe_redirect(
-                        url=management_url(
-                            request,
-                            f"events/{event_id}/rooms/{room_id}/?error=invalid_role&role={urllib.parse.quote(role)}",
-                        ),
+                        url=management_url(request, f"events/{event_id}/rooms/{room_id}/?error=invalid_role&role={urllib.parse.quote(role)}"),
                         status_code=status.HTTP_303_SEE_OTHER,
                     )
             else:
@@ -1874,6 +2247,7 @@ async def admin_add_room_member(request: Request, event_id: int, room_id: int):
                 for m in memberships:
                     if m.user_id == uid:
                         await remove_room_membership(session, m.id)
+                        await revoke_membership_push(session, user_id=uid, level="room", target_id=room_id)
                         break
     return safe_redirect(
         url=management_url(request, f"events/{event_id}/rooms/{room_id}/"),
@@ -1882,24 +2256,24 @@ async def admin_add_room_member(request: Request, event_id: int, room_id: int):
 
 
 @router.post(
-    "/admin/events/{event_id}/rooms/{room_id}/members/{membership_id}/invite",
-    dependencies=[Depends(require_event_owner), Depends(require_admin_csrf)],
+    "/admin/events/{event_id}/rooms/{room_id}/members/{membership_id}/invite", dependencies=[Depends(require_event_owner), Depends(require_admin_csrf)]
 )
 async def admin_invite_room_member(request: Request, event_id: int, room_id: int, membership_id: int):
+    """Send an invitation email to a room member."""
     async with get_session() as session:
-        await room_in_event(session, event_id, room_id)
-        memberships = await list_memberships_for_room(session, room_id)
-        for m in memberships:
-            if m.id == membership_id:
-                user = await get_user_by_id(session, m.user_id)
-                event = await get_event_by_id(session, event_id)
-                room = await get_room_by_id(session, room_id)
-                if user and event and room:
-                    target_url = "/account"
-                    await _send_admin_invite(
-                        session, user, m.role, f"room ({room.display_name}) for {event.display_name}", target_url
-                    )
-                break
+        room = await room_in_event(session, event_id, room_id)
+        membership = await session.scalar(
+            select(RoomMembership).where(RoomMembership.id == membership_id, RoomMembership.room_id == room_id)
+        )
+        if membership is None:
+            raise HTTPException(status_code=404, detail="Membership not found.")
+        user = await get_user_by_id(session, membership.user_id)
+        event = await get_event_by_id(session, event_id)
+        if user and event:
+            target_url = "/account"
+            await _send_admin_invite(
+                session, user, membership.role, f"room ({room.display_name}) for {event.display_name}", target_url
+            )
     return safe_redirect(
         url=management_url(request, f"events/{event_id}/rooms/{room_id}/?success=invite_sent"),
         status_code=status.HTTP_303_SEE_OTHER,
@@ -1907,12 +2281,18 @@ async def admin_invite_room_member(request: Request, event_id: int, room_id: int
 
 
 @router.post(
-    "/admin/events/{event_id}/rooms/{room_id}/members/{membership_id}/delete",
-    dependencies=[Depends(require_event_owner), Depends(require_admin_csrf)],
+    "/admin/events/{event_id}/rooms/{room_id}/members/{membership_id}/delete", dependencies=[Depends(require_event_owner), Depends(require_admin_csrf)]
 )
 async def admin_remove_room_member(request: Request, event_id: int, room_id: int, membership_id: int):
+    """Remove a room membership assignment."""
     try:
         async with get_session() as session:
+            await room_in_event(session, event_id, room_id)
+            membership = await session.scalar(
+                select(RoomMembership).where(RoomMembership.id == membership_id, RoomMembership.room_id == room_id)
+            )
+            if membership is None:
+                raise HTTPException(status_code=404, detail="Membership not found.")
             await remove_team_assignment(session, event_id=event_id, level="room", membership_id=membership_id)
     except TeamError as exc:
         return await render_team(request, event_id, error=str(exc), status_code=400)
@@ -1923,19 +2303,20 @@ async def admin_remove_room_member(request: Request, event_id: int, room_id: int
 
 
 @router.post(
-    "/admin/events/{event_id}/rooms/{room_id}/booths/{booth_id}/members/",
-    dependencies=[Depends(require_event_owner), Depends(require_admin_csrf)],
+    "/admin/events/{event_id}/rooms/{room_id}/booths/{booth_id}/members/", dependencies=[Depends(require_event_owner), Depends(require_admin_csrf)]
 )
 async def admin_add_booth_member(request: Request, event_id: int, room_id: int, booth_id: int):
+    """Add or update a booth membership assignment for a user."""
+    async with get_session() as session:
+        await booth_in_room(session, event_id, room_id, booth_id)
     form = await request.form()
     email = form.get("email", "").strip()
     role = form.get("role", "").strip()
     if role and assignment_error(role, "booth"):
         return invalid_role_redirect(request, f"events/{event_id}/rooms/{room_id}/booths/{booth_id}/", role)
-    async with get_session() as session:
-        await booth_in_room(session, event_id, room_id, booth_id)
     if email:
         async with get_session() as session:
+            booth = await booth_in_room(session, event_id, room_id, booth_id)
             user = await get_user_by_email(session, email)
             if not user:
                 display_name = email.split("@")[0]
@@ -1945,9 +2326,9 @@ async def admin_add_booth_member(request: Request, event_id: int, room_id: int, 
             if role:
                 try:
                     await set_booth_membership(session, user_id=uid, booth_id=booth_id, role=role)
+                    await revoke_membership_push(session, user_id=uid, level="booth", target_id=booth_id)
                     # Send invite
                     event = await get_event_by_id(session, event_id)
-                    booth = await get_booth_by_id(session, booth_id)
                     if event and booth:
                         target_url = "/interpreter"
                         await _send_admin_invite(
@@ -1966,6 +2347,7 @@ async def admin_add_booth_member(request: Request, event_id: int, room_id: int, 
                 for m in memberships:
                     if m.user_id == uid:
                         await remove_booth_membership(session, m.id)
+                        await revoke_membership_push(session, user_id=uid, level="booth", target_id=booth_id)
                         break
     return safe_redirect(
         url=management_url(request, f"events/{event_id}/rooms/{room_id}/booths/{booth_id}/"),
@@ -1978,20 +2360,21 @@ async def admin_add_booth_member(request: Request, event_id: int, room_id: int, 
     dependencies=[Depends(require_event_owner), Depends(require_admin_csrf)],
 )
 async def admin_invite_booth_member(request: Request, event_id: int, room_id: int, booth_id: int, membership_id: int):
+    """Send an invitation email to a booth member."""
     async with get_session() as session:
-        await booth_in_room(session, event_id, room_id, booth_id)
-        memberships = await list_memberships_for_booth(session, booth_id)
-        for m in memberships:
-            if m.id == membership_id:
-                user = await get_user_by_id(session, m.user_id)
-                event = await get_event_by_id(session, event_id)
-                booth = await get_booth_by_id(session, booth_id)
-                if user and event and booth:
-                    target_url = "/interpreter"
-                    await _send_admin_invite(
-                        session, user, m.role, f"booth ({booth.language_code}) for {event.display_name}", target_url
-                    )
-                break
+        booth = await booth_in_room(session, event_id, room_id, booth_id)
+        membership = await session.scalar(
+            select(BoothMembership).where(BoothMembership.id == membership_id, BoothMembership.booth_id == booth_id)
+        )
+        if membership is None:
+            raise HTTPException(status_code=404, detail="Membership not found.")
+        user = await get_user_by_id(session, membership.user_id)
+        event = await get_event_by_id(session, event_id)
+        if user and event and booth:
+            target_url = "/interpreter"
+            await _send_admin_invite(
+                session, user, membership.role, f"booth ({booth.language_code}) for {event.display_name}", target_url
+            )
     return safe_redirect(
         url=management_url(
             request,
@@ -2006,8 +2389,15 @@ async def admin_invite_booth_member(request: Request, event_id: int, room_id: in
     dependencies=[Depends(require_event_owner), Depends(require_admin_csrf)],
 )
 async def admin_remove_booth_member(request: Request, event_id: int, room_id: int, booth_id: int, membership_id: int):
+    """Remove a booth membership assignment."""
     try:
         async with get_session() as session:
+            await booth_in_room(session, event_id, room_id, booth_id)
+            membership = await session.scalar(
+                select(BoothMembership).where(BoothMembership.id == membership_id, BoothMembership.booth_id == booth_id)
+            )
+            if membership is None:
+                raise HTTPException(status_code=404, detail="Membership not found.")
             await remove_team_assignment(session, event_id=event_id, level="booth", membership_id=membership_id)
     except TeamError as exc:
         return await render_team(request, event_id, error=str(exc), status_code=400)
@@ -2017,15 +2407,12 @@ async def admin_remove_booth_member(request: Request, event_id: int, room_id: in
     )
 
 
-@router.post(
-    "/admin/events/{event_id}/rooms/{room_id}/booths/{booth_id}/delete",
-    dependencies=[Depends(require_event_owner), Depends(require_admin_csrf)],
-)
+@router.post("/admin/events/{event_id}/rooms/{room_id}/booths/{booth_id}/delete", dependencies=[Depends(require_event_owner), Depends(require_admin_csrf)])
 async def admin_delete_booth(request: Request, event_id: int, room_id: int, booth_id: int):
+    """Delete an interpretation booth from a room."""
     async with get_session() as session:
-        booth = await get_booth_by_id(session, booth_id)
-        if booth is None or booth.event_id != event_id or booth.room_id != room_id:
-            raise HTTPException(status_code=404, detail="Booth not found.")
+        await booth_in_room(session, event_id, room_id, booth_id)
+        await revoke_booths_for_deleted_entity(session, level="booth", target_id=booth_id)
         await delete_booth(session, booth_id)
     return safe_redirect(
         url=management_url(request, f"events/{event_id}/rooms/{room_id}/booths/"),
@@ -2048,9 +2435,7 @@ async def admin_booth_translation_settings(
     translation_languages: list[str] = Form([]),
 ):
     async with get_session() as session:
-        db_booth = await get_booth_by_id(session, booth_id)
-        if db_booth is None or db_booth.event_id != event_id or db_booth.room_id != room_id:
-            raise HTTPException(status_code=404, detail="Booth not found.")
+        db_booth = await booth_in_room(session, event_id, room_id, booth_id)
         event = await get_event_by_id(session, event_id)
         if event is None:
             raise HTTPException(status_code=404, detail="Event not found.")
@@ -2058,6 +2443,12 @@ async def admin_booth_translation_settings(
             TranslationProviderEnum(translation_provider)
         except ValueError:
             raise HTTPException(status_code=400, detail="Invalid translation provider")
+        # Checked only when translation is on, so a booth left on a removed server can still turn it off.
+        if translation_enabled and translation_provider == TranslationProviderEnum.SELF_HOSTED.value:
+            if not settings.self_hosted_llm_enabled:
+                raise HTTPException(status_code=400, detail="Self-hosted translation is not configured on this server")
+            if not settings.self_hosted_llm_allows(translation_model):
+                raise HTTPException(status_code=400, detail="That model is not allowed for self-hosted translation")
         db_booth.translation_enabled = translation_enabled
         db_booth.translation_provider = translation_provider
         db_booth.translation_model = translation_model
@@ -2078,32 +2469,28 @@ async def admin_booth_translation_settings(
                 lang_model.enabled = False
         await session.flush()
     return safe_redirect(
-        url=management_url(request, f"events/{event_id}/rooms/{room_id}/booths/{booth_id}/"),
+        url=_booth_saved_url(request, event_id, room_id, booth_id, "translations"),
         status_code=status.HTTP_303_SEE_OTHER,
     )
 
 
-@router.post(
-    "/admin/events/{event_id}/rooms/{room_id}/booths/{booth_id}/edit",
-    dependencies=[Depends(require_event_owner), Depends(require_admin_csrf)],
-)
+@router.post("/admin/events/{event_id}/rooms/{room_id}/booths/{booth_id}/edit", dependencies=[Depends(require_event_owner), Depends(require_admin_csrf)])
 async def admin_edit_booth(request: Request, event_id: int, room_id: int, booth_id: int):
     form = await request.form()
     language_name = form.get("language_name", "").strip()
     language_code_raw = form.get("language_code", "").strip()
     async with get_session() as session:
-        booth = await get_booth_by_id(session, booth_id)
-        if booth and booth.event_id == event_id and (booth.room_id == room_id):
-            if language_name:
-                booth.language_name = language_name
-            if language_code_raw:
-                try:
-                    booth.language_code = validate_language_code(language_code_raw)
-                except ValueError as e:
-                    raise HTTPException(status_code=400, detail=str(e))
+        booth = await booth_in_room(session, event_id, room_id, booth_id)
+        if language_name:
+            booth.language_name = language_name
+        if language_code_raw:
+            try:
+                booth.language_code = validate_language_code(language_code_raw)
+            except ValueError as e:
+                raise HTTPException(status_code=400, detail=str(e))
         await session.flush()
     return safe_redirect(
-        url=management_url(request, f"events/{event_id}/rooms/{room_id}/booths/{booth_id}/"),
+        url=_booth_saved_url(request, event_id, room_id, booth_id, "settings"),
         status_code=status.HTTP_303_SEE_OTHER,
     )
 
@@ -2122,26 +2509,50 @@ async def admin_transcription_settings(
     transcription_model: str = Form("tiny"),
 ):
     async with get_session() as session:
-        db_booth = await get_booth_by_id(session, booth_id)
-        if db_booth is None or db_booth.event_id != event_id or db_booth.room_id != room_id:
-            raise HTTPException(status_code=404, detail="Booth not found.")
+        db_booth = await booth_in_room(session, event_id, room_id, booth_id)
         try:
             provider_enum = ProviderEnum(transcription_provider)
         except ValueError:
             raise HTTPException(status_code=400, detail="Invalid transcription provider")
         if transcription_model not in ALLOWED_MODELS.get(provider_enum, set()):
-            raise HTTPException(
-                status_code=400, detail=f"Invalid model '{transcription_model}' for provider '{transcription_provider}'"
+            # The page keeps a saved model selectable even after it stops being supported. Turning captions
+            # off must still save with it; turning them on with it gets a notice on the Captions tab.
+            keeps_saved_model = (
+                not transcription_enabled
+                and transcription_provider == db_booth.transcription_provider
+                and transcription_model == db_booth.transcription_model
             )
+            if not keeps_saved_model:
+                if transcription_enabled:
+                    return safe_redirect(
+                        url=_booth_saved_url(request, event_id, room_id, booth_id, "captions", error="model"),
+                        status_code=status.HTTP_303_SEE_OTHER,
+                    )
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"Invalid model '{transcription_model}' for provider '{transcription_provider}'",
+                )
         event = await get_event_by_id(session, event_id)
         if event is None:
             raise HTTPException(status_code=404, detail="Event not found.")
-        if provider_enum != ProviderEnum.LOCAL:
-            if not event.transcription_api_enabled:
-                raise HTTPException(status_code=400, detail="External API transcription is disabled for this event.")
-            if not get_api_key(event, provider_enum):
-                raise HTTPException(
-                    status_code=400, detail=f"API key for {transcription_provider} is not configured on the event."
+        # Turning captions off must work even if the saved service lost its key, so the key and
+        # external-API checks only apply when captions will be on.
+        if transcription_enabled and server_unavailable_reason(transcription_provider):
+            # A key cannot fix this: the server itself cannot run the service.
+            return safe_redirect(
+                url=_booth_saved_url(request, event_id, room_id, booth_id, "captions", error="server"),
+                status_code=status.HTTP_303_SEE_OTHER,
+            )
+        if transcription_enabled and provider_enum != ProviderEnum.LOCAL:
+            # Both are fixed on the API keys page, so say so on the Captions tab instead of showing a bare 400.
+            # Name both when both are missing, so fixing one does not lead to a second refusal.
+            api_off = not event.transcription_api_enabled
+            no_key = not get_api_key(event, provider_enum)
+            missing = "api_off_no_key" if api_off and no_key else "api_off" if api_off else "no_key" if no_key else ""
+            if missing:
+                return safe_redirect(
+                    url=_booth_saved_url(request, event_id, room_id, booth_id, "captions", error=missing),
+                    status_code=status.HTTP_303_SEE_OTHER,
                 )
         old_enabled = db_booth.transcription_enabled
         old_provider = db_booth.transcription_provider
@@ -2152,33 +2563,54 @@ async def admin_transcription_settings(
         await session.flush()
         bid = make_booth_id(event.slug, db_booth.room_id, db_booth.language_code)
         state = booths.get_booth_sync(bid)
-        is_live = state is not None and state.active_interpreter_id is not None
+        # Live means the stream is published (as on the booth page). An interpreter who only opened the
+        # booth, or clicked Off Live, is still "active" but nothing is publishing for a worker to read.
+        is_live = state is not None and state.ingest_status == "connected"
+        worker = ""
         if is_live:
+            worker = "kept"
             if not transcription_enabled:
                 await stop_transcription_worker(bid)
                 await broadcast_transcription(bid, "")
+                worker = "stopped" if old_enabled else "off"
             elif (
                 old_enabled != transcription_enabled
                 or old_provider != transcription_provider
                 or old_model != transcription_model
+                # A start that failed earlier left the settings saved but no worker (or a dead one still in the
+                # registry): saving again retries it. One that is shutting down is about to disappear, so it is
+                # replaced too: stop_transcription_worker waits for it to finish, then a new one starts.
+                or bid not in active_workers
+                or active_workers[bid].state in (State.STOPPING, State.STOPPED)
             ):
                 await stop_transcription_worker(bid)
                 await broadcast_transcription(bid, "")
                 api_key = get_api_key(event, ProviderEnum(transcription_provider))
                 config = ProviderConfig(api_key=api_key)
                 await asyncio.sleep(0.1)
-                await start_transcription_worker(
-                    event.slug,
-                    db_booth.language_code,
-                    bid,
-                    broadcast_transcription,
-                    transcription_provider,
-                    transcription_model,
-                    config,
-                    room_id=db_booth.room_id,
-                )
+                try:
+                    await start_transcription_worker(
+                        event.slug,
+                        db_booth.language_code,
+                        bid,
+                        broadcast_transcription,
+                        transcription_provider,
+                        transcription_model,
+                        config,
+                        room_id=db_booth.room_id,
+                    )
+                    # The start call only schedules the worker; ffmpeg is launched right after, so wait for that.
+                    worker = "restarted" if await wait_for_worker_start(bid) else "failed"
+                except WorkerCapacityError:
+                    logger.warning("Could not start caption worker for %s", bid, exc_info=True)
+                    worker = "failed"
+                except Exception:
+                    # Deliberately broad (#1155): the old worker is already stopped and the settings are saved,
+                    # so any start failure must show the notice, not a 500 that rolls the settings back.
+                    logger.exception("Caption worker for %s failed to start", bid)
+                    worker = "failed"
     return safe_redirect(
-        url=management_url(request, f"events/{event_id}/rooms/{room_id}/booths/{booth_id}/"),
+        url=_booth_saved_url(request, event_id, room_id, booth_id, "captions", worker),
         status_code=status.HTTP_303_SEE_OTHER,
     )
 
@@ -2273,7 +2705,8 @@ async def room_in_event(session, event_id: int, room_id: int):
 
 
 async def booth_in_room(session, event_id: int, room_id: int, booth_id: int):
-    """The booth in the URL, or 404 when it isn't in that room of the event in the URL."""
+    """The booth in the URL, or 404 when the room or booth isn't in the event in the URL."""
+    await room_in_event(session, event_id, room_id)
     booth = await get_booth_by_id(session, booth_id)
     if booth is None or booth.event_id != event_id or booth.room_id != room_id:
         raise HTTPException(status_code=404, detail="Booth not found.")
@@ -2372,6 +2805,13 @@ async def apply_user_access(request: Request, user_id: int, field: str, value: b
                 context,
                 idempotency_key=f"access:{change.user_id}:{field}:{value}:{utc_now().isoformat()}",
             )
+    if field in ("admin", "active") and not value:
+        # Demotion or deactivation invalidates every live booth session for this
+        # account. The sweep runs whenever the resulting state is demoted/inactive
+        # (idempotent, does not depend on change.changed) so that retrying an
+        # interrupted request still evicts live sessions. Wrapped in asyncio.shield
+        # so client cancellation does not abort the revocation after commit.
+        await asyncio.shield(manager.close_user_sessions(change.user_id))
     return change
 
 
@@ -2392,9 +2832,7 @@ async def admin_set_user_access(request: Request, user_id: int):
             error = exc
         else:
             if wants_json(request):
-                return JSONResponse(
-                    {"ok": True, "field": change.field, "value": change.value, "message": change.message}
-                )
+                return JSONResponse({"ok": True, "field": change.field, "value": change.value, "message": change.message})
             return user_action_redirect(request, user_id, f"notice={change.notice}")
     if wants_json(request):
         return JSONResponse({"ok": False, "detail": error.message}, status_code=error.status_code)
@@ -2443,10 +2881,13 @@ async def admin_invite_user(request: Request):
             session.add(target_user)
             await session.flush()
 
-        delete_stmt = select(AuthToken).where(
-            AuthToken.user_id == target_user.id,
-            AuthToken.token_type == TOKEN_TYPE_HOSTING_INVITE,
-            AuthToken.used_at.is_(None),
+        delete_stmt = (
+            select(AuthToken)
+            .where(
+                AuthToken.user_id == target_user.id,
+                AuthToken.token_type == TOKEN_TYPE_HOSTING_INVITE,
+                AuthToken.used_at.is_(None),
+            )
         )
         existing_tokens = (await session.execute(delete_stmt)).scalars().all()
         for et in existing_tokens:
@@ -2495,17 +2936,11 @@ async def admin_toggle_user_hosting(request: Request, user_id: int):
     if f"/admin/users/{user_id}" in referrer:
         return safe_redirect(url=f"/admin/users/{user_id}/", status_code=status.HTTP_303_SEE_OTHER)
     outcome = f"success=hosting_{'granted' if change.value else 'revoked'}"
-    return safe_redirect(
-        url=hosting_return_url(request, "/admin/users/", outcome), status_code=status.HTTP_303_SEE_OTHER
-    )
+    return safe_redirect(url=hosting_return_url(request, "/admin/users/", outcome), status_code=status.HTTP_303_SEE_OTHER)
 
 
-@router.post(
-    "/admin/users/invite/{token_id}/cancel", dependencies=[Depends(require_admin), Depends(require_admin_csrf)]
-)
-@router.post(
-    "/admin/users/invite/{token_id}/cancel/", dependencies=[Depends(require_admin), Depends(require_admin_csrf)]
-)
+@router.post("/admin/users/invite/{token_id}/cancel", dependencies=[Depends(require_admin), Depends(require_admin_csrf)])
+@router.post("/admin/users/invite/{token_id}/cancel/", dependencies=[Depends(require_admin), Depends(require_admin_csrf)])
 async def admin_cancel_invite(request: Request, token_id: int):
     if not verify_same_origin(request):
         raise HTTPException(status_code=400, detail="Invalid request origin.")
@@ -2524,12 +2959,8 @@ async def admin_cancel_invite(request: Request, token_id: int):
     )
 
 
-@router.post(
-    "/admin/users/invite/{token_id}/resend", dependencies=[Depends(require_admin), Depends(require_admin_csrf)]
-)
-@router.post(
-    "/admin/users/invite/{token_id}/resend/", dependencies=[Depends(require_admin), Depends(require_admin_csrf)]
-)
+@router.post("/admin/users/invite/{token_id}/resend", dependencies=[Depends(require_admin), Depends(require_admin_csrf)])
+@router.post("/admin/users/invite/{token_id}/resend/", dependencies=[Depends(require_admin), Depends(require_admin_csrf)])
 async def admin_resend_invite(request: Request, token_id: int):
     if not verify_same_origin(request):
         raise HTTPException(status_code=400, detail="Invalid request origin.")
@@ -2606,34 +3037,26 @@ class HostingAccessEntry:
 async def list_hosting_access_entries(session: AsyncSession) -> list[HostingAccessEntry]:
     """People with hosting access, then people with a pending hosting invitation."""
     hosts = (
-        (
-            await session.execute(
-                select(User)
-                .where(User.can_host.is_(True), User.is_admin.is_(False))
-                .order_by(func.lower(User.display_name), User.id)
-            )
+        await session.execute(
+            select(User)
+            .where(User.can_host.is_(True), User.is_admin.is_(False))
+            .order_by(func.lower(User.display_name), User.id)
         )
-        .scalars()
-        .all()
-    )
+    ).scalars().all()
     invites = (
-        (
-            await session.execute(
-                select(AuthToken)
-                .options(joinedload(AuthToken.user))
-                .join(User, User.id == AuthToken.user_id)
-                .where(
-                    AuthToken.token_type == TOKEN_TYPE_HOSTING_INVITE,
-                    AuthToken.used_at.is_(None),
-                    AuthToken.expires_at > utc_now(),
-                    User.can_host.is_(False),
-                )
-                .order_by(AuthToken.created_at.desc())
+        await session.execute(
+            select(AuthToken)
+            .options(joinedload(AuthToken.user))
+            .join(User, User.id == AuthToken.user_id)
+            .where(
+                AuthToken.token_type == TOKEN_TYPE_HOSTING_INVITE,
+                AuthToken.used_at.is_(None),
+                AuthToken.expires_at > utc_now(),
+                User.can_host.is_(False),
             )
+            .order_by(AuthToken.created_at.desc())
         )
-        .scalars()
-        .all()
-    )
+    ).scalars().all()
     latest_invites: dict[int, AuthToken] = {}
     for tok in invites:
         latest_invites.setdefault(tok.user_id, tok)
@@ -2697,10 +3120,7 @@ async def admin_hosting_requests(request: Request):
     return render_hosting_access(request, tab="requests", entries=[], hosting_requests=hosting_requests)
 
 
-@router.post(
-    "/admin/hosting-access/requests/{request_id}/grant",
-    dependencies=[Depends(require_admin), Depends(require_admin_csrf)],
-)
+@router.post("/admin/hosting-access/requests/{request_id}/grant", dependencies=[Depends(require_admin), Depends(require_admin_csrf)])
 async def admin_grant_hosting_request(request: Request, request_id: int):
     """Grant hosting access to the requester and close the request."""
     if not verify_same_origin(request):
@@ -2710,14 +3130,10 @@ async def admin_grant_hosting_request(request: Request, request_id: int):
         principal = await resolve_principal(request, session)
         hosting_request = await get_hosting_request(session, request_id)
         if hosting_request is None or hosting_request.status != HOSTING_REQUEST_OPEN:
-            return safe_redirect(
-                url=f"{HOSTING_REQUESTS_URL}?error=request_not_found", status_code=status.HTTP_303_SEE_OTHER
-            )
+            return safe_redirect(url=f"{HOSTING_REQUESTS_URL}?error=request_not_found", status_code=status.HTTP_303_SEE_OTHER)
         user = hosting_request.user
         if not user.is_active:
-            return safe_redirect(
-                url=f"{HOSTING_REQUESTS_URL}?error=inactive_user", status_code=status.HTTP_303_SEE_OTHER
-            )
+            return safe_redirect(url=f"{HOSTING_REQUESTS_URL}?error=inactive_user", status_code=status.HTTP_303_SEE_OTHER)
 
         user.can_host = True
         user.hosting_revoked_at = None
@@ -2725,18 +3141,14 @@ async def admin_grant_hosting_request(request: Request, request_id: int):
             session, hosting_request, status=HOSTING_REQUEST_GRANTED, decided_by_user_id=principal["user_id"]
         )
         pending_invites = (
-            (
-                await session.execute(
-                    select(AuthToken).where(
-                        AuthToken.user_id == user.id,
-                        AuthToken.token_type == TOKEN_TYPE_HOSTING_INVITE,
-                        AuthToken.used_at.is_(None),
-                    )
+            await session.execute(
+                select(AuthToken).where(
+                    AuthToken.user_id == user.id,
+                    AuthToken.token_type == TOKEN_TYPE_HOSTING_INVITE,
+                    AuthToken.used_at.is_(None),
                 )
             )
-            .scalars()
-            .all()
-        )
+        ).scalars().all()
         for tok in pending_invites:
             await session.delete(tok)
         await queue_notification(
@@ -2753,10 +3165,7 @@ async def admin_grant_hosting_request(request: Request, request_id: int):
     return safe_redirect(url=f"{HOSTING_REQUESTS_URL}?success=request_granted", status_code=status.HTTP_303_SEE_OTHER)
 
 
-@router.post(
-    "/admin/hosting-access/requests/{request_id}/decline",
-    dependencies=[Depends(require_admin), Depends(require_admin_csrf)],
-)
+@router.post("/admin/hosting-access/requests/{request_id}/decline", dependencies=[Depends(require_admin), Depends(require_admin_csrf)])
 async def admin_decline_hosting_request(request: Request, request_id: int):
     """Decline a hosting request and tell the requester why."""
     if not verify_same_origin(request):
@@ -2771,9 +3180,7 @@ async def admin_decline_hosting_request(request: Request, request_id: int):
         principal = await resolve_principal(request, session)
         hosting_request = await get_hosting_request(session, request_id)
         if hosting_request is None or hosting_request.status != HOSTING_REQUEST_OPEN:
-            return safe_redirect(
-                url=f"{HOSTING_REQUESTS_URL}?error=request_not_found", status_code=status.HTTP_303_SEE_OTHER
-            )
+            return safe_redirect(url=f"{HOSTING_REQUESTS_URL}?error=request_not_found", status_code=status.HTTP_303_SEE_OTHER)
         await close_hosting_request(
             session,
             hosting_request,
@@ -2837,6 +3244,8 @@ async def admin_delete_user(request: Request, user_id: int):
             )
     except UserAdminError as exc:
         return safe_redirect(url=f"/admin/users/{user_id}/?error={exc.code}", status_code=status.HTTP_303_SEE_OTHER)
+    # The account and its memberships are gone; end any live booth sessions.
+    await asyncio.shield(manager.close_user_sessions(user_id))
     return safe_redirect(url="/admin/users/?notice=deleted", status_code=status.HTTP_303_SEE_OTHER)
 
 
@@ -2940,9 +3349,7 @@ TEAM_NOTICES = {
 }
 
 
-async def render_team(
-    request: Request, event_id: int, *, error: str = "", form: dict | None = None, status_code: int = 200
-):
+async def render_team(request: Request, event_id: int, *, error: str = "", form: dict | None = None, status_code: int = 200):
     async with get_session() as session:
         event = await get_event_by_id(session, event_id)
         if event is None:
@@ -2969,9 +3376,7 @@ async def render_team(
 
 
 def team_redirect(request: Request, event_id: int, notice: str) -> RedirectResponse:
-    return safe_redirect(
-        url=management_url(request, f"events/{event_id}/team/?notice={notice}"), status_code=status.HTTP_303_SEE_OTHER
-    )
+    return safe_redirect(url=management_url(request, f"events/{event_id}/team/?notice={notice}"), status_code=status.HTTP_303_SEE_OTHER)
 
 
 @router.get("/admin/events/{event_id}/team/", dependencies=[Depends(require_event_owner)])
@@ -2980,9 +3385,7 @@ async def admin_event_team(request: Request, event_id: int):
     return await render_team(request, event_id)
 
 
-@router.post(
-    "/admin/events/{event_id}/team/add", dependencies=[Depends(require_event_owner), Depends(require_admin_csrf)]
-)
+@router.post("/admin/events/{event_id}/team/add", dependencies=[Depends(require_event_owner), Depends(require_admin_csrf)])
 async def admin_team_add(request: Request, event_id: int):
     if not verify_same_origin(request):
         raise HTTPException(status_code=400, detail="Invalid request origin.")
@@ -2992,9 +3395,7 @@ async def admin_team_add(request: Request, event_id: int):
         async with get_session() as session:
             team = await load_team(session, event_id)
             place = parse_team_place(data["where"], team)
-            user, changed = await add_team_member(
-                session, event_id=event_id, email=data["email"], role=data["role"], place=place
-            )
+            user, changed = await add_team_member(session, event_id=event_id, email=data["email"], role=data["role"], place=place)
             event = await get_event_by_id(session, event_id)
             if changed:
                 try:
@@ -3008,9 +3409,7 @@ async def admin_team_add(request: Request, event_id: int):
     return team_redirect(request, event_id, "added" if changed else "already")
 
 
-@router.post(
-    "/admin/events/{event_id}/team/remove", dependencies=[Depends(require_event_owner), Depends(require_admin_csrf)]
-)
+@router.post("/admin/events/{event_id}/team/remove", dependencies=[Depends(require_event_owner), Depends(require_admin_csrf)])
 async def admin_team_remove(request: Request, event_id: int):
     if not verify_same_origin(request):
         raise HTTPException(status_code=400, detail="Invalid request origin.")
@@ -3029,9 +3428,7 @@ async def admin_team_remove(request: Request, event_id: int):
     return team_redirect(request, event_id, "removed")
 
 
-@router.post(
-    "/admin/events/{event_id}/team/resend", dependencies=[Depends(require_event_owner), Depends(require_admin_csrf)]
-)
+@router.post("/admin/events/{event_id}/team/resend", dependencies=[Depends(require_event_owner), Depends(require_admin_csrf)])
 async def admin_team_resend(request: Request, event_id: int):
     if not verify_same_origin(request):
         raise HTTPException(status_code=400, detail="Invalid request origin.")
@@ -3045,20 +3442,14 @@ async def admin_team_resend(request: Request, event_id: int):
         first = member.assignments[0]
         try:
             await _send_admin_invite(
-                session,
-                member.user,
-                role_label(first.role),
-                f"{first.place.label} at {event.display_name}",
-                "/workspace/",
+                session, member.user, role_label(first.role), f"{first.place.label} at {event.display_name}", "/workspace/"
             )
         except Exception as e:
             logger.warning(f"Failed to resend team invite email to {member.user.email}: {e}")
     return team_redirect(request, event_id, "resent")
 
 
-@router.post(
-    "/admin/events/{event_id}/team/links", dependencies=[Depends(require_event_owner), Depends(require_admin_csrf)]
-)
+@router.post("/admin/events/{event_id}/team/links", dependencies=[Depends(require_event_owner), Depends(require_admin_csrf)])
 async def admin_team_create_link(request: Request, event_id: int):
     if not verify_same_origin(request):
         raise HTTPException(status_code=400, detail="Invalid request origin.")
@@ -3080,10 +3471,7 @@ async def admin_team_create_link(request: Request, event_id: int):
     return team_redirect(request, event_id, "link_created")
 
 
-@router.post(
-    "/admin/events/{event_id}/team/links/revoke",
-    dependencies=[Depends(require_event_owner), Depends(require_admin_csrf)],
-)
+@router.post("/admin/events/{event_id}/team/links/revoke", dependencies=[Depends(require_event_owner), Depends(require_admin_csrf)])
 async def admin_team_revoke_link(request: Request, event_id: int):
     if not verify_same_origin(request):
         raise HTTPException(status_code=400, detail="Invalid request origin.")
@@ -3103,10 +3491,13 @@ async def admin_event_members(request: Request, event_id: int):
     return safe_redirect(url=management_url(request, f"events/{event_id}/team/"), status_code=status.HTTP_303_SEE_OTHER)
 
 
-@router.post(
-    "/admin/events/{event_id}/members/", dependencies=[Depends(require_event_owner), Depends(require_admin_csrf)]
-)
+@router.post("/admin/events/{event_id}/members/", dependencies=[Depends(require_event_owner), Depends(require_admin_csrf)])
 async def admin_add_event_member(request: Request, event_id: int):
+    """Add or update an event membership assignment for a user."""
+    async with get_session() as session:
+        event = await get_event_by_id(session, event_id)
+        if event is None:
+            raise HTTPException(status_code=404, detail="Event not found.")
     form = await request.form()
     email = form.get("email", "").strip()
     role = form.get("role", "").strip()
@@ -3114,6 +3505,9 @@ async def admin_add_event_member(request: Request, event_id: int):
         return invalid_role_redirect(request, f"events/{event_id}/members/", role)
     if email:
         async with get_session() as session:
+            event = await get_event_by_id(session, event_id)
+            if event is None:
+                raise HTTPException(status_code=404, detail="Event not found.")
             user = await get_user_by_email(session, email)
             if not user:
                 display_name = email.split("@")[0]
@@ -3123,16 +3517,14 @@ async def admin_add_event_member(request: Request, event_id: int):
             if role:
                 try:
                     await set_event_membership(session, user_id=uid, event_id=event_id, role=role)
+                    await revoke_membership_push(session, user_id=uid, level="event", target_id=event_id)
                     # Send invite
-                    event = await get_event_by_id(session, event_id)
                     if event:
                         target_url = "/account"
                         await _send_admin_invite(session, user, role, f"event {event.display_name}", target_url)
                 except ValueError:
                     return safe_redirect(
-                        url=management_url(
-                            request, f"events/{event_id}/members/?error=invalid_role&role={urllib.parse.quote(role)}"
-                        ),
+                        url=management_url(request, f"events/{event_id}/members/?error=invalid_role&role={urllib.parse.quote(role)}"),
                         status_code=status.HTTP_303_SEE_OTHER,
                     )
             else:
@@ -3140,40 +3532,51 @@ async def admin_add_event_member(request: Request, event_id: int):
                 for m in memberships:
                     if m.user_id == uid:
                         await remove_event_membership(session, m.id)
+                        await revoke_membership_push(session, user_id=uid, level="event", target_id=event_id)
                         break
     return safe_redirect(
         url=management_url(request, f"events/{event_id}/members/"), status_code=status.HTTP_303_SEE_OTHER
     )
 
 
-@router.post(
-    "/admin/events/{event_id}/members/{membership_id}/invite",
-    dependencies=[Depends(require_event_owner), Depends(require_admin_csrf)],
-)
+@router.post("/admin/events/{event_id}/members/{membership_id}/invite", dependencies=[Depends(require_event_owner), Depends(require_admin_csrf)])
 async def admin_invite_event_member(request: Request, event_id: int, membership_id: int):
+    """Send an invitation email to an event member."""
     async with get_session() as session:
-        memberships = await list_memberships_for_event(session, event_id)
-        for m in memberships:
-            if m.id == membership_id:
-                user = await get_user_by_id(session, m.user_id)
-                event = await get_event_by_id(session, event_id)
-                if user and event:
-                    target_url = "/account"
-                    await _send_admin_invite(session, user, m.role, f"event {event.display_name}", target_url)
-                break
+        event = await get_event_by_id(session, event_id)
+        if event is None:
+            raise HTTPException(status_code=404, detail="Event not found.")
+        membership = await session.scalar(
+            select(EventMembership).where(EventMembership.id == membership_id, EventMembership.event_id == event_id)
+        )
+        if membership is None:
+            raise HTTPException(status_code=404, detail="Membership not found.")
+        user = await get_user_by_id(session, membership.user_id)
+        if user and event:
+            target_url = "/account"
+            await _send_admin_invite(session, user, membership.role, f"event {event.display_name}", target_url)
     return safe_redirect(
         url=management_url(request, f"events/{event_id}/members/?success=invite_sent"),
         status_code=status.HTTP_303_SEE_OTHER,
     )
 
 
-@router.post(
-    "/admin/events/{event_id}/members/{membership_id}/delete",
-    dependencies=[Depends(require_event_owner), Depends(require_admin_csrf)],
-)
+@router.post("/admin/events/{event_id}/members/{membership_id}/delete", dependencies=[Depends(require_event_owner), Depends(require_admin_csrf)])
 async def admin_remove_event_member(request: Request, event_id: int, membership_id: int):
+    """Remove an event membership assignment."""
     try:
         async with get_session() as session:
+            event = await get_event_by_id(session, event_id)
+            if event is None:
+                raise HTTPException(status_code=404, detail="Event not found.")
+            membership = await session.scalar(
+                select(EventMembership).where(
+                    EventMembership.id == membership_id,
+                    EventMembership.event_id == event_id,
+                )
+            )
+            if membership is None:
+                raise HTTPException(status_code=404, detail="Membership not found.")
             await remove_team_assignment(session, event_id=event_id, level="event", membership_id=membership_id)
     except TeamError as exc:
         return await render_team(request, event_id, error=str(exc), status_code=400)
@@ -3183,10 +3586,12 @@ async def admin_remove_event_member(request: Request, event_id: int, membership_
 
 
 @router.post(
-    "/admin/events/{event_id}/rooms/{room_id}/booths/{booth_id}/tokens/",
-    dependencies=[Depends(require_event_owner), Depends(require_admin_csrf)],
+    "/admin/events/{event_id}/rooms/{room_id}/booths/{booth_id}/tokens/", dependencies=[Depends(require_event_owner), Depends(require_admin_csrf)]
 )
 async def admin_create_token(request: Request, event_id: int, room_id: int, booth_id: int):
+    """Create an invite token for a booth."""
+    async with get_session() as session:
+        await booth_in_room(session, event_id, room_id, booth_id)
     form = await request.form()
     role = form.get("role", "").strip()
     if role and assignment_error(role, "booth"):
@@ -3297,10 +3702,7 @@ async def api_download_progress(model: str = Query("nllb-200-distilled-600M")):
     return progress
 
 
-@router.post(
-    "/admin/models/supertonic/trigger_download",
-    dependencies=[Depends(require_event_owner), Depends(require_admin_csrf)],
-)
+@router.post("/admin/models/supertonic/trigger_download", dependencies=[Depends(require_event_owner), Depends(require_admin_csrf)])
 async def api_supertonic_trigger_download():
     from portal.tts.providers.supertonic import trigger_supertonic_download
 

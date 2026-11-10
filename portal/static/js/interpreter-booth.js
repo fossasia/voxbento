@@ -1,3 +1,6 @@
+import { createBackoff, finalCloseMessage } from './booth-reconnect.js'
+import { micIsActive, watchMicTracks } from './mic-activity.js'
+
 const portal = document.getElementById('interpreter-portal')
 
 if (!portal) {
@@ -22,6 +25,8 @@ const state = {
   peerConnection: null,
   whipResourceUrl: null,
   micMuted: true,
+  /** The device itself is muted (keyboard key, OS input mute, headset button), as the browser reports it. */
+  micDeviceMuted: false,
   ingestConnected: false,
   ingestStarting: false,
   ingestReachable: Boolean(portal.dataset.whipBase),
@@ -43,7 +48,16 @@ const state = {
   handoffInitiatorId: null,
   /** Track whether booth audio WHEP has been auto-started for passive */
   boothAudioAutoStarted: false,
+  /** The Jitsi monitor is loaded once; rejoining after a reconnect keeps it. */
+  monitoringStarted: false,
+  /** Set when the page is closing or the server ended the session for good. */
+  stopReconnecting: false,
+  reconnectTimer: null,
+  /** Set by boot() once the booth should be joined on every socket that opens. */
+  joinRequested: false,
 }
+
+const reconnectBackoff = createBackoff()
 
 const elements = {
   connectionStatus: document.getElementById('connection-status'),
@@ -122,8 +136,9 @@ async function boot() {
   await connectWebSocket()
   bindEventHandlers()
 
-  // Auto-join the booth immediately
-  joinBooth()
+  // Auto-join the booth now, or as soon as a slow or retried socket opens.
+  state.joinRequested = true
+  if (state.wsConnected) joinBooth()
 
   render()
 }
@@ -163,27 +178,47 @@ function connectWebSocket() {
 
     ws.addEventListener('open', () => {
       clearTimeout(openTimer)
+      if (state.ws !== ws || state.stopReconnecting) return
       state.wsConnected = true
       setBadge(elements.connectionStatus, 'Connected', 'success')
+      // Once boot() has asked to join, every new socket (re)joins with the same
+      // participant ID so the server can give this interpreter back their place.
+      if (state.joinRequested) joinBooth()
       resolve()
     })
 
     ws.addEventListener('close', (event) => {
+      clearTimeout(openTimer)
+      resolve()
+      // A socket replaced by a newer one must not schedule a second reconnect.
+      if (state.ws !== ws) return
       state.wsConnected = false
       state.ws = null
-      setBadge(elements.connectionStatus, 'Disconnected', 'warning')
-      if (event.code !== 1000 && event.code !== 1001) {
-        showError('Connection lost. Refresh the page to reconnect.')
+      state.joined = false
+      render()
+      if (state.stopReconnecting) return
+      const finalMessage = finalCloseMessage(event.code)
+      if (finalMessage) {
+        state.stopReconnecting = true
+        state.micMuted = true
+        state.micStream?.getAudioTracks().forEach((track) => { track.enabled = false })
+        stopLiveIngest().catch((error) => console.warn('Could not finish stopping revoked booth audio:', error))
+        setBadge(elements.connectionStatus, 'Disconnected', 'danger')
+        showError(finalMessage)
+        return
       }
+      setBadge(elements.connectionStatus, 'Reconnecting…', 'warning')
+      showError('Connection lost. Reconnecting…')
+      scheduleReconnect(reconnectBackoff.next())
     })
 
     ws.addEventListener('error', () => {
+      // A close event always follows and decides whether to reconnect.
       clearTimeout(openTimer)
-      showError('WebSocket connection failed. Is the server running?')
-      resolve()
     })
 
     ws.addEventListener('message', (event) => {
+      if (state.ws !== ws || state.stopReconnecting) return
       try {
         handleServerMessage(JSON.parse(event.data))
       } catch {
@@ -193,9 +228,38 @@ function connectWebSocket() {
   })
 }
 
+function scheduleReconnect(delayMs) {
+  if (state.reconnectTimer || state.stopReconnecting) return
+  state.reconnectTimer = setTimeout(async () => {
+    state.reconnectTimer = null
+    if (state.ws || state.stopReconnecting) return
+    // The booth token may have expired while the socket was down.
+    await acquireJwt()
+    if (state.ws || state.stopReconnecting) return
+    connectWebSocket()
+  }, delayMs)
+}
+
+/**
+ * The WHIP publish to MediaMTX does not depend on the booth socket, so it can
+ * survive a reconnect. The server forgot this interpreter's ingest when the
+ * socket dropped: report it again if they are still active, or stop publishing
+ * if the booth moved on to another interpreter while they were away.
+ */
+function reconcileIngestAfterRejoin() {
+  if (!state.ingestConnected || state.relayingOut) return
+  if (state.activeInterpreterId === state.participantId && state.broadcastUnlocked) {
+    wsSend({ type: 'booth:update-state', mic_active: currentMicActive(), ingest_connected: true })
+  } else {
+    stopLiveIngest().catch((error) => console.warn('Could not finish stopping previous booth audio:', error))
+  }
+}
+
 function handleServerMessage(data) {
   const type = data.type
   if (type === 'booth:joined') {
+    reconnectBackoff.reset()
+    const rejoined = state.monitoringStarted
     state.participantId = data.participant_id
     state.joined = true
     // Re-sync to Mission Control's current broadcast state. If a coordinator
@@ -204,7 +268,12 @@ function handleServerMessage(data) {
     // being unlocked from Mission Control — never by the act of joining itself,
     // because a booth defaults to locked (Off) until a coordinator turns it on.
     applyBoothState(data.state)
-    joinMonitoringFeed()
+    if (rejoined) {
+      reconcileIngestAfterRejoin()
+    } else {
+      state.monitoringStarted = true
+      joinMonitoringFeed()
+    }
     render()
     showError('')
   } else if (type === 'booth:publish-ticket') {
@@ -381,7 +450,16 @@ function bindEventHandlers() {
   // Set Active button removed — active interpreter assignment is handled
   // automatically on join and via the handover protocol.
 
+  // Retry at once when the network comes back instead of waiting out the back-off.
+  window.addEventListener('online', () => {
+    if (state.ws || state.stopReconnecting) return
+    clearTimeout(state.reconnectTimer)
+    state.reconnectTimer = null
+    scheduleReconnect(0)
+  })
+
   window.addEventListener('beforeunload', () => {
+    state.stopReconnecting = true
     if (state.joined && state.participantId) {
       wsSend({ type: 'booth:leave' })
     }
@@ -830,8 +908,18 @@ function stopBoothAudioListening() {
 
 // ── Microphone management ─────────────────────────────────────────────────────
 
-async function ensureMicStream() {
-  if (state.micStream) return state.micStream
+// The request in flight, so overlapping callers (going live while pressing Unmute) share one
+// stream: a second stream would be published while the watcher followed the other.
+let micStreamRequest = null
+
+function ensureMicStream() {
+  if (state.micStream) return Promise.resolve(state.micStream)
+  // Cleared when settled, so a refused request (permission, unplugged device) can be retried.
+  micStreamRequest ??= openMicStream().finally(() => { micStreamRequest = null })
+  return micStreamRequest
+}
+
+async function openMicStream() {
   if (micTestStream) {
     stopMicTest()
   }
@@ -844,8 +932,34 @@ async function ensureMicStream() {
       autoGainControl: true,
     },
   })
+  watchMicDevice(state.micStream)
   startMicMeter(state.micStream)
   return state.micStream
+}
+
+// ── Real microphone state (#1214) ─────────────────────────────────────────────
+
+let micWatcher = null
+
+/** What everyone else should see: not muted by the Mute button and not muted by the device. */
+function currentMicActive() {
+  return micIsActive({ uiMuted: state.micMuted, deviceMuted: state.micDeviceMuted })
+}
+
+/** Follow the browser's report of the real microphone state for this stream. */
+function watchMicDevice(stream) {
+  micWatcher?.stop()
+  micWatcher = watchMicTracks(stream, (deviceMuted) => {
+    state.micDeviceMuted = deviceMuted
+    renderMicControls()
+    // Before the stream is published nobody sees a speaking state, so there is nothing to correct.
+    // After a handoff the server refuses mic_active from a participant who is no longer active.
+    const isActive = state.activeInterpreterId === state.participantId
+    if (state.joined && state.participantId && state.ingestConnected && isActive) {
+      wsSend({ type: 'booth:update-state', mic_active: currentMicActive() })
+    }
+  })
+  state.micDeviceMuted = micWatcher.deviceMuted()
 }
 
 async function startMicTest() {
@@ -906,7 +1020,7 @@ function startMicMeter(stream) {
     ctx.clearRect(0, 0, canvas.width, canvas.height)
     ctx.fillStyle = '#e9ecef'
     ctx.fillRect(0, 0, canvas.width, canvas.height)
-    if (state.micMuted) {
+    if (!currentMicActive()) {
       ctx.fillStyle = '#9ca3af'
     } else if (volume > 0.95) {
       ctx.fillStyle = '#dc3545'
@@ -1044,7 +1158,7 @@ async function toggleMicMute() {
   if (state.joined && state.participantId) {
     wsSend({
       type: 'booth:update-state',
-      mic_active: !state.micMuted && state.ingestConnected,
+      mic_active: currentMicActive() && state.ingestConnected,
     })
   }
 }
@@ -1159,7 +1273,7 @@ async function startLiveIngest() {
     await startTranscription()
     wsSend({
       type: 'booth:update-state',
-      mic_active: !state.micMuted,
+      mic_active: currentMicActive(),
       ingest_connected: true,
     })
     showError('')
@@ -1264,7 +1378,7 @@ function attemptRelayStart(attempt) {
         await startTranscription()
       }
 
-      wsSend({ type: 'booth:update-state', mic_active: !state.micMuted, ingest_connected: true })
+      wsSend({ type: 'booth:update-state', mic_active: currentMicActive(), ingest_connected: true })
       showError('')
     } catch (error) {
       if (state.peerConnection) {
@@ -1285,9 +1399,28 @@ function attemptRelayStart(attempt) {
 
 
 
+// Matches CHAT_MESSAGE_MAX_LENGTH in portal/booth_state.py. The server counts
+// code points (Python len), so count with Array.from rather than maxlength,
+// which counts an emoji as two.
+const CHAT_MESSAGE_MAX_LENGTH = 1000
+
+// The characters Python's str.strip() removes. String.prototype.trim() differs:
+// it keeps U+001C–U+001F and U+0085 and removes U+FEFF.
+const _PY_WHITESPACE = '[\\t-\\r\\x1c-\\x20\\x85\\xa0\\u1680\\u2000-\\u200a\\u2028\\u2029\\u202f\\u205f\\u3000]'
+const _PY_STRIP_RE = new RegExp(`^${_PY_WHITESPACE}+|${_PY_WHITESPACE}+$`, 'g')
+
+// Trim like the server so the length check sees the same text it will store.
+function stripLikeServer(text) {
+  return text.replace(_PY_STRIP_RE, '')
+}
+
 function sendChatMessage() {
-  const body = elements.chatInput.value.trim()
+  const body = stripLikeServer(elements.chatInput.value)
   if (!body) return
+  if (Array.from(body).length > CHAT_MESSAGE_MAX_LENGTH) {
+    showError(`Message must not exceed ${CHAT_MESSAGE_MAX_LENGTH} characters.`)
+    return
+  }
   if (!state.participantId) {
     showError('Join the booth before sending messages.')
     return
@@ -1417,7 +1550,13 @@ function renderMicControls() {
     state.ingestConnected ? 'Ingest connected' : 'Ingest disconnected',
     state.ingestConnected ? 'success' : 'warning',
   )
-  elements.micState.textContent = state.micMuted ? 'Muted' : state.micStream ? 'Ready' : 'Inactive'
+  elements.micState.textContent = state.micMuted
+    ? 'Muted'
+    : state.micDeviceMuted
+      ? 'Muted by your device'
+      : state.micStream
+        ? 'Ready'
+        : 'Inactive'
 
   const micOnIcon = elements.toggleMic.querySelector('.ctrl-icon--mic-on')
   const micOffIcon = elements.toggleMic.querySelector('.ctrl-icon--mic-off')

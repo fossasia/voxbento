@@ -1,8 +1,17 @@
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
-from collections.abc import Sequence
+from collections.abc import Awaitable, Sequence
 from typing import Any
+
+from portal.translations.engine import (
+    EngineKind,
+    Language,
+    TranslationContext,
+    TranslationEngine,
+    TranslationRows,
+    translate_each,
+)
 
 
 class TranslationProvider(ABC):
@@ -34,3 +43,46 @@ class TranslationProvider(ABC):
             The translated text, or None if translation failed.
         """
         pass
+
+
+class ProviderEngine(TranslationEngine):
+    """Runs a prompt-based ``TranslationProvider`` behind the ``TranslationEngine`` interface.
+
+    One instance per provider name, because providers that share a class (OpenAI, OpenRouter
+    and Groq) are still told apart by that name.
+    """
+
+    def __init__(self, provider_name: str, provider: TranslationProvider, kind: EngineKind) -> None:
+        self.provider_name = provider_name
+        self.provider = provider
+        self._kind = kind
+
+    @property
+    def kind(self) -> EngineKind:
+        return self._kind
+
+    async def translate_batch(
+        self,
+        source: Language,
+        targets: Sequence[Language],
+        texts: Sequence[str],
+        context: TranslationContext,
+        *,
+        model: str,
+        api_key: str | None = None,
+    ) -> TranslationRows:
+        def translate_one(text: str, target: Language) -> Awaitable[str | None]:
+            return self.provider.translate(
+                provider_name=self.provider_name,
+                text=text,
+                target_lang_name=target.name,
+                target_lang_code=target.code,
+                source_lang_name=source.name,
+                model=model,
+                api_key=api_key,
+                persona=context.persona,
+                style=context.style,
+                vocabulary_entries=context.vocabulary_for(target),
+            )
+
+        return await translate_each(translate_one, targets, texts)

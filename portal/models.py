@@ -43,6 +43,10 @@ def generate_token() -> str:
     return secrets.token_hex(TOKEN_LENGTH // 2)
 
 
+def generate_public_id() -> str:
+    return secrets.token_urlsafe(12)
+
+
 # ---------------------------------------------------------------------------
 # Base
 # ---------------------------------------------------------------------------
@@ -71,6 +75,9 @@ class Event(Base):
     encrypted_nvidia_api_key: Mapped[str | None] = mapped_column("nvidia_api_key", Text, nullable=True, default=None)
     encrypted_elevenlabs_api_key: Mapped[str | None] = mapped_column(
         "elevenlabs_api_key", Text, nullable=True, default=None
+    )
+    encrypted_atlascloud_api_key: Mapped[str | None] = mapped_column(
+        "atlascloud_api_key", Text, nullable=True, default=None
     )
     encrypted_translation_openai_api_key: Mapped[str | None] = mapped_column(
         "translation_openai_api_key", Text, nullable=True, default=None
@@ -137,7 +144,8 @@ class Room(Base):
     program_connected_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     program_disconnected_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     program_sync_offset_ms: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
-    # "whip" keeps the independent dual-output model; "rtmps_relay" puts VoxBento in the YouTube path (#749).
+    # "whip" and "rtmps" (#1087) keep YouTube independent (VoxBento is an extra destination over WHIP
+    # or RTMPS); "rtmps_relay" puts VoxBento in the YouTube path (#749).
     program_ingest_mode: Mapped[str] = mapped_column(String(20), default="whip", server_default="whip")
     program_relay_server: Mapped[str | None] = mapped_column(String(255), nullable=True)
     # Fernet-encrypted YouTube stream key; write-only from the API, never returned or logged.
@@ -176,6 +184,12 @@ class Room(Base):
         back_populates="room", cascade="all, delete-orphan"
     )
 
+    @property
+    def has_floor_captions(self) -> bool:
+        """Floor transcription is on and has a real provider, so the floor has a caption channel."""
+        provider = (self.floor_transcription_provider or "").strip().lower()
+        return bool(self.floor_transcription_enabled) and provider not in {"", "none"}
+
     def __repr__(self) -> str:
         return f"<Room id={self.id} name={self.display_name!r}>"
 
@@ -204,7 +218,7 @@ class DBBooth(Base):
     language_name: Mapped[str] = mapped_column(String(100))
     transcription_enabled: Mapped[bool] = mapped_column(Boolean, default=False, server_default="0")
     transcription_provider: Mapped[str] = mapped_column(String(20), default="local", server_default=sa.text("'local'"))
-    transcription_model: Mapped[str] = mapped_column(String(20), default="tiny", server_default=sa.text("'tiny'"))
+    transcription_model: Mapped[str] = mapped_column(String(40), default="tiny", server_default=sa.text("'tiny'"))
 
     # Broadcast Lock
     broadcast_unlocked: Mapped[bool] = mapped_column(Boolean, default=False, server_default="0")
@@ -295,6 +309,8 @@ class RoomTranslationLanguage(Base):
     language_code: Mapped[str] = mapped_column(String(20))
     language_name: Mapped[str] = mapped_column(String(100))
     enabled: Mapped[bool] = mapped_column(Boolean, default=True, server_default="1")
+    # False for AI text languages: translated for reading, never spoken.
+    tts_enabled: Mapped[bool] = mapped_column(Boolean, default=True, server_default="1")
 
     room: Mapped[Room] = relationship(back_populates="translation_languages")
 
@@ -378,11 +394,13 @@ class InviteToken(Base):
     __tablename__ = "invite_tokens"
 
     token: Mapped[str] = mapped_column(String(TOKEN_LENGTH), primary_key=True, default=generate_token)
+    public_id: Mapped[str] = mapped_column(String(32), unique=True, index=True, nullable=False, default=generate_public_id)
     booth_id: Mapped[int] = mapped_column(ForeignKey("booths.id", ondelete="CASCADE"))
     role: Mapped[str] = mapped_column(String(20))
     label: Mapped[str] = mapped_column(String(200), default="")
     expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True, default=None)
     used_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True, default=None)
+    revoked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True, default=None)
     created_by: Mapped[str] = mapped_column(String(200), default="")
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
 
@@ -408,6 +426,10 @@ class InviteToken(Base):
     @property
     def is_used(self) -> bool:
         return self.used_at is not None
+
+    @property
+    def is_revoked(self) -> bool:
+        return self.revoked_at is not None
 
     def __repr__(self) -> str:
         return f"<InviteToken token={self.token[:8]}… role={self.role!r}>"
@@ -478,6 +500,8 @@ class User(Base):
     can_host: Mapped[bool] = mapped_column(Boolean, default=False, server_default="0")
     hosting_requested_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True, default=None)
     hosting_revoked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True, default=None)
+    sessions_valid_after: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True, default=None)
+    last_sign_in_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True, default=None)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
 
     memberships: Mapped[list[EventMembership]] = relationship(
@@ -706,6 +730,43 @@ class UsageMetric(Base):
 
     def __repr__(self) -> str:
         return f"<UsageMetric event={self.event_id} metric={self.metric_name!r} value={self.value}>"
+
+
+# ---------------------------------------------------------------------------
+# Interpreter attendance (#1215)
+# ---------------------------------------------------------------------------
+
+
+class InterpreterAttendance(Base):
+    """One visit to an interpreter booth: from joining the booth page to leaving it.
+
+    Written in batches by ``portal.attendance`` (never on the live path). ``left_at`` is
+    unset while the visit is open; ``last_seen_at`` is the last time the portal saved it,
+    so a visit cut short by a restart is closed there. ``interpreting_seconds`` counts the
+    time the person was the active interpreter with the stream connected and the
+    microphone on.
+    """
+
+    __tablename__ = "interpreter_attendance"
+    __table_args__ = (Index("ix_interpreter_attendance_event_joined", "event_id", "joined_at"),)
+
+    id: Mapped[str] = mapped_column(String(32), primary_key=True)
+    event_id: Mapped[int] = mapped_column(ForeignKey("events.id", ondelete="CASCADE"))
+    # Plain values, not foreign keys: the record stays after a room or booth is removed.
+    room_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    language_code: Mapped[str] = mapped_column(String(10), default="")
+    user_id: Mapped[int | None] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"), nullable=True, index=True)
+    # Public id of the invite link used to join, for people without an account.
+    invite_public_id: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    display_name: Mapped[str] = mapped_column(String(200), default="")
+    role: Mapped[str] = mapped_column(String(32), default="")
+    joined_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    left_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True, default=None)
+    last_seen_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    interpreting_seconds: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
+
+    def __repr__(self) -> str:
+        return f"<InterpreterAttendance id={self.id} event={self.event_id} user={self.user_id}>"
 
 
 # ---------------------------------------------------------------------------

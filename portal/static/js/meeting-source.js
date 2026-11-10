@@ -56,8 +56,8 @@ function render(data) {
   if (lastError) statusText.textContent = lastError;
   renderLifecycle(data.state);
   document.getElementById('meeting-owner').textContent = data.floor_source === 'program_ingest'
-    ? 'Program ingest'
-    : (data.enabled ? 'Meeting agent' : 'None');
+    ? 'Streaming software or sound desk'
+    : (data.enabled ? 'Online meeting' : 'Nothing yet');
   document.getElementById('meeting-restarts').textContent = `${data.restarts} of ${data.max_restarts} used`;
 
   const attention = data.state === 'degraded' || data.state === 'reconnecting';
