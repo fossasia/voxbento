@@ -177,6 +177,7 @@ from portal.transcription.worker import (
     active_workers,
     start_transcription_worker,
     stop_transcription_worker,
+    wait_for_worker_start,
 )
 from portal.translations.constants import TRANSLATION_MODELS, TranslationProviderEnum
 from portal.translations.vocabulary import (
@@ -2554,9 +2555,10 @@ async def admin_transcription_settings(
                 or old_provider != transcription_provider
                 or old_model != transcription_model
                 # A start that failed earlier left the settings saved but no worker (or a dead one still in the
-                # registry): saving again retries it.
+                # registry): saving again retries it. One that is shutting down is about to disappear, so it is
+                # replaced too: stop_transcription_worker waits for it to finish, then a new one starts.
                 or bid not in active_workers
-                or active_workers[bid].state == State.STOPPED
+                or active_workers[bid].state in (State.STOPPING, State.STOPPED)
             ):
                 await stop_transcription_worker(bid)
                 await broadcast_transcription(bid, "")
@@ -2574,7 +2576,8 @@ async def admin_transcription_settings(
                         config,
                         room_id=db_booth.room_id,
                     )
-                    worker = "restarted"
+                    # The start call only schedules the worker; ffmpeg is launched right after, so wait for that.
+                    worker = "restarted" if await wait_for_worker_start(bid) else "failed"
                 except WorkerCapacityError:
                     logger.warning("Could not start caption worker for %s", bid, exc_info=True)
                     worker = "failed"

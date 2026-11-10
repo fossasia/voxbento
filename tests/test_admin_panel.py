@@ -2394,6 +2394,25 @@ class TestBoothCRUD:
             assert location == f"{url}?saved=captions&worker=restarted#captions"
             assert calls[-2:] == ["stop", "start"]
 
+            # A worker that is shutting down is not "kept running" either: it is replaced.
+            monkeypatch.setattr(admin, "active_workers", {bid: SimpleNamespace(state=State.STOPPING)})
+            location, page = await save(c, enabled=True)
+            assert location == f"{url}?saved=captions&worker=restarted#captions"
+            assert calls[-2:] == ["stop", "start"]
+
+            # ffmpeg could not be launched after the start call returned: the page must not say "restarted".
+            async def start_then_fail(*_args, **_kwargs):
+                calls.append("start")
+
+            async def not_started(_bid):
+                return False
+
+            monkeypatch.setattr(admin, "start_transcription_worker", start_then_fail)
+            monkeypatch.setattr(admin, "wait_for_worker_start", not_started)
+            location, page = await save(c, enabled=True)
+            assert location == f"{url}?saved=captions&worker=failed#captions"
+            assert "The caption worker could not be started" in page
+
     @pytest.mark.anyio
     async def test_captions_can_be_turned_off_when_the_saved_service_lost_its_key(self, admin_cookie, seed_event):
         """Only turning captions on needs a working key; turning them off must never be blocked (#1081)."""
