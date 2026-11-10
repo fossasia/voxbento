@@ -100,9 +100,6 @@ class RequestLoggingMiddleware:
         try:
             await self.app(scope, receive, send_wrapper)
         except Exception:
-            # Log the failure against this id, then let the app's handlers run.
-            # Starlette's error middleware sits outside this one and will turn
-            # this into the 500 the caller sees, so the status is recorded here.
             logger.exception(
                 "request failed",
                 extra=details(
@@ -113,6 +110,13 @@ class RequestLoggingMiddleware:
                     duration_ms=round((time.perf_counter() - started) * 1000, 2),
                 ),
             )
+            if scope["type"] == "http":
+                body = b'{"detail":"Internal Server Error","request_id":"' + request_id.encode() + b'"}'
+                await send_wrapper({"type": "http.response.start", "status": 500, "headers": [
+                    [b"content-type", b"application/json"],
+                ]})
+                await send_wrapper({"type": "http.response.body", "body": body})
+                return
             raise
         else:
             if scope.get("path") in _QUIET_WHEN_HEALTHY and status_code < 400:
