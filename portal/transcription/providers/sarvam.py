@@ -25,6 +25,8 @@ STABLE_AFTER_SECS = 10.0  # A session this old was not rejected, so the outage i
 BACKOFF_BASE_SECS = 1.0
 BACKOFF_MAX_SECS = 30.0
 MIN_REVISION_OVERLAP = 0.6  # Share of published words a later transcript must repeat to be the same passage.
+# The prefix routes this to the booth screen (portal.websockets.manager.broadcast_transcription).
+REJECTED_NOTICE = "[Transcription provider failed: Sarvam rejected the session. Check the event's API key and credits.]"
 
 
 class _SarvamRejected(Exception):
@@ -250,7 +252,7 @@ class SarvamProvider(TranscriptionProvider):
         aggregator = CaptionAggregator(broadcast_callback, room_id=room_id)
         link = _LinkHealth(booth_id)
         while process.returncode is None:
-            ended = False
+            ended = rejected = False
             reason = "server ended the session"
             try:
                 ended = await self._run_session(url, headers, process, _CaptionFeed(aggregator, booth_id), link)
@@ -260,7 +262,10 @@ class SarvamProvider(TranscriptionProvider):
                 raise
             except Exception as exc:
                 reason = _failure_reason(exc)
+                rejected = isinstance(exc, _SarvamRejected)
             # Publish a caption the lost session left unfinished; the next one starts a new utterance.
             await aggregator.handle_clear(booth_id)
+            if rejected and not link.outage.failures:
+                await broadcast_callback(booth_id, REJECTED_NOTICE)
             if ended or not await _discard_audio(process, link.failed(reason)):
                 return

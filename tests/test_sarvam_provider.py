@@ -544,3 +544,42 @@ def test_room_ai_settings_reject_an_unsupported_language():
     _apply_ai_settings(room, form, catalog)
     assert room.floor_transcription_provider == "sarvam"
     assert room.floor_transcription_model == MODEL
+
+
+@pytest.mark.anyio
+async def test_a_rejected_session_tells_the_booth_once_per_outage(monkeypatch):
+    """A bad key reaches the booth screen once, however many retries follow."""
+
+    async def rejected(s):
+        await s.ws.send(json.dumps({"event": "error", "is_fatal": True, "code": "invalid_subscription_key"}))
+        await asyncio.sleep(0.5)
+
+    async def recovered(s):
+        await _read_until_end(s)
+
+    monkeypatch.setattr(sarvam, "BACKOFF_BASE_SECS", 0.01)
+    notices: list[str] = []
+
+    async def broadcast(_booth_id, payload):
+        if isinstance(payload, str):
+            notices.append(payload)
+
+    process = _audio_process(eof=False)
+    fake = FakeSarvam(rejected, rejected, recovered)
+    async with fake as url:
+        monkeypatch.setattr(sarvam, "SARVAM_WS_URL", url)
+        stream = asyncio.create_task(
+            SarvamProvider().run_stream(process, "hi", MODEL, ProviderConfig(API_KEY), broadcast, "conf-1-hi")
+        )
+        try:
+            await asyncio.wait_for(_until_connected(fake, 3), 5)
+        except TimeoutError:
+            stream.cancel()
+            await asyncio.gather(stream, return_exceptions=True)
+            raise
+        process.stdout.feed_eof()
+        await asyncio.wait_for(stream, 5)
+
+    assert notices == [sarvam.REJECTED_NOTICE]
+    assert notices[0].startswith("[Transcription provider failed")
+    assert API_KEY not in notices[0]
