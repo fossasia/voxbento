@@ -626,14 +626,9 @@ async def reconcile_room(room: Room, event: Event, path: MediaPath | None) -> tu
     now = time.monotonic()
     # A short-lived sender secret gates new publishes, not an already-connected session.
     session_live = bool(path and path.source and room.program_session_id and path.source.id == room.program_session_id)
-    # Switching RTMPS ingest off or deleting the event also ends a feed that is already live.
+    # Switching RTMPS ingest off also ends a feed that is already live.
     rtmps_off = room.program_ingest_mode == program_relay.RTMPS_MODE and not settings.rtmps_ingest_enabled
-    permitted = bool(
-        settings.program_ingest_enabled
-        and event.deleted_at is None
-        and not rtmps_off
-        and (has_valid_credential(room) or session_live)
-    )
+    permitted = bool(settings.program_ingest_enabled and not rtmps_off and (has_valid_credential(room) or session_live))
     if path and path.source and (not permitted or path.source.id != room.program_session_id):
         await kick(path_name, path.source)
         path = None
