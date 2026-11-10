@@ -925,3 +925,30 @@ async def test_consent_page_issues_a_binding_the_post_accepts(setup_oauth_client
             cookies=cookies,
         )
     assert res.status_code == 303
+
+
+@pytest.mark.anyio
+async def test_event_binding_mac_is_keyed_and_rejects_the_unkeyed_digest():
+    """The binding is an HMAC under the configured secret (Sourcery #3).
+
+    An unkeyed SHA-256 digest of the same tuple must not match, so an attacker
+    who learns the tuple cannot forge a binding without the server's secret.
+    """
+    from portal.config import settings
+    from portal.routers.oauth import _event_binding_mac
+
+    event_id, client_id, user_sub = 7, "client_abc", "42"
+    msg = f"{event_id}:{client_id}:{user_sub}".encode()
+
+    produced = _event_binding_mac(event_id, client_id, user_sub)
+
+    expected = hmac.new(
+        settings.effective_jwt_secret.encode(), msg, hashlib.sha256
+    ).hexdigest()
+    assert hmac.compare_digest(produced, expected)
+
+    unkeyed = hashlib.sha256(msg).hexdigest()
+    assert not hmac.compare_digest(produced, unkeyed)
+
+    other_key = hmac.new(b"not-the-server-secret", msg, hashlib.sha256).hexdigest()
+    assert not hmac.compare_digest(produced, other_key)
