@@ -42,6 +42,7 @@ IDLE_SWEEP_SECS = 30.0
 RESTART_BACKOFF_SECS = (2.0, 5.0, 10.0, 20.0, 30.0)
 # Processing this long without a fault ends the incident and refills the restart budget.
 STABLE_RESET_SECS = 60.0
+EMPTY_ROOM_REASON = "The meeting agent stopped because the room remained empty."
 MEETING_PATH = re.compile(r"[A-Za-z0-9_.~%-]{1,200}(?:/[A-Za-z0-9_.~%-]{1,200})?")
 FAILURES = {
     "missing": "The meeting agent is not running.",
@@ -277,16 +278,24 @@ async def disconnect(room: Room, event: Event) -> bool:
 def status(room: Room) -> dict:
     """Public status. Never include the meeting URL or media addresses."""
     enabled = room.meeting_agent_enabled and room.floor_source == "jitsi_bot"
-    current = health.get(room.id) if enabled else None
+    current = health.get(room.id)
     if enabled:
         state = current.state if current else "starting"
         reason = current.reason if current else "Launching the meeting agent."
     else:
-        state = "stopped"
+        state = (
+            current.state
+            if current and current.reason == EMPTY_ROOM_REASON
+            else "stopped"
+        )
         reason = (
-            "Program ingest (an encoder or the browser sender) owns the floor."
-            if room.floor_source != "jitsi_bot"
-            else ""
+            current.reason
+            if current and current.reason == EMPTY_ROOM_REASON
+            else (
+                "Program ingest (an encoder or the browser sender) owns the floor."
+                if room.floor_source != "jitsi_bot"
+                else ""
+            )
         )
     return {
         "enabled": enabled,
@@ -341,6 +350,18 @@ async def reconcile_room(
     booth_id = make_booth_id(event.slug, room.id, "floor")
     now = monotonic()
     target_url = agent_url(room, event)
+    if agent and agent.get("state") == "stopped" and agent.get("stage") == "left_empty_room":
+        await _stop_worker(current, booth_id)
+        room.meeting_agent_enabled = False
+        current.state = "stopped"
+        current.reason = EMPTY_ROOM_REASON
+        current.next_restart_at = None
+        current.joined_at = None
+        current.last_progress = None
+        current.last_bytes = -1
+        current.failure = None
+        logger.info("meeting_agent left_empty_room room_id=%s", room.id)
+        return
     if joined_other_url(agent, current.agent_url, target_url):
         # The owner changed the meeting URL. Rejoin with a fresh budget even if the old
         # agent failed: retries spent on the previous URL say nothing about the new one.
@@ -491,9 +512,19 @@ async def reconcile_once() -> None:
                 select(Room.id, Event.slug).join(Event).where(Room.meeting_agent_enabled, Event.deleted_at.is_(None))
             )
         ).all()
-    ids = [room_id for room_id, _ in rows]
-    await _stop_deleted_event_workers(set(health) - set(ids))
-    for room_id in set(health) - set(ids):
+        ids = [room_id for room_id, _ in rows]
+        stale = set(health) - set(ids)
+        # Only the rooms we hold a health record for are looked up, never the whole table.
+        left_empty = {room_id for room_id in stale if health[room_id].reason == EMPTY_ROOM_REASON}
+        if left_empty:
+            left_empty = set(
+                await session.scalars(
+                    select(Room.id).join(Event).where(Room.id.in_(left_empty), Event.deleted_at.is_(None))
+                )
+            )
+    await _stop_deleted_event_workers(stale)
+    # A room that emptied keeps its record, so its status still says why the agent stopped.
+    for room_id in stale - left_empty:
         health.pop(room_id, None)
     if not rows and monotonic() - _last_sweep < IDLE_SWEEP_SECS:
         return
