@@ -44,7 +44,12 @@ for (const [saveStatus, triggerStatus] of [[400, 200], [500, 200], [200, 500], [
 }
 
 // Model filtering works with and without an enclosing details element.
-const roomDetail = readFileSync(new URL('../portal/static/js/room-detail.js', import.meta.url), 'utf8');
+const roomDetailSource = readFileSync(new URL('../portal/static/js/room-detail.js', import.meta.url), 'utf8');
+// The room page shares one tab implementation with the booth page instead of keeping its own.
+assert.match(roomDetailSource, /import \{ initTabs \} from '\.\/tabs\.js';/);
+assert.doesNotMatch(roomDetailSource, /\bfunction\s+initTabs\b/);
+// vm scripts cannot import, so run the page code without its import line (tabs.js has its own tests).
+const roomDetail = roomDetailSource.replace(/^import .*$/m, '');
 for (const details of [null, { hidden: false }]) {
   const provider = { value: 'local', addEventListener() {} };
   const options = [{ dataset: { provider: 'local' } }, { dataset: { provider: 'openai' } }];
@@ -60,5 +65,63 @@ for (const details of [null, { hidden: false }]) {
   assert.equal(options[0].selected, true);
   assert.equal(options[1].disabled, true);
   if (details) assert.equal(details.hidden, true);
+}
+// A saved self-hosted model the server no longer lists isn't offered; an allowed one and a custom
+// cloud model stay selected. If the model list fails to load, the saved model is kept for the server to check.
+for (const [provider, saved, listLoads, expected, selected] of [
+  ['self_hosted', 'removed-model', true, ['', 'llama3.2', 'qwen2.5:7b'], []],
+  ['self_hosted', 'qwen2.5:7b', true, ['', 'llama3.2', 'qwen2.5:7b'], ['qwen2.5:7b']],
+  ['self_hosted', 'qwen2.5:7b', false, ['', 'qwen2.5:7b'], ['qwen2.5:7b']],
+  ['openai', 'my-custom-model', true, ['', 'my-custom-model', 'gpt-4o-mini'], ['my-custom-model']],
+]) {
+  const added = [];
+  const transProvider = { value: provider, addEventListener() {} };
+  const transModel = { replaceChildren(...opts) { added.length = 0; added.push(...opts); }, append(opt) { added.push(opt); } };
+  const elements = {
+    'room-detail': { dataset: { initialTranslationModel: saved } },
+    floor_translation_provider: transProvider,
+    floor_translation_model: transModel,
+  };
+  const catalog = { self_hosted: ['llama3.2', 'qwen2.5:7b'], openai: ['gpt-4o-mini'] };
+  vm.runInNewContext(roomDetail, {
+    console: { error() {} },
+    initTabs() {},
+    Option: class { constructor(text, value, defaultSelected, isSelected) { this.value = value; this.selected = Boolean(isSelected); } },
+    fetch: async () => ({ ok: listLoads, json: async () => catalog }),
+    document: { querySelector: () => null, querySelectorAll: () => [], getElementById: (id) => elements[id] },
+  });
+  await new Promise(setImmediate);
+  assert.deepEqual(added.map((opt) => opt.value), expected);
+  assert.deepEqual(added.filter((opt) => opt.selected).map((opt) => opt.value), selected);
+}
+// Switching service while the model list loads must not leave the old service's models in the list,
+// whichever load finishes first. A newer load that fails must not throw away a list that loaded.
+for (const [reverse, newerFails] of [[false, false], [true, false], [false, true]]) {
+  const added = [];
+  let onChange;
+  const transProvider = { value: 'self_hosted', addEventListener(type, handler) { onChange = handler; } };
+  const transModel = { replaceChildren(...opts) { added.length = 0; added.push(...opts); }, append(opt) { added.push(opt); } };
+  const elements = {
+    'room-detail': { dataset: { initialTranslationModel: 'qwen2.5:7b' } },
+    floor_translation_provider: transProvider,
+    floor_translation_model: transModel,
+  };
+  const pending = [];
+  vm.runInNewContext(roomDetail, {
+    console: { error() {} },
+    initTabs() {},
+    Option: class { constructor(text, value, defaultSelected, isSelected) { this.value = value; this.selected = Boolean(isSelected); } },
+    fetch: () => new Promise((resolve) => pending.push(resolve)),
+    document: { querySelector: () => null, querySelectorAll: () => [], getElementById: (id) => elements[id] },
+  });
+  transProvider.value = 'openai';
+  onChange();
+  const catalog = { self_hosted: ['llama3.2', 'qwen2.5:7b'], openai: ['gpt-4o-mini'] };
+  for (const [i, resolve] of (reverse ? [...pending.entries()].reverse() : [...pending.entries()])) {
+    resolve(newerFails && i === 1 ? { ok: false } : { ok: true, json: async () => catalog });
+    await new Promise(setImmediate);
+  }
+  assert.deepEqual(added.map((opt) => opt.value), ['', 'gpt-4o-mini']);
+  assert.deepEqual(added.filter((opt) => opt.selected).map((opt) => opt.value), []);
 }
 console.log('Room AI regression checks passed');

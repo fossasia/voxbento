@@ -504,6 +504,7 @@ class User(Base):
     hosting_requested_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True, default=None)
     hosting_revoked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True, default=None)
     sessions_valid_after: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True, default=None)
+    last_sign_in_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True, default=None)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
 
     memberships: Mapped[list[EventMembership]] = relationship(
@@ -754,6 +755,43 @@ class UsageMetric(Base):
 
     def __repr__(self) -> str:
         return f"<UsageMetric event={self.event_id} metric={self.metric_name!r} value={self.value}>"
+
+
+# ---------------------------------------------------------------------------
+# Interpreter attendance (#1215)
+# ---------------------------------------------------------------------------
+
+
+class InterpreterAttendance(Base):
+    """One visit to an interpreter booth: from joining the booth page to leaving it.
+
+    Written in batches by ``portal.attendance`` (never on the live path). ``left_at`` is
+    unset while the visit is open; ``last_seen_at`` is the last time the portal saved it,
+    so a visit cut short by a restart is closed there. ``interpreting_seconds`` counts the
+    time the person was the active interpreter with the stream connected and the
+    microphone on.
+    """
+
+    __tablename__ = "interpreter_attendance"
+    __table_args__ = (Index("ix_interpreter_attendance_event_joined", "event_id", "joined_at"),)
+
+    id: Mapped[str] = mapped_column(String(32), primary_key=True)
+    event_id: Mapped[int] = mapped_column(ForeignKey("events.id", ondelete="CASCADE"))
+    # Plain values, not foreign keys: the record stays after a room or booth is removed.
+    room_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    language_code: Mapped[str] = mapped_column(String(10), default="")
+    user_id: Mapped[int | None] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"), nullable=True, index=True)
+    # Public id of the invite link used to join, for people without an account.
+    invite_public_id: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    display_name: Mapped[str] = mapped_column(String(200), default="")
+    role: Mapped[str] = mapped_column(String(32), default="")
+    joined_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    left_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True, default=None)
+    last_seen_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    interpreting_seconds: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
+
+    def __repr__(self) -> str:
+        return f"<InterpreterAttendance id={self.id} event={self.event_id} user={self.user_id}>"
 
 
 # ---------------------------------------------------------------------------
