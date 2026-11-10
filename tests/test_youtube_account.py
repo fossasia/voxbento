@@ -848,6 +848,49 @@ async def test_failed_channel_lookup_revokes_the_new_grant(yt_env):
 
 
 @pytest.mark.anyio
+async def test_event_deleted_during_sign_in_revokes_the_new_grant(yt_env, monkeypatch):
+    import portal.routers.youtube as youtube_router
+
+    state = await start_connect(yt_env)
+
+    async def no_event(session, event_id):
+        return None
+
+    monkeypatch.setattr(youtube_router, "get_event_by_id", no_event)
+    response = await yt_env["client"].get("/youtube/oauth/callback", params={"state": state, "code": AUTH_CODE})
+    assert response.status_code == 404
+    assert await stored_connection(yt_env) is None
+    assert yt_env["google"]["revoked"] == [REFRESH_TOKEN]
+
+
+@pytest.mark.anyio
+async def test_failed_save_keeps_a_grant_a_stored_connection_relies_on(yt_env, monkeypatch):
+    import portal.routers.youtube as youtube_router
+
+    await connect(yt_env)
+    stored = (await stored_connection(yt_env)).refresh_token_enc
+    state = await start_connect(yt_env)
+
+    def broken_encrypt(value):
+        raise ValueError("simulated storage failure")
+
+    monkeypatch.setattr(youtube_router, "encrypt_val", broken_encrypt)
+    with pytest.raises(ValueError, match="simulated storage failure"):
+        await yt_env["client"].get("/youtube/oauth/callback", params={"state": state, "code": AUTH_CODE})
+    # Same channel, same grant: revoking it would cut off the connection that is still stored.
+    assert yt_env["google"]["revoked"] == []
+    assert (await stored_connection(yt_env)).refresh_token_enc == stored
+
+    # A different channel's new grant is not relied on by anything stored, so it is given back.
+    yt_env["google"]["channel_id"] = "UCchannel0002"
+    state = await start_connect(yt_env)
+    with pytest.raises(ValueError, match="simulated storage failure"):
+        await yt_env["client"].get("/youtube/oauth/callback", params={"state": state, "code": AUTH_CODE})
+    assert yt_env["google"]["revoked"] == [REFRESH_TOKEN]
+    assert (await stored_connection(yt_env)).channel_id == "UCchannel0001"
+
+
+@pytest.mark.anyio
 async def test_rejected_access_token_is_refreshed_once(yt_env):
     client, google = yt_env["client"], yt_env["google"]
     await connect(yt_env)

@@ -167,6 +167,23 @@ async def youtube_oauth_callback(request: Request, state: str = "", code: str = 
         return await _store_connection(event_id, room_id, owner, sub, code, verifier)
 
 
+async def _give_back(event_id: int, channel_id: str, refresh_token: str) -> None:
+    """Revoke a new grant that was not stored, unless a stored connection still relies on it.
+
+    Google keeps one grant per channel owner and client, so revoking it would also cut off a
+    connection already stored for this channel (this event's earlier sign-in or another event's).
+    """
+    try:
+        async with get_session() as session:
+            in_use = await yt.channel_connected(session, channel_id)
+    except Exception:
+        # Unknown: keeping an unused grant is safer than cutting off a stored connection.
+        logger.warning("youtube event_id=%s action=revoke_skipped reason=lookup_failed", event_id)
+        return
+    if not in_use:
+        await yt.revoke(refresh_token)
+
+
 async def _store_connection(event_id: int, room_id: int, owner: bool, sub: str, code: str, verifier: str) -> Response:
     tokens = None
     try:
@@ -213,9 +230,14 @@ async def _store_connection(event_id: int, room_id: int, owner: bool, sub: str, 
             connection.connected_at = datetime.now(timezone.utc)
     except RuntimeError:
         # No API_KEY_ENCRYPTION_KEY: the token cannot be stored, so give it back.
-        await yt.revoke(tokens["refresh_token"])
+        await _give_back(event_id, channel_id, tokens["refresh_token"])
         logger.warning("youtube event_id=%s action=connect_failed reason=encryption_key", event_id)
         return _finish(_room_page(event_id, room_id, "error", owner))
+    except Exception:
+        # The event was deleted meanwhile or saving failed: nothing was stored, so give the grant back.
+        logger.warning("youtube event_id=%s action=connect_failed reason=store_failed", event_id)
+        await _give_back(event_id, channel_id, tokens["refresh_token"])
+        raise
     yt.forget_event(event_id, room_ids)
     await yt.revoke(old_token)
     logger.info("youtube event_id=%s action=connected", event_id)

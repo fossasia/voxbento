@@ -271,6 +271,14 @@ async def channel_shared(session: AsyncSession, connection: YouTubeConnection) -
     return result.first() is not None
 
 
+async def channel_connected(session: AsyncSession, channel_id: str) -> bool:
+    """True when any event has a stored connection to ``channel_id`` (and so relies on its grant)."""
+    result = await session.execute(
+        select(YouTubeConnection.id).where(YouTubeConnection.channel_id == channel_id).limit(1)
+    )
+    return result.first() is not None
+
+
 async def room_ids_for_event(session: AsyncSession, event_id: int) -> list[int]:
     result = await session.execute(select(Room.id).where(Room.event_id == event_id))
     return list(result.scalars())
