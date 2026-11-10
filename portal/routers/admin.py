@@ -2164,6 +2164,7 @@ async def admin_booth_detail(request: Request, event_id: int, room_id: int, boot
     enabled_translation_language_codes = [lang.language_code for lang in db_booth.translation_languages if lang.enabled]
     # Coordinators only see the Overview tab, so only event owners need the engine catalog and model lists.
     catalog = None
+    speech_engines: list = []
     speech_models: dict = {}
     translation_models: dict = {}
     saved_speech_model = db_booth.transcription_model
@@ -2194,6 +2195,9 @@ async def admin_booth_detail(request: Request, event_id: int, room_id: int, boot
             ]
         catalog = engine_catalog(event)
         kept_speech_hint = _kept_speech_hint(event, catalog, db_booth.transcription_provider)
+        speech_engines = [
+            engine for engine in catalog.speech if not speech_language_problem(engine.provider, db_booth.language_code)
+        ]
     return templates.TemplateResponse(
         request=request,
         name="admin/booth_detail.html",
@@ -2201,11 +2205,7 @@ async def admin_booth_detail(request: Request, event_id: int, room_id: int, boot
             "event": event,
             "room": room,
             "booth": db_booth,
-            "speech_engines": [
-                engine
-                for engine in catalog.speech
-                if not speech_language_problem(engine.provider, db_booth.language_code)
-            ],
+            "speech_engines": speech_engines,
             "speech_provider_unsupported": bool(
                 speech_language_problem(db_booth.transcription_provider, db_booth.language_code)
             ),

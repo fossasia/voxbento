@@ -4214,8 +4214,8 @@ async def test_booth_with_captions_off_can_change_language_and_must_then_pick_a_
 
     assert changed.status_code == 303
     assert 'name="transcription_provider" required' in page.text
-    assert '<option value="" selected disabled>Sarvam can\'t caption' in page.text or (
-        '<option value="" selected disabled>Sarvam can&#39;t caption' in page.text
+    assert '<option value="" selected disabled>Sarvam AI can\'t caption' in page.text or (
+        '<option value="" selected disabled>Sarvam AI can&#39;t caption' in page.text
     )
 
 
