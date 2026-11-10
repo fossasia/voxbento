@@ -343,7 +343,7 @@
           class="inline-delete"
           data-confirm="Delete the {{ booth.language_name }} booth? All invite tokens will be removed.">
       <input type="hidden" name="csrf_token" value="{{ request.state.admin_csrf_token }}" />
-      <button type="submit" class="btn btn-danger">Delete Booth</button>
+      <button type="submit" class="btn btn-danger" title="Permanently delete this booth">Delete Booth</button>
       <span class="danger-text">This removes all invite tokens for this booth.</span>
     </form>
   </div>

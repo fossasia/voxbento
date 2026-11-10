@@ -78,7 +78,7 @@
         <form method="post" action="{{ management_prefix }}/events/{{ ev.id }}/delete" class="inline-delete"
               data-confirm="Delete event '{{ ev.display_name }}'? This will remove all rooms, booths, and tokens.">
               <input type="hidden" name="csrf_token" value="{{ request.state.admin_csrf_token }}" />
-          <button type="submit" class="btn btn-sm btn-danger">Delete</button>
+          <button type="submit" class="btn btn-sm btn-danger" title="Permanently delete this event">Delete</button>
         </form>
       </td>
     </tr>

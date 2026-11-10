@@ -381,7 +381,7 @@
                   <form method="post" action="{{ management_prefix }}/events/{{ event.id }}/rooms/{{ room.id }}/ai-vocabulary/delete">
                     <input type="hidden" name="csrf_token" value="{{ request.state.admin_csrf_token }}" />
                     <input type="hidden" name="entry_id" value="{{ entry.id }}">
-                    <button type="submit" class="btn btn-sm btn-outline">Delete</button>
+                    <button type="submit" class="btn btn-sm btn-outline" title="Delete this glossary entry">Delete</button>
                   </form>
                 </td>
               </tr>
@@ -451,7 +451,7 @@
     <form method="post" action="{{ management_prefix }}/events/{{ event.id }}/rooms/{{ room.id }}/delete" class="inline-delete"
           data-confirm="Delete room '{{ room.display_name }}'? All booths in this room will be removed.">
       <input type="hidden" name="csrf_token" value="{{ request.state.admin_csrf_token }}" />
-      <button type="submit" class="btn btn-danger">Delete room</button>
+      <button type="submit" class="btn btn-danger" title="Permanently delete this room">Delete room</button>
       <span class="danger-text">This removes its booths and their invite links. It can't be undone.</span>
     </form>
   </div>

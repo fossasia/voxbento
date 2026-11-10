@@ -7,12 +7,12 @@
 <script type="module" src="{{ url_for('static', path='js/admin-users.js') }}?v={{ asset_version }}"></script>
 {% endblock %}
 
-{% macro access_form(field, value, label, classes='btn btn-outline ud-btn', confirm='', disabled=false) -%}
+{% macro access_form(field, value, label, classes='btn btn-outline ud-btn', confirm='', disabled=false, title='') -%}
 <form method="post" action="/admin/users/{{ u.id }}/access"{% if confirm %} data-confirm-message="{{ confirm }}"{% endif %}>
   <input type="hidden" name="csrf_token" value="{{ request.state.admin_csrf_token }}" />
   <input type="hidden" name="field" value="{{ field }}" />
   <input type="hidden" name="value" value="{{ 'true' if value else 'false' }}" />
-  <button type="submit" class="{{ classes }}"{% if disabled %} disabled{% endif %}>{{ label }}</button>
+  <button type="submit" class="{{ classes }}"{% if title %} title="{{ title }}"{% endif %}{% if disabled %} disabled{% endif %}>{{ label }}</button>
 </form>
 {%- endmacro %}
 
@@ -183,7 +183,7 @@
         {% if u.is_active %}
         <p class="ud-row-title">Deactivate account</p>
         <p class="ud-row-desc">Signs them out and blocks sign-in. Can be undone.</p>
-        {{ access_form('active', false, 'Deactivate', classes='btn btn-outline ud-btn ud-btn--danger', confirm='Deactivate ' ~ u.display_name ~ '? They are signed out and can no longer sign in until reactivated.', disabled=is_self or is_last_admin) }}
+        {{ access_form('active', false, 'Deactivate', classes='btn btn-outline ud-btn ud-btn--danger', confirm='Deactivate ' ~ u.display_name ~ '? They are signed out and can no longer sign in until reactivated.', disabled=is_self or is_last_admin, title='Deactivate this user account') }}
         {% else %}
         <p class="ud-row-title">Reactivate account</p>
         <p class="ud-row-desc">Lets them sign in again with their existing roles.</p>
@@ -193,7 +193,7 @@
       <div class="ud-danger-row">
         <p class="ud-row-title">Delete account</p>
         <p class="ud-row-desc">Removes the account and all its roles. Asks you to type the email address to confirm.</p>
-        <button type="button" class="btn btn-outline ud-btn ud-btn--danger" data-open-dialog="ud-delete-dialog"{% if is_self or is_last_admin %} disabled{% endif %}>Delete</button>
+        <button type="button" class="btn btn-outline ud-btn ud-btn--danger" data-open-dialog="ud-delete-dialog" title="Permanently delete this user"{% if is_self or is_last_admin %} disabled{% endif %}>Delete</button>
       </div>
     </section>
   </aside>
@@ -220,7 +220,7 @@
     <input class="ud-confirm-input" id="ud-confirm-email" name="confirm_email" type="email" autocomplete="off" required data-confirm-match="{{ u.email }}" />
     <div class="ul-dialog-actions">
       <button type="button" class="btn btn-outline" data-close-dialog>Cancel</button>
-      <button type="submit" class="btn btn-danger" data-confirm-submit disabled>Delete account</button>
+      <button type="submit" class="btn btn-danger" data-confirm-submit title="Permanently delete this user" disabled>Delete account</button>
     </div>
   </form>
 </dialog>
