@@ -1,4 +1,5 @@
 import { createBackoff, finalCloseMessage } from './booth-reconnect.js'
+import { micIsActive, watchMicTracks } from './mic-activity.js'
 
 const portal = document.getElementById('interpreter-portal')
 
@@ -24,6 +25,8 @@ const state = {
   peerConnection: null,
   whipResourceUrl: null,
   micMuted: true,
+  /** The device itself is muted (keyboard key, OS input mute, headset button), as the browser reports it. */
+  micDeviceMuted: false,
   ingestConnected: false,
   ingestStarting: false,
   ingestReachable: Boolean(portal.dataset.whipBase),
@@ -246,7 +249,7 @@ function scheduleReconnect(delayMs) {
 function reconcileIngestAfterRejoin() {
   if (!state.ingestConnected || state.relayingOut) return
   if (state.activeInterpreterId === state.participantId && state.broadcastUnlocked) {
-    wsSend({ type: 'booth:update-state', mic_active: !state.micMuted, ingest_connected: true })
+    wsSend({ type: 'booth:update-state', mic_active: currentMicActive(), ingest_connected: true })
   } else {
     stopLiveIngest().catch((error) => console.warn('Could not finish stopping previous booth audio:', error))
   }
@@ -905,8 +908,18 @@ function stopBoothAudioListening() {
 
 // ── Microphone management ─────────────────────────────────────────────────────
 
-async function ensureMicStream() {
-  if (state.micStream) return state.micStream
+// The request in flight, so overlapping callers (going live while pressing Unmute) share one
+// stream: a second stream would be published while the watcher followed the other.
+let micStreamRequest = null
+
+function ensureMicStream() {
+  if (state.micStream) return Promise.resolve(state.micStream)
+  // Cleared when settled, so a refused request (permission, unplugged device) can be retried.
+  micStreamRequest ??= openMicStream().finally(() => { micStreamRequest = null })
+  return micStreamRequest
+}
+
+async function openMicStream() {
   if (micTestStream) {
     stopMicTest()
   }
@@ -919,8 +932,34 @@ async function ensureMicStream() {
       autoGainControl: true,
     },
   })
+  watchMicDevice(state.micStream)
   startMicMeter(state.micStream)
   return state.micStream
+}
+
+// ── Real microphone state (#1214) ─────────────────────────────────────────────
+
+let micWatcher = null
+
+/** What everyone else should see: not muted by the Mute button and not muted by the device. */
+function currentMicActive() {
+  return micIsActive({ uiMuted: state.micMuted, deviceMuted: state.micDeviceMuted })
+}
+
+/** Follow the browser's report of the real microphone state for this stream. */
+function watchMicDevice(stream) {
+  micWatcher?.stop()
+  micWatcher = watchMicTracks(stream, (deviceMuted) => {
+    state.micDeviceMuted = deviceMuted
+    renderMicControls()
+    // Before the stream is published nobody sees a speaking state, so there is nothing to correct.
+    // After a handoff the server refuses mic_active from a participant who is no longer active.
+    const isActive = state.activeInterpreterId === state.participantId
+    if (state.joined && state.participantId && state.ingestConnected && isActive) {
+      wsSend({ type: 'booth:update-state', mic_active: currentMicActive() })
+    }
+  })
+  state.micDeviceMuted = micWatcher.deviceMuted()
 }
 
 async function startMicTest() {
@@ -981,7 +1020,7 @@ function startMicMeter(stream) {
     ctx.clearRect(0, 0, canvas.width, canvas.height)
     ctx.fillStyle = '#e9ecef'
     ctx.fillRect(0, 0, canvas.width, canvas.height)
-    if (state.micMuted) {
+    if (!currentMicActive()) {
       ctx.fillStyle = '#9ca3af'
     } else if (volume > 0.95) {
       ctx.fillStyle = '#dc3545'
@@ -1119,7 +1158,7 @@ async function toggleMicMute() {
   if (state.joined && state.participantId) {
     wsSend({
       type: 'booth:update-state',
-      mic_active: !state.micMuted && state.ingestConnected,
+      mic_active: currentMicActive() && state.ingestConnected,
     })
   }
 }
@@ -1234,7 +1273,7 @@ async function startLiveIngest() {
     await startTranscription()
     wsSend({
       type: 'booth:update-state',
-      mic_active: !state.micMuted,
+      mic_active: currentMicActive(),
       ingest_connected: true,
     })
     showError('')
@@ -1339,7 +1378,7 @@ function attemptRelayStart(attempt) {
         await startTranscription()
       }
 
-      wsSend({ type: 'booth:update-state', mic_active: !state.micMuted, ingest_connected: true })
+      wsSend({ type: 'booth:update-state', mic_active: currentMicActive(), ingest_connected: true })
       showError('')
     } catch (error) {
       if (state.peerConnection) {
@@ -1511,7 +1550,13 @@ function renderMicControls() {
     state.ingestConnected ? 'Ingest connected' : 'Ingest disconnected',
     state.ingestConnected ? 'success' : 'warning',
   )
-  elements.micState.textContent = state.micMuted ? 'Muted' : state.micStream ? 'Ready' : 'Inactive'
+  elements.micState.textContent = state.micMuted
+    ? 'Muted'
+    : state.micDeviceMuted
+      ? 'Muted by your device'
+      : state.micStream
+        ? 'Ready'
+        : 'Inactive'
 
   const micOnIcon = elements.toggleMic.querySelector('.ctrl-icon--mic-on')
   const micOffIcon = elements.toggleMic.querySelector('.ctrl-icon--mic-off')

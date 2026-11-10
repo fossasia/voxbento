@@ -66,6 +66,8 @@ MediaMTX terminates the WebRTC connection from the interpreter's browser, decode
 
 Listeners connect to the WHEP endpoint for their chosen language. WHEP (WebRTC HTTP Egress Protocol) is the mirror of WHIP — it negotiates a WebRTC session from the server side and streams audio to the listener's browser with sub-second latency.
 
+Clearing a listener selection cancels its pending WHEP negotiation and retries. Each attempt owns its peer and session URL, so late responses from a previous source cannot change the current stream. Returned sessions from discarded attempts are released. Cleanup accepts only HTTP(S) session URLs on the selected media origin and sends no cookies or redirected requests. WHEP requests, including their answer bodies, have a 15-second deadline before retrying.
+
 The listener page shows **Live (WebRTC)** only when the WHEP client reports both
 a connected peer and active audio playback. Selecting a source or receiving
 translation text alone does not mark WebRTC audio live. Failed WHEP requests
@@ -87,7 +89,7 @@ Before starting booth playback, the listener page waits for a live and unlocked 
 You do not need to configure the fallback manually. The listener page tries WHEP first and switches to HLS transparently if the WebRTC negotiation fails.
 :::
 
-Rooms can also define an optional listener-side audio synchronization delay. This is useful when attendees are watching delayed livestream video, delayed captions, embedded conference players, or external media while listening to Voxbento audio. For example, use `1000` ms for a one-second caption delay, `2000` ms for a lightly delayed player, `5000` ms for a typical embedded stream, or `8000` ms for a platform with a larger broadcast buffer. When the room delay is `0` ms, listener playback uses the same direct WHEP-to-HTML-audio path as normal and adds no Web Audio graph or extra latency.
+Rooms can also define an optional listener-side audio synchronization delay. This is useful when attendees are watching delayed livestream video, delayed captions, embedded conference players, or external media while listening to Voxbento audio. For example, use `1000` ms for a one-second caption delay, `2000` ms for a lightly delayed player, `5000` ms for a typical embedded stream, or `8000` ms for a platform with a larger broadcast buffer. When the room delay is `0` ms, listener playback uses the same direct WHEP-to-HTML-audio path as normal and adds no Web Audio graph or extra latency. With a positive delay, the browser routes the received stream through a Web Audio delay and back into the same HTML audio element. There is no separate speaker output: embed Play/Pause and volume controls, as well as listener muting for TTS, control the delayed stream too. Changing the delay preserves the current pause, mute and volume settings. Reconnecting a paused stream keeps it paused until the listener presses Play. The player remains attached during recovery so Pause also works while a replacement stream negotiates. If the browser suspends the delay context later, the next click, touch or pointer gesture can resume it. A muted receiver sink keeps incoming WebRTC samples flowing into the delay graph; only the controlled player produces audible output.
 
 In the organizer workspace, room management includes server-side search to quickly filter rooms by name within an event using case-insensitive matching against the room display name, displaying a clearable empty state when no rooms match the query.
 
@@ -141,6 +143,21 @@ Both namespaces use the same underlying management handlers, so the route split 
 
 Room deletion checks that the requested room belongs to the event specified in the workspace URL before removing it and its dependent booths, invites, and memberships. An unknown room or a room from another event returns HTTP 404 without deleting any data.
 
+API v1 event upserts recheck current account state and event-management access.
+An existing event outside the token's event scope can only be updated by an
+active user who currently owns it, which lets a client retry an event it created.
+Creating a new event checks
+the grant's original event and holds its mutation lock through the request, so a
+removed public-client organizer, a deactivated account, or a deleted authorizing
+event cannot bootstrap new ownership. Active Admins and trusted confidential
+clients retain their existing access rules.
+
+API v1 room deletion uses the shared database cleanup, which clears relay
+relationships before deleting booths and their room. This also supports a room
+relaying from its own booth and clears references from surviving rooms without
+changing unrelated relay selections. Publishing booths still block deletion with
+HTTP 409; successful deletion returns HTTP 204.
+
 ## The Transcription & Translation Pipeline
 
 When live captions or translations are enabled, Voxbento spawns background workers to process the audio in real-time. This pipeline supports both **Booth Audio** (interpreters) and **Floor Audio** (the main conference).
@@ -168,7 +185,7 @@ Jitsi session; they do not validate a deployment host's available disk space.
 2. **Transcoding:** FFmpeg transcodes the audio to PCM S16LE (mono, 16kHz or 24kHz depending on the provider) and pipes it to the selected `TranscriptionProvider`.
 3. **Speech-to-Text (Transcription):** The provider sends audio to an AI service (OpenAI, Deepgram, Atlas Cloud, ElevenLabs, NVIDIA, or Local Whisper). The Atlas Cloud adapter submits WAV chunks to Seed ASR 2.0 once and polls the asynchronous prediction. The `CaptionAggregator` receives raw text, splitting sentences and instantly broadcasting partial updates to listeners (`/ws/captions/{channel_id}`).
 4. **Finalization:** Once a full sentence is formed, the aggregator saves it to the database as a canonical `transcript_segment`.
-5. **Text-to-Text (Translation & AI Interpretation):** If target languages are enabled, the Translation Worker detects the finalized segment and generates translations using LLMs (Anthropic, OpenAI, Groq, Gemini) or local NLLB. Translation prompts dynamically integrate the room's configured **AI interpreter persona** and **interpretation style**, as well as matching domain terms from the room's **AI vocabulary glossary**, ensuring consistent, conference-grade terminology.
+5. **Text-to-Text (Translation & AI Interpretation):** If target languages are enabled, the Translation Worker detects the finalized segment and generates translations using LLMs (Anthropic, OpenAI, Groq, Gemini, or an OpenAI-compatible server the operator runs, set with `SELF_HOSTED_LLM_BASE_URL`) or local NLLB. Translation prompts dynamically integrate the room's configured **AI interpreter persona** and **interpretation style**, as well as matching domain terms from the room's **AI vocabulary glossary**, ensuring consistent, conference-grade terminology.
 6. **Broadcast:** Translations are saved to the database and immediately broadcast as `translated_caption` events via the target booth's caption feed (`/ws/captions/{booth_id}`).
 
 7. **Text-to-Speech (TTS):** If a room language uses **AI voice**, the `TTSWorker` instantly receives the finalized translated text and synthesizes speech using the room's configured provider — either **Deepgram Aura** (cloud WebSocket) or **Supertonic** (self-hosted, in-process ONNX).
@@ -223,7 +240,7 @@ Monitors floor audio via the Jitsi iframe and publishes translated audio to Medi
 
 ### Listeners
 
-Listening is not a role. Listeners receive the interpreted audio stream from MediaMTX via WHEP or HLS. They connect to the event's public listener page and choose a room and language — no login required by default.
+Listening is not a role. Listeners receive the interpreted audio stream from MediaMTX via WHEP or HLS. They connect to the event's public listener page and choose a room and language — no login required by default. A link can preselect the room and language with `room` and `lang` query parameters (for example `/listener/pycon2026?room=1&lang=hi`); unknown values fall back to the normal choice, and an event with a single room opens with that room selected.
   
 
 ## Live Captions
@@ -422,6 +439,38 @@ MediaMTX is configured to allow only one publisher per stream path at a time. Ev
 
 Password sign-in requires a verified email address. `/login` allows 10 attempts
 per email address per hour.
+
+Password recovery commits the new password and a `users.sessions_valid_after`
+cutoff together with redemption of the reset token and invalidation of outstanding
+magic sign-in links. Auth tokens are redeemed with a conditional database update
+so overlapping requests cannot use the same token twice. Account authentication checks
+the JWT issuance time against that cutoff on HTTP requests, booth pages and booth
+WebSocket connections. User JWT issuance retains fractional seconds so the fresh
+recovery session works even when it is issued in the same second as the cutoff.
+Password, magic-link and hosting-invitation sign-ins bind that issuance time and a
+session-cutoff version to the credential snapshot, so an in-flight sign-in cannot bypass a
+concurrent recovery, including while the reset is waiting to commit.
+Existing booth sockets are closed after the transaction commits; reconnecting
+with the old token cannot renew its authorization. Listener pages and hosting
+invitation acceptance also validate the account session; an old cookie cannot
+skip a hosting invitation's password check and obtain a fresh session. The
+interpreter lobby and account-authenticated caption subscriptions also enforce
+the cutoff.
+
+TTS subscriptions authorize Admins from their current account record, rather
+than an Admin claim saved at sign-in. Each subscription rechecks its credentials
+before sending a text/audio bundle, at most once every 5 seconds, so existing connections
+stop receiving within that window after access is revoked or the token expires. Listener and invitation credentials
+keep their existing scope checks, including independent listener-code access.
+A listener-code recheck only confirms that the code the socket connected with is still
+the event's code. It is not counted as a join-code guess, so failed guesses from other
+clients on the same IP cannot close an accepted subscription; a regenerated code still does.
+An unrelated or revoked account cookie does not hide a separately valid invitation
+cookie. Invitation authorization reads current revocation state before delivery;
+TTS subscribers are checked concurrently so one slow check does not hold up others,
+with a small cap on simultaneous checks so a large audience cannot take every
+database connection. If a TTS authorization database check fails, that bundle is
+withheld and the subscriber stays connected; the next bundle checks again.
 
 ## Program floor source
 

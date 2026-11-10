@@ -6,6 +6,8 @@ Covers:
 - A client holding a valid session cookie reaches the listener page and is never throttled
 - Viewing the join page, and polling for the room audio delay, are not join-code attempts
 - A wrong code submitted through the listener_code_ cookie is still throttled
+- A stale cookie left from before a code regenerate costs one attempt, not one per poll, and the tab
+  recovers once the new code is entered
 """
 
 from __future__ import annotations
@@ -65,7 +67,8 @@ def _client(client_ip: str = "10.0.0.1"):
 
     from fastapi_app import app
 
-    return AsyncClient(transport=ASGITransport(app=app, client=(client_ip, 123)), base_url="http://test")
+    # https so the Secure listener cookie is sent back, as a browser on a production deployment would.
+    return AsyncClient(transport=ASGITransport(app=app, client=(client_ip, 123)), base_url="https://test")
 
 
 # ---------------------------------------------------------------------------
@@ -193,3 +196,60 @@ class TestListenerRateLimit:
                 resp = await c.get(f"/listener/{event.slug}/rooms/{room.id}/audio-delay")
                 assert resp.status_code == 200
                 assert resp.json() == {"audio_delay_ms": 0}
+
+    @pytest.mark.anyio
+    async def test_stale_cookie_after_regenerate_does_not_lock_out_same_ip(self, seed_event):
+        """A tab left open across a code regenerate keeps polling the audio delay with the old cookie."""
+        from portal.database import get_session
+        from portal.models import Event
+
+        event, room = seed_event
+        async with _client() as old_tab:
+            await old_tab.get(f"/listener/{event.slug}?code=ROOM42")
+            async with get_session() as s:
+                (await s.get(Event, event.id)).listener_join_code = "NEW999"
+
+            for _ in range(15):
+                resp = await old_tab.get(f"/listener/{event.slug}/rooms/{room.id}/audio-delay")
+                assert resp.status_code == 403
+            assert f"listener_code_{event.slug}" not in old_tab.cookies
+
+        async with _client() as new_listener:
+            resp = await new_listener.get(f"/listener/{event.slug}?code=NEW999")
+            assert resp.status_code == 200
+            assert b"Invalid join code." not in resp.content
+
+    @pytest.mark.anyio
+    async def test_stale_tab_recovers_once_the_new_code_is_entered(self, seed_event):
+        """The cleared tab keeps polling at no cost, so entering the new code in any tab brings it back."""
+        from portal.database import get_session
+        from portal.models import Event
+
+        event, room = seed_event
+        async with _client() as browser:
+            await browser.get(f"/listener/{event.slug}?code=ROOM42")
+            async with get_session() as s:
+                (await s.get(Event, event.id)).listener_join_code = "NEW999"
+            for _ in range(15):
+                resp = await browser.get(f"/listener/{event.slug}/rooms/{room.id}/audio-delay")
+                assert resp.status_code == 403
+
+            # The same browser joins again with the new code, e.g. from another tab.
+            await browser.get(f"/listener/{event.slug}?code=NEW999")
+            resp = await browser.get(f"/listener/{event.slug}/rooms/{room.id}/audio-delay")
+            assert resp.status_code == 200
+            assert resp.json() == {"audio_delay_ms": 0}
+
+    @pytest.mark.anyio
+    async def test_wrong_query_code_keeps_a_valid_cookie(self, seed_event):
+        """Only a failed cookie is cleared; a bad ?code= must not log out a listener whose cookie still works."""
+        event, room = seed_event
+        async with _client() as c:
+            await c.get(f"/listener/{event.slug}?code=ROOM42")
+            resp = await c.get(f"/listener/{event.slug}/rooms/{room.id}/audio-delay?code=WRONGCODE")
+            assert resp.status_code == 403
+            assert resp.json() == {"detail": "Listener access required"}
+            assert "set-cookie" not in resp.headers
+
+            resp = await c.get(f"/listener/{event.slug}/rooms/{room.id}/audio-delay")
+            assert resp.status_code == 200
