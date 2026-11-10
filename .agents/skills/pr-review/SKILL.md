@@ -76,6 +76,9 @@ description: Use this skill to review pull requests for VoxBento. Covers correct
 - [ ] Relevant `.agents/context/` files updated if routes, DB schema, transcription, or module ownership changed.
 - [ ] `agents.md` updated if invariants changed.
 
+### 10. AI Attribution
+- [ ] If reviewing with AI (inline comments, review summaries, or change requests), include attribution at the end of the review comment or summary (`Reviewed with <Model> in <Harness/IDE>, run from <Environment>.`, leaving out any part you do not know).
+
 ---
 
 ## High-Risk Patterns to Flag

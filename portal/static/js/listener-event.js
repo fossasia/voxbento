@@ -198,6 +198,8 @@ var translationLangSelect = document.getElementById("translation-lang-select");
 
 var audioEl = document.getElementById("audio-player");
 var statusEl = document.getElementById("status");
+var tapToListenBtn = document.getElementById("tap-to-listen-btn");
+var whepPlaybackBlocked = false;
 var captionsWs = null;
 var captionsRetryTimer = null;
 var captionsRetryDelayMs = 1000;
@@ -237,9 +239,32 @@ function showAudioPlayer(show) {
   }
 }
 
+function ttsPlaybackBlocked() {
+  return ttsWs !== null && audioCtx !== null && audioCtx.state === "suspended";
+}
+
+function updateTapToListen() {
+  if (tapToListenBtn) {
+    tapToListenBtn.hidden = !(whepPlaybackBlocked || ttsPlaybackBlocked());
+  }
+}
+
+if (tapToListenBtn) {
+  tapToListenBtn.addEventListener("click", function () {
+    WhepListener.resume();
+    if (audioCtx && audioCtx.state === "suspended") {
+      audioCtx.resume().then(updateTapToListen);
+    }
+  });
+}
+
 function onState(s) {
-  whepAudioLive = s.peerConnection === "connected" && s.audioActive;
-  if (whepAudioLive) {
+  whepPlaybackBlocked = Boolean(s.playbackBlocked) && s.peerConnection === "connected";
+  updateTapToListen();
+  whepAudioLive = s.peerConnection === "connected" && s.audioActive && !whepPlaybackBlocked;
+  if (whepPlaybackBlocked) {
+    setStatus("Ready — tap to listen", "waiting");
+  } else if (whepAudioLive) {
     setStatus("Live (WebRTC)", "live");
     showAudioPlayer(true);
   } else if (s.peerConnection === "connecting" || s.ice === "checking") {
@@ -319,6 +344,8 @@ function stopCurrentStream() {
   }
   showAudioPlayer(false);
   audioEl.muted = false;
+  whepPlaybackBlocked = false;
+  updateTapToListen();
   resetCaptions();
 
   setStatus("Waiting for selection...", "waiting");
@@ -329,6 +356,7 @@ function startTtsWs(roomId, langCode, boothId, audioDelayMs) {
   stopTtsWs();
   if (!audioCtx) {
     audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+    audioCtx.onstatechange = updateTapToListen;
   }
   if (audioCtx.state === "suspended") {
     audioCtx.resume();
@@ -357,6 +385,7 @@ function startTtsWs(roomId, langCode, boothId, audioDelayMs) {
     boothId;
   ttsWs = new WebSocket(wsUrl);
   ttsWs.binaryType = "arraybuffer";
+  updateTapToListen();
 
   ttsWs.onmessage = function (event) {
     if (event.data instanceof ArrayBuffer) {
@@ -1209,3 +1238,56 @@ window.addEventListener("beforeunload", function () {
 });
 
 window.setInterval(applyCurrentRoomAudioDelay, 3000);
+
+function selectOption(select, matches) {
+  var index = Array.from(select.options).findIndex(matches);
+  if (index < 1) return false;
+  select.selectedIndex = index;
+  select.dispatchEvent(new Event("change"));
+  return true;
+}
+
+function syncListenerLink() {
+  var url = new URL(window.location.href);
+  url.searchParams.delete("code");
+  url.searchParams.delete("room");
+  url.searchParams.delete("lang");
+  if (roomSelect.value) {
+    url.searchParams.set("room", roomSelect.value);
+    var selectedOpt = languageSelect.options[languageSelect.selectedIndex];
+    if (selectedOpt && selectedOpt.dataset.languageCode) {
+      url.searchParams.set("lang", selectedOpt.dataset.languageCode);
+    }
+  }
+  window.history.replaceState(null, "", url);
+}
+
+function applyListenerLink() {
+  var params = new URLSearchParams(window.location.search);
+  var requestedRoom = params.get("room");
+  var requestedLang = (params.get("lang") || "").toLowerCase();
+  var rooms = Array.from(roomSelect.options).filter(function (opt) {
+    return opt.value;
+  });
+
+  var roomSelected =
+    Boolean(requestedRoom) &&
+    selectOption(roomSelect, function (opt) {
+      return opt.value === requestedRoom;
+    });
+  if (!roomSelected && rooms.length === 1) {
+    roomSelected = selectOption(roomSelect, function (opt) {
+      return opt.value === rooms[0].value;
+    });
+  }
+  if (roomSelected && requestedLang) {
+    selectOption(languageSelect, function (opt) {
+      return opt.dataset.languageCode === requestedLang;
+    });
+  }
+}
+
+applyListenerLink();
+syncListenerLink();
+roomSelect.addEventListener("change", syncListenerLink);
+languageSelect.addEventListener("change", syncListenerLink);
