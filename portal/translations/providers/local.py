@@ -251,7 +251,11 @@ class LocalProvider(TranslationProvider, TranslationEngine):
         model: str,
         api_key: str | None = None,
     ) -> TranslationRows:
-        """One forward pass per text and target; a language NLLB lacks is ``None`` in its column."""
+        """One model call per text and target; a language NLLB lacks is ``None`` in its column.
+
+        A call is one forward pass, or two when the model drops a glossary placeholder and
+        the text is translated again without it.
+        """
 
         def translate_one(text: str, target: Language) -> Awaitable[str | None]:
             return self.translate(

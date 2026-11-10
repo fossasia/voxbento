@@ -101,9 +101,7 @@ async def test_translate_text_is_translate_batch_for_one_text_and_one_target():
 
 @pytest.mark.parametrize("failed", [None, ""])
 async def test_translate_text_passes_a_failed_or_empty_translation_through(failed):
-    result = await FakeEngine(rows=[[failed]]).translate_text(
-        ENGLISH, FRENCH, "Hello", TranslationContext(), model="m"
-    )
+    result = await FakeEngine(rows=[[failed]]).translate_text(ENGLISH, FRENCH, "Hello", TranslationContext(), model="m")
 
     assert result == failed
 
@@ -118,7 +116,7 @@ def test_context_gives_each_target_its_own_glossary():
     french = [glossary_entry("booth", "fr", "cabine")]
     context = TranslationContext(vocabulary={"fr": french})
 
-    assert context.vocabulary_for(FRENCH) == french
+    assert context.vocabulary_for(FRENCH) == tuple(french)
     assert context.vocabulary_for(GERMAN) == ()
     assert TranslationContext().vocabulary_for(FRENCH) == ()
 
@@ -131,9 +129,30 @@ def test_a_context_cannot_be_changed_once_built():
     with pytest.raises(TypeError):
         context.vocabulary["de"] = []
     given["de"] = []
+    # The lists are copied too: changing the caller's list later must not reach the context.
+    french.append(glossary_entry("mic", "fr", "micro"))
+    with pytest.raises(AttributeError):
+        context.vocabulary_for(FRENCH).append(glossary_entry("mic", "fr", "micro"))
 
-    assert dict(context.vocabulary) == {"fr": french}
-    assert context == TranslationContext(vocabulary={"fr": french})
+    assert dict(context.vocabulary) == {"fr": (french[0],)}
+    assert context == TranslationContext(vocabulary={"fr": french[:1]})
+
+
+def test_a_context_can_be_pickled_copied_and_turned_into_a_dict():
+    """A remote backend may serialise the context, so the read-only view must not block it."""
+    import copy
+    import dataclasses
+    import pickle
+
+    entry = glossary_entry("booth", "fr", "cabine")
+    context = TranslationContext(persona="Formal", style="Concise", vocabulary={"fr": [entry]})
+
+    assert pickle.loads(pickle.dumps(context)) == context
+    copied = copy.deepcopy(context)
+    assert copied == context
+    with pytest.raises(TypeError):
+        copied.vocabulary["de"] = ()
+    assert dataclasses.asdict(context) == {"persona": "Formal", "style": "Concise", "vocabulary": {"fr": (entry,)}}
 
 
 # --- translate_each ------------------------------------------------------------------------
@@ -173,6 +192,30 @@ async def test_translate_each_raises_when_nothing_was_translated():
         await translate_each(translate_one, [FRENCH, GERMAN], ["Hello"])
 
 
+async def test_translate_each_logs_every_error_when_all_calls_fail(caplog):
+    async def translate_one(text, target):
+        raise RuntimeError(f"{target.code} is down")
+
+    with caplog.at_level("ERROR", logger="portal.translations.engine"):
+        with pytest.raises(RuntimeError, match="fr is down"):
+            await translate_each(translate_one, [FRENCH, GERMAN], ["Hello"])
+
+    assert [record.getMessage() for record in caplog.records if "de is down" in record.getMessage()], (
+        "the error that is not re-raised is still logged"
+    )
+
+
+async def test_translate_each_returns_none_without_raising_when_only_some_calls_errored():
+    """A backend's own None (an unsupported language) is an answer, not an error."""
+
+    async def translate_one(text, target):
+        if target.code == "de":
+            raise RuntimeError("down")
+        return None
+
+    assert await translate_each(translate_one, [FRENCH, GERMAN], ["Hello"]) == [[None, None]]
+
+
 async def test_translate_each_without_targets_or_texts_calls_nothing():
     translate_one = AsyncMock()
 
@@ -210,7 +253,7 @@ async def test_provider_engine_passes_each_target_its_languages_and_glossary():
         "style": "Concise",
     }
     assert [call.kwargs for call in provider.translate.await_args_list] == [
-        {**shared, "target_lang_name": "French", "target_lang_code": "fr", "vocabulary_entries": french},
+        {**shared, "target_lang_name": "French", "target_lang_code": "fr", "vocabulary_entries": tuple(french)},
         {**shared, "target_lang_name": "German", "target_lang_code": "de", "vocabulary_entries": ()},
     ]
 

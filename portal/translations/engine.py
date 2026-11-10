@@ -10,10 +10,9 @@ from __future__ import annotations
 import asyncio
 import logging
 from abc import ABC, abstractmethod
-from collections.abc import Awaitable, Callable, Mapping, Sequence
+from collections.abc import Awaitable, Callable, Iterator, Mapping, Sequence
 from dataclasses import dataclass, field
 from enum import Enum
-from types import MappingProxyType
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
@@ -55,6 +54,32 @@ class Language:
     name: str
 
 
+class _Glossaries(Mapping[str, "tuple[GlossaryEntry, ...]"]):
+    """A read-only copy of the glossaries by target language code.
+
+    A plain class, not ``MappingProxyType``, so a context can still be pickled, deep-copied
+    and passed to ``dataclasses.asdict`` (a remote backend may need to serialise it). The
+    entry lists are stored as tuples, so they cannot be changed either.
+    """
+
+    __slots__ = ("_by_code",)
+
+    def __init__(self, vocabulary: Mapping[str, Sequence[GlossaryEntry]]) -> None:
+        self._by_code = {code: tuple(entries) for code, entries in vocabulary.items()}
+
+    def __getitem__(self, code: str) -> tuple[GlossaryEntry, ...]:
+        return self._by_code[code]
+
+    def __iter__(self) -> Iterator[str]:
+        return iter(self._by_code)
+
+    def __len__(self) -> int:
+        return len(self._by_code)
+
+    def __repr__(self) -> str:
+        return f"{type(self).__name__}({self._by_code!r})"
+
+
 @dataclass(frozen=True, slots=True)
 class TranslationContext:
     """What one source stream (a room's floor or a booth) wants applied to its translations.
@@ -70,9 +95,9 @@ class TranslationContext:
     vocabulary: Mapping[str, Sequence[GlossaryEntry]] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
-        # A copy behind a read-only view, so neither the engine nor the caller's own
-        # dict can change a context that is already on its way to a model.
-        object.__setattr__(self, "vocabulary", MappingProxyType(dict(self.vocabulary)))
+        # A read-only copy, lists included, so neither the engine nor the caller's own
+        # dict or lists can change a context that is already on its way to a model.
+        object.__setattr__(self, "vocabulary", _Glossaries(self.vocabulary))
 
     def vocabulary_for(self, target: Language) -> Sequence[GlossaryEntry]:
         return self.vocabulary.get(target.code, ())
@@ -111,7 +136,9 @@ class TranslationEngine(ABC):
 
         Returns ``len(texts)`` rows of ``len(targets)`` translations each. A translation
         that failed is ``None`` in its place, so one unsupported language or one failed
-        request does not cost the others. The call raises only when nothing was translated.
+        request does not cost the others. The call raises only when every request failed
+        with an error. A backend answering ``None`` itself (say for a language it lacks) is
+        not an error, so a mix of errors and such answers returns all ``None`` without raising.
         """
 
     async def translate_text(
@@ -141,7 +168,8 @@ async def translate_each(
     """Build ``translate_batch`` rows from a backend that translates one text into one language.
 
     A call that raises becomes ``None`` in its place, unless every call raised: then the
-    first error is re-raised, as ``translate_batch`` promises.
+    first error is re-raised, as ``translate_batch`` promises. Every error is logged,
+    including the ones that are not re-raised.
 
     Every call starts at once: ``len(texts) * len(targets)`` of them, with no limit here.
     That is safe only while the caller bounds how much it sends, as the worker does today
@@ -158,9 +186,9 @@ async def translate_each(
         return_exceptions=True,
     )
     errors = [(position, outcome) for position, outcome in enumerate(outcomes) if isinstance(outcome, BaseException)]
-    if len(errors) == len(outcomes):
-        raise errors[0][1]
-    for position, error in errors:
+    all_failed = len(errors) == len(outcomes)
+    # When every call failed the first error is re-raised and logged by the caller.
+    for position, error in errors[1:] if all_failed else errors:
         # The text's index, never the text: transcripts stay out of the logs.
         logger.error(
             "Translation into %r failed for text %d of %d in a batch: %r",
@@ -169,6 +197,8 @@ async def translate_each(
             len(texts),
             error,
         )
+    if all_failed:
+        raise errors[0][1]
 
     return [
         [None if isinstance(outcome, BaseException) else outcome for outcome in outcomes[start : start + width]]
