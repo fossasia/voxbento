@@ -6,31 +6,41 @@ import logging
 import os
 import threading
 import time
-from collections.abc import Sequence
+from collections.abc import Awaitable, Mapping, Sequence
 from dataclasses import dataclass
+from types import MappingProxyType
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
     import ctranslate2
     from transformers import PreTrainedTokenizer, PreTrainedTokenizerFast
 
+import pycountry
+from huggingface_hub.utils import LocalEntryNotFoundError
 from tqdm.auto import tqdm
 
-from portal.translations.constants import NLLB_LANGUAGE_MAP
+from portal.translations.constants import TranslationProviderEnum
+from portal.translations.engine import (
+    EngineKind,
+    Language,
+    TranslationContext,
+    TranslationEngine,
+    TranslationRows,
+    translate_each,
+)
 from portal.translations.providers.base import TranslationProvider
+from portal.translations.registry import NLLB_200_DISTILLED_600M, get_translation_model
+from portal.translations.vocabulary import protect_terms, restore_terms
 
 logger = logging.getLogger(__name__)
 
 _download_progress = {}
 _progress_lock = threading.Lock()
 
-_CODE_TO_NAME = {
-    'af': 'Afrikaans', 'ak': 'Akan', 'am': 'Amharic', 'ar': 'Arabic', 'an': 'Aragonese', 'hy': 'Armenian', 'as': 'Assamese', 'av': 'Avaric', 'ae': 'Avestan', 'ay': 'Aymara', 'az': 'Azerbaijani', 'bm': 'Bambara', 'ba': 'Bashkir', 'eu': 'Basque', 'be': 'Belarusian', 'bn': 'Bengali', 'bi': 'Bislama', 'bs': 'Bosnian', 'br': 'Breton', 'bg': 'Bulgarian', 'my': 'Burmese', 'ca': 'Catalan', 'ch': 'Chamorro', 'ce': 'Chechen', 'ny': 'Chichewa', 'zh': 'Chinese', 'cv': 'Chuvash', 'kw': 'Cornish', 'co': 'Corsican', 'cr': 'Cree', 'hr': 'Croatian', 'cs': 'Czech', 'da': 'Danish', 'dv': 'Divehi', 'nl': 'Dutch', 'dz': 'Dzongkha', 'en': 'English', 'eo': 'Esperanto', 'et': 'Estonian', 'ee': 'Ewe', 'fo': 'Faroese', 'fj': 'Fijian', 'fi': 'Finnish', 'fr': 'French', 'ff': 'Fula', 'gl': 'Galician', 'lg': 'Ganda', 'ka': 'Georgian', 'de': 'German', 'el': 'Greek, Modern (1453-)', 'gn': 'Guarani', 'gu': 'Gujarati', 'ht': 'Haitian', 'ha': 'Hausa', 'he': 'Hebrew', 'hz': 'Herero', 'hi': 'Hindi', 'ho': 'Hiri Motu', 'hu': 'Hungarian', 'is': 'Icelandic', 'io': 'Ido', 'ig': 'Igbo', 'id': 'Indonesian', 'ia': 'Interlingua', 'ie': 'Interlingue', 'iu': 'Inuktitut', 'ik': 'Inupiaq', 'ga': 'Irish', 'it': 'Italian', 'ja': 'Japanese', 'jv': 'Javanese', 'kl': 'Kalaallisut', 'kn': 'Kannada', 'kr': 'Kanuri', 'ks': 'Kashmiri', 'kk': 'Kazakh', 'km': 'Khmer', 'ki': 'Kikuyu', 'rw': 'Kinyarwanda', 'rn': 'Kirundi', 'kv': 'Komi', 'kg': 'Kongo', 'ko': 'Korean', 'ku': 'Kurdish', 'kj': 'Kwanyama', 'ky': 'Kirghiz', 'lo': 'Lao', 'la': 'Latin', 'lv': 'Latvian', 'li': 'Limburgish', 'ln': 'Lingala', 'lt': 'Lithuanian', 'lu': 'Luba-Katanga', 'lb': 'Luxembourgish', 'mi': 'Maori', 'mk': 'Macedonian', 'mg': 'Malagasy', 'ms': 'Malay', 'ml': 'Malayalam', 'mt': 'Maltese', 'gv': 'Manx', 'mr': 'Marathi', 'mh': 'Marshallese', 'mn': 'Mongolian', 'na': 'Nauru', 'nv': 'Navajo', 'ng': 'Ndonga', 'ne': 'Nepali', 'nd': 'Northern Ndebele', 'se': 'Northern Sami', 'no': 'Norwegian', 'nb': 'Norwegian Bokmål', 'nn': 'Norwegian Nynorsk', 'ii': 'Nuosu', 'oc': 'Occitan (post 1500)', 'oj': 'Ojibwe', 'cu': 'Old Church Slavonic', 'or': 'Oriya', 'om': 'Oromo', 'os': 'Ossetian', 'pi': 'Pāli', 'pa': 'Panjabi', 'ps': 'Pashto', 'fa': 'Persian', 'pl': 'Polish', 'pt': 'Portuguese', 'qu': 'Quechua', 'ro': 'Romanian', 'rm': 'Romansh', 'ru': 'Russian', 'sm': 'Samoan', 'sg': 'Sango', 'sa': 'Sanskrit', 'sc': 'Sardinian', 'gd': 'Scottish Gaelic', 'sr': 'Serbian', 'sn': 'Shona', 'sd': 'Sindhi', 'si': 'Sinhala', 'sk': 'Slovak', 'sl': 'Slovenian', 'so': 'Somali', 'nr': 'Southern Ndebele', 'st': 'Southern Sotho', 'es': 'Spanish', 'su': 'Sundanese', 'sw': 'Swahili', 'ss': 'Swati', 'sv': 'Swedish', 'tl': 'Tagalog', 'ty': 'Tahitian', 'tg': 'Tajik', 'ta': 'Tamil', 'tt': 'Tatar', 'te': 'Telugu', 'th': 'Thai', 'bo': 'Tibetan', 'ti': 'Tigrinya', 'to': 'Tonga', 'ts': 'Tsonga', 'tn': 'Tswana', 'tr': 'Turkish', 'tk': 'Turkmen', 'tw': 'Twi', 'uk': 'Ukrainian', 'ur': 'Urdu', 'ug': 'Uyghur', 'uz': 'Uzbek', 've': 'Venda', 'vi': 'Vietnamese', 'vo': 'Volapük', 'wa': 'Walloon', 'cy': 'Welsh', 'fy': 'Western Frisian', 'wo': 'Wolof', 'xh': 'Xhosa', 'yi': 'Yiddish', 'yo': 'Yoruba', 'za': 'Zhuang', 'zu': 'Zulu'
-}
-
 
 class ModelDownloadTqdm(tqdm):
     def update(self, n=1):
+        """Update download progress percentage for tqdm callbacks."""
         super().update(n)
         if hasattr(self, "total") and self.total is not None and self.total > 10 * 1024 * 1024:
             model_size = getattr(self, "_custom_model_id", "nllb-200-distilled-600M")
@@ -45,16 +55,48 @@ class ModelDownloadTqdm(tqdm):
                     _download_progress[model_size]["status"] = "downloading"
 
 
-def get_hf_repo_and_revision(model_size: str) -> tuple[str, str]:
-    hf_repo_id = model_size
-    rev = "main"
-    if model_size == "nllb-200-distilled-600M":
-        hf_repo_id = "JustFrederik/nllb-200-distilled-600M-ct2-int8"
-        rev = "302d78f00e6fdb50a1064059df7c392b735e9d05"
-    return hf_repo_id, rev
+def _hf_source(model_size: str) -> tuple[str, str]:
+    """The Hugging Face repository and revision to load ``model_size`` from.
+
+    A registered model comes from its pinned revision. Any other name is used as the
+    repository itself, as before the registry.
+    """
+    entry = get_translation_model(model_size)
+    if entry:
+        return entry.hf_repo, entry.hf_revision
+    return model_size, "main"
+
+
+#: Names historically accepted for languages whose official or pycountry name differs.
+_LEGACY_LANGUAGE_NAMES: Mapping[str, str] = MappingProxyType(
+    {
+        "Greek, Modern (1453-)": "el",
+        "Greek": "el",
+    }
+)
+
+
+def _engine_code(model_size: str, language_code: str, language_name: str) -> str | None:
+    """The code ``model_size`` uses for a language, looked up by ISO 639-1 code.
+
+    A model without a registry entry (an operator's own NLLB build, loaded from a path) uses
+    the NLLB-200 language codes. A caller that has only the English name gets it resolved
+    to its ISO code first; the name may also be the ISO code itself.
+    """
+    entry = get_translation_model(model_size) or NLLB_200_DISTILLED_600M
+    for code in (language_code, language_name):
+        engine_code = entry.engine_code(code) if code else None
+        if engine_code:
+            return engine_code
+    iso_code = _LEGACY_LANGUAGE_NAMES.get(language_name)
+    if not iso_code and language_name:
+        record = pycountry.languages.get(name=language_name)
+        iso_code = getattr(record, "alpha_2", None)
+    return entry.engine_code(iso_code) if iso_code else None
 
 
 def trigger_download(model_size: str):
+    """Trigger manual download of a translation model repository in the background."""
     logger.info(f"Triggering manual download for {model_size}")
 
     class ScopedTqdm(ModelDownloadTqdm):
@@ -68,7 +110,7 @@ def trigger_download(model_size: str):
     try:
         from huggingface_hub import snapshot_download
 
-        hf_repo_id, rev = get_hf_repo_and_revision(model_size)
+        hf_repo_id, rev = _hf_source(model_size)
 
         snapshot_download(repo_id=hf_repo_id, revision=rev, tqdm_class=ScopedTqdm)
         with _progress_lock:
@@ -80,6 +122,7 @@ def trigger_download(model_size: str):
 
 
 def get_download_progress(model_size: str):
+    """Return download/cache status; cache misses are normal, other probe failures warn."""
     with _progress_lock:
         prog = _download_progress.get(model_size)
         if prog:
@@ -89,11 +132,14 @@ def get_download_progress(model_size: str):
     try:
         from huggingface_hub import snapshot_download
 
-        hf_repo_id, rev = get_hf_repo_and_revision(model_size)
+        hf_repo_id, rev = _hf_source(model_size)
 
         snapshot_download(repo_id=hf_repo_id, revision=rev, local_files_only=True)
         return {"status": "completed", "n": 1, "total": 1, "rate": 0}
-    except Exception:
+    except LocalEntryNotFoundError:
+        return {}
+    except Exception as exc:
+        logger.warning("Local model cache lookup failed (%s); download status unavailable", type(exc).__name__)
         return {}
 
 
@@ -125,6 +171,7 @@ def decrement_model_ref(model_size: str):
 
 
 def get_model_and_tokenizer(model_size: str):
+    """Load or retrieve the cached CTranslate2 generator and tokenizer for a local model."""
     with _model_lock:
         if model_size in _loaded_models:
             _loaded_models[model_size].last_used = time.time()
@@ -154,7 +201,7 @@ def get_model_and_tokenizer(model_size: str):
                 with _progress_lock:
                     _download_progress[model_size] = {"n": 0, "total": 100, "rate": 0, "status": "downloading"}
 
-                hf_repo_id, rev = get_hf_repo_and_revision(model_size)
+                hf_repo_id, rev = _hf_source(model_size)
 
                 local_model_path = snapshot_download(repo_id=hf_repo_id, revision=rev, tqdm_class=ScopedTqdm)
                 with _progress_lock:
@@ -216,12 +263,50 @@ def start_eviction_loop():
             pass
 
 
-class LocalProvider(TranslationProvider):
+class LocalProvider(TranslationProvider, TranslationEngine):
+    """NLLB through CTranslate2, in the portal process."""
+
+    kind = EngineKind.CT2_SEQ2SEQ
+
     #: Set once the operator has been told the interpretation settings do not apply here.
     _warned_unsupported_settings = False
 
     def __init__(self):
         start_eviction_loop()
+
+    async def translate_batch(
+        self,
+        source: Language,
+        targets: Sequence[Language],
+        texts: Sequence[str],
+        context: TranslationContext,
+        *,
+        model: str,
+        api_key: str | None = None,
+    ) -> TranslationRows:
+        """One model call per text and target; a language NLLB lacks is ``None`` in its column.
+
+        A call is one forward pass, or two when the model drops a glossary placeholder and
+        the text is translated again without it.
+        """
+
+        def translate_one(text: str, target: Language) -> Awaitable[str | None]:
+            """Translate one text into one target language using the local engine."""
+            return self.translate(
+                provider_name=TranslationProviderEnum.LOCAL.value,
+                text=text,
+                target_lang_name=target.name,
+                target_lang_code=target.code,
+                source_lang_name=source.name,
+                source_lang_code=source.code,
+                model=model,
+                api_key=api_key,
+                persona=context.persona,
+                style=context.style,
+                vocabulary_entries=context.vocabulary_for(target),
+            )
+
+        return await translate_each(translate_one, targets, texts)
 
     async def translate(
         self,
@@ -235,50 +320,49 @@ class LocalProvider(TranslationProvider):
         persona: str | None = None,
         style: str | None = None,
         vocabulary_entries: Sequence[Any] = (),
+        source_lang_code: str = "",
     ) -> str | None:
+        """Translate a single text using a local sequence-to-sequence model."""
         logger.debug(
             f"[NLLB] translate called: source='{source_lang_name}' -> target='{target_lang_name}' "
             f"model='{model}' text_len={len(text)}"
         )
-        # NLLB is sequence-to-sequence and has no system-prompt channel, so the room's
-        # interpretation settings cannot be applied here. Say so once per process rather
-        # than letting configured settings look active.
-        ignored = [
-            name
-            for name, value in (("persona", persona), ("style", style), ("vocabulary", vocabulary_entries))
-            if value
-        ]
+        # NLLB is sequence-to-sequence and has no system-prompt channel, so persona and style
+        # cannot be applied here (glossary terms are, through placeholders). Say so once per
+        # process rather than letting configured settings look active.
+        ignored = [name for name, value in (("persona", persona), ("style", style)) if value]
         if ignored and not LocalProvider._warned_unsupported_settings:
             LocalProvider._warned_unsupported_settings = True
             logger.warning(
-                f"[NLLB] The local provider ignores {', '.join(ignored)}: NLLB takes no system prompt. "
-                "Select a cloud translation provider for these settings to take effect."
+                "[NLLB] The local provider ignores %s: NLLB takes no system prompt. "
+                "Select a cloud translation provider for these settings to take effect.",
+                ", ".join(ignored),
             )
 
-
-        if target_lang_name in _CODE_TO_NAME:
-            target_lang_name = _CODE_TO_NAME[target_lang_name]
-        if source_lang_name in _CODE_TO_NAME:
-            source_lang_name = _CODE_TO_NAME[source_lang_name]
-
-        target_lang_token = NLLB_LANGUAGE_MAP.get(target_lang_name)
-        source_lang_token = NLLB_LANGUAGE_MAP.get(source_lang_name)
+        target_lang_token = _engine_code(model, target_lang_code, target_lang_name)
+        source_lang_token = _engine_code(model, source_lang_code, source_lang_name)
         if not target_lang_token:
-            logger.error(
-                f"[NLLB] Target language '{target_lang_name}' not found in NLLB_LANGUAGE_MAP. "
-                f"Available keys (sample): {list(NLLB_LANGUAGE_MAP.keys())[:10]}"
-            )
+            logger.error("[NLLB] Model %r does not translate into %r (%s)", model, target_lang_code, target_lang_name)
             return None
         if not source_lang_token:
-            logger.error(
-                f"[NLLB] Source language '{source_lang_name}' not found in NLLB_LANGUAGE_MAP. "
-                f"Available keys (sample): {list(NLLB_LANGUAGE_MAP.keys())[:10]}"
-            )
+            logger.error("[NLLB] Model %r does not translate from %r (%s)", model, source_lang_code, source_lang_name)
             return None
 
         logger.debug(
             f"[NLLB] Language tokens resolved: source_token='{source_lang_token}' target_token='{target_lang_token}'"
         )
+        segment = protect_terms(text, vocabulary_entries)
+        if segment.target_terms:
+            translated = await asyncio.to_thread(
+                self._run_inference, segment.text, source_lang_token, target_lang_token, model
+            )
+            if translated is None:
+                return None
+            restored = restore_terms(translated, segment)
+            if restored is not None:
+                return restored
+            # Never show a placeholder to listeners: translate the original segment instead.
+            logger.debug("[NLLB] Glossary placeholders did not survive translation; using the plain translation")
         return await asyncio.to_thread(self._run_inference, text, source_lang_token, target_lang_token, model)
 
     def _run_inference(self, text: str, source_lang_token: str, target_lang_token: str, model_size: str) -> str | None:
@@ -312,6 +396,7 @@ class LocalProvider(TranslationProvider):
 
         except Exception as e:
             import traceback
+
             logger.error(
                 f"[NLLB] _run_inference failed: {e}\n"
                 f"source_token={source_lang_token}, target_token={target_lang_token}, model={model_size}\n"
