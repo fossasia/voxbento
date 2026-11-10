@@ -646,6 +646,7 @@ async def upsert_room(
     db: AsyncSession = Depends(get_db_session),
     token: OAuthToken = Depends(require_oauth_scope("rooms:write")),
 ):
+    """Create or update a room after validating its resulting translation configuration."""
     from portal.booth_identity import make_mediamtx_path
     from portal.globals import booths
 

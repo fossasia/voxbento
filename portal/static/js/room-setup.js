@@ -183,7 +183,7 @@ if (root && form) {
 
   // ── Captions & AI services ─────────────────────────────────────────────
 
-  // A translation service is offered only while it can translate the language spoken and every AI language.
+  /** Filter services against the spoken and AI languages only while AI delivery is selected. */
   function syncTranslationEngines(ai) {
     const select = form.querySelector('#rs-translation');
     if (!select || !ai.length) return;

@@ -53,6 +53,7 @@ UNSUPPORTED = "The built-in translator (nllb-200-distilled-600M) doesn't support
 
 
 def test_only_the_built_in_translator_has_a_fixed_language_list():
+    """Only the built in translator has a fixed language list."""
     assert fixed_language_model("local", NLLB) is NLLB_200_DISTILLED_600M
     for provider in ("openai", "gemini", "anthropic", "groq", "openrouter", "self_hosted", "", None):
         assert fixed_language_model(provider, "any-model") is None
@@ -61,19 +62,23 @@ def test_only_the_built_in_translator_has_a_fixed_language_list():
 
 
 def test_a_built_in_model_without_an_entry_uses_the_nllb_languages():
+    """A built in model without an entry uses the nllb languages."""
     assert fixed_language_model("local", "/models/my-nllb-build") is NLLB_200_DISTILLED_600M
     assert fixed_language_model("local", None) is NLLB_200_DISTILLED_600M
 
 
 def test_supported_languages_are_the_registry_entrys_codes():
+    """Supported languages are the registry entrys codes."""
     assert supported_languages("local", NLLB) == sorted(NLLB_200_DISTILLED_600M.languages)
 
 
 def test_unsupported_languages_skip_a_language_that_is_not_set():
+    """Unsupported languages skip a language that is not set."""
     assert unsupported_languages("local", NLLB, [None, "en", "", "az", "fr", "no", "az"]) == ["az", "no"]
 
 
 def test_the_error_names_the_model_and_every_language_it_lacks():
+    """The error names the model and every language it lacks."""
     assert language_support_error("local", NLLB, ["en", "fr", "el"]) is None
     assert language_support_error("openai", "gpt-4o-mini", ["en", "az"]) is None
     assert language_support_error("local", NLLB, ["az", "fr", "no"]) == (
@@ -83,6 +88,7 @@ def test_the_error_names_the_model_and_every_language_it_lacks():
 
 
 def test_the_catalog_tells_the_setup_form_which_services_have_a_fixed_list():
+    """The catalog tells the setup form which services have a fixed list."""
     event = Event(slug="demo", display_name="Demo", encrypted_translation_openai_api_key=encrypt_val("sk-test"))
     catalog = engine_catalog(event)
 
@@ -97,6 +103,7 @@ def test_the_catalog_tells_the_setup_form_which_services_have_a_fixed_list():
 
 @pytest.fixture
 async def setup_db():
+    """Provide an isolated database for language validation tests."""
     configure("sqlite+aiosqlite://")
     await init_db()
     yield
@@ -105,6 +112,7 @@ async def setup_db():
 
 @pytest.fixture
 async def admin_room(setup_db):
+    """Create an authenticated admin and a room with a hosted translation key."""
     async with get_session() as s:
         admin = User(email="lang-admin@example.com", display_name="Admin", is_admin=True, email_verified=True)
         s.add(admin)
@@ -119,6 +127,7 @@ async def admin_room(setup_db):
 
 @pytest.fixture
 async def admin_booth(admin_room):
+    """Add a French booth to the authenticated room fixture."""
     cookie, event_id, room_id = admin_room
     async with get_session() as s:
         booth = await create_booth(s, event_id=event_id, room_id=room_id, language_code="fr", language_name="French")
@@ -126,15 +135,18 @@ async def admin_booth(admin_room):
 
 
 def _client(cookies: dict[str, str]) -> AsyncClient:
+    """Build an ASGI client carrying the given session cookies."""
     return AsyncClient(transport=ASGITransport(app=app), base_url="http://test", cookies=cookies)
 
 
 async def _room(room_id: int) -> Room:
+    """Read persisted room settings after a request."""
     async with get_session() as s:
         return await s.get(Room, room_id)
 
 
 async def _room_targets(room_id: int) -> list[str]:
+    """Read the enabled target languages persisted for a room."""
     async with get_session() as s:
         rows = await s.scalars(
             select(RoomTranslationLanguage.language_code).where(
@@ -158,6 +170,7 @@ async def _set_room(room_id: int, *, provider: str, targets: list[str], source: 
 
 
 async def _post_room(cookie, event_id, room_id, **fields):
+    """Submit room settings through the admin form."""
     async with _client(cookie) as client:
         return await client.post(f"/admin/events/{event_id}/rooms/{room_id}/edit", data=fields, headers=ORIGIN)
 
@@ -167,6 +180,7 @@ async def _post_room(cookie, event_id, room_id, **fields):
 
 @pytest.mark.anyio
 async def test_room_ai_settings_refuse_a_model_that_lacks_a_room_language(admin_room):
+    """Room ai settings refuse a model that lacks a room language."""
     cookie, event_id, room_id = admin_room
     await _set_room(room_id, provider="openai", targets=["fr", "az"])
 
@@ -180,6 +194,7 @@ async def test_room_ai_settings_refuse_a_model_that_lacks_a_room_language(admin_
 
 @pytest.mark.anyio
 async def test_room_ai_settings_refuse_a_model_that_lacks_the_language_spoken(admin_room):
+    """Room ai settings refuse a model that lacks the language spoken."""
     cookie, event_id, room_id = admin_room
     await _set_room(room_id, provider="openai", targets=["fr"], source="az")
 
@@ -191,6 +206,7 @@ async def test_room_ai_settings_refuse_a_model_that_lacks_the_language_spoken(ad
 
 @pytest.mark.anyio
 async def test_room_ai_settings_accept_a_model_that_translates_every_language(admin_room):
+    """Room ai settings accept a model that translates every language."""
     cookie, event_id, room_id = admin_room
     await _set_room(room_id, provider="openai", targets=["fr", "el"])
 
@@ -203,6 +219,7 @@ async def test_room_ai_settings_accept_a_model_that_translates_every_language(ad
 
 @pytest.mark.anyio
 async def test_a_room_saved_before_the_rule_can_still_save_its_other_settings(admin_room):
+    """A room saved before the rule can still save its other settings."""
     cookie, event_id, room_id = admin_room
     await _set_room(room_id, provider="local", targets=["az"])
 
@@ -223,6 +240,7 @@ async def test_a_room_saved_before_the_rule_can_still_save_its_other_settings(ad
 
 @pytest.mark.anyio
 async def test_room_page_offers_only_services_that_translate_its_languages(admin_room):
+    """Room page offers only services that translate its languages."""
     cookie, event_id, room_id = admin_room
     await _set_room(room_id, provider="openai", targets=["az"])
 
@@ -237,6 +255,7 @@ async def test_room_page_offers_only_services_that_translate_its_languages(admin
 
 @pytest.mark.anyio
 async def test_room_page_still_shows_the_saved_service_when_it_no_longer_fits(admin_room):
+    """Room page still shows the saved service when it no longer fits."""
     cookie, event_id, room_id = admin_room
     await _set_room(room_id, provider="local", targets=["az"])
 
@@ -249,6 +268,7 @@ async def test_room_page_still_shows_the_saved_service_when_it_no_longer_fits(ad
 
 @pytest.mark.anyio
 async def test_room_setup_form_gets_the_language_list_of_the_built_in_translator(admin_room):
+    """Room setup form gets the language list of the built in translator."""
     cookie, event_id, room_id = admin_room
 
     async with _client(cookie) as client:
@@ -262,6 +282,7 @@ async def test_room_setup_form_gets_the_language_list_of_the_built_in_translator
 
 
 def _translation_form(**fields) -> dict:
+    """Build the legacy room translation form fields."""
     return {
         "form_section": "translation",
         "floor_translation_enabled": "on",
@@ -274,6 +295,7 @@ def _translation_form(**fields) -> dict:
 
 @pytest.mark.anyio
 async def test_older_room_form_refuses_a_language_the_model_lacks(admin_room):
+    """Older room form refuses a language the model lacks."""
     cookie, event_id, room_id = admin_room
 
     res = await _post_room(cookie, event_id, room_id, **_translation_form(floor_translation_languages=["fr", "az"]))
@@ -287,6 +309,7 @@ async def test_older_room_form_refuses_a_language_the_model_lacks(admin_room):
 
 @pytest.mark.anyio
 async def test_older_room_form_saves_languages_the_model_translates(admin_room):
+    """Older room form saves languages the model translates."""
     cookie, event_id, room_id = admin_room
 
     res = await _post_room(cookie, event_id, room_id, **_translation_form(floor_translation_languages=["fr", "de"]))
@@ -297,6 +320,7 @@ async def test_older_room_form_saves_languages_the_model_translates(admin_room):
 
 @pytest.mark.anyio
 async def test_older_room_form_lets_a_hosted_model_translate_any_language(admin_room):
+    """Older room form lets a hosted model translate any language."""
     cookie, event_id, room_id = admin_room
 
     res = await _post_room(
@@ -316,6 +340,7 @@ async def test_older_room_form_lets_a_hosted_model_translate_any_language(admin_
 
 @pytest.mark.anyio
 async def test_older_room_form_can_always_turn_translation_off(admin_room):
+    """Older room form can always turn translation off."""
     cookie, event_id, room_id = admin_room
     await _set_room(room_id, provider="local", targets=["az"])
 
@@ -329,6 +354,7 @@ async def test_older_room_form_can_always_turn_translation_off(admin_room):
 
 @pytest.mark.anyio
 async def test_older_room_form_refuses_a_spoken_language_the_model_lacks(admin_room):
+    """Older room form refuses a spoken language the model lacks."""
     cookie, event_id, room_id = admin_room
     await _set_room(room_id, provider="local", targets=["fr"])
 
@@ -350,6 +376,7 @@ async def test_older_room_form_refuses_a_spoken_language_the_model_lacks(admin_r
 
 
 async def _save_booth(cookie, event_id, room_id, booth_id, **fields):
+    """Submit booth translation settings through the admin form."""
     data = {"translation_provider": "local", "translation_model": NLLB, "translation_languages": ["de"], **fields}
     async with _client(cookie) as client:
         return await client.post(
@@ -360,12 +387,14 @@ async def _save_booth(cookie, event_id, room_id, booth_id, **fields):
 
 
 async def _booth(booth_id: int) -> DBBooth:
+    """Read persisted booth settings after a request."""
     async with get_session() as s:
         return await s.get(DBBooth, booth_id)
 
 
 @pytest.mark.anyio
 async def test_booth_refuses_a_language_the_model_lacks(admin_booth):
+    """Booth refuses a language the model lacks."""
     cookie, event_id, room_id, booth_id = admin_booth
 
     res = await _save_booth(
@@ -379,6 +408,7 @@ async def test_booth_refuses_a_language_the_model_lacks(admin_booth):
 
 @pytest.mark.anyio
 async def test_booth_saves_languages_the_model_translates(admin_booth):
+    """Booth saves languages the model translates."""
     cookie, event_id, room_id, booth_id = admin_booth
 
     res = await _save_booth(cookie, event_id, room_id, booth_id, translation_enabled="true")
@@ -390,6 +420,7 @@ async def test_booth_saves_languages_the_model_translates(admin_booth):
 
 @pytest.mark.anyio
 async def test_booth_lets_a_hosted_model_translate_any_language(admin_booth):
+    """Booth lets a hosted model translate any language."""
     cookie, event_id, room_id, booth_id = admin_booth
 
     res = await _save_booth(
@@ -408,6 +439,7 @@ async def test_booth_lets_a_hosted_model_translate_any_language(admin_booth):
 
 @pytest.mark.anyio
 async def test_booth_with_translation_off_is_not_checked(admin_booth):
+    """Booth with translation off is not checked."""
     cookie, event_id, room_id, booth_id = admin_booth
 
     res = await _save_booth(cookie, event_id, room_id, booth_id, translation_languages=["az"])
@@ -418,6 +450,7 @@ async def test_booth_with_translation_off_is_not_checked(admin_booth):
 
 @pytest.mark.anyio
 async def test_booth_language_cannot_change_to_one_its_model_lacks(admin_booth):
+    """Booth language cannot change to one its model lacks."""
     cookie, event_id, room_id, booth_id = admin_booth
     async with get_session() as s:
         booth = await s.get(DBBooth, booth_id)
@@ -439,6 +472,7 @@ async def test_booth_language_cannot_change_to_one_its_model_lacks(admin_booth):
 
 @pytest.mark.anyio
 async def test_booth_page_offers_only_services_that_translate_its_languages(admin_booth):
+    """Booth page offers only services that translate its languages."""
     cookie, event_id, room_id, booth_id = admin_booth
     async with get_session() as s:
         booth = await s.get(DBBooth, booth_id)
@@ -457,6 +491,7 @@ async def test_booth_page_offers_only_services_that_translate_its_languages(admi
 
 @pytest.mark.anyio
 async def test_booth_page_still_shows_the_saved_service_when_it_no_longer_fits(admin_booth):
+    """Booth page still shows the saved service when it no longer fits."""
     cookie, event_id, room_id, booth_id = admin_booth
     async with get_session() as s:
         booth = await s.get(DBBooth, booth_id)
@@ -477,6 +512,7 @@ async def test_booth_page_still_shows_the_saved_service_when_it_no_longer_fits(a
 
 @pytest.fixture
 async def api_event(setup_db):
+    """Create an owner and scoped OAuth token for room API tests."""
     async with get_session() as s:
         user = User(email="lang-owner@example.com", display_name="Owner", email_verified=True)
         s.add(user)
@@ -503,6 +539,7 @@ async def api_event(setup_db):
 
 
 async def _put_room(body: dict):
+    """Upsert the test room with its scoped OAuth token."""
     async with _client({}) as client:
         return await client.put(
             "/api/v1/events/apicon/rooms/hall-1", json=body, headers={"Authorization": f"Bearer {ACCESS_TOKEN}"}
@@ -510,6 +547,7 @@ async def _put_room(body: dict):
 
 
 async def _api_room() -> Room | None:
+    """Read the room saved by the room API."""
     async with get_session() as s:
         return await s.scalar(select(Room).where(Room.eventyay_room_id == "hall-1"))
 
@@ -526,6 +564,7 @@ LOCAL_ROOM = {
 
 @pytest.mark.anyio
 async def test_api_does_not_create_a_room_whose_model_lacks_a_language(api_event):
+    """API does not create a room whose model lacks a language."""
     res = await _put_room({**LOCAL_ROOM, "target_languages": ["fr", "az"]})
 
     assert res.status_code == 422
@@ -535,6 +574,7 @@ async def test_api_does_not_create_a_room_whose_model_lacks_a_language(api_event
 
 @pytest.mark.anyio
 async def test_api_creates_a_room_whose_model_translates_its_languages(api_event):
+    """API creates a room whose model translates its languages."""
     res = await _put_room(LOCAL_ROOM)
 
     assert res.status_code == 200
@@ -552,6 +592,7 @@ async def test_api_creates_a_room_whose_model_translates_its_languages(api_event
     ids=["spoken language", "target language"],
 )
 async def test_api_update_is_checked_against_the_room_as_it_will_be(api_event, update):
+    """API update is checked against the room as it will be."""
     assert (await _put_room(LOCAL_ROOM)).status_code == 200
 
     res = await _put_room(update)
@@ -565,6 +606,7 @@ async def test_api_update_is_checked_against_the_room_as_it_will_be(api_event, u
 
 @pytest.mark.anyio
 async def test_api_switching_to_the_built_in_model_checks_the_languages_already_saved(api_event):
+    """API switching to the built in model checks the languages already saved."""
     hosted = {**LOCAL_ROOM, "translation_provider": "openai", "translation_model": "gpt-4o-mini"}
     assert (await _put_room({**hosted, "target_languages": ["az"]})).status_code == 200
 
@@ -576,6 +618,7 @@ async def test_api_switching_to_the_built_in_model_checks_the_languages_already_
 
 @pytest.mark.anyio
 async def test_api_can_turn_translation_off_and_leaves_unrelated_updates_alone(api_event):
+    """API can turn translation off and leaves unrelated updates alone."""
     hosted = {**LOCAL_ROOM, "translation_provider": "openai", "translation_model": "gpt-4o-mini"}
     assert (await _put_room({**hosted, "target_languages": ["az"]})).status_code == 200
     async with get_session() as s:  # a room left on a model that lacks its language
@@ -587,3 +630,62 @@ async def test_api_can_turn_translation_off_and_leaves_unrelated_updates_alone(a
 
     assert (renamed.status_code, off.status_code) == (200, 200)
     assert (await _api_room()).floor_translation_enabled is False
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("prefix", ["/admin", "/workspace"])
+@pytest.mark.parametrize("save_path", ["room_ai", "room_source", "booth_translation", "booth_source"])
+async def test_browser_translation_errors_return_the_settings_form(admin_booth, prefix, save_path):
+    """Browser validation keeps the form and error visible without committing partial changes."""
+    cookie, event_id, room_id, booth_id = admin_booth
+    await _set_room(room_id, provider="openai", targets=["az"])
+    room_url = f"{prefix}/events/{event_id}/rooms/{room_id}"
+    booth_url = f"{room_url}/booths/{booth_id}"
+    if save_path == "room_ai":
+        url = f"{room_url}/edit"
+        fields = {
+            "form_section": "ai",
+            "floor_translation_provider": "local",
+            "floor_transcription_provider": "local",
+            "floor_transcription_model": "small",
+        }
+        expected_action = f"{room_url}/edit"
+    elif save_path == "room_source":
+        await _set_room(room_id, provider="local", targets=[])
+        url = f"{room_url}/edit"
+        fields = {"form_section": "transcription", "floor_language_code": "az"}
+        expected_action = f"{room_url}/edit"
+    elif save_path == "booth_translation":
+        url = f"{booth_url}/translation-settings"
+        fields = {
+            "translation_enabled": "true",
+            "translation_provider": "local",
+            "translation_model": NLLB,
+            "translation_languages": ["az"],
+        }
+        expected_action = url
+    else:
+        async with get_session() as session:
+            booth = await session.get(DBBooth, booth_id)
+            booth.translation_enabled = True
+            booth.translation_provider = "local"
+            booth.translation_model = NLLB
+        url = f"{booth_url}/edit"
+        fields = {"language_code": "az", "language_name": "Changed name"}
+        expected_action = url
+
+    async with _client(cookie) as client:
+        response = await client.post(url, data=fields, headers={**ORIGIN, "accept": "text/html"})
+
+    assert response.status_code == 400
+    assert response.headers["content-type"].startswith("text/html")
+    assert 'role="alert"' in response.text or "role='alert'" in response.text
+    assert "doesn&#39;t support Azerbaijani" in response.text
+    assert f'action="{expected_action}"' in response.text
+    room = await _room(room_id)
+    assert room.floor_language_code == "en"
+    assert room.floor_transcription_model != "small"
+    async with get_session() as session:
+        booth = await session.get(DBBooth, booth_id)
+        assert (booth.language_code, booth.language_name) == ("fr", "French")
+        assert booth.translation_enabled == (save_path == "booth_source")

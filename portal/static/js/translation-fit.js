@@ -3,13 +3,16 @@
 // `support` maps a service to the language codes it translates; a service that is not in
 // it translates anything. `needed` is the language spoken plus every language translated into.
 
+/** Return whether a service supports every required language. */
 export function translatesAll(support, provider, needed) {
   const codes = support[provider];
   return !codes || needed.every((code) => codes.includes(code));
 }
 
-// Hides the options that don't fit and moves the choice off a hidden one.
-// When nothing fits, the options are left as they are: saving says which language is the problem.
+/**
+ * Hide incompatible options and select a supported service when one exists.
+ * Leave all options available when none fit so save-time validation can explain why.
+ */
 export function syncTranslationOptions(select, support, needed) {
   const options = [...select.options];
   const fitting = options.filter((option) => translatesAll(support, option.value, needed));

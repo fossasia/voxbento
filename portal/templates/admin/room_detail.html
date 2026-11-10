@@ -12,6 +12,9 @@
 {% endblock %}
 
 {% block content %}
+{% if error_notice %}
+<div class='alert alert-danger' role='alert'>{{ error_notice }}</div>
+{% endif %}
 <div class="page-header room-header">
   <div>
     <h1>{{ room.display_name }}</h1>
