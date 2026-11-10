@@ -3,12 +3,15 @@ from __future__ import annotations
 import asyncio
 import logging
 
+from portal import youtube_captions
 from portal.database import get_session
 from portal.models import DBBooth, Event, Room, TranscriptTranslation
-from portal.transcription.timing import timing_metadata
+from portal.transcription.timing import segment_timing, timing_metadata
 from portal.translations.constants import OPENAI_COMPATIBLE_ENDPOINTS, TranslationProviderEnum
+from portal.translations.engine import EngineKind, Language, TranslationContext, TranslationEngine
 from portal.translations.keys import get_translation_api_key
 from portal.translations.providers.anthropic import AnthropicProvider
+from portal.translations.providers.base import ProviderEngine
 from portal.translations.providers.gemini import GeminiProvider
 from portal.translations.providers.local import LocalProvider
 from portal.translations.providers.openai import OpenAIProvider
@@ -24,13 +27,25 @@ VOCABULARY_LOOKUP_TIMEOUT = 2.0
 
 openai_provider = OpenAIProvider()
 
-PROVIDERS = {
-    TranslationProviderEnum.GEMINI.value: GeminiProvider(),
-    TranslationProviderEnum.ANTHROPIC.value: AnthropicProvider(),
+#: The engine behind each translation provider a room or booth can select.
+ENGINES: dict[str, TranslationEngine] = {
+    TranslationProviderEnum.GEMINI.value: ProviderEngine(
+        TranslationProviderEnum.GEMINI.value, GeminiProvider(), EngineKind.LLM_API
+    ),
+    TranslationProviderEnum.ANTHROPIC.value: ProviderEngine(
+        TranslationProviderEnum.ANTHROPIC.value, AnthropicProvider(), EngineKind.LLM_API
+    ),
     TranslationProviderEnum.LOCAL.value: LocalProvider(),
 }
 for p in OPENAI_COMPATIBLE_ENDPOINTS.keys():
-    PROVIDERS[p] = openai_provider
+    ENGINES[p] = ProviderEngine(p, openai_provider, EngineKind.OPENAI_COMPATIBLE_LLM)
+# The operator's self-hosted server speaks the same protocol; the provider picks its endpoint by name.
+ENGINES[TranslationProviderEnum.SELF_HOSTED.value] = ProviderEngine(
+    TranslationProviderEnum.SELF_HOSTED.value, openai_provider, EngineKind.OPENAI_COMPATIBLE_LLM
+)
+
+# Providers that run without a per-event API key.
+KEYLESS_PROVIDERS = {TranslationProviderEnum.LOCAL.value, TranslationProviderEnum.SELF_HOSTED.value}
 
 
 class TranslationWorker:
@@ -106,7 +121,7 @@ class TranslationWorker:
                 return
 
             api_key = self._get_translation_api_key(event, provider)
-            if not api_key and provider != TranslationProviderEnum.LOCAL.value:
+            if not api_key and provider not in KEYLESS_PROVIDERS:
                 logger.error(f"[{booth_id_str}] Translation API key not found for provider {provider}")
                 return
 
@@ -129,6 +144,13 @@ class TranslationWorker:
                         if t_booth_id:
                             await listener_manager.broadcast(t_booth_id, {"type": "translated_caption", "status": "final", "text": txt,
                                                                          "segment_id": u_seg_id, "seq": sq, **timing_metadata()})
+                        if b_id_str.endswith("-floor") and youtube_captions.wants(r_id, l_code):
+                            # The floor's own text is offered as "floor"; a YouTube track set to this
+                            # language code needs it offered under that code too.
+                            timing = segment_timing.get()
+                            youtube_captions.offer(
+                                r_id, l_code, txt, timing.source_received_at_ms if timing else None
+                            )
 
                     target_booth_id = f"{event.slug}-{room.id}-{lang.language_code}"
                     tasks.append(
@@ -140,7 +162,12 @@ class TranslationWorker:
                     from portal.websockets.manager import listener_manager
                     has_tts = tts_manager.has_listeners(room.id, lang.language_code, booth_id_str)
                     has_text = listener_manager.has_listeners(target_booth_id)
-                    if not has_tts and not has_text:
+                    # A language posted to YouTube's caption track is translated even with no listeners. Only the
+                    # floor's translations are posted there, so a booth's segments keep the listener rule.
+                    youtube_only = not has_tts and not has_text
+                    if youtube_only and not (
+                        booth_id_str.endswith("-floor") and youtube_captions.wants(room.id, lang.language_code)
+                    ):
                         continue
 
                     tasks.append(
@@ -161,6 +188,7 @@ class TranslationWorker:
                             seq,
                             target_booth_id,
                             segment.booth_id,
+                            synthesize_audio=not youtube_only,
                         )
                     )
 
@@ -189,8 +217,13 @@ class TranslationWorker:
         seq: int,
         target_booth_id: str | None = None,
         source_booth_id: int | None = None,
+        synthesize_audio: bool = True,
     ):
-        """Translate and deliver a segment, keeping advisory status failures outside inference."""
+        """Translate and deliver a segment, keeping advisory status failures outside inference.
+
+        ``synthesize_audio`` is False when nobody listens to this language (it is only translated for the
+        YouTube caption track), so no speech is generated for it.
+        """
         from portal.websockets.manager import tts_manager
 
         queue_key = f"{booth_id_str}:{lang_code}"
@@ -279,9 +312,18 @@ class TranslationWorker:
                     logger.error(f"[{booth_id_str}] Translation LLM timed out after {timeout_val}s for {lang_code}.")
                     translated_text = None
 
-                if not translated_text:
+                if translated_text is None:
                     await tts_manager.broadcast_bundle(
                         room.id, lang_code, booth_id_str, b"", uuid_segment_id, seq, text, "", "pipeline_failed"
+                    )
+                    return
+
+                if not translated_text.strip():
+                    # The engine ran and had nothing to say for this segment, which is not a failure.
+                    # Close the segment (no error, no audio to wait for) so listeners move on without
+                    # a message; there is nothing to store or speak.
+                    await tts_manager.broadcast_bundle(
+                        room.id, lang_code, booth_id_str, b"", uuid_segment_id, seq, text, "", None, audio_pending=False
                     )
                     return
 
@@ -301,10 +343,19 @@ class TranslationWorker:
                     from portal.websockets.manager import listener_manager
                     await listener_manager.broadcast(target_booth_id, {"type": "translated_caption", "status": "final", "text": translated_text,
                                                                       "segment_id": uuid_segment_id, "seq": seq, **timing_metadata()})
+                if booth_id_str.endswith("-floor"):
+                    # Non-blocking: queues the translation for the room's YouTube caption track, if it asks for this language.
+                    timing = segment_timing.get()
+                    youtube_captions.offer(
+                        room.id, lang_code, translated_text, timing.source_received_at_ms if timing else None
+                    )
 
             # Decrement queue early so slow TTS doesn't cause new incoming segments to be dropped
             LANGUAGE_QUEUES[queue_key] -= 1
             queue_decremented = True
+
+            if not synthesize_audio:
+                return
 
             from portal.tts.worker import synthesize
 
@@ -354,22 +405,22 @@ class TranslationWorker:
         style: str | None = None,
         vocabulary_entries: list | None = None,
     ) -> str | None:
-        provider_instance = PROVIDERS.get(provider)
-        if not provider_instance:
+        engine = ENGINES.get(provider)
+        if not engine:
             logger.error(f"Translation provider {provider} not supported.")
             return None
 
-        translated = await provider_instance.translate(
-            provider_name=provider,
-            text=text,
-            target_lang_name=target_lang_name,
-            target_lang_code=target_lang_code,
-            source_lang_name=source_lang_name,
+        translated = await engine.translate_text(
+            Language(code=source_language_code or "", name=source_lang_name),
+            Language(code=target_lang_code, name=target_lang_name),
+            text,
+            TranslationContext(
+                persona=persona,
+                style=style,
+                vocabulary={target_lang_code: vocabulary_entries} if vocabulary_entries else {},
+            ),
             model=model,
             api_key=api_key,
-            persona=persona,
-            style=style,
-            vocabulary_entries=vocabulary_entries or (),
         )
         if not translated:
             logger.warning(f"Provider {provider} returned empty translation for text: '{text}'")

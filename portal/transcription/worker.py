@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 import asyncio
 import logging
 import uuid
@@ -69,6 +71,9 @@ class TranscriptionWorkerSession:
         self.stop_event = asyncio.Event()
         self.task: asyncio.Task | None = None
         self.loop_entered = False
+        # Set once the first ffmpeg process is up, or once the loop ends without ever getting one.
+        self.ready = asyncio.Event()
+        self.start_error: BaseException | None = None
 
         from portal.booth_identity import make_mediamtx_path
 
@@ -93,15 +98,20 @@ class TranscriptionWorkerSession:
             self.task.cancel()
 
     async def wait_until_stopped(self):
+        """Wait for the session task to finish without letting a cancelled caller cut its cleanup short."""
         if self.task:
             try:
-                await self.task
+                await asyncio.shield(self.task)
             except asyncio.CancelledError:
-                pass
+                # The worker's own cancellation is how stop() ends it; the caller's must propagate.
+                current = asyncio.current_task()
+                if current is not None and current.cancelling():
+                    raise
             except Exception as e:
                 logger.error(f"[{self.booth_id}][{self.session_id}] Task ended with exception: {e}")
 
     async def _run_loop(self):
+        """Run provider retries and finish process, webhook, and model cleanup on exit."""
         self.loop_entered = True
         retry_count = 0
         try:
@@ -112,11 +122,13 @@ class TranscriptionWorkerSession:
 
                 self.state = State.RUNNING
                 await _wh_worker.enqueue_webhook(
-                    "booth.transcription.started", {"booth_id": self.booth_id, "session_id": self.session_id, "event_slug": self.event_slug}
+                    "booth.transcription.started",
+                    {"booth_id": self.booth_id, "session_id": self.session_id, "event_slug": self.event_slug},
                 )
 
                 # The context manager entirely encapsulates ffmpeg process lifecycle and cleanup.
                 async with FfmpegProcess(self.rtsp_url, self.sample_rate, self.booth_id) as process:
+                    self.ready.set()
                     try:
                         actual_language = self.transcription_language or self.language_code
                         if actual_language == "floor":
@@ -174,10 +186,17 @@ class TranscriptionWorkerSession:
                     await asyncio.wait_for(self.stop_event.wait(), timeout=1.0)
                 except TimeoutError:
                     pass
+        except Exception as exc:
+            # ffmpeg could not even be started: remember why, for whoever is waiting in wait_for_worker_start.
+            if not self.ready.is_set():
+                self.start_error = exc
+            raise
         finally:
+            self.ready.set()
             self.state = State.STOPPED
             await _wh_worker.enqueue_webhook(
-                "booth.transcription.stopped", {"booth_id": self.booth_id, "session_id": self.session_id, "event_slug": self.event_slug}
+                "booth.transcription.stopped",
+                {"booth_id": self.booth_id, "session_id": self.session_id, "event_slug": self.event_slug},
             )
             if self.provider_name == "local":
                 from portal.transcription.providers.local import decrement_model_ref
@@ -199,7 +218,10 @@ async def start_transcription_worker(
     config: ProviderConfig,
     transcription_language: str | None = None,
     room_id: int | None = None,
-):
+    *,
+    restart_on_key_change: bool = False,
+) -> bool:
+    """Return whether a new worker was started, optionally replacing changed credentials."""
     while True:
         async with active_workers_lock:
             existing_session = active_workers.get(booth_id)
@@ -228,25 +250,46 @@ async def start_transcription_worker(
                 )
                 active_workers[booth_id] = new_session
                 new_session.start()
-                return
+                return True
 
             if existing_session.state in (State.STOPPING, State.STOPPED):
-                if existing_session.state == State.STOPPED:
-                    # It's fully dead. Pop it and let the loop recreate it immediately.
+                if existing_session.state == State.STOPPED and (
+                    existing_session.task is None or existing_session.task.done()
+                ):
+                    # STOPPED precedes async cleanup; remove only after the task finishes.
                     active_workers.pop(booth_id)
                     continue
                 # Session is tearing down in the background. We must strictly serialize.
                 # Drop lock, actively await the old session's death, then loop around and re-check registry.
                 pass
+            elif restart_on_key_change and existing_session.config.get_key() != config.get_key():
+                existing_session.stop()
             else:
                 logger.info(f"Transcription worker for {booth_id} is already running.")
-                return
+                return False
 
         # We dropped the lock and the session is STOPPING. Wait for it to die completely.
         logger.info(
             f"[{booth_id}] start_transcription_worker actively waiting for old session [{existing_session.session_id}] to STOP."
         )
         await existing_session.wait_until_stopped()
+
+
+async def wait_for_worker_start(booth_id: str, timeout: float = 3.0) -> bool:
+    """False when the worker for this booth is known to have failed to start its ffmpeg process.
+
+    ``start_transcription_worker`` returns as soon as the session task is scheduled, so a failure to launch
+    ffmpeg happens afterwards. This waits (briefly) for that first launch. A worker that is still starting
+    when the timeout ends, or that is not in the registry, counts as fine: only a known failure is reported.
+    """
+    session = active_workers.get(booth_id)
+    if session is None:
+        return True
+    try:
+        await asyncio.wait_for(session.ready.wait(), timeout=timeout)
+    except TimeoutError:
+        return True
+    return session.start_error is None
 
 
 async def stop_transcription_worker(booth_id: str):
