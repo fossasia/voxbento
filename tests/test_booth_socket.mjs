@@ -10,7 +10,7 @@ const source = readFileSync(new URL('../portal/static/js/interpreter-booth.js', 
   .replace(/^import .* from '\.\/mic-activity.js'\n/, '')
   .replace('boot().catch((error) => {', 'Promise.resolve().catch((error) => {')
 
-function harness() {
+function harness({ getUserMedia = async () => ({ getAudioTracks: () => [] }) } = {}) {
   const timers = new Map()
   const sockets = []
   const events = []
@@ -32,6 +32,7 @@ function harness() {
     window: { location: { protocol: 'https:', host: 'example.test' } },
     setTimeout: (fn, delay) => { timers.set(++timerId, { fn, delay }); return timerId },
     clearTimeout: (id) => timers.delete(id),
+    navigator: { mediaDevices: { getUserMedia } },
     events,
   })
   vm.runInContext(source + `
@@ -46,7 +47,8 @@ function harness() {
     joinMonitoringFeed = () => events.push('monitor-started');
     stopLiveIngest = async () => { events.push('publish-stopped'); state.ingestConnected = false; };
     renderMicControls = () => {};
-    globalThis.api = { state, connectWebSocket, reconnectBackoff, watchMicDevice, currentMicActive };
+    startMicMeter = () => {};
+    globalThis.api = { state, connectWebSocket, reconnectBackoff, watchMicDevice, currentMicActive, ensureMicStream };
   `, context)
   return { ...context.api, timers, sockets, events }
 }
@@ -177,6 +179,35 @@ for (let attempt = 0; attempt < 3; attempt++) {
   track.deviceMute()
   track.deviceUnmute()
   assert.equal(mic.sockets[0].sent.length, handingOver, 'nothing is sent after losing the active role')
+}
+
+// Going live and pressing Unmute at the same moment must open the microphone once, so the
+// published stream is the one being watched for device mutes.
+{
+  const requests = []
+  const mic = harness({
+    getUserMedia: () => new Promise((resolve, reject) => requests.push({ resolve, reject })),
+  })
+  const first = mic.ensureMicStream()
+  const second = mic.ensureMicStream()
+  assert.equal(requests.length, 1, 'overlapping callers share one microphone request')
+  const stream = { getAudioTracks: () => [] }
+  requests[0].resolve(stream)
+  assert.equal(await first, stream)
+  assert.equal(await second, stream, 'both callers get the same stream')
+  assert.equal(await mic.ensureMicStream(), stream, 'later calls reuse it')
+  assert.equal(requests.length, 1)
+
+  const denied = harness({
+    getUserMedia: () => new Promise((resolve, reject) => requests.push({ resolve, reject })),
+  })
+  const refused = denied.ensureMicStream()
+  requests.at(-1).reject(new Error('Permission denied'))
+  await assert.rejects(refused, /Permission denied/)
+  const retry = denied.ensureMicStream()
+  assert.equal(requests.length, 3, 'a refused request can be tried again')
+  requests.at(-1).resolve(stream)
+  assert.equal(await retry, stream)
 }
 
 console.log('Booth socket lifecycle checks passed')

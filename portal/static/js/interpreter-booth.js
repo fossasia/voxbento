@@ -908,8 +908,18 @@ function stopBoothAudioListening() {
 
 // ── Microphone management ─────────────────────────────────────────────────────
 
-async function ensureMicStream() {
-  if (state.micStream) return state.micStream
+// The request in flight, so overlapping callers (going live while pressing Unmute) share one
+// stream: a second stream would be published while the watcher followed the other.
+let micStreamRequest = null
+
+function ensureMicStream() {
+  if (state.micStream) return Promise.resolve(state.micStream)
+  // Cleared when settled, so a refused request (permission, unplugged device) can be retried.
+  micStreamRequest ??= openMicStream().finally(() => { micStreamRequest = null })
+  return micStreamRequest
+}
+
+async function openMicStream() {
   if (micTestStream) {
     stopMicTest()
   }
