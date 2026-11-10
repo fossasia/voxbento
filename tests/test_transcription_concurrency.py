@@ -75,6 +75,7 @@ mock_providers = {
     "openai": MockProvider("openai"),
     "deepgram": MockProvider("deepgram"),
     "nvidia": MockProvider("nvidia"),
+    "sarvam": MockProvider("sarvam"),
 }
 
 
@@ -278,3 +279,71 @@ async def test_stop_before_task_starts_still_runs_cleanup():
 
     assert session.state == State.STOPPED
     assert local._active_booths_per_model["tiny"] == 0
+
+
+@pytest.mark.anyio
+async def test_sarvam_api_key_isolation_across_concurrent_events():
+    """Concurrent Sarvam booths on separate events receive only their own decrypted API key."""
+    async with get_session() as session:
+        e1 = Event(slug="sarvam-alpha", display_name="Sarvam Alpha", transcription_api_enabled=True)
+        e1.encrypted_sarvam_api_key = encrypt_val("sarvam-key-alpha")
+        e2 = Event(slug="sarvam-beta", display_name="Sarvam Beta", transcription_api_enabled=True)
+        e2.encrypted_sarvam_api_key = encrypt_val("sarvam-key-beta")
+        session.add_all([e1, e2])
+        await session.flush()
+
+        r1 = Room(event_id=e1.id, display_name="Hall 1")
+        r2 = Room(event_id=e2.id, display_name="Hall 2")
+        session.add_all([r1, r2])
+        await session.flush()
+
+        b1 = DBBooth(
+            event_id=e1.id,
+            room_id=r1.id,
+            language_code="hi",
+            language_name="Hindi",
+            transcription_enabled=True,
+            transcription_provider="sarvam",
+            transcription_model="saaras:v3-realtime",
+        )
+        b2 = DBBooth(
+            event_id=e2.id,
+            room_id=r2.id,
+            language_code="ta",
+            language_name="Tamil",
+            transcription_enabled=True,
+            transcription_provider="sarvam",
+            transcription_model="saaras:v3-realtime",
+        )
+        session.add_all([b1, b2])
+        await session.flush()
+        targets = [(e1.slug, r1.id, "hi"), (e2.slug, r2.id, "ta")]
+
+    mock_providers["sarvam"].received_configs.clear()
+    tok = create_user_token(user_id=1, email="admin@test.com", is_admin=True)
+    cookies = {"user_token": tok}
+
+    async with AsyncClient(
+        transport=ASGITransport(app=app), base_url="http://test", headers={"Origin": "http://test"}
+    ) as client:
+        responses = await asyncio.gather(
+            *[
+                client.post(f"/api/events/{slug}/rooms/{rid}/booths/{lang}/transcription/start", cookies=cookies)
+                for slug, rid, lang in targets
+            ]
+        )
+        assert [r.status_code for r in responses] == [200, 200]
+        await asyncio.sleep(0.05)
+
+        configs = {c["booth_id"]: c["api_key"] for c in mock_providers["sarvam"].received_configs}
+        assert configs[f"sarvam-alpha-{targets[0][1]}-hi"] == "sarvam-key-alpha"
+        assert configs[f"sarvam-beta-{targets[1][1]}-ta"] == "sarvam-key-beta"
+
+        await asyncio.gather(
+            *[
+                client.post(f"/api/events/{slug}/rooms/{rid}/booths/{lang}/transcription/stop", cookies=cookies)
+                for slug, rid, lang in targets
+            ]
+        )
+
+    assert len(active_workers) == 0

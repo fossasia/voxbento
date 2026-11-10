@@ -946,6 +946,7 @@ class TestEventCRUD:
             "deepgram_api_key": "deepgram-secret",
             "nvidia_api_key": "nvidia-secret",
             "elevenlabs_api_key": "elevenlabs-secret",
+            "sarvam_api_key": " sarvam-secret ",
             "translation_openai_api_key": "translation-openai-secret",
             "openrouter_api_key": "openrouter-secret",
             "gemini_api_key": "gemini-secret",
@@ -968,6 +969,15 @@ class TestEventCRUD:
             for form_name, expected in keys.items():
                 attribute = f"encrypted_{form_name}"
                 assert decrypt_val(getattr(updated, attribute)) == expected.strip()
+            sarvam_ciphertext = updated.encrypted_sarvam_api_key
+
+        async with _client() as c:
+            settings_page = await c.get(f"/admin/events/{event.id}/api-settings/", cookies=admin_cookie)
+        assert settings_page.status_code == 200
+        assert "sarvam-secret" not in settings_page.text
+        assert sarvam_ciphertext not in settings_page.text
+        assert 'name="sarvam_api_key"' in settings_page.text
+        assert 'placeholder="Configured"' in settings_page.text
 
         async with _client() as c:
             response = await c.post(
@@ -977,6 +987,7 @@ class TestEventCRUD:
                     "openai_api_key": "replacement",
                     "clear_openai_api_key": "1",
                     "deepgram_api_key": "   ",
+                    "sarvam_api_key": "   ",
                 },
                 follow_redirects=False,
             )
@@ -987,6 +998,65 @@ class TestEventCRUD:
             assert updated is not None
             assert updated.encrypted_openai_api_key is None
             assert decrypt_val(updated.encrypted_deepgram_api_key) == "deepgram-secret"
+            assert updated.encrypted_sarvam_api_key == sarvam_ciphertext
+            assert decrypt_val(updated.encrypted_sarvam_api_key) == "sarvam-secret"
+
+        async with _client() as c:
+            clear_sarvam = await c.post(
+                f"/admin/events/{event.id}/api-settings",
+                cookies=admin_cookie,
+                data={"transcription_api_enabled": "1", "clear_sarvam_api_key": "1"},
+                follow_redirects=False,
+            )
+        assert clear_sarvam.status_code == 303
+
+        async with get_session() as session:
+            cleared = await get_event_by_id(session, event.id)
+            assert cleared is not None
+            assert cleared.encrypted_sarvam_api_key is None
+
+    @pytest.mark.anyio
+    async def test_booth_transcription_settings_with_sarvam(self, admin_cookie, seed_event):
+        from portal.crypto import encrypt_val
+        from portal.database import get_session
+
+        event, room, booth = seed_event
+        url = f"/admin/events/{event.id}/rooms/{room.id}/booths/{booth.id}/"
+        sarvam_data = {
+            "transcription_enabled": "true",
+            "transcription_provider": "sarvam",
+            "transcription_model": "saaras:v3-realtime",
+        }
+        async with _client() as c:
+            no_key = await c.post(f"{url}transcription-settings", data=sarvam_data, cookies=admin_cookie)
+        assert no_key.status_code == 400
+
+        await _update_row(
+            type(event),
+            event.id,
+            transcription_api_enabled=True,
+            encrypted_sarvam_api_key=encrypt_val("sarvam-key"),
+        )
+        async with _client() as c:
+            bad_model = await c.post(
+                f"{url}transcription-settings",
+                data={**sarvam_data, "transcription_model": "saaras:v3"},
+                cookies=admin_cookie,
+            )
+            ok = await c.post(
+                f"{url}transcription-settings",
+                data=sarvam_data,
+                cookies=admin_cookie,
+                follow_redirects=False,
+            )
+        assert bad_model.status_code == 400
+        assert ok.status_code == 303
+
+        async with get_session() as session:
+            saved = await session.get(type(booth), booth.id)
+        assert saved.transcription_enabled is True
+        assert saved.transcription_provider == "sarvam"
+        assert saved.transcription_model == "saaras:v3-realtime"
 
     @pytest.mark.anyio
     async def test_event_detail_shows_booth_links(self, admin_cookie, seed_event):

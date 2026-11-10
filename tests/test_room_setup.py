@@ -138,11 +138,32 @@ def test_without_keys_only_self_hosted_engines_are_offered():
         "OpenAI",
         "Atlas Cloud",
         "NVIDIA",
+        "Sarvam AI",
         "Anthropic",
         "Google Gemini",
         "Groq",
         "OpenRouter",
     )
+
+
+def test_sarvam_engine_requires_api_key_and_transcription_switch():
+    locked_catalog = engine_catalog(_event(encrypted_sarvam_api_key=encrypt_val("sarvam-k")))
+    assert "sarvam" not in [e.provider for e in locked_catalog.speech]
+    assert "Sarvam AI" in locked_catalog.locked_speech
+
+    no_key_event = _event()
+    no_key_event.transcription_api_enabled = True
+    no_key_catalog = engine_catalog(no_key_event)
+    assert "sarvam" not in [e.provider for e in no_key_catalog.speech]
+    assert "Sarvam AI" in no_key_catalog.locked_speech
+
+    enabled_event = _event(encrypted_sarvam_api_key=encrypt_val("sarvam-k"))
+    enabled_event.transcription_api_enabled = True
+    enabled_catalog = engine_catalog(enabled_event)
+    sarvam_engine = enabled_catalog.find("speech", "sarvam")
+    assert sarvam_engine is not None
+    assert sarvam_engine.model == "saaras:v3-realtime"
+    assert "Sarvam AI" not in enabled_catalog.locked_speech
 
 
 def test_engines_with_keys_are_offered_first():

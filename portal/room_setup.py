@@ -154,6 +154,7 @@ _SPEECH_ENGINES = (
     ("openai", "whisper-1", "OpenAI Whisper", "encrypted_openai_api_key"),
     ("atlascloud", "bytedance/seed-asr-2.0", "Atlas Cloud Seed ASR", "encrypted_atlascloud_api_key"),
     ("nvidia", "parakeet-rnnt", "NVIDIA Parakeet", "encrypted_nvidia_api_key"),
+    ("sarvam", "saaras:v3-realtime", "Sarvam AI", "encrypted_sarvam_api_key"),
 )
 _TRANSLATION_ENGINES = (
     ("openai", "gpt-4o-mini", "OpenAI", "encrypted_translation_openai_api_key"),
@@ -176,6 +177,7 @@ SPEECH_MODELS: dict[str, tuple[tuple[str, str], ...]] = {
     ),
     "atlascloud": (("bytedance/seed-asr-2.0", "Seed ASR 2.0"),),
     "nvidia": (("parakeet-rnnt", "Parakeet RNNT"), ("parakeet-ctc", "Parakeet CTC")),
+    "sarvam": (("saaras:v3-realtime", "Saaras v3 Realtime"),),
     "local": (
         ("tiny", "Tiny, fastest"),
         ("base", "Base, more accurate but slower"),
@@ -200,6 +202,7 @@ _BRANDS = {
     "openai": "OpenAI",
     "atlascloud": "Atlas Cloud",
     "nvidia": "NVIDIA",
+    "sarvam": "Sarvam AI",
     "anthropic": "Anthropic",
     "gemini": "Google Gemini",
     "groq": "Groq",

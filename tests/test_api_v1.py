@@ -147,6 +147,66 @@ async def test_update_event_api_keys_only_changes_fields_sent_in_payload(event_a
 
 
 @pytest.mark.anyio
+async def test_update_event_api_keys_sarvam_encrypts_preserves_and_clears(event_api_access):
+    """PATCH /api_keys encrypts sarvam_api_key, preserves omitted fields, and clears on empty string."""
+    access_token, event_id = event_api_access
+    headers = {"Authorization": f"Bearer {access_token}"}
+
+    async with get_session() as session:
+        event = await session.get(Event, event_id)
+        assert event is not None
+        event.encrypted_deepgram_api_key = encrypt_val("keep-deepgram-key")
+        await session.commit()
+        deepgram_ciphertext = event.encrypted_deepgram_api_key
+
+    async with _client() as client:
+        set_resp = await client.patch(
+            "/api/v1/events/api-key-test/api_keys",
+            json={"sarvam_api_key": "sarvam-v1-key"},
+            headers=headers,
+        )
+    assert set_resp.status_code == 200
+
+    async with get_session() as session:
+        event = await session.get(Event, event_id)
+        assert event is not None
+        assert event.encrypted_sarvam_api_key is not None
+        assert event.encrypted_sarvam_api_key != "sarvam-v1-key"
+        assert decrypt_val(event.encrypted_sarvam_api_key) == "sarvam-v1-key"
+        assert event.encrypted_deepgram_api_key == deepgram_ciphertext
+        sarvam_ciphertext = event.encrypted_sarvam_api_key
+
+    # Omitting sarvam_api_key preserves it byte-for-byte.
+    async with _client() as client:
+        omit_resp = await client.patch(
+            "/api/v1/events/api-key-test/api_keys",
+            json={"openai_api_key": "other-key"},
+            headers=headers,
+        )
+    assert omit_resp.status_code == 200
+
+    async with get_session() as session:
+        event = await session.get(Event, event_id)
+        assert event is not None
+        assert event.encrypted_sarvam_api_key == sarvam_ciphertext
+
+    # Empty string clears sarvam_api_key without touching other keys.
+    async with _client() as client:
+        clear_resp = await client.patch(
+            "/api/v1/events/api-key-test/api_keys",
+            json={"sarvam_api_key": ""},
+            headers=headers,
+        )
+    assert clear_resp.status_code == 200
+
+    async with get_session() as session:
+        event = await session.get(Event, event_id)
+        assert event is not None
+        assert event.encrypted_sarvam_api_key is None
+        assert event.encrypted_deepgram_api_key == deepgram_ciphertext
+
+
+@pytest.mark.anyio
 async def test_app_creating_an_event_for_another_organizer_adds_only_the_organizer():
     """#757: the organizer becomes Event owner; the app's developer gets no automatic access.
 

@@ -14,6 +14,7 @@ from portal.transcription.providers.elevenlabs import ElevenLabsProvider
 from portal.transcription.providers.local import LocalProvider
 from portal.transcription.providers.nvidia import NVIDIAProvider
 from portal.transcription.providers.openai import OpenAIProvider
+from portal.transcription.providers.sarvam import SarvamProvider
 
 logger = logging.getLogger(__name__)
 
@@ -24,6 +25,7 @@ PROVIDERS = {
     "deepgram": DeepgramProvider(),
     "nvidia": NVIDIAProvider(),
     "elevenlabs": ElevenLabsProvider(),
+    "sarvam": SarvamProvider(),
 }
 
 active_workers_lock = asyncio.Lock()
