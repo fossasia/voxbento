@@ -88,8 +88,8 @@ def stale_process_patterns(sink_name, pulse_socket):
     # tokens: "slug.*room" would also match room 14 (or another slug) when cleaning up room 1.
     import re
     return (
-        f"^ffmpeg .* -i {re.escape(sink_name)}[.]monitor ",
-        f"^pulseaudio .*socket={re.escape(pulse_socket)}( |$)",
+        f"(^|/)ffmpeg .* -i {re.escape(sink_name)}[.]monitor( |$)",
+        f"(^|/)pulseaudio .*socket={re.escape(pulse_socket)}( |$)",
     )
 
 async def run_capture():

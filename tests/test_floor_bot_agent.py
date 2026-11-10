@@ -64,16 +64,16 @@ def test_redirect_rule_keeps_the_requested_room_and_credentials_safe(requested, 
     assert same_meeting(requested, final) is allowed
 
 
-def ffmpeg_cmdline(slug: str, room: int) -> str:
+def ffmpeg_cmdline(slug: str, room: int, program: str = "ffmpeg") -> str:
     return (
-        f"ffmpeg -y -f pulse -i sink_{slug}_{room}.monitor -ac 1 -ar 16000 -c:a libopus "
+        f"{program} -y -f pulse -i sink_{slug}_{room}.monitor -ac 1 -ar 16000 -c:a libopus "
         f"-f rtsp -rtsp_transport tcp rtsp://mediamtx:8554/{slug}/{room}/floor"
     )
 
 
-def pulseaudio_cmdline(slug: str, room: int) -> str:
+def pulseaudio_cmdline(slug: str, room: int, program: str = "pulseaudio") -> str:
     return (
-        "pulseaudio --daemonize=no --exit-idle-time=-1 --disallow-exit -n "
+        f"{program} --daemonize=no --exit-idle-time=-1 --disallow-exit -n "
         f"-L module-native-protocol-unix auth-anonymous=1 socket=/tmp/pulse-{slug}-{room}.sock "
         f"-L module-null-sink sink_name=sink_{slug}_{room} -L module-always-sink"
     )
@@ -97,3 +97,28 @@ def test_startup_cleanup_leaves_other_rooms_processes_alone(slug, room):
 
     assert not re.search(ffmpeg_pattern, ffmpeg_cmdline(slug, room))
     assert not re.search(pulse_pattern, pulseaudio_cmdline(slug, room))
+
+
+@pytest.mark.parametrize("directory", ["", "/usr/bin/"])
+def test_startup_cleanup_matches_by_bare_name_or_absolute_path(directory):
+    stale_process_patterns = capture_function("stale_process_patterns")
+    ffmpeg_pattern, pulse_pattern = stale_process_patterns("sink_pycon_1", "/tmp/pulse-pycon-1.sock")
+
+    assert re.search(ffmpeg_pattern, ffmpeg_cmdline("pycon", 1, f"{directory}ffmpeg"))
+    assert re.search(pulse_pattern, pulseaudio_cmdline("pycon", 1, f"{directory}pulseaudio"))
+
+
+def test_startup_cleanup_matches_when_the_sink_is_the_last_argument():
+    stale_process_patterns = capture_function("stale_process_patterns")
+    ffmpeg_pattern, _ = stale_process_patterns("sink_pycon_1", "/tmp/pulse-pycon-1.sock")
+
+    assert re.search(ffmpeg_pattern, "ffmpeg -f pulse -i sink_pycon_1.monitor")
+
+
+def test_startup_cleanup_ignores_lookalikes_and_other_rooms_by_absolute_path():
+    stale_process_patterns = capture_function("stale_process_patterns")
+    ffmpeg_pattern, pulse_pattern = stale_process_patterns("sink_pycon_1", "/tmp/pulse-pycon-1.sock")
+
+    assert not re.search(ffmpeg_pattern, ffmpeg_cmdline("pycon", 1, "xffmpeg"))
+    assert not re.search(ffmpeg_pattern, ffmpeg_cmdline("pycon", 14, "/usr/bin/ffmpeg"))
+    assert not re.search(pulse_pattern, pulseaudio_cmdline("pycon", 14, "/usr/bin/pulseaudio"))
