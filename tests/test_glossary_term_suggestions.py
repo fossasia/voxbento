@@ -116,6 +116,16 @@ def test_acronym_plural_is_counted_with_the_singular():
     assert "APIs" not in terms
 
 
+def test_acronyms_ending_in_a_capital_s_keep_it():
+    terms = terms_of("The FOSS community runs DNS and BIOS tools.")
+    assert {"FOSS", "DNS", "BIOS"} <= set(terms)
+
+
+def test_repeated_word_count_includes_its_capitalised_uses():
+    terms = terms_of("We saw Kubernetes today. Then kubernetes, kubernetes and kubernetes again.")
+    assert terms["kubernetes"].count == 4
+
+
 def test_repeated_lowercase_pair_is_suggested_only_when_repeated():
     assert terms_of(ABSTRACT)["speech recognition"].count == 3
     assert "clean audio" not in terms_of(ABSTRACT)
@@ -678,19 +688,53 @@ async def test_translations_are_requested_only_when_ticked(setup, monkeypatch):
 @pytest.mark.anyio
 async def test_room_page_offers_translations_only_with_a_usable_key(setup):
     room_url = f"/admin/events/{setup['event']}/rooms/{setup['room']}/"
+    async with get_session() as session:
+        room = await get_room_by_id(session, setup["room"])
+        room.floor_translation_provider = "groq"
+        room.floor_translation_model = "some-model"
     async with client() as c:
         without_key = await c.get(room_url, cookies=setup["admin"])
         async with get_session() as session:
-            room = await get_room_by_id(session, setup["room"])
             event = await get_event_by_id(session, setup["event"])
-            room.floor_translation_provider = "groq"
-            room.floor_translation_model = "some-model"
             event.encrypted_groq_api_key = encrypt_val("secret")
         with_key = await c.get(room_url, cookies=setup["admin"])
+        async with get_session() as session:
+            for language in await session.scalars(
+                select(RoomTranslationLanguage).where(RoomTranslationLanguage.room_id == setup["room"])
+            ):
+                language.enabled = False
+        without_targets = await c.get(room_url, cookies=setup["admin"])
     assert without_key.status_code == 200
     assert b"/ai-vocabulary/suggest" in without_key.content
     assert b'name="propose_translations"' not in without_key.content
     assert b'name="propose_translations"' in with_key.content
+    assert b'name="propose_translations"' not in without_targets.content
+
+
+@pytest.mark.anyio
+async def test_upload_is_closed_before_translation_starts(setup, monkeypatch):
+    closed: list[str | None] = []
+    closed_when_translating: list[list[str | None]] = []
+    original_close = UploadFile.close
+
+    async def tracking_close(self: UploadFile) -> None:
+        closed.append(self.filename)
+        await original_close(self)
+
+    class RecordingProvider:
+        async def translate(self, **_kwargs: object) -> str:
+            closed_when_translating.append(list(closed))
+            return "1. Übersetzt"
+
+    monkeypatch.setattr(UploadFile, "close", tracking_close)
+    monkeypatch.setitem(term_suggestions.PROVIDERS, "fake", RecordingProvider())
+    monkeypatch.setattr(
+        "portal.routers.admin.suggestion_engine",
+        lambda _event, _room: TranslationEngine("fake", "fake-model", "key"),
+    )
+    async with client() as c:
+        await post_file(c, setup, "secret.txt", b"The WebRTC talk", propose_translations="on")
+    assert closed_when_translating == [["secret.txt"]]
 
 
 @pytest.mark.anyio

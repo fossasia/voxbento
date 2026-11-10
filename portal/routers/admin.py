@@ -186,6 +186,7 @@ from portal.translations.source_documents import (
     extract_source_text,
 )
 from portal.translations.term_suggestions import (
+    ALL_LANGUAGES,
     TermSuggestion,
     build_suggestion_rows,
     extract_terms,
@@ -1528,7 +1529,8 @@ async def admin_room_detail(request: Request, event_id: int, room_id: int):
             "vocabulary_imported": request.query_params.get("vocab_imported"),
             "vocabulary_warnings": request.query_params.get("vocab_warnings"),
             "vocabulary_languages": request.query_params.get("vocab_languages"),
-            "can_propose_translations": suggestion_engine(event, room) is not None,
+            "can_propose_translations": suggestion_engine(event, room) is not None
+            and suggestion_languages(room) != (ALL_LANGUAGES,),
             "memberships": memberships,
             **admin_flags,
         },

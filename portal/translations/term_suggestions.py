@@ -258,7 +258,7 @@ def record_repeated_lowercase(tally: TermTally, tokens: Sequence[Token]) -> None
     )
     for term, count in (*words.items(), *pairs.items()):
         if count >= MIN_REPEATS and tally.kinds.get(term, TermKind.NAME) <= TermKind.NAME:
-            tally.spellings[term] = Counter({term: count})
+            tally.spellings.setdefault(term, Counter())[term] += count
             tally.kinds[term] = TermKind.REPEATED
             tally.mid_sentence.add(term)
 
