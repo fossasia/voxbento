@@ -28,6 +28,7 @@ def self_hosted_endpoint(model: str) -> str | None:
 
 
 _THINK_BLOCK = re.compile(r"<think>.*?</think>", re.IGNORECASE | re.DOTALL)
+_THINK_CLOSE = re.compile(r"</think>", re.IGNORECASE)
 
 
 def strip_reasoning(content: object) -> str | None:
@@ -40,9 +41,8 @@ def strip_reasoning(content: object) -> str | None:
         return None
     answer = _THINK_BLOCK.sub("", content)
     # Some chat templates open the thinking section themselves, so only "</think>" comes back.
-    close = answer.lower().rfind("</think>")
-    if close != -1:
-        answer = answer[close + len("</think>") :]
+    # Matched on the original text: lowering it can change its length (e.g. "İ") and shift an index.
+    answer = _THINK_CLOSE.split(answer)[-1]
     if "<think>" in answer.lower():
         return None
     return answer.strip() or None

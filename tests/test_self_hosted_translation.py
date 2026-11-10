@@ -517,6 +517,7 @@ def test_enabled_needs_both_url_and_models(url, models, enabled):
         ("<THINK>Upper case tags</THINK> Hallo Welt", "Hallo Welt"),
         # Templates that open the tag in the prompt return only the closing tag.
         ("German, formal.</think>Hallo Welt", "Hallo Welt"),
+        ("İstanbul, İzmir.</think>Hallo Welt", "Hallo Welt"),
         ("<think>a</think><think>b</think>Hallo Welt", "Hallo Welt"),
         ("Hallo <think>choose the noun</think>Welt", "Hallo Welt"),
         ("<think>Cut off by the token limit", None),
