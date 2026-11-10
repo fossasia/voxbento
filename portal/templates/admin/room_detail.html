@@ -262,7 +262,7 @@
 
       <details class="room-more" data-translation-instructions {% if room.floor_ai_interpreter_persona or room.floor_ai_interpretation_style %}open{% endif %}>
         <summary>Instructions for the AI translator <span class="rs-label-note">optional</span></summary>
-        <p class="hint" data-local-translation-note>The built-in translator (NLLB) doesn't read instructions or the glossary. Choose another service to use them.</p>
+        <p class="hint" data-local-translation-note>The built-in translator (NLLB) uses the glossary but doesn't read these instructions. Choose another service to use them.</p>
         <div class="field">
           <label for="floor_ai_interpreter_persona">What is this event about?</label>
           <textarea id="floor_ai_interpreter_persona" name="floor_ai_interpreter_persona" rows="3" placeholder="Example: An open source developer conference. Talks are technical.">{{ room.floor_ai_interpreter_persona or '' }}</textarea>
