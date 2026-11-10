@@ -136,13 +136,7 @@ SELF_HOSTED_LLM_API_KEY=YOUR_KEY
 The model name in `SELF_HOSTED_LLM_MODELS` must match exactly what the server reports at `/v1/models`. Check with `curl http://localhost:8081/v1/models`.
 :::
 
-With Docker Compose, add the variables to `.env` and recreate the portal:
-
-```bash
-docker compose up -d portal
-```
-
-**Docker Compose:** The portal container connects to the host via `host.docker.internal`, which resolves to the host's gateway address — not `127.0.0.1`. You must start the inference server with `--host 0.0.0.0` (instead of `127.0.0.1`) so it is reachable from the container, and set `--api-key` to prevent unauthorised access. Then use `http://host.docker.internal:8081/v1` as the base URL. On Linux, also add to your `docker-compose.yml`:
+**Docker Compose:** The portal container connects to the host via `host.docker.internal`, which resolves to the host's gateway address — not `127.0.0.1`. You must start the inference server with `--host 0.0.0.0` (instead of `127.0.0.1`) so it is reachable from the container, and set `--api-key` to prevent unauthorised access. Set the base URL to `http://host.docker.internal:8081/v1` in `.env`. On Linux, also add to your `docker-compose.yml`:
 
 ```yaml
 services:
@@ -151,7 +145,13 @@ services:
       - "host.docker.internal:host-gateway"
 ```
 
-Then choose **Self-hosted LLM** in the room or booth **Translation** settings and select the model.
+Then recreate the portal so it picks up the new variables:
+
+```bash
+docker compose up -d portal
+```
+
+Choose **Self-hosted LLM** in the room or booth **Translation** settings and select the model.
 
 ---
 
