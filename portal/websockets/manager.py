@@ -44,6 +44,7 @@ class Session:
     channel_id: str
     # Role derived from the bearer cookie at WS connection time — never from client data.
     granted_role: str | None = None
+    auth_payload: dict | None = None
     user_id: int | None = None
     invite_token_id: str | int | None = None
     revoked: bool = False

@@ -370,7 +370,7 @@ async function mintSession() {
       'Content-Type': 'application/json',
       'X-CSRF-Token': document.querySelector('meta[name="csrf-token"]')?.content || '',
     },
-    body: JSON.stringify({sync_offset_ms: 0}),
+    body: '{}',
     cache: 'no-store',
   });
   let data;
