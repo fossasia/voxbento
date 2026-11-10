@@ -1598,20 +1598,37 @@ def _apply_ai_settings(room: Room, form: FormData, catalog: EngineCatalog) -> No
             room.floor_tts_voice = preset
 
 
-@router.post("/admin/events/{event_id}/rooms/{room_id}/edit", dependencies=[Depends(require_event_owner), Depends(require_admin_csrf)])
-async def admin_edit_room(request: Request, event_id: int, room_id: int):
-    """Update settings and configuration for an event room."""
-    form = await request.form()
-    form_section = form.get("form_section", "").strip()
+def _process_room_general_section(room: Room, form: FormData) -> None:
     display_name = form.get("display_name", "").strip()
     jitsi_url = form.get("jitsi_url", "").strip()
+    audio_delay_ms = parse_audio_delay_ms(form.get("audio_delay_ms", "0"))
+    if display_name:
+        room.display_name = display_name
+    room.jitsi_url = jitsi_url if jitsi_url else None
+    room.audio_delay_ms = audio_delay_ms
+
+
+async def _process_room_relay_section(session: AsyncSession, room: Room, event_id: int, form: FormData) -> None:
     relay_booth_id_str = form.get("relay_booth_id", "").strip()
     relay_booth_id = int(relay_booth_id_str) if relay_booth_id_str and relay_booth_id_str.lower() != "none" else None
-    audio_delay_ms = parse_audio_delay_ms(form.get("audio_delay_ms", "0"))
-    floor_transcription_enabled = form.get("floor_transcription_enabled") == "on"
-    floor_transcription_provider = form.get("floor_transcription_provider", "local").strip().lower() or "none"
-    floor_transcription_model = form.get("floor_transcription_model", "tiny").strip()
-    floor_language_code = form.get("floor_language_code", "").strip() or None
+    if relay_booth_id is not None:
+        relay_booth = await get_booth_by_id(session, relay_booth_id)
+        if relay_booth is None or relay_booth.event_id != event_id:
+            raise HTTPException(status_code=404, detail="Booth not found.")
+        relay_room = await get_room_by_id(session, relay_booth.room_id)
+        if relay_room is None or relay_room.event_id != event_id:
+            raise HTTPException(status_code=404, detail="Booth not found.")
+    room.relay_booth_id = relay_booth_id
+
+
+def _process_room_transcription_section(room: Room, form: FormData) -> None:
+    room.floor_transcription_enabled = form.get("floor_transcription_enabled") == "on"
+    room.floor_transcription_provider = form.get("floor_transcription_provider", "local").strip().lower() or "none"
+    room.floor_transcription_model = form.get("floor_transcription_model", "tiny").strip()
+    room.floor_language_code = form.get("floor_language_code", "").strip() or None
+
+
+def _process_room_translation_section(session: AsyncSession, room: Room, form: FormData, form_section: str) -> None:
     floor_translation_enabled = form.get("floor_translation_enabled") == "on"
     floor_translation_provider = form.get("floor_translation_provider", "").strip() or None
     floor_translation_model = form.get("floor_translation_model", "").strip() or None
@@ -1620,78 +1637,81 @@ async def admin_edit_room(request: Request, event_id: int, room_id: int):
         if floor_translation_enabled and form_section in ("", "translation") and not settings.self_hosted_llm_enabled:
             raise HTTPException(status_code=400, detail="Self-hosted translation is not configured on this server")
         floor_translation_model = settings.self_hosted_llm_model_or_default(floor_translation_model)
+
+    room.floor_translation_enabled = floor_translation_enabled
+    room.floor_translation_provider = floor_translation_provider
+    room.floor_translation_model = floor_translation_model
+    room.floor_ai_interpreter_persona = form.get("floor_ai_interpreter_persona", "").strip() or None
+    room.floor_ai_interpretation_style = form.get("floor_ai_interpretation_style", "").strip() or None
+    room.floor_ai_vocabulary_enabled = form.get("floor_ai_vocabulary_enabled") == "on"
+
     floor_translation_languages = form.getlist("floor_translation_languages")
-    floor_ai_interpreter_persona = form.get("floor_ai_interpreter_persona", "").strip() or None
-    floor_ai_interpretation_style = form.get("floor_ai_interpretation_style", "").strip() or None
-    floor_ai_vocabulary_enabled = form.get("floor_ai_vocabulary_enabled") == "on"
-    floor_tts_enabled = form.get("floor_tts_enabled") == "on"
+    existing_langs = {lang.language_code: lang for lang in room.translation_languages}
+    requested_codes = set(floor_translation_languages)
+    for code, lang in existing_langs.items():
+        if code not in requested_codes:
+            lang.enabled = False
+    for code in requested_codes:
+        if code in existing_langs:
+            existing_langs[code].enabled = True
+        else:
+            lang_obj = pycountry.languages.get(alpha_2=code)
+            lang_name = lang_obj.name if lang_obj else code
+            new_lang = RoomTranslationLanguage(
+                room_id=room.id, language_code=code, language_name=lang_name, enabled=True
+            )
+            session.add(new_lang)
+
+
+def _process_room_tts_section(room: Room, form: FormData) -> None:
+    room.floor_tts_enabled = form.get("floor_tts_enabled") == "on"
     floor_tts_provider = (form.get("floor_tts_provider", "deepgram") or "deepgram").strip().lower() or "deepgram"
     if floor_tts_provider not in {"deepgram", "supertonic"}:
         floor_tts_provider = "deepgram"
+    room.floor_tts_provider = floor_tts_provider
+
     floor_tts_voice = (form.get("floor_tts_voice", "M1") or "M1").strip().upper() or "M1"
     if floor_tts_voice not in {"M1", "M2", "M3", "M4", "M5", "F1", "F2", "F3", "F4", "F5"}:
         floor_tts_voice = "M1"
+    room.floor_tts_voice = floor_tts_voice
+
+
+async def _process_room_ai_section(session: AsyncSession, room: Room, event_id: int, form: FormData) -> None:
+    event = await get_event_by_id(session, event_id)
+    if event is None:
+        raise HTTPException(status_code=404, detail="Event not found.")
+    _apply_ai_settings(room, form, engine_catalog(event))
+
+
+@router.post("/admin/events/{event_id}/rooms/{room_id}/edit", dependencies=[Depends(require_event_owner), Depends(require_admin_csrf)])
+async def admin_edit_room(request: Request, event_id: int, room_id: int):
+    """Update settings and configuration for an event room."""
+    form = await request.form()
+    form_section = form.get("form_section", "").strip()
+
     async with get_session() as session:
         room = await get_room_by_id(session, room_id)
         if room is None or room.event_id != event_id:
             raise HTTPException(status_code=404, detail="Room not found.")
 
         if not form_section or form_section == "general":
-            if display_name:
-                room.display_name = display_name
-            room.jitsi_url = jitsi_url if jitsi_url else None
-            room.audio_delay_ms = audio_delay_ms
+            _process_room_general_section(room, form)
 
         if not form_section or form_section == "relay":
-            if relay_booth_id is not None:
-                relay_booth = await get_booth_by_id(session, relay_booth_id)
-                if relay_booth is None or relay_booth.event_id != event_id:
-                    raise HTTPException(status_code=404, detail="Booth not found.")
-                relay_room = await get_room_by_id(session, relay_booth.room_id)
-                if relay_room is None or relay_room.event_id != event_id:
-                    raise HTTPException(status_code=404, detail="Booth not found.")
-            room.relay_booth_id = relay_booth_id
+            await _process_room_relay_section(session, room, event_id, form)
 
         if not form_section or form_section == "transcription":
-            room.floor_transcription_enabled = floor_transcription_enabled
-            room.floor_transcription_provider = floor_transcription_provider
-            room.floor_transcription_model = floor_transcription_model
-            room.floor_language_code = floor_language_code
+            _process_room_transcription_section(room, form)
 
         if not form_section or form_section == "translation":
-            room.floor_translation_enabled = floor_translation_enabled
-            room.floor_translation_provider = floor_translation_provider
-            room.floor_translation_model = floor_translation_model
-            room.floor_ai_interpreter_persona = floor_ai_interpreter_persona
-            room.floor_ai_interpretation_style = floor_ai_interpretation_style
-            room.floor_ai_vocabulary_enabled = floor_ai_vocabulary_enabled
-
-            existing_langs = {lang.language_code: lang for lang in room.translation_languages}
-            requested_codes = set(floor_translation_languages)
-            for code, lang in existing_langs.items():
-                if code not in requested_codes:
-                    lang.enabled = False
-            for code in requested_codes:
-                if code in existing_langs:
-                    existing_langs[code].enabled = True
-                else:
-                    lang_obj = pycountry.languages.get(alpha_2=code)
-                    lang_name = lang_obj.name if lang_obj else code
-                    new_lang = RoomTranslationLanguage(
-                        room_id=room_id, language_code=code, language_name=lang_name, enabled=True
-                    )
-                    session.add(new_lang)
+            _process_room_translation_section(session, room, form, form_section)
 
         if not form_section or form_section == "tts":
-            room.floor_tts_enabled = floor_tts_enabled
-            room.floor_tts_provider = floor_tts_provider
-            room.floor_tts_voice = floor_tts_voice
+            _process_room_tts_section(room, form)
 
         if form_section == "ai":
-            event = await get_event_by_id(session, event_id)
-            if event is None:
-                raise HTTPException(status_code=404, detail="Event not found.")
-            _apply_ai_settings(room, form, engine_catalog(event))
+            await _process_room_ai_section(session, room, event_id, form)
+
         await session.flush()
     return safe_redirect(
         url=management_url(request, f"events/{event_id}/rooms/{room_id}/"),
