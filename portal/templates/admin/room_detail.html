@@ -361,6 +361,21 @@
       <div class="room-save-bar"><button type="submit" class="btn btn-primary">Upload</button></div>
     </form>
 
+    <form method="post" action="{{ management_prefix }}/events/{{ event.id }}/rooms/{{ room.id }}/ai-vocabulary/suggest" enctype="multipart/form-data" class="room-upload">
+      <div class="field">
+        <label for="source_file">Suggest terms from talk material</label>
+        <input type="file" id="source_file" name="source_file" accept=".txt,.md,.markdown,.pdf,text/plain,text/markdown,application/pdf" required>
+        <span class="hint">An abstract, script or slide deck as text, Markdown or PDF, up to 10 MB. You review every suggestion before it is added, and the file is not kept.</span>
+      </div>
+      {% if can_propose_translations %}
+      <label class="ai-vocabulary-toggle">
+        <input type="checkbox" name="propose_translations">
+        <span>Ask this room's translation service to propose translations. Only the terms are sent, not the file.</span>
+      </label>
+      {% endif %}
+      <div class="room-save-bar"><button type="submit" class="btn btn-primary">Suggest terms</button></div>
+    </form>
+
     {% if vocabulary_entries %}
       <div class="ai-vocabulary-table-wrap">
         <table class="data-table ai-vocabulary-table">

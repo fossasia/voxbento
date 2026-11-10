@@ -60,6 +60,16 @@ Pull Request,de,Pull Request,Developer term in German,false,phrase,80
 
 Exporting downloads the normalized glossary in the identical CSV schema. Formula characters (`=`, `+`, `-`, `@`) at the start of text cells are neutralized during export to protect against spreadsheet injection.
 
+### Suggesting Terms from Talk Material
+
+Instead of writing a CSV by hand, upload a talk's abstract, script or slide deck in the **Glossary** card under **Suggest terms from talk material**. VoxBento accepts UTF-8 plain text, Markdown and PDF files up to 10 MB. PDFs need selectable text, because scanned pages are not read.
+
+VoxBento picks out names, acronyms, product-style words such as `WebRTC` and terms the document repeats, then shows them on a review page with how often each appears. Nothing is added until you tick a row and choose **Add ticked terms**. You can edit any term or translation first, and clearing a translation skips that language. Ticked rows pass the same validation as a CSV upload and then appear in the glossary and its CSV export.
+
+Each translation starts as the original term, because most names stay as written. If the room uses a cloud or self-hosted translation LLM with a working key, you can tick the option to have it propose translations. Only the extracted terms are sent to that service, never the file. The request happens once, while you prepare the glossary, and is not part of live translation.
+
+The uploaded file is read in memory and is not kept. Extraction works best for languages that use capital letters. Chinese, Japanese and similar scripts only yield any Latin-script terms they contain, and languages that capitalise every noun, such as German, produce more suggestions to reject.
+
 ## Prompt Bounding & Latency Optimization
 
 To prevent token bloating and latency spikes during live simultaneous interpretation, Voxbento does not transmit the complete vocabulary with every segment. For each incoming utterance, the vocabulary resolver:

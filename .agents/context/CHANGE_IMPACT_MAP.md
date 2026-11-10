@@ -175,9 +175,10 @@ Session secrets from the browser sender never authorize RTMPS. Tests: `tests/tes
 2. `portal/translations/prompts.py` — system prompt templates and contextual prompt building
 3. `portal/translations/vocabulary.py` — glossary lookup, overlap resolution, priority ordering, CSV import/export, and NLLB term protection (`protect_terms` / `restore_terms`, used by `providers/local.py`)
 4. `portal/translations/worker.py` — translation dispatch and glossary resolution before taking worker slots
-5. `portal/routers/admin.py` — room AI interpretation settings & vocabulary CSV routes (`.../ai-vocabulary/upload`, `.../export`, `.../delete`)
+5. `portal/routers/admin.py` — room AI interpretation settings & vocabulary routes (`.../ai-vocabulary/upload`, `.../export`, `.../delete`, `.../suggest`, `.../accept`)
 6. `portal/templates/admin/room_detail.html` — AI interpretation persona, style, and glossary management UI
-7. `tests/test_ai_interpretation.py` & `tests/test_translation_pipeline.py` — regression tests
+7. `portal/translations/source_documents.py`, `portal/translations/term_suggestions.py` & `portal/templates/admin/room_glossary_suggestions.html` — glossary suggestions from uploaded talk material
+8. `tests/test_ai_interpretation.py`, `tests/test_translation_pipeline.py` & `tests/test_glossary_term_suggestions.py` — regression tests
 
 ---
 

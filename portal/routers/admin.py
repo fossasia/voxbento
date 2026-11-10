@@ -21,7 +21,7 @@ from sqlalchemy import delete, func, select
 from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import joinedload
-from starlette.datastructures import FormData
+from starlette.datastructures import FormData, UploadFile
 
 from portal import meeting_source
 from portal import roles as roles_module
@@ -176,9 +176,26 @@ from portal.transcription.worker import (
     stop_transcription_worker,
 )
 from portal.translations.constants import TRANSLATION_MODELS, TranslationProviderEnum
+from portal.translations.source_documents import (
+    MAX_SOURCE_BYTES,
+    TOO_LARGE_MESSAGE,
+    SourceDocumentError,
+    extract_source_text,
+)
+from portal.translations.term_suggestions import (
+    TermSuggestion,
+    build_suggestion_rows,
+    extract_terms,
+    parse_accepted_suggestions,
+    propose_translations,
+    source_language_name,
+    suggestion_engine,
+    suggestion_languages,
+)
 from portal.translations.vocabulary import (
     VocabularyOverlapIndex,
     VocabularyScopeError,
+    add_room_vocabulary_entries,
     parse_vocabulary_csv,
     serialize_vocabulary_csv,
     validate_vocabulary_scope,
@@ -1508,6 +1525,7 @@ async def admin_room_detail(request: Request, event_id: int, room_id: int):
             "vocabulary_imported": request.query_params.get("vocab_imported"),
             "vocabulary_warnings": request.query_params.get("vocab_warnings"),
             "vocabulary_languages": request.query_params.get("vocab_languages"),
+            "can_propose_translations": suggestion_engine(event, room) is not None,
             "memberships": memberships,
             **admin_flags,
         },
@@ -1723,8 +1741,6 @@ async def admin_upload_ai_vocabulary(request: Request, event_id: int, room_id: i
 
     parsed_entries, warnings = parse_vocabulary_csv(csv_text)
     replace_existing = form.get("import_mode") == "replace"
-    imported = 0
-    languages: set[str] = set()
     async with get_session() as session:
         try:
             await validate_vocabulary_scope(session, event_id, room_id=room_id)
@@ -1751,28 +1767,114 @@ async def admin_upload_ai_vocabulary(request: Request, event_id: int, room_id: i
             for existing in existing_entries:
                 accepted.add(existing)
 
-        for entry in parsed_entries:
-            if accepted.conflicts(entry):
-                warnings.append(
-                    f"Existing duplicate: '{entry.source_term}' for target language '{entry.target_language}'"
-                )
-                continue
-            accepted.add(entry)
-            languages.add(entry.target_language)
-            session.add(
-                AIVocabularyEntry(
-                    event_id=event_id,
-                    room_id=room_id,
-                    source_term=entry.source_term,
-                    target_language=entry.target_language,
-                    target_term=entry.target_term,
-                    description=entry.description,
-                    case_sensitive=entry.case_sensitive,
-                    match_type=entry.match_type,
-                    priority=entry.priority,
+        imported, languages = add_room_vocabulary_entries(
+            session, event_id, room_id, parsed_entries, accepted, warnings
+        )
+        await session.flush()
+
+    return safe_redirect(
+        url=_vocabulary_result_url(event_id, room_id, imported, warnings, languages),
+        status_code=status.HTTP_303_SEE_OTHER,
+    )
+
+
+SOURCE_DOCUMENT_SLOTS = asyncio.Semaphore(2)
+
+
+async def _read_suggestion_terms(upload: UploadFile, existing_terms: list[str]) -> list[TermSuggestion]:
+    if upload.size is None or upload.size > MAX_SOURCE_BYTES:
+        raise HTTPException(status_code=413, detail=TOO_LARGE_MESSAGE)
+    content = await upload.read()
+
+    def read_terms() -> list[TermSuggestion]:
+        return extract_terms(extract_source_text(upload.filename or "", content), existing_terms)
+
+    # Parsing is CPU-bound and the portal also serves live booths, so it stays off the event loop.
+    try:
+        async with SOURCE_DOCUMENT_SLOTS:
+            return await asyncio.to_thread(read_terms)
+    except SourceDocumentError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@router.post(
+    "/admin/events/{event_id}/rooms/{room_id}/ai-vocabulary/suggest",
+    dependencies=[Depends(require_event_owner)],
+)
+async def admin_suggest_ai_vocabulary(request: Request, event_id: int, room_id: int):
+    """Show suggested glossary terms for review. The upload is read here and never stored."""
+    admin_flags = await get_access_flags(request, event_id=event_id, room_id=room_id)
+    async with get_session() as session:
+        event = await get_event_by_id(session, event_id)
+        room = await get_room_by_id(session, room_id)
+        if event is None or room is None or room.event_id != event_id:
+            raise HTTPException(status_code=404, detail="Room not found.")
+        existing_terms = list(
+            await session.scalars(
+                select(AIVocabularyEntry.source_term).where(
+                    AIVocabularyEntry.event_id == event_id,
+                    AIVocabularyEntry.room_id == room_id,
                 )
             )
-            imported += 1
+        )
+        languages = suggestion_languages(room)
+        engine = suggestion_engine(event, room)
+        source_language = source_language_name(room)
+
+    # The context manager closes the spooled upload as soon as its terms are out.
+    async with request.form() as form:
+        upload = form.get("source_file")
+        if not isinstance(upload, UploadFile) or not upload.filename:
+            raise HTTPException(status_code=400, detail="Select a file with the talk's material.")
+        filename = upload.filename
+        wants_translations = form.get("propose_translations") == "on"
+        suggestions = await _read_suggestion_terms(upload, existing_terms)
+
+    warnings: list[str] = []
+    proposals = None
+    if wants_translations and engine and suggestions:
+        proposals = await propose_translations(
+            engine, source_language, languages, [suggestion.term for suggestion in suggestions]
+        )
+        if not proposals.complete:
+            warnings.append("The translation service did not answer for every term. Those rows show the original term.")
+
+    return templates.TemplateResponse(
+        request=request,
+        name="admin/room_glossary_suggestions.html",
+        context={
+            "event": event,
+            "room": room,
+            "filename": filename,
+            "rows": build_suggestion_rows(suggestions, languages, proposals),
+            "languages": languages,
+            "warnings": warnings,
+            **admin_flags,
+        },
+    )
+
+
+@router.post(
+    "/admin/events/{event_id}/rooms/{room_id}/ai-vocabulary/accept",
+    dependencies=[Depends(require_event_owner)],
+)
+async def admin_accept_ai_vocabulary(request: Request, event_id: int, room_id: int):
+    """Save only the suggestions the owner ticked, through the normal glossary validation."""
+    form = await request.form()
+    async with get_session() as session:
+        room = await get_room_by_id(session, room_id)
+        if room is None or room.event_id != event_id:
+            raise HTTPException(status_code=404, detail="Room not found.")
+        entries, warnings = parse_accepted_suggestions(form, suggestion_languages(room))
+        accepted = VocabularyOverlapIndex()
+        for existing in await session.scalars(
+            select(AIVocabularyEntry).where(
+                AIVocabularyEntry.event_id == event_id,
+                AIVocabularyEntry.room_id == room_id,
+            )
+        ):
+            accepted.add(existing)
+        imported, languages = add_room_vocabulary_entries(session, event_id, room_id, entries, accepted, warnings)
         await session.flush()
 
     return safe_redirect(

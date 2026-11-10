@@ -1,0 +1,64 @@
+{% extends "admin/base.html" %}
+{% block title %}Suggested glossary terms — {{ room.display_name }}{% endblock %}
+
+{% block breadcrumb %}
+<nav class="breadcrumb">
+  <a href="{{ management_prefix }}/">{{ 'My events' if is_workspace else 'Overview' }}</a> <span>/</span>
+  <a href="{{ management_prefix }}/events/{{ event.id }}/">{{ event.display_name }}</a> <span>/</span>
+  <a href="{{ management_prefix }}/events/{{ event.id }}/rooms/{{ room.id }}/#ai">{{ room.display_name }}</a> <span>/</span>
+  <span class="breadcrumb-current" aria-current="page">Suggested terms</span>
+</nav>
+{% endblock %}
+
+{% block content %}
+<div class="page-header">
+  <div>
+    <h1>Suggested glossary terms</h1>
+    <p class="meta-text">From {{ filename }}. The file has not been kept.</p>
+  </div>
+</div>
+
+{% for warning in warnings %}
+  <div class="alert alert-warning ai-vocabulary-alert">{{ warning }}</div>
+{% endfor %}
+
+<section class="room-card">
+  {% if rows %}
+    <p class="room-card-sub">Nothing is added until you tick a row and save. Change any term or translation first, and clear a translation to skip that language.</p>
+    <form method="post" action="{{ management_prefix }}/events/{{ event.id }}/rooms/{{ room.id }}/ai-vocabulary/accept">
+      <div class="ai-vocabulary-table-wrap">
+        <table class="data-table ai-vocabulary-table ai-vocabulary-suggestions">
+          <thead>
+            <tr>
+              <th>Add</th><th>Term</th><th>Appears</th>
+              {% for code, name in languages %}<th>{{ name }}</th>{% endfor %}
+            </tr>
+          </thead>
+          <tbody>
+            {% for row in rows %}
+              <tr>
+                <td><input type="checkbox" name="accept" value="{{ row.index }}" aria-label="Add {{ row.term }}"></td>
+                <td>
+                  <input type="text" name="source_{{ row.index }}" value="{{ row.term }}" maxlength="120" aria-label="Term">
+                  <input type="hidden" name="case_sensitive_{{ row.index }}" value="{{ 'true' if row.case_sensitive else 'false' }}">
+                </td>
+                <td>{{ row.count }}</td>
+                {% for target in row.targets %}
+                  <td><input type="text" name="target_{{ row.index }}_{{ target.code }}" value="{{ target.value }}" maxlength="120" aria-label="{{ row.term }} in {{ target.language_name }}"></td>
+                {% endfor %}
+              </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </div>
+      <div class="room-save-bar ai-vocabulary-suggestions-actions">
+        <a class="btn btn-outline" href="{{ management_prefix }}/events/{{ event.id }}/rooms/{{ room.id }}/#ai">Cancel</a>
+        <button type="submit" class="btn btn-primary">Add ticked terms</button>
+      </div>
+    </form>
+  {% else %}
+    <p class="ai-vocabulary-empty">No new terms were found in this file. Terms already in the glossary are not suggested again.</p>
+    <div class="room-save-bar"><a class="btn btn-outline" href="{{ management_prefix }}/events/{{ event.id }}/rooms/{{ room.id }}/#ai">Back to the room</a></div>
+  {% endif %}
+</section>
+{% endblock %}

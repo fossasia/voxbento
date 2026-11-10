@@ -77,6 +77,14 @@ def client():
             "/workspace/events/1/rooms/2/ai-vocabulary/delete",
             "/admin/events/1/rooms/2/ai-vocabulary/delete",
         ),
+        (
+            "/workspace/events/1/rooms/2/ai-vocabulary/suggest",
+            "/admin/events/1/rooms/2/ai-vocabulary/suggest",
+        ),
+        (
+            "/workspace/events/1/rooms/2/ai-vocabulary/accept",
+            "/admin/events/1/rooms/2/ai-vocabulary/accept",
+        ),
     ],
 )
 @pytest.mark.anyio

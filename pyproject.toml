@@ -28,6 +28,7 @@ dependencies = [
     "ctranslate2>=4.5.0",
     "transformers>=4.40.0",
     "unilimit>=0.1.0",
+    "pypdf>=6",
 ]
 
 [project.optional-dependencies]
