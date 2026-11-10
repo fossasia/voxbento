@@ -751,6 +751,8 @@ async def _handle_join(ws: WebSocket, session: Session, data: dict) -> None:
             # Only this socket's own record may be re-claimed by ID.
             reclaim=participant_id is not None and participant_id == session.participant_id,
             joined_by=session.session_key,
+            user_id=session.user_id,
+            invite_public_id=str(session.invite_token_id) if session.invite_token_id is not None else None,
         )
     except (ValueError, PermissionError) as exc:
         await ws.send_text(json.dumps({"type": "booth:error", "message": str(exc)}))
