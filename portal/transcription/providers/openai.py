@@ -70,7 +70,7 @@ class OpenAIProvider(TranscriptionProvider):
         return ""
 
     # Error codes and messages OpenAI uses when the realtime socket rejects a key.
-    _AUTH_ERROR_CODES = ("invalid_api_key", "invalid_request_error", "authentication_error")
+    _AUTH_ERROR_CODES = ("invalid_api_key", "authentication_error")
     _AUTH_ERROR_TOKENS = ("api key", "api_key", "unauthorized", "authentication", "invalid_api_key")
 
     @classmethod
