@@ -501,30 +501,40 @@ async def test_a_deleted_user_does_not_block_the_flush(event_setup, clock):
 
 
 @pytest.mark.anyio
-async def test_shutdown_retries_a_failed_final_flush(event_setup, clock, monkeypatch):
-    """A save that fails at shutdown (say a user deleted mid-flush) is retried, not lost."""
+async def test_shutdown_retries_when_a_user_is_deleted_mid_flush(event_setup, clock, monkeypatch):
+    """The account is deleted between the user lookup and the write: the write fails on the
+    foreign key, and the retry saves that visit without the account and keeps the others."""
     import asyncio
 
+    from sqlalchemy import delete
     from sqlalchemy.exc import IntegrityError
 
     import portal.attendance as attendance
+    from portal.models import User
 
     real_save = attendance.save_visits
     calls = 0
 
-    async def flaky(visits, now):
+    async def deleted_during_first_save(visits, now):
         nonlocal calls
         calls += 1
         if calls == 1:
-            raise IntegrityError("INSERT", {}, Exception("foreign key"))
+            async with get_session() as session:
+                await session.execute(delete(User).where(User.id == event_setup["ana"]))
+            raise IntegrityError("INSERT", {}, Exception("FOREIGN KEY constraint failed"))
         return await real_save(visits, now)
 
-    monkeypatch.setattr(attendance, "save_visits", flaky)
+    monkeypatch.setattr(attendance, "save_visits", deleted_during_first_save)
     monkeypatch.setattr(attendance, "SHUTDOWN_RETRY_DELAY_SECS", 0)
+    booth_id = f"conf-{event_setup['room']}-de"
     registry = BoothRegistry(attendance=AttendanceTracker(clock=clock))
     await registry.join_participant(
-        booth_id=f"conf-{event_setup['room']}-de", display_name="Ana", role=INTERPRETER, language=LANG,
-        channel_id=CHANNEL,
+        booth_id=booth_id, display_name="Ana", role=INTERPRETER, language=LANG, channel_id=CHANNEL,
+        user_id=event_setup["ana"],
+    )
+    await registry.join_participant(
+        booth_id=booth_id, display_name="Ben", role=INTERPRETER, language=LANG, channel_id=CHANNEL,
+        invite_public_id="pubB",
     )
     task = asyncio.create_task(registry.attendance.run(interval=3600))
     await asyncio.sleep(0.05)  # let it start and wait for the first interval
@@ -535,6 +545,38 @@ async def test_shutdown_retries_a_failed_final_flush(event_setup, clock, monkeyp
     assert calls == 2
     assert registry.attendance._closed == []
     async with get_session() as session:
+        saved = {row.display_name: row for row in (await session.execute(select(InterpreterAttendance))).scalars()}
+    assert set(saved) == {"Ana", "Ben"}
+    assert saved["Ana"].user_id is None, "the deleted account is dropped, the visit is kept"
+    assert saved["Ben"].invite_public_id == "pubB"
+    assert all(row.left_at is not None for row in saved.values())
+
+
+@pytest.mark.anyio
+async def test_shutdown_during_recovery_still_saves_visits(event_setup, clock, monkeypatch):
+    """Cancelling while startup recovery is still running must not skip the final save."""
+    import asyncio
+
+    import portal.attendance as attendance
+
+    recovering = asyncio.Event()
+
+    async def slow_recovery():
+        recovering.set()
+        await asyncio.sleep(3600)
+
+    monkeypatch.setattr(attendance, "close_stale_visits", slow_recovery)
+    registry = BoothRegistry(attendance=AttendanceTracker(clock=clock))
+    await registry.join_participant(
+        booth_id=f"conf-{event_setup['room']}-de", display_name="Ana", role=INTERPRETER, language=LANG,
+        channel_id=CHANNEL,
+    )
+    task = asyncio.create_task(registry.attendance.run(interval=3600))
+    await recovering.wait()
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+
+    async with get_session() as session:
         saved = list((await session.execute(select(InterpreterAttendance))).scalars())
     assert [row.display_name for row in saved] == ["Ana"]
-    assert saved[0].left_at is not None

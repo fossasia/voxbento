@@ -22,8 +22,11 @@ from datetime import date, datetime, timezone, tzinfo
 from typing import TYPE_CHECKING
 from uuid import uuid4
 
+from sqlalchemy import select, update
 from sqlalchemy.exc import SQLAlchemyError
 
+from portal.database import get_session
+from portal.models import Event, InterpreterAttendance, User
 from portal.outage_log import OutageLog
 
 if TYPE_CHECKING:
@@ -187,11 +190,12 @@ class AttendanceTracker:
         return written
 
     async def run(self, interval: float = FLUSH_INTERVAL_SECS) -> None:
+        # Recovery sits inside the try, so a shutdown while it runs still saves the visits.
         try:
-            await close_stale_visits()
-        except (SQLAlchemyError, OSError):
-            logger.warning("attendance_recovery_failed", exc_info=True)
-        try:
+            try:
+                await close_stale_visits()
+            except (SQLAlchemyError, OSError):
+                logger.warning("attendance_recovery_failed", exc_info=True)
             while True:
                 await asyncio.sleep(interval)
                 await self.flush()
@@ -209,11 +213,6 @@ class AttendanceTracker:
 
 async def save_visits(visits: Iterable[Visit], now: datetime) -> int:
     """Insert or update one row per visit, in one transaction."""
-    from sqlalchemy import select, update
-
-    from portal.database import get_session
-    from portal.models import Event, InterpreterAttendance, User
-
     visits = list(visits)
     slugs = {visit.event_slug for visit in visits}
     written = 0
@@ -249,11 +248,6 @@ async def close_stale_visits() -> int:
     The portal runs one replica and keeps booths in memory, so after a restart no
     saved visit can still be open.
     """
-    from sqlalchemy import update
-
-    from portal.database import get_session
-    from portal.models import InterpreterAttendance
-
     async with get_session() as session:
         result = await session.execute(
             update(InterpreterAttendance)
