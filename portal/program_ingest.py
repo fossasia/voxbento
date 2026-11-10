@@ -36,7 +36,12 @@ from portal.outage_log import OutageLog
 from portal.transcription.process import audio_progress
 from portal.transcription.providers.base import ProviderConfig, ProviderEnum, get_api_key
 from portal.transcription.providers.sarvam import is_supported_sarvam_language
-from portal.transcription.worker import active_workers, start_transcription_worker, stop_transcription_worker
+from portal.transcription.worker import (
+    active_workers,
+    permanent_worker_failure,
+    start_transcription_worker,
+    stop_transcription_worker,
+)
 from portal.websockets.manager import broadcast_transcription
 
 logger = logging.getLogger(__name__)
@@ -728,6 +733,10 @@ async def reconcile_processing(
     if started is True or current.worker_started_at is None:
         # Read the clock again: replacing the old worker can take a while, and the grace period starts now.
         current.worker_started_at = time.monotonic()
+    if fatal_reason := permanent_worker_failure(booth_id):
+        current.state, current.reason = "degraded", fatal_reason
+        current.processing_state, current.processing_reason = "degraded", fatal_reason
+        return
     last_audio = audio_progress.get(booth_id)
     if now - (last_audio or current.worker_started_at) > settings.program_ingest_stall_secs:
         current.state, current.reason = "degraded", "Audio decoder stalled or failed; restarting the processing worker."

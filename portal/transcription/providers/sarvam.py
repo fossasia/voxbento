@@ -374,13 +374,22 @@ class SarvamProvider(TranscriptionProvider):
         buffer = _BoundedAudioBuffer(MAX_AUDIO_BUFFER_CHUNKS)
 
         async def stdout_reader() -> None:
+            pending_byte = b""
             try:
                 while True:
                     chunk = await process.stdout.read(AUDIO_CHUNK_BYTES)
                     if not chunk:
+                        # Discard an incomplete trailing byte if stdout closes mid-sample.
                         await buffer.mark_eof()
                         return
-                    await buffer.push(chunk)
+                    if pending_byte:
+                        chunk = pending_byte + chunk
+                        pending_byte = b""
+                    if len(chunk) & 1:
+                        pending_byte = chunk[-1:]
+                        chunk = chunk[:-1]
+                    if chunk:
+                        await buffer.push(chunk)
             except asyncio.CancelledError:
                 raise
             except (OSError, ValueError, RuntimeError) as exc:
@@ -691,7 +700,8 @@ class SarvamProvider(TranscriptionProvider):
                     if consecutive_errors >= MAX_RECONNECT_ATTEMPTS:
                         logger.error(f"[{booth_id}] Sarvam Realtime connection repeatedly failed. Giving up.")
                         raise FatalTranscriptionError(
-                            f"Sarvam Realtime connection failed after {consecutive_errors} attempts: {exc}"
+                            f"Sarvam Realtime connection failed after {consecutive_errors} attempts: {exc}",
+                            permanent=False,
                         ) from exc
 
                     if not session_ended_cleanly and not buffer.is_at_clean_eof():

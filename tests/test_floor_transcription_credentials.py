@@ -449,3 +449,56 @@ async def test_cancelled_key_refresh_lets_old_worker_finish_cleanup(environment:
     await asyncio.wait_for(original.wait_until_stopped(), timeout=3)
     assert original.state == worker.State.STOPPED
     assert env.provider.calls.empty()
+
+
+@pytest.mark.anyio
+async def test_sarvam_permanent_auth_failure_suppresses_reconciler_restarts_until_key_change(
+    environment: Environment, monkeypatch
+) -> None:
+    """Reconcilers must not restart FFmpeg/workers after HTTP 401 until the key or settings change."""
+    from portal.transcription.providers.base import FatalTranscriptionError
+
+    env = environment
+    calls: asyncio.Queue[tuple[str | None, str]] = asyncio.Queue()
+
+    class _SarvamAuthStub:
+        async def run_stream(
+            self, process, language_code, model_variant, config, broadcast_callback, booth_id, room_id
+        ) -> None:
+            key = config.get_key() if config else None
+            await calls.put((key, language_code))
+            if key == OLD_KEY:
+                raise FatalTranscriptionError("HTTP 401 Invalid API key", permanent=True)
+            await asyncio.sleep(10)
+
+    monkeypatch.setitem(worker.PROVIDERS, "sarvam", _SarvamAuthStub())
+
+    async with get_session() as session:
+        event = await session.get(Event, env.event_id)
+        event.encrypted_sarvam_api_key = encrypt_val(OLD_KEY)
+        room = await session.get(Room, env.room_id)
+        room.floor_transcription_provider = "sarvam"
+        room.floor_transcription_model = "saaras:v3-realtime"
+        room.floor_language_code = "hi"
+
+    # First reconcile tick starts the worker and hits permanent 401.
+    await env.tick()
+    assert await asyncio.wait_for(calls.get(), timeout=3) == (OLD_KEY, "hi")
+    failed_session = worker.active_workers[env.booth_id]
+    await asyncio.wait_for(failed_session.wait_until_stopped(), timeout=3)
+    assert failed_session.state == worker.State.STOPPED
+    assert failed_session.permanent_failure is True
+
+    # Subsequent ticks (including past stall timeout) must NOT restart FFmpeg/worker with the same bad key.
+    meeting.audio_progress.pop(env.booth_id, None)
+    env.clock += 120
+    await env.tick()
+    await env.tick()
+    assert calls.empty()
+    assert worker.active_workers[env.booth_id] is failed_session
+
+    # Rotating to a valid Sarvam key triggers clean recovery on the next tick.
+    await env.save_key(NEW_KEY, field="sarvam_api_key")
+    await env.tick()
+    assert await asyncio.wait_for(calls.get(), timeout=3) == (NEW_KEY, "hi")
+    assert worker.active_workers[env.booth_id] is not failed_session

@@ -20,6 +20,10 @@ TRANSIENT_STATUS_CODES = (429, 502, 503, 504)
 class FatalTranscriptionError(Exception):
     """Non-retryable provider failure that must stop the transcription worker."""
 
+    def __init__(self, message: str = "", *, permanent: bool = True) -> None:
+        super().__init__(message)
+        self.permanent = permanent
+
 
 def is_retryable_transcription_error(exc: BaseException) -> bool:
     """Retry transient network/HTTP failures; let auth, quota and client errors propagate."""

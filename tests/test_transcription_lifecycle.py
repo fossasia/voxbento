@@ -761,47 +761,228 @@ async def test_stopped_worker_does_not_consume_capacity_slot():
         other_started.set()
         await asyncio.sleep(10)
 
-    with (
-        patch.object(sarvam_provider, "run_stream", side_effect=_fatal_run_stream),
-        patch.dict("portal.transcription.worker.PROVIDERS", {"sarvam": sarvam_provider}),
-    ):
-        await start_transcription_worker(
-            "evt",
-            "hi",
-            "evt-1-hi-stopped",
-            AsyncMock(),
-            "sarvam",
-            "saaras:v3-realtime",
-            ProviderConfig(api_key="bad"),
-        )
-        stopped_session = active_workers["evt-1-hi-stopped"]
-        await asyncio.wait_for(stopped_session.wait_until_stopped(), timeout=2.0)
-
-    assert stopped_session.state == State.STOPPED
-    assert "evt-1-hi-stopped" in active_workers
-
-    # Fill all MAX_TOTAL_WORKERS - 1 remaining slots with RUNNING sessions (total dict entries == MAX_TOTAL_WORKERS).
     dummy_ids = [f"dummy-{i}" for i in range(MAX_TOTAL_WORKERS - 1)]
-    for bid in dummy_ids:
-        sess = MagicMock()
-        sess.state = State.RUNNING
-        active_workers[bid] = sess
+    try:
+        with (
+            patch.object(sarvam_provider, "run_stream", side_effect=_fatal_run_stream),
+            patch.dict("portal.transcription.worker.PROVIDERS", {"sarvam": sarvam_provider}),
+        ):
+            await start_transcription_worker(
+                "evt",
+                "hi",
+                "evt-1-hi-stopped",
+                AsyncMock(),
+                "sarvam",
+                "saaras:v3-realtime",
+                ProviderConfig(api_key="bad"),
+            )
+            stopped_session = active_workers["evt-1-hi-stopped"]
+            await asyncio.wait_for(stopped_session.wait_until_stopped(), timeout=2.0)
 
-    assert len(active_workers) == MAX_TOTAL_WORKERS
+        assert stopped_session.state == State.STOPPED
+        assert "evt-1-hi-stopped" in active_workers
 
-    local_mock = MagicMock()
-    local_mock.run_stream = _hold_stream
-    with patch.dict("portal.transcription.worker.PROVIDERS", {"local": local_mock}):
-        # Must succeed because evt-1-hi-stopped is State.STOPPED and does not consume a slot.
-        await start_transcription_worker("evt", "en", "evt-1-en-new", AsyncMock(), "local", "tiny", None)
-        await asyncio.wait_for(other_started.wait(), timeout=2.0)
+        # Fill all MAX_TOTAL_WORKERS - 1 remaining slots with RUNNING sessions (total dict entries == MAX_TOTAL_WORKERS).
+        for bid in dummy_ids:
+            sess = MagicMock()
+            sess.state = State.RUNNING
+            active_workers[bid] = sess
 
-        # Now all MAX_TOTAL_WORKERS active slots are occupied, so another booth must hit WorkerCapacityError.
-        with pytest.raises(WorkerCapacityError):
-            await start_transcription_worker("evt", "fr", "evt-1-fr-over", AsyncMock(), "local", "tiny", None)
+        assert len(active_workers) == MAX_TOTAL_WORKERS
 
-    for bid in dummy_ids:
-        active_workers.pop(bid, None)
-    await stop_transcription_worker("evt-1-en-new")
-    await stop_transcription_worker("evt-1-hi-stopped")
+        local_mock = MagicMock()
+        local_mock.run_stream = _hold_stream
+        with patch.dict("portal.transcription.worker.PROVIDERS", {"local": local_mock}):
+            # Must succeed because evt-1-hi-stopped is State.STOPPED and does not consume a slot.
+            await start_transcription_worker("evt", "en", "evt-1-en-new", AsyncMock(), "local", "tiny", None)
+            await asyncio.wait_for(other_started.wait(), timeout=2.0)
+
+            # Now all MAX_TOTAL_WORKERS active slots are occupied, so another booth must hit WorkerCapacityError.
+            with pytest.raises(WorkerCapacityError):
+                await start_transcription_worker("evt", "fr", "evt-1-fr-over", AsyncMock(), "local", "tiny", None)
+    finally:
+        for bid in dummy_ids:
+            active_workers.pop(bid, None)
+        await stop_transcription_worker("evt-1-en-new")
+        await stop_transcription_worker("evt-1-fr-over")
+        await stop_transcription_worker("evt-1-hi-stopped")
     assert "evt-1-hi-stopped" not in active_workers
+
+
+@pytest.mark.anyio
+async def test_permanent_fatal_failure_suppresses_repeated_restarts_until_key_or_settings_change():
+    """Permanent auth failures block repeated reconciler restarts until credentials or settings change."""
+    from portal.transcription.providers.base import FatalTranscriptionError, ProviderConfig
+    from portal.transcription.providers.sarvam import SarvamProvider
+
+    sarvam_provider = SarvamProvider()
+    calls: list[tuple[str | None, str, str]] = []
+    recovered_started = asyncio.Event()
+
+    async def _run_stream(_process, language_code, model_variant, config, *_args):
+        key = config.get_key() if config else None
+        calls.append((key, language_code, model_variant))
+        if key == "bad-key" and language_code == "hi":
+            raise FatalTranscriptionError("HTTP 401 unauthorized", permanent=True)
+        recovered_started.set()
+        await asyncio.sleep(10)
+
+    booth_id = "evt-1-sarvam-perm"
+    try:
+        with (
+            patch.object(sarvam_provider, "run_stream", side_effect=_run_stream),
+            patch.dict("portal.transcription.worker.PROVIDERS", {"sarvam": sarvam_provider}),
+        ):
+            started = await start_transcription_worker(
+                "evt",
+                "floor",
+                booth_id,
+                AsyncMock(),
+                "sarvam",
+                "saaras:v3-realtime",
+                ProviderConfig(api_key="bad-key"),
+                transcription_language="hi",
+                restart_on_key_change=True,
+            )
+            assert started is True
+            first_session = active_workers[booth_id]
+            await asyncio.wait_for(first_session.wait_until_stopped(), timeout=2.0)
+
+            assert first_session.state == State.STOPPED
+            assert first_session.permanent_failure is True
+            assert len(calls) == 1
+
+            # Repeated reconciler start calls with identical key/settings must be suppressed.
+            for _ in range(3):
+                restarted = await start_transcription_worker(
+                    "evt",
+                    "floor",
+                    booth_id,
+                    AsyncMock(),
+                    "sarvam",
+                    "saaras:v3-realtime",
+                    ProviderConfig(api_key="bad-key"),
+                    transcription_language="hi",
+                    restart_on_key_change=True,
+                )
+                assert restarted is False
+                assert active_workers[booth_id] is first_session
+            assert len(calls) == 1
+
+            # Updating the API key unblocks recovery cleanly.
+            recovered = await start_transcription_worker(
+                "evt",
+                "floor",
+                booth_id,
+                AsyncMock(),
+                "sarvam",
+                "saaras:v3-realtime",
+                ProviderConfig(api_key="good-key"),
+                transcription_language="hi",
+                restart_on_key_change=True,
+            )
+            assert recovered is True
+            await asyncio.wait_for(recovered_started.wait(), timeout=2.0)
+            assert active_workers[booth_id] is not first_session
+            assert calls == [("bad-key", "hi", "saaras:v3-realtime"), ("good-key", "hi", "saaras:v3-realtime")]
+
+            # If a permanent failure happens again and the language setting changes, recovery works too.
+            await stop_transcription_worker(booth_id)
+            calls.clear()
+            recovered_started.clear()
+
+            started_again = await start_transcription_worker(
+                "evt",
+                "floor",
+                booth_id,
+                AsyncMock(),
+                "sarvam",
+                "saaras:v3-realtime",
+                ProviderConfig(api_key="bad-key"),
+                transcription_language="hi",
+                restart_on_key_change=True,
+            )
+            assert started_again is True
+            await asyncio.wait_for(active_workers[booth_id].wait_until_stopped(), timeout=2.0)
+            assert len(calls) == 1
+
+            restarted_lang = await start_transcription_worker(
+                "evt",
+                "floor",
+                booth_id,
+                AsyncMock(),
+                "sarvam",
+                "saaras:v3-realtime",
+                ProviderConfig(api_key="bad-key"),
+                transcription_language="ta",
+                restart_on_key_change=True,
+            )
+            assert restarted_lang is True
+            await asyncio.wait_for(recovered_started.wait(), timeout=2.0)
+            assert calls == [("bad-key", "hi", "saaras:v3-realtime"), ("bad-key", "ta", "saaras:v3-realtime")]
+    finally:
+        await stop_transcription_worker(booth_id)
+
+
+@pytest.mark.anyio
+async def test_exhausted_transient_retries_remain_retryable_on_next_start():
+    """Exhausting transient retries (permanent=False) must still permit future reconciler restarts."""
+    from portal.transcription.providers.base import FatalTranscriptionError, ProviderConfig
+    from portal.transcription.providers.sarvam import SarvamProvider
+
+    sarvam_provider = SarvamProvider()
+    calls = 0
+    second_started = asyncio.Event()
+
+    async def _run_stream(*_args):
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            raise FatalTranscriptionError("Sarvam Realtime connection failed after 5 attempts", permanent=False)
+        second_started.set()
+        await asyncio.sleep(10)
+
+    booth_id = "evt-1-sarvam-transient"
+    try:
+        with (
+            patch.object(sarvam_provider, "run_stream", side_effect=_run_stream),
+            patch.dict("portal.transcription.worker.PROVIDERS", {"sarvam": sarvam_provider}),
+        ):
+            assert (
+                await start_transcription_worker(
+                    "evt",
+                    "floor",
+                    booth_id,
+                    AsyncMock(),
+                    "sarvam",
+                    "saaras:v3-realtime",
+                    ProviderConfig(api_key="same-key"),
+                    transcription_language="hi",
+                    restart_on_key_change=True,
+                )
+                is True
+            )
+            first_session = active_workers[booth_id]
+            await asyncio.wait_for(first_session.wait_until_stopped(), timeout=2.0)
+            assert first_session.state == State.STOPPED
+            assert first_session.permanent_failure is False
+
+            # Same credentials/settings must still be allowed to restart after non-permanent exhaustion.
+            assert (
+                await start_transcription_worker(
+                    "evt",
+                    "floor",
+                    booth_id,
+                    AsyncMock(),
+                    "sarvam",
+                    "saaras:v3-realtime",
+                    ProviderConfig(api_key="same-key"),
+                    transcription_language="hi",
+                    restart_on_key_change=True,
+                )
+                is True
+            )
+            await asyncio.wait_for(second_started.wait(), timeout=2.0)
+            assert calls == 2
+    finally:
+        await stop_transcription_worker(booth_id)

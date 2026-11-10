@@ -600,7 +600,9 @@ def _check_self_hosted_translation(payload_dict: dict, room: Room | None) -> Non
 
 def _check_sarvam_transcription(payload_dict: dict, room: Room | None) -> None:
     """Reject enabling or keeping Sarvam floor transcription with an unsupported language."""
-    enabled = payload_dict.get("enable_transcription", room.floor_transcription_enabled if room else False)
+    enabled = payload_dict.get("enable_transcription")
+    if enabled is None:
+        enabled = room.floor_transcription_enabled if room else False
     provider = payload_dict.get("transcription_provider", room.floor_transcription_provider if room else "local")
     provider_val = getattr(provider, "value", provider)
     if not enabled or provider_val != ProviderEnum.SARVAM.value:

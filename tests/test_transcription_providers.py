@@ -1556,7 +1556,7 @@ class TestSarvamProvider:
         from portal.transcription.providers import sarvam
         from portal.transcription.providers.sarvam import SarvamProvider
 
-        c1, c2, c3 = b"chunk-1", b"chunk-2", b"chunk-3"
+        c1, c2, c3 = b"chunk-01", b"chunk-02", b"chunk-03"
 
         class _GateChunksStdout:
             def __init__(self):
@@ -1798,7 +1798,7 @@ class TestSarvamProvider:
         from portal.transcription.providers import sarvam
         from portal.transcription.providers.sarvam import SarvamProvider
 
-        c1, c2 = b"queued-first", b"queued-second"
+        c1, c2 = b"queued-first", b"queued-secnd"
 
         class _TwoChunksThenWaitStdout:
             def __init__(self):
@@ -1857,7 +1857,7 @@ class TestSarvamProvider:
         from portal.transcription.providers import sarvam
         from portal.transcription.providers.sarvam import SarvamProvider
 
-        c1, c2 = b"chain-1", b"chain-2"
+        c1, c2 = b"chain-01", b"chain-02"
 
         class _FailFirstAudioWS(_FakeSarvamWebSocket):
             async def send(self, raw: str) -> None:
@@ -2371,3 +2371,63 @@ class TestSarvamProvider:
             with pytest.raises(asyncio.CancelledError):
                 await task
         cancel_connect.assert_called_once()
+
+    async def test_sarvam_stdout_reader_aligns_odd_pcm_reads_and_discards_trailing_eof_byte(self):
+        from portal.transcription.providers.sarvam import SarvamProvider
+
+        # Case 1: odd-length reads ([3, 3, 1] bytes) combine across boundaries and drop trailing incomplete byte.
+        ws1 = _FakeSarvamWebSocket(
+            server_messages=[{"event": "session.begin", "request_id": "req-pcm-1"}],
+            end_messages=[{"event": "session.end", "request_id": "req-pcm-1"}],
+            close_on_end=True,
+        )
+        with patch("websockets.connect", return_value=ws1):
+            await SarvamProvider().run_stream(
+                _FakeProcess([b"\x01\x02\x03", b"\x04\x05\x06", b"\x07"]),
+                "hi-IN",
+                "saaras:v3-realtime",
+                ProviderConfig(api_key="sarvam-secret"),
+                AsyncMock(),
+                "evt-1-hi",
+            )
+        sent_chunks_1 = [base64.b64decode(m["audio"]) for m in ws1.sent if m.get("event") == "audio_input"]
+        assert all(len(c) > 0 and len(c) % 2 == 0 for c in sent_chunks_1)
+        assert b"".join(sent_chunks_1) == b"\x01\x02\x03\x04\x05\x06"
+        assert sent_chunks_1 == [b"\x01\x02", b"\x03\x04\x05\x06"]
+
+        # Case 2: two consecutive 1-byte reads combine into one 2-byte PCM sample without empty pushes.
+        ws2 = _FakeSarvamWebSocket(
+            server_messages=[{"event": "session.begin", "request_id": "req-pcm-2"}],
+            end_messages=[{"event": "session.end", "request_id": "req-pcm-2"}],
+            close_on_end=True,
+        )
+        with patch("websockets.connect", return_value=ws2):
+            await SarvamProvider().run_stream(
+                _FakeProcess([b"\xaa", b"\xbb"]),
+                "hi-IN",
+                "saaras:v3-realtime",
+                ProviderConfig(api_key="sarvam-secret"),
+                AsyncMock(),
+                "evt-1-hi",
+            )
+        sent_chunks_2 = [base64.b64decode(m["audio"]) for m in ws2.sent if m.get("event") == "audio_input"]
+        assert sent_chunks_2 == [b"\xaa\xbb"]
+
+        # Case 3: single incomplete trailing byte at EOF sends zero audio frames and ends cleanly.
+        ws3 = _FakeSarvamWebSocket(
+            server_messages=[{"event": "session.begin", "request_id": "req-pcm-3"}],
+            end_messages=[{"event": "session.end", "request_id": "req-pcm-3"}],
+            close_on_end=True,
+        )
+        with patch("websockets.connect", return_value=ws3):
+            await SarvamProvider().run_stream(
+                _FakeProcess([b"\x99"]),
+                "hi-IN",
+                "saaras:v3-realtime",
+                ProviderConfig(api_key="sarvam-secret"),
+                AsyncMock(),
+                "evt-1-hi",
+            )
+        sent_chunks_3 = [m for m in ws3.sent if m.get("event") == "audio_input"]
+        assert sent_chunks_3 == []
+        assert {"event": "end"} in ws3.sent

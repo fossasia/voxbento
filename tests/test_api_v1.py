@@ -279,16 +279,44 @@ async def test_upsert_room_rejects_sarvam_with_unsupported_source_language(event
             json={"source_language": "es"},
             headers=headers,
         )
+        explicit_null_enabled_bad = await client.put(
+            "/api/v1/events/api-key-test/rooms/ext-room-1",
+            json={"enable_transcription": None, "source_language": "fr"},
+            headers=headers,
+        )
+        explicit_null_new_room = await client.put(
+            "/api/v1/events/api-key-test/rooms/ext-room-null-create",
+            json={
+                "name": "Disabled By Null Default",
+                "enable_transcription": None,
+                "transcription_provider": "sarvam",
+                "source_language": "fr",
+            },
+            headers=headers,
+        )
     assert bad_create.status_code == 422
     assert "Sarvam AI does not support transcription language 'fr'" in bad_create.json()["detail"]
     assert ok_create.status_code == 200
     assert bad_update.status_code == 422
     assert "Sarvam AI does not support transcription language 'es'" in bad_update.json()["detail"]
+    assert explicit_null_enabled_bad.status_code == 422
+    assert "Sarvam AI does not support transcription language 'fr'" in explicit_null_enabled_bad.json()["detail"]
+    assert explicit_null_new_room.status_code == 200
 
     async with get_session() as session:
-        room = (await session.execute(select(Room).where(Room.event_id == event_id))).scalar_one()
+        room = (
+            await session.execute(
+                select(Room).where(Room.event_id == event_id, Room.eventyay_room_id == "ext-room-1")
+            )
+        ).scalar_one()
         assert room.floor_language_code == "hi"
         assert room.floor_transcription_provider == "sarvam"
+        null_room = (
+            await session.execute(
+                select(Room).where(Room.event_id == event_id, Room.eventyay_room_id == "ext-room-null-create")
+            )
+        ).scalar_one()
+        assert null_room.floor_transcription_enabled is False
 
 
 @pytest.mark.anyio

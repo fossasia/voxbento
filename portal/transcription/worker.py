@@ -76,6 +76,8 @@ class TranscriptionWorkerSession:
         # Set once the first ffmpeg process is up, or once the loop ends without ever getting one.
         self.ready = asyncio.Event()
         self.start_error: BaseException | None = None
+        self.permanent_failure = False
+        self.fatal_error: str | None = None
 
         from portal.booth_identity import make_mediamtx_path
 
@@ -183,6 +185,8 @@ class TranscriptionWorkerSession:
                             e,
                         )
                         terminal_failure = True
+                        self.permanent_failure = bool(getattr(e, "permanent", True))
+                        self.fatal_error = str(e) or type(e).__name__
                     except Exception as e:
                         logger.error(f"[{self.booth_id}][{self.session_id}] Transcription error: {e}. Retrying...")
 
@@ -239,6 +243,33 @@ def is_worker_occupying_slot(session: object | None) -> bool:
     return True
 
 
+def permanent_worker_failure(booth_id: str) -> str | None:
+    """Return the fatal reason when a stopped worker requires credential/setting changes before retry."""
+    session = active_workers.get(booth_id)
+    if session is None:
+        return None
+    if getattr(session, "state", None) == State.STOPPED and getattr(session, "permanent_failure", False):
+        return getattr(session, "fatal_error", None) or "Permanent transcription provider or configuration error."
+    return None
+
+
+def _same_credentials_and_settings(
+    session: TranscriptionWorkerSession,
+    provider: str,
+    model_size: str,
+    config: ProviderConfig | None,
+    transcription_language: str | None,
+) -> bool:
+    old_key = session.config.get_key() if session.config is not None else None
+    new_key = config.get_key() if config is not None else None
+    return (
+        session.provider_name == provider
+        and session.model_size == model_size
+        and session.transcription_language == transcription_language
+        and old_key == new_key
+    )
+
+
 async def start_transcription_worker(
     event_slug: str,
     language_code: str,
@@ -288,6 +319,18 @@ async def start_transcription_worker(
                 if existing_session.state == State.STOPPED and (
                     existing_session.task is None or existing_session.task.done()
                 ):
+                    if existing_session.permanent_failure and _same_credentials_and_settings(
+                        existing_session,
+                        provider,
+                        model_size,
+                        config,
+                        transcription_language,
+                    ):
+                        logger.debug(
+                            "[%s] Skipping restart after permanent failure until credentials or settings change.",
+                            booth_id,
+                        )
+                        return False
                     # STOPPED precedes async cleanup; remove only after the task finishes.
                     active_workers.pop(booth_id)
                     continue
