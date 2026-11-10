@@ -59,6 +59,8 @@ reconnect budget, so fixing a wrong URL recovers a room that shows **Needs atten
   and switches between meeting audio and program ingest. Listeners can keep their
   language selected while processing recovers; new sentences append to caption
   history and translated speech resumes without resetting the player.
+- Replacing the event's speech-provider API key restarts affected floor processing
+  on the next reconciliation pass. Saving the same key again keeps the worker running.
 - A failed agent restarts after 2, 5, 10, 20 and 30 seconds, up to
   `MEETING_AGENT_MAX_RESTARTS` (default 5) attempts per incident. Sixty seconds
   of healthy processing ends the incident and refills the budget. When the
@@ -76,6 +78,9 @@ reconnect budget, so fixing a wrong URL recovers a room that shows **Needs atten
   disconnect that cannot reach the floor-bot service returns `202` with
   `cleanup_pending: true`; the desired state is already cleared and the stale
   agent is stopped on the next successful reconcile.
+- Rooms of a deleted event (`DELETE /api/v1/events/{slug}`) no longer count as wanting an
+  agent. The next reconcile stops their agent and floor transcription worker, within 30
+  seconds when no other room wants one.
 
 ## Deployment
 

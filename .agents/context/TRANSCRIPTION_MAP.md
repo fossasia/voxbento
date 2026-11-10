@@ -176,6 +176,13 @@ translation and TTS until allocation recovers. This avoids inventing a fallback
 counter that could conflict with the durable stream. Missing/deleted rooms drop
 pending finals rather than publishing an invalid sequence.
 
+Every published floor final is also offered to the room's YouTube caption track
+(`youtube_captions.offer`, non-blocking), inside the same per-room lock so posts
+follow allocation order. YouTube numbers its own posts, so a track set to the
+floor's original text keeps receiving captions during an allocation outage; a
+track set to a translated language pauses with translation. Dropped finals for
+deleted rooms are not offered.
+
 ---
 
 ## Local Model Cache (`providers/local.py`)

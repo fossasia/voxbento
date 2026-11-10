@@ -10,6 +10,7 @@ from weakref import WeakValueDictionary
 from sqlalchemy import select, update
 from sqlalchemy.exc import SQLAlchemyError
 
+from portal import youtube_captions
 from portal.database import get_session
 from portal.models import Room
 from portal.tasks import track_task
@@ -246,6 +247,12 @@ class CaptionAggregator:
         if seq is not None:
             payload["seq"] = seq
         await self.broadcast_callback(booth_id, payload)
+
+        if self.room_id is not None and booth_id.endswith("-floor"):
+            # Non-blocking: queues the caption for the room's YouTube caption track, if one is set up.
+            # YouTube numbers its own posts, so original text is offered even without a room sequence.
+            timing = segment_timing.get()
+            youtube_captions.offer(self.room_id, "floor", final_text, timing.source_received_at_ms if timing else None)
 
         if self.room_id is not None and seq is not None:
             from portal.database import save_transcript_segment

@@ -228,6 +228,7 @@ function make(tagName, id) {
   'tts-sync-group',
   'tts-sync-toggle',
   'captions-container',
+  'tap-to-listen-btn',
 ].forEach((id) => make('div', id));
 ['room-select', 'language-select', 'caption-mode-select', 'translation-lang-select'].forEach((id) =>
   make('select', id),
@@ -285,9 +286,13 @@ listenerData.textContent = JSON.stringify({
 // ── Stubbed browser APIs ─────────────────────────────────────────────────
 
 let whepOpts = null;
+let resumeCalls = 0;
 const WhepListener = {
   start(opts) {
     whepOpts = opts;
+  },
+  resume() {
+    resumeCalls++;
   },
   stop() {
     if (whepOpts) whepOpts.onState({ peerConnection: 'closed', ice: 'closed', audioActive: false });
@@ -344,7 +349,12 @@ Object.assign(globalThis, {
   WebSocket: FakeWebSocket,
   fetch,
   window: {
-    location: { protocol: 'http:', host: 'portal.test' },
+    location: { protocol: 'http:', host: 'portal.test', href: 'http://portal.test/listener/demo', search: '' },
+    history: {
+      replaceState(_state, _title, url) {
+        globalThis.window.location.href = String(url);
+      },
+    },
     setTimeout,
     setInterval: () => 0,
     addEventListener: () => {},
@@ -373,6 +383,13 @@ function flush() {
 
 function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+// Poll until the listener reaches the expected state. Gives up after the
+// timeout so the assertion that follows reports the failure instead of hanging.
+async function waitFor(predicate, timeoutMs = 2000) {
+  const deadline = Date.now() + timeoutMs;
+  while (!predicate() && Date.now() < deadline) await sleep(10);
 }
 
 function ttsSocket() {
@@ -412,6 +429,10 @@ async function run() {
   await import(pathToFileURL(path.join(__dirname, '..', 'portal', 'static', 'js', 'listener-event.js')).href);
   choose(roomSelect, '1');
 
+  console.log('\n── Shareable listener link ──');
+  assert(new URL(window.location.href).searchParams.get('room') === '1', 'choosing a room puts it in the address bar');
+  assert(!new URL(window.location.href).searchParams.has('code'), 'the address bar never carries a join code');
+
   console.log('\n── Status badge (#985) ──');
 
   choose(languageSelect, 'http://mtx/floor/whep');
@@ -434,6 +455,26 @@ async function run() {
     whepOpts.onState({ peerConnection: state, ice: state, audioActive: false });
     assert(statusText() === 'Reconnecting...', state + ' connections show Reconnecting...');
   }
+
+  console.log('\n── Tap to listen when autoplay is blocked ──');
+  const tapButton = document.getElementById('tap-to-listen-btn');
+  whepOpts.onState({ peerConnection: 'connected', ice: 'connected', audioActive: false, playbackBlocked: true });
+  assert(tapButton.hidden === false, 'blocked playback shows the Tap to listen button');
+  assert(statusText() === 'Ready — tap to listen', 'blocked playback says to tap, got "' + statusText() + '"');
+
+  whepOpts.onState({ peerConnection: 'connected', ice: 'connected', audioActive: true, playbackBlocked: true });
+  assert(statusText() !== 'Live (WebRTC)', 'a suspended delayed stream is not shown as Live');
+
+  tapButton.dispatchEvent(new Event('click'));
+  assert(resumeCalls === 1, 'tapping the button asks the player to start playback');
+
+  whepOpts.onState({ peerConnection: 'connected', ice: 'connected', audioActive: true, playbackBlocked: false });
+  assert(tapButton.hidden === true, 'the button hides once audio plays');
+  assert(statusText() === 'Live (WebRTC)', 'playback after the tap shows Live');
+
+  whepOpts.onState({ peerConnection: 'connected', ice: 'connected', audioActive: false, playbackBlocked: true });
+  choose(languageSelect, '');
+  assert(tapButton.hidden === true, 'stopping the stream hides the button');
 
   choose(languageSelect, 'http://mtx/es/whep');
   assert(statusText() !== 'Live (WebRTC)', 'switching to a booth does not show Live before its state is known');
@@ -543,7 +584,7 @@ async function run() {
   // Before the restart: sentence 1 plays; sentence 2's audio is still being synthesized.
   for (const stage of ['caption', 'text', 'audio']) sendFloorSegment(1, 'before-1', 'Before 1', 'Avant 1', stage);
   for (const stage of ['caption', 'text']) sendFloorSegment(2, 'before-2', 'Before 2', 'Avant 2', stage);
-  await sleep(60);
+  await waitFor(() => scheduledSegments.length >= 1);
   assert(JSON.stringify(scheduledSegments) === '[1]', 'the first sentence plays before the restart, got ' + JSON.stringify(scheduledSegments));
 
   // After the restart, then the delayed audio for sentence 2 from the old worker.
@@ -552,10 +593,10 @@ async function run() {
       sendFloorSegment(seq, 'after-' + seq, 'After ' + seq, 'Après ' + seq, stage);
     }
   }
-  await sleep(60);
+  await sleep(60); // fixed wait: this checks that nothing plays yet
   assert(JSON.stringify(scheduledSegments) === '[1]', 'recovered sentences wait for the delayed pre-restart audio');
   sendFloorSegment(2, 'before-2', 'Before 2', 'Avant 2', 'audio');
-  await sleep(200);
+  await waitFor(() => scheduledSegments.length >= 5);
   assert(
     JSON.stringify(scheduledSegments) === '[1,2,3,4,5]',
     'speech continues across the restart in sentence order, got ' + JSON.stringify(scheduledSegments),
@@ -564,7 +605,7 @@ async function run() {
   // A late copy of already played audio must not replay or reorder speech.
   sendFloorSegment(1, 'before-1', 'Before 1', 'Avant 1', 'audio');
   sendFloorSegment(3, 'after-3', 'After 3', 'Après 3', 'audio');
-  await sleep(60);
+  await sleep(60); // fixed wait: this checks that nothing is replayed
   assert(JSON.stringify(scheduledSegments) === '[1,2,3,4,5]', 'late audio from expired sentences is not replayed');
 
   const rows = historyBox.children.map((row) => ({

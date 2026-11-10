@@ -48,6 +48,14 @@ async def sequence_db(tmp_path):
         await db.dispose()
 
 
+@pytest.fixture
+def offered(monkeypatch):
+    """Every caption handed to the YouTube caption track, as (room_id, language, text, received_at_ms)."""
+    calls: list[tuple] = []
+    monkeypatch.setattr(aggregation.youtube_captions, "offer", lambda *args: calls.append(args))
+    return calls
+
+
 @pytest.mark.anyio
 @pytest.mark.parametrize("source", ["jitsi_bot", "program_ingest"])
 @pytest.mark.parametrize("recovery", ["retry", "replacement"])
@@ -226,6 +234,34 @@ async def test_floor_sequence_survives_database_reopen_and_source_switch(source,
 
 
 @pytest.mark.anyio
+@pytest.mark.parametrize("source", ["jitsi_bot", "program_ingest"])
+async def test_sequenced_floor_finals_reach_the_youtube_caption_track(source, sequence_db, offered):
+    """Durable sequencing still hands each floor final to YouTube once, in sequence order."""
+    async with db.get_session() as session:
+        event = Event(slug="youtube-floor", display_name="YouTube floor")
+        session.add(event)
+        await session.flush()
+        room = Room(event_id=event.id, display_name="Hall", floor_source=source)
+        session.add(room)
+        await session.flush()
+    callback = AsyncMock()
+    aggregator = CaptionAggregator(callback, room.id)
+    booth_id = f"{event.slug}-{room.id}-floor"
+    await aggregator.handle_final(booth_id, "First sentence")
+    await aggregator.handle_final(f"{event.slug}-{room.id}-fr", "Phrase de cabine")
+    await aggregator.handle_final(booth_id, "Second sentence")
+    await drain_pipeline()
+    floor_payloads = [call.args[1] for call in callback.await_args_list if call.args[0] == booth_id]
+    assert [payload["seq"] for payload in floor_payloads] == [1, 2]
+    assert [call[:3] for call in offered] == [
+        (room.id, "floor", "First sentence"),
+        (room.id, "floor", "Second sentence"),
+    ]
+    # Only program ingest stamps captions with the time its audio was received.
+    assert all((call[3] is not None) == (source == "program_ingest") for call in offered)
+
+
+@pytest.mark.anyio
 async def test_concurrent_floor_aggregators_allocate_distinct_sequences(sequence_db):
     """Deliver concurrent final captions in their allocated sequence order."""
     async with db.get_session() as session:
@@ -301,7 +337,7 @@ async def test_floor_allocation_and_delivery_share_a_room_lock(sequence_db, monk
 
 @pytest.mark.anyio
 @pytest.mark.parametrize("failure", ["lookup", "update", "commit"])
-async def test_counter_outage_delivers_original_text_and_recovers(sequence_db, monkeypatch, failure):
+async def test_counter_outage_delivers_original_text_and_recovers(sequence_db, monkeypatch, failure, offered):
     """Keep UUID captions available during DB failures without inventing TTS sequences."""
     async with db.get_session() as session:
         event = Event(slug="outage-floor", display_name="Outage floor")
@@ -345,9 +381,16 @@ async def test_counter_outage_delivers_original_text_and_recovers(sequence_db, m
     assert "seq" not in fallback
     assert fallback["segment_id"]
     assert not tasks._tasks  # No storage/translation task may emit unsequenced audio.
+    # YouTube numbers its own posts, so the original-text track keeps going through the outage.
+    assert offered[-1] == (room.id, "floor", "Still readable", None)
     await aggregator.handle_final(booth_id, "Recovered")
     payloads = [call.args[1] for call in callback.await_args_list]
     assert [payload.get("seq") for payload in payloads] == [21, None, 22]
+    assert [call[1:3] for call in offered] == [
+        ("floor", "Connected"),
+        ("floor", "Still readable"),
+        ("floor", "Recovered"),
+    ]
     assert len({payload["segment_id"] for payload in payloads}) == 3
 
 
@@ -372,7 +415,7 @@ async def test_partial_caption_survives_database_outage(sequence_db, monkeypatch
 
 @pytest.mark.anyio
 @pytest.mark.parametrize("deletion", ["lookup", "update"])
-async def test_deleted_floor_does_not_publish_a_late_final(sequence_db, monkeypatch, deletion):
+async def test_deleted_floor_does_not_publish_a_late_final(sequence_db, monkeypatch, deletion, offered):
     """Discard pending text if the room disappears before or during counter allocation."""
     async with db.get_session() as session:
         event = Event(slug="deleted-floor", display_name="Deleted floor")
@@ -410,6 +453,7 @@ async def test_deleted_floor_does_not_publish_a_late_final(sequence_db, monkeypa
         context.setattr(aggregation, "get_session", deleting_session)
         await aggregator.handle_final(booth_id, "Late final")
     callback.assert_not_awaited()
+    assert offered == []
     assert not tasks._tasks
     assert aggregator.states[booth_id].current_utterance == ""
     async with db.get_session() as session:
