@@ -101,6 +101,8 @@ with `?error=invalid_role&role=…` and the page explains why.
 | POST | `/admin/events/` | — | Creates event (slug + display_name) |
 | GET | `/admin/events/{event_id}/` | `admin/event_detail.html` | Event + rooms + booths |
 | GET | `/admin/events/{event_id}/caption-overlays/` | `admin/caption_overlays.html` | Owner-only caption preview, appearance and OBS/vMix URLs; canonical `/workspace` mapping; no-store; linked from event quick actions |
+| GET | `/admin/events/{event_id}/attendance/` | `admin/attendance.html` | Owner-only interpreter attendance (#1215): join/leave, time in booth, interpreting time; `day`/`booth` filters, days in the `vb_tz` cookie's time zone; canonical `/workspace` mapping; no-store |
+| GET | `/admin/events/{event_id}/attendance/export` | CSV | Owner-only per-visit CSV (UTC) honouring the same filters; formula cells neutralized |
 | GET | `/admin/events/{event_id}/api-settings/` | `admin/api_settings.html` | View encrypted API keys |
 | POST | `/admin/events/{event_id}/api-settings` | — | Update transcription API keys (Fernet-encrypted) |
 | POST | `/admin/events/{event_id}/delete` | — | Cascade-deletes event |
