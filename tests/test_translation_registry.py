@@ -180,7 +180,7 @@ def test_a_model_loaded_from_a_path_uses_the_nllb_language_codes():
 
 def test_a_models_own_language_map_is_used_for_it(monkeypatch):
     other = dataclasses.replace(NLLB_200_DISTILLED_600M, id="other", languages={"en": "__en__", "fr": "__fr__"})
-    monkeypatch.setattr("portal.translations.providers.local.get_translation_model", {"other": other}.get)
+    monkeypatch.setattr("portal.translations.model_languages.get_translation_model", {"other": other}.get)
 
     assert _engine_code("other", "fr", "French") == "__fr__"
     assert _engine_code("other", "de", "German") is None

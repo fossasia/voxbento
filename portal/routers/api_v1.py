@@ -33,6 +33,7 @@ from portal.roles import EVENT_OWNER
 from portal.transcription.constants import ProviderEnum
 from portal.transcription.worker import active_workers, start_transcription_worker, stop_transcription_worker
 from portal.translations.constants import TranslationProviderEnum
+from portal.translations.model_languages import language_support_error
 from portal.websockets.revocation import revoke_booths_for_deleted_entity
 
 logger = logging.getLogger(__name__)
@@ -591,6 +592,52 @@ def _check_self_hosted_translation(payload_dict: dict, room: Room | None) -> Non
     )
 
 
+_TRANSLATION_SETUP_FIELDS = {
+    "translation_provider",
+    "translation_model",
+    "enable_translation",
+    "source_language",
+    "target_languages",
+}
+
+
+async def _check_translation_languages(db: AsyncSession, payload_dict: dict, room: Room | None) -> None:
+    """Reject a translation model that cannot handle the room's languages, before anything is written.
+
+    Looks at the room as it will be once the update is applied. Only an update that touches
+    the translation setup is checked, and never one that leaves translation off.
+    """
+    if not _TRANSLATION_SETUP_FIELDS & payload_dict.keys():
+        return
+    enabled = payload_dict.get("enable_translation")
+    if enabled is None:
+        enabled = bool(room and room.floor_translation_enabled)
+    if not enabled:
+        return
+
+    def after(field: str, current: str | None) -> str | None:
+        """The proposed value from payload_dict, or current value when omitted."""
+        return payload_dict[field] if field in payload_dict else current
+
+    targets = payload_dict.get("target_languages")
+    if targets is None:
+        targets = []
+        if room is not None:
+            rows = await db.scalars(
+                select(RoomTranslationLanguage.language_code).where(
+                    RoomTranslationLanguage.room_id == room.id, RoomTranslationLanguage.enabled.is_(True)
+                )
+            )
+            targets = list(rows)
+    error = language_support_error(
+        after("translation_provider", room.floor_translation_provider if room else None),
+        after("translation_model", room.floor_translation_model if room else None),
+        (after("source_language", room.floor_language_code if room else None), *targets),
+    )
+    if error:
+        raise HTTPException(status_code=422, detail=error)
+
+
 @router.put("/events/{event_slug}/rooms/{eventyay_room_id}")
 async def upsert_room(
     event_slug: str,
@@ -615,6 +662,7 @@ async def upsert_room(
 
     payload_dict = payload.model_dump(exclude_unset=True)
     _check_self_hosted_translation(payload_dict, room)
+    await _check_translation_languages(db, payload_dict, room)
 
     if room:
         _apply_floor_settings(room, payload_dict)

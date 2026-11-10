@@ -240,7 +240,8 @@
             {% if room.floor_translation_provider and not catalog.find("translation", room.floor_translation_provider) %}
             <option value="" selected disabled>{{ room.floor_translation_provider | replace('_', '-') | capitalize }} — not available now, choose another</option>
             {% endif %}
-            {% for engine in catalog.translation %}
+            {# A service that cannot translate this room's languages is offered only while it is the saved one. #}
+            {% for engine in catalog.translation if engine.provider not in translation_unfit or engine.provider == room.floor_translation_provider %}
             <option value="{{ engine.provider }}" {% if room.floor_translation_provider == engine.provider %}selected{% endif %}>{{ engine.label }} — {{ engine.note }}</option>
             {% endfor %}
           </select>
