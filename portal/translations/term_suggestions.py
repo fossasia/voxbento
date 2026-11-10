@@ -51,13 +51,13 @@ TERM_LIST_STYLE = (
 
 # Uploads are untrusted and ``re`` holds the GIL for a whole match, even in a worker thread, so a
 # pattern that goes quadratic on one huge token would stall live booths. These stay linear.
-_MARKUP = re.compile(r"<[^<>\n]{1,256}>|\]\([^()\]\n]{0,2048}\)")
-_SOFT_HYPHEN_BREAK = re.compile(r"(?<=[^\W\d_])-\n(?=[^\W\d_]*[a-z])")
-_WORD = re.compile(r"[^\W_](?:[\w+#]|[-'’](?=[^\W_])|\.(?=[a-z]{1,4}\b))*")
-_POSSESSIVE = re.compile(r"['’]s$")
-_SENTENCE_BREAK = re.compile(r"[.!?:;•|]")
-_VERSION_LIKE = re.compile(r"[vVqQ]\d+")
-_NUMBERED_LINE = re.compile(r"^\s*(\d{1,3})[.):]\s*(.+?)\s*$", re.MULTILINE)
+MARKUP = re.compile(r"<[^<>\n]{1,256}>|\]\([^()\]\n]{0,2048}\)")
+SOFT_HYPHEN_BREAK = re.compile(r"(?<=[^\W\d_])-\n(?=[^\W\d_]*[a-z])")
+WORD = re.compile(r"[^\W_](?:[\w+#]|[-'’](?=[^\W_])|\.(?=[a-z]{1,4}\b))*")
+POSSESSIVE = re.compile(r"['’]s$")
+SENTENCE_BREAK = re.compile(r"[.!?:;•|]")
+VERSION_LIKE = re.compile(r"[vVqQ]\d+")
+NUMBERED_LINE = re.compile(r"^\s*(\d{1,3})[.):]\s*(.+?)\s*$", re.MULTILINE)
 
 CONNECTORS = frozenset("of de del der di du la le van von".split())
 
@@ -159,12 +159,12 @@ def tokenize(text: str) -> list[Token]:
     tokens: list[Token] = []
     for line in text.splitlines():
         previous_end: int | None = None
-        for match in _WORD.finditer(line):
+        for match in WORD.finditer(line):
             gap = None if previous_end is None else line[previous_end : match.start()]
             tokens.append(
                 Token(
-                    text=_POSSESSIVE.sub("", match.group()),
-                    opens_sentence=gap is None or _SENTENCE_BREAK.search(gap) is not None,
+                    text=POSSESSIVE.sub("", match.group()),
+                    opens_sentence=gap is None or SENTENCE_BREAK.search(gap) is not None,
                     follows_directly=gap is not None and gap.isspace(),
                 )
             )
@@ -184,7 +184,7 @@ def acronym_stem(word: str) -> str | None:
 
 def is_product_style(word: str) -> bool:
     """Inner capitals ("WebRTC", "iPhone") or letters mixed with digits ("K8s", "H264")."""
-    if len(word) < 2 or acronym_stem(word) or _VERSION_LIKE.fullmatch(word):
+    if len(word) < 2 or acronym_stem(word) or VERSION_LIKE.fullmatch(word):
         return False
     inner_capital = any(char.isupper() for char in word[1:]) and any(char.islower() for char in word)
     return inner_capital or (word[0].isalpha() and any(char.isdigit() for char in word))
@@ -269,7 +269,7 @@ def is_address_or_blob(word: str) -> bool:
 
 def extract_terms(text: str, existing_terms: Iterable[str] = (), limit: int = MAX_SUGGESTIONS) -> list[TermSuggestion]:
     """Candidate glossary terms, likeliest first, leaving out terms already in the glossary."""
-    cleaned = _SOFT_HYPHEN_BREAK.sub("", _MARKUP.sub(" ", text))
+    cleaned = SOFT_HYPHEN_BREAK.sub("", MARKUP.sub(" ", text))
     tally = TermTally()
     tokens: list[Token] = []
     for line in cleaned.splitlines():
@@ -344,7 +344,7 @@ def source_language_name(room: Room) -> str:
 def parse_numbered_reply(reply: str, batch: Sequence[str]) -> dict[str, str]:
     """Map a model's numbered reply back to ``batch``, ignoring lines that fit no term."""
     translations: dict[str, str] = {}
-    for number, translation in _NUMBERED_LINE.findall(reply):
+    for number, translation in NUMBERED_LINE.findall(reply):
         position = int(number) - 1
         cleaned = translation.strip("\"'`*“” ")
         if 0 <= position < len(batch) and cleaned and len(cleaned) <= MAX_TERM_CHARS:
@@ -383,7 +383,7 @@ async def propose_translations(
     ]
     by_language: dict[str, dict[str, str]] = {code: {} for code, _ in translatable}
     if not tasks:
-        return TranslationProposals(by_language, complete=False)
+        return TranslationProposals(by_language, complete=True)
 
     done, pending = await asyncio.wait(tasks, timeout=TRANSLATION_BUDGET_SECONDS)
     for task in pending:
@@ -426,6 +426,11 @@ def parse_accepted_suggestions(
     warnings: list[str] = []
     seen = VocabularyOverlapIndex()
     accepted_rows = list(dict.fromkeys(str(value) for value in form.getlist("accept")))[:MAX_SUGGESTIONS]
+    # The room's languages can change while the review page is open.
+    reviewed = {key.rsplit("_", 1)[1] for key, value in form.multi_items() if key.startswith("target_") and value}
+    dropped = sorted(reviewed - {code for code, _ in languages})
+    if accepted_rows and dropped:
+        warnings.append(f"Skipped languages no longer enabled in this room: {', '.join(dropped[:5])}")
     for row_number, index in enumerate(accepted_rows, start=1):
         source_term = str(form.get(f"source_{index}", ""))
         row_entries = 0

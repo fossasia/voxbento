@@ -22,6 +22,7 @@ from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import joinedload
 from starlette.datastructures import FormData, UploadFile
+from starlette.types import Message
 
 from portal import meeting_source
 from portal import roles as roles_module
@@ -177,6 +178,8 @@ from portal.transcription.worker import (
 )
 from portal.translations.constants import TRANSLATION_MODELS, TranslationProviderEnum
 from portal.translations.source_documents import (
+    MAX_DISCARDED_UPLOAD_BYTES,
+    MAX_MULTIPART_OVERHEAD_BYTES,
     MAX_SOURCE_BYTES,
     TOO_LARGE_MESSAGE,
     SourceDocumentError,
@@ -1709,6 +1712,10 @@ async def admin_edit_room(request: Request, event_id: int, room_id: int):
     )
 
 
+#: Overlap checks read the glossary before writing, so writers take turns. The portal runs as one replica.
+GLOSSARY_WRITE_LOCK = asyncio.Lock()
+
+
 def _vocabulary_result_url(event_id: int, room_id: int, imported: int, warnings: list[str], languages: set[str]) -> str:
     query = urllib.parse.urlencode(
         {
@@ -1741,7 +1748,7 @@ async def admin_upload_ai_vocabulary(request: Request, event_id: int, room_id: i
 
     parsed_entries, warnings = parse_vocabulary_csv(csv_text)
     replace_existing = form.get("import_mode") == "replace"
-    async with get_session() as session:
+    async with GLOSSARY_WRITE_LOCK, get_session() as session:
         try:
             await validate_vocabulary_scope(session, event_id, room_id=room_id)
         except VocabularyScopeError as exc:
@@ -1781,7 +1788,27 @@ async def admin_upload_ai_vocabulary(request: Request, event_id: int, room_id: i
 SOURCE_DOCUMENT_SLOTS = asyncio.Semaphore(2)
 
 
-async def _read_suggestion_terms(upload: UploadFile, existing_terms: list[str]) -> list[TermSuggestion]:
+def limit_request_body(request: Request, max_bytes: int) -> Request:
+    """The same request, answering 413 once its body passes ``max_bytes`` instead of spooling all of it."""
+    received = 0
+
+    async def receive() -> Message:
+        nonlocal received
+        message = await request.receive()
+        received += len(message.get("body", b""))
+        if received > max_bytes:
+            # Answering mid-upload can show as a connection reset, so a moderately oversized file
+            # is read to its end, unstored, for the browser to display the message.
+            while message.get("more_body") and received <= MAX_DISCARDED_UPLOAD_BYTES:
+                message = await request.receive()
+                received += len(message.get("body", b""))
+            raise HTTPException(status_code=413, detail=TOO_LARGE_MESSAGE)
+        return message
+
+    return Request(request.scope, receive)
+
+
+async def read_suggestion_terms(upload: UploadFile, existing_terms: list[str]) -> list[TermSuggestion]:
     if upload.size is None or upload.size > MAX_SOURCE_BYTES:
         raise HTTPException(status_code=413, detail=TOO_LARGE_MESSAGE)
     content = await upload.read()
@@ -1802,7 +1829,9 @@ async def _read_suggestion_terms(upload: UploadFile, existing_terms: list[str]) 
     dependencies=[Depends(require_event_owner)],
 )
 async def admin_suggest_ai_vocabulary(request: Request, event_id: int, room_id: int):
-    """Show suggested glossary terms for review. The upload is read here and never stored."""
+    """Show suggested glossary terms for review. The upload is discarded when its terms are out."""
+    if not verify_same_origin(request):
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Invalid request origin.")
     admin_flags = await get_access_flags(request, event_id=event_id, room_id=room_id)
     async with get_session() as session:
         event = await get_event_by_id(session, event_id)
@@ -1814,6 +1843,7 @@ async def admin_suggest_ai_vocabulary(request: Request, event_id: int, room_id: 
                 select(AIVocabularyEntry.source_term).where(
                     AIVocabularyEntry.event_id == event_id,
                     AIVocabularyEntry.room_id == room_id,
+                    AIVocabularyEntry.booth_id.is_(None),
                 )
             )
         )
@@ -1821,14 +1851,14 @@ async def admin_suggest_ai_vocabulary(request: Request, event_id: int, room_id: 
         engine = suggestion_engine(event, room)
         source_language = source_language_name(room)
 
-    # The context manager closes the spooled upload as soon as its terms are out.
-    async with request.form() as form:
+    # The context manager deletes the spooled upload as soon as its terms are out.
+    async with limit_request_body(request, MAX_SOURCE_BYTES + MAX_MULTIPART_OVERHEAD_BYTES).form() as form:
         upload = form.get("source_file")
         if not isinstance(upload, UploadFile) or not upload.filename:
             raise HTTPException(status_code=400, detail="Select a file with the talk's material.")
         filename = upload.filename
         wants_translations = form.get("propose_translations") == "on"
-        suggestions = await _read_suggestion_terms(upload, existing_terms)
+        suggestions = await read_suggestion_terms(upload, existing_terms)
 
     warnings: list[str] = []
     proposals = None
@@ -1860,8 +1890,10 @@ async def admin_suggest_ai_vocabulary(request: Request, event_id: int, room_id: 
 )
 async def admin_accept_ai_vocabulary(request: Request, event_id: int, room_id: int):
     """Save only the suggestions the owner ticked, through the normal glossary validation."""
+    if not verify_same_origin(request):
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Invalid request origin.")
     form = await request.form()
-    async with get_session() as session:
+    async with GLOSSARY_WRITE_LOCK, get_session() as session:
         room = await get_room_by_id(session, room_id)
         if room is None or room.event_id != event_id:
             raise HTTPException(status_code=404, detail="Room not found.")
@@ -1871,6 +1903,7 @@ async def admin_accept_ai_vocabulary(request: Request, event_id: int, room_id: i
             select(AIVocabularyEntry).where(
                 AIVocabularyEntry.event_id == event_id,
                 AIVocabularyEntry.room_id == room_id,
+                AIVocabularyEntry.booth_id.is_(None),
             )
         ):
             accepted.add(existing)

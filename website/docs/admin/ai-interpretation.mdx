@@ -68,7 +68,7 @@ VoxBento picks out names, acronyms, product-style words such as `WebRTC` and ter
 
 Each translation starts as the original term, because most names stay as written. If the room uses a cloud or self-hosted translation LLM with a working key, you can tick the option to have it propose translations. Only the extracted terms are sent to that service, never the file. The request happens once, while you prepare the glossary, and is not part of live translation.
 
-The uploaded file is read in memory and is not kept. Extraction works best for languages that use capital letters. Chinese, Japanese and similar scripts only yield any Latin-script terms they contain, and languages that capitalise every noun, such as German, produce more suggestions to reject.
+The uploaded file is not kept after the request. Larger uploads pass through a temporary file that is deleted as soon as the terms are extracted. Extraction works best for languages that use capital letters. Chinese, Japanese and similar scripts only yield any Latin-script terms they contain, and languages that capitalise every noun, such as German, produce more suggestions to reject.
 
 ## Prompt Bounding & Latency Optimization
 

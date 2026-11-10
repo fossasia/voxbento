@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import itertools
 import os
 import re
 import time
@@ -11,6 +12,7 @@ from types import SimpleNamespace
 os.environ["BOOTH_ACCESS_TOKEN"] = ""
 
 import pytest
+from fastapi import HTTPException, Request
 from httpx import ASGITransport, AsyncClient
 from sqlalchemy import select
 from starlette.datastructures import FormData, UploadFile
@@ -20,6 +22,7 @@ from portal.auth import create_user_token
 from portal.crypto import encrypt_val
 from portal.database import (
     configure,
+    create_booth,
     create_event,
     create_room,
     create_user,
@@ -31,7 +34,8 @@ from portal.database import (
     set_room_membership,
 )
 from portal.models import AIVocabularyEntry, Event, RoomTranslationLanguage
-from portal.translations import term_suggestions
+from portal.routers.admin import limit_request_body
+from portal.translations import source_documents, term_suggestions
 from portal.translations.source_documents import SourceDocumentError, extract_source_text
 from portal.translations.term_suggestions import (
     ALL_LANGUAGES,
@@ -193,6 +197,20 @@ def test_unusable_files_are_rejected_with_a_clear_message(filename, content, mes
         extract_source_text(filename, content)
 
 
+def test_pdf_page_past_the_deadline_stops_mid_page(monkeypatch):
+    # The deadline and the between-pages check see time 0; the first drawing operator sees a later time.
+    clock = itertools.chain([0, 0], itertools.repeat(1000))
+    monkeypatch.setattr(source_documents, "time", SimpleNamespace(monotonic=lambda: next(clock)))
+    with pytest.raises(SourceDocumentError, match="took too long"):
+        extract_source_text("slides.pdf", build_pdf("Our WebRTC talk"))
+
+
+def test_pdf_page_with_too_much_text_is_rejected(monkeypatch):
+    monkeypatch.setattr(source_documents, "MAX_SOURCE_CHARS", 3)
+    with pytest.raises(SourceDocumentError, match="too much text"):
+        extract_source_text("slides.pdf", build_pdf("Our WebRTC talk"))
+
+
 def test_pdf_without_text_is_rejected():
     with pytest.raises(SourceDocumentError, match="No text was found"):
         extract_source_text("scan.pdf", build_pdf(""))
@@ -291,6 +309,12 @@ def test_engine_treats_an_undecryptable_key_as_no_key():
     assert suggestion_engine(Event(encrypted_groq_api_key="not-a-token"), room_with("groq")) is None
 
 
+@pytest.mark.anyio
+async def test_no_translatable_language_is_a_complete_no_op():
+    proposals = await propose_translations(ENGINE, "English", [ALL_LANGUAGES], ["Docker"])
+    assert proposals.complete is True
+
+
 def test_review_rows_prefer_a_proposal_and_otherwise_keep_the_term():
     proposals = TranslationProposals({"de": {"open source": "quelloffen"}}, complete=False)
     rows = build_suggestion_rows(
@@ -350,6 +374,13 @@ def test_invalid_edits_are_refused_by_the_existing_validation(source, target, wa
     assert warning in warnings[0]
 
 
+def test_language_disabled_during_review_is_reported():
+    form = accepted_form(("accept", "0"), ("source_0", "Docker"), ("target_0_de", "Docker"), ("target_0_es", "Docker"))
+    entries, warnings = parse_accepted_suggestions(form, (("de", "German"),))
+    assert [entry.target_language for entry in entries] == ["de"]
+    assert warnings == ["Skipped languages no longer enabled in this room: es"]
+
+
 def test_row_without_any_translation_is_reported():
     form = accepted_form(("accept", "0"), ("source_0", "Docker"), ("target_0_de", "  "))
     entries, warnings = parse_accepted_suggestions(form, LANGUAGES)
@@ -407,7 +438,7 @@ async def setup():
 
 
 def client() -> AsyncClient:
-    return AsyncClient(transport=ASGITransport(app=app), base_url="http://test")
+    return AsyncClient(transport=ASGITransport(app=app), base_url="http://test", headers={"origin": "http://test"})
 
 
 async def saved_entries(room_id: int) -> list[AIVocabularyEntry]:
@@ -470,6 +501,94 @@ async def test_oversized_upload_is_rejected_with_a_message(setup, monkeypatch):
         response = await post_file(c, setup, "big.txt", b"x" * 11)
     assert response.status_code == 413
     assert b"10 MB or smaller" in response.content
+
+
+@pytest.mark.anyio
+async def test_body_limit_stops_before_the_upload_is_handed_to_the_parser():
+    chunks = [b"x" * 6, b"x" * 6, b"x" * 6]
+
+    async def receive() -> dict:
+        body = chunks.pop(0)
+        return {"type": "http.request", "body": body, "more_body": bool(chunks)}
+
+    limited = limit_request_body(Request({"type": "http"}, receive), max_bytes=10)
+    first = await limited.receive()
+    assert first["body"] == b"x" * 6
+    with pytest.raises(HTTPException) as rejected:
+        await limited.receive()
+    assert rejected.value.status_code == 413
+    # The rest was read and dropped, so the browser can receive the error.
+    assert chunks == []
+
+
+@pytest.mark.anyio
+async def test_body_over_the_limit_is_rejected_by_the_route(setup, monkeypatch):
+    monkeypatch.setattr("portal.routers.admin.MAX_SOURCE_BYTES", 10)
+    monkeypatch.setattr("portal.routers.admin.MAX_MULTIPART_OVERHEAD_BYTES", 10)
+    async with client() as c:
+        response = await post_file(c, setup, "big.txt", b"x" * 100_000)
+    assert response.status_code == 413
+    assert b"10 MB or smaller" in response.content
+
+
+@pytest.mark.anyio
+async def test_requests_from_another_origin_are_refused(setup):
+    evil = {"origin": "http://evil.example", "accept": "text/html"}
+    async with client() as c:
+        upload = await c.post(
+            f"{setup['url']}/suggest",
+            files={"source_file": ("a.txt", b"WebRTC", "text/plain")},
+            cookies=setup["admin"],
+            headers=evil,
+        )
+        accept = await c.post(
+            f"{setup['url']}/accept",
+            data={"accept": ["0"], "source_0": "WebRTC", "target_0_de": "WebRTC"},
+            cookies=setup["admin"],
+            headers=evil,
+        )
+    assert upload.status_code == 403
+    assert accept.status_code == 403
+    assert await saved_entries(setup["room"]) == []
+
+
+@pytest.mark.anyio
+async def test_double_submit_saves_each_term_once(setup):
+    data = {"accept": ["0"], "source_0": "WebRTC", "target_0_de": "WebRTC"}
+    async with client() as c:
+        responses = await asyncio.gather(
+            *(c.post(f"{setup['url']}/accept", data=data, cookies=setup["admin"]) for _ in range(2))
+        )
+    assert sorted("vocab_imported=1" in str(response.next_request.url) for response in responses) == [False, True]
+    assert len(await saved_entries(setup["room"])) == 1
+
+
+@pytest.mark.anyio
+async def test_booth_only_terms_do_not_block_the_room_glossary(setup):
+    async with get_session() as session:
+        booth = await create_booth(
+            session, event_id=setup["event"], room_id=setup["room"], language_code="de", language_name="German"
+        )
+        session.add(
+            AIVocabularyEntry(
+                event_id=setup["event"],
+                room_id=setup["room"],
+                booth_id=booth.id,
+                source_term="WebRTC",
+                target_language="de",
+                target_term="Booth",
+            )
+        )
+    async with client() as c:
+        suggested = await post_file(c, setup, "a.txt", b"The WebRTC talk")
+        accept = await c.post(
+            f"{setup['url']}/accept",
+            data={"accept": ["0"], "source_0": "WebRTC", "target_0_de": "WebRTC"},
+            cookies=setup["admin"],
+            follow_redirects=False,
+        )
+    assert b'value="WebRTC"' in suggested.content
+    assert "vocab_imported=1" in accept.headers["location"]
 
 
 @pytest.mark.anyio
@@ -572,6 +691,14 @@ async def test_room_page_offers_translations_only_with_a_usable_key(setup):
     assert b"/ai-vocabulary/suggest" in without_key.content
     assert b'name="propose_translations"' not in without_key.content
     assert b'name="propose_translations"' in with_key.content
+
+
+@pytest.mark.anyio
+async def test_coordinators_are_not_offered_the_upload(setup):
+    async with client() as c:
+        page = await c.get(f"/admin/events/{setup['event']}/rooms/{setup['room']}/", cookies=setup["coordinator"])
+    assert page.status_code == 200
+    assert b"/ai-vocabulary/suggest" not in page.content
 
 
 @pytest.mark.anyio
