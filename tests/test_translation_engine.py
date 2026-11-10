@@ -407,6 +407,34 @@ async def test_the_worker_returns_none_for_a_provider_without_an_engine():
     assert result is None
 
 
+@pytest.mark.parametrize("answer", [None, ""], ids=["failed", "empty"])
+async def test_the_worker_delivers_nothing_for_a_failed_or_empty_translation(monkeypatch, answer):
+    """An empty translation is not an engine failure, but listeners get nothing to show, store or speak."""
+    monkeypatch.setitem(worker_module.ENGINES, "fake", FakeEngine(rows=[[answer]]))
+    bundle = AsyncMock()
+    monkeypatch.setattr("portal.websockets.manager.tts_manager.broadcast_bundle", bundle)
+    captions = AsyncMock()
+    monkeypatch.setattr("portal.websockets.manager.listener_manager.broadcast", captions)
+    synthesize = AsyncMock()
+    monkeypatch.setattr("portal.tts.worker.synthesize", synthesize)
+    stored = MagicMock(side_effect=AssertionError("nothing may be stored"))
+    monkeypatch.setattr(worker_module, "get_session", stored)
+    room = SimpleNamespace(
+        id=7, floor_ai_vocabulary_enabled=False, floor_ai_interpreter_persona=None, floor_ai_interpretation_style=None
+    )
+
+    await TranslationWorker(MagicMock())._translate_and_broadcast(
+        SimpleNamespace(id=1), room, "fake", "fake-model", None, "fr", "French", "en", "English",
+        42, "Hello", "floor", "uuid-1", 3, "event-7-fr",
+    )
+
+    bundle.assert_awaited_once_with(7, "fr", "floor", b"", "uuid-1", 3, "Hello", "", "pipeline_failed")
+    captions.assert_not_awaited()
+    synthesize.assert_not_awaited()
+    stored.assert_not_called()
+    assert worker_module.LANGUAGE_QUEUES["floor:fr"] == 0
+
+
 async def test_the_worker_returns_none_when_the_engine_could_not_translate(monkeypatch):
     monkeypatch.setitem(worker_module.ENGINES, "fake", FakeEngine(rows=[[None]]))
 
