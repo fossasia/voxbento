@@ -14,10 +14,11 @@ if TYPE_CHECKING:
     import ctranslate2
     from transformers import PreTrainedTokenizer, PreTrainedTokenizerFast
 
+import pycountry
 from huggingface_hub.utils import LocalEntryNotFoundError
 from tqdm.auto import tqdm
 
-from portal.translations.constants import NLLB_LANGUAGE_MAP, TranslationProviderEnum
+from portal.translations.constants import TranslationProviderEnum
 from portal.translations.engine import (
     EngineKind,
     Language,
@@ -27,16 +28,13 @@ from portal.translations.engine import (
     translate_each,
 )
 from portal.translations.providers.base import TranslationProvider
+from portal.translations.registry import NLLB_200_DISTILLED_600M, get_translation_model
 from portal.translations.vocabulary import protect_terms, restore_terms
 
 logger = logging.getLogger(__name__)
 
 _download_progress = {}
 _progress_lock = threading.Lock()
-
-_CODE_TO_NAME = {
-    'af': 'Afrikaans', 'ak': 'Akan', 'am': 'Amharic', 'ar': 'Arabic', 'an': 'Aragonese', 'hy': 'Armenian', 'as': 'Assamese', 'av': 'Avaric', 'ae': 'Avestan', 'ay': 'Aymara', 'az': 'Azerbaijani', 'bm': 'Bambara', 'ba': 'Bashkir', 'eu': 'Basque', 'be': 'Belarusian', 'bn': 'Bengali', 'bi': 'Bislama', 'bs': 'Bosnian', 'br': 'Breton', 'bg': 'Bulgarian', 'my': 'Burmese', 'ca': 'Catalan', 'ch': 'Chamorro', 'ce': 'Chechen', 'ny': 'Chichewa', 'zh': 'Chinese', 'cv': 'Chuvash', 'kw': 'Cornish', 'co': 'Corsican', 'cr': 'Cree', 'hr': 'Croatian', 'cs': 'Czech', 'da': 'Danish', 'dv': 'Divehi', 'nl': 'Dutch', 'dz': 'Dzongkha', 'en': 'English', 'eo': 'Esperanto', 'et': 'Estonian', 'ee': 'Ewe', 'fo': 'Faroese', 'fj': 'Fijian', 'fi': 'Finnish', 'fr': 'French', 'ff': 'Fula', 'gl': 'Galician', 'lg': 'Ganda', 'ka': 'Georgian', 'de': 'German', 'el': 'Greek, Modern (1453-)', 'gn': 'Guarani', 'gu': 'Gujarati', 'ht': 'Haitian', 'ha': 'Hausa', 'he': 'Hebrew', 'hz': 'Herero', 'hi': 'Hindi', 'ho': 'Hiri Motu', 'hu': 'Hungarian', 'is': 'Icelandic', 'io': 'Ido', 'ig': 'Igbo', 'id': 'Indonesian', 'ia': 'Interlingua', 'ie': 'Interlingue', 'iu': 'Inuktitut', 'ik': 'Inupiaq', 'ga': 'Irish', 'it': 'Italian', 'ja': 'Japanese', 'jv': 'Javanese', 'kl': 'Kalaallisut', 'kn': 'Kannada', 'kr': 'Kanuri', 'ks': 'Kashmiri', 'kk': 'Kazakh', 'km': 'Khmer', 'ki': 'Kikuyu', 'rw': 'Kinyarwanda', 'rn': 'Kirundi', 'kv': 'Komi', 'kg': 'Kongo', 'ko': 'Korean', 'ku': 'Kurdish', 'kj': 'Kwanyama', 'ky': 'Kirghiz', 'lo': 'Lao', 'la': 'Latin', 'lv': 'Latvian', 'li': 'Limburgish', 'ln': 'Lingala', 'lt': 'Lithuanian', 'lu': 'Luba-Katanga', 'lb': 'Luxembourgish', 'mi': 'Maori', 'mk': 'Macedonian', 'mg': 'Malagasy', 'ms': 'Malay', 'ml': 'Malayalam', 'mt': 'Maltese', 'gv': 'Manx', 'mr': 'Marathi', 'mh': 'Marshallese', 'mn': 'Mongolian', 'na': 'Nauru', 'nv': 'Navajo', 'ng': 'Ndonga', 'ne': 'Nepali', 'nd': 'Northern Ndebele', 'se': 'Northern Sami', 'no': 'Norwegian', 'nb': 'Norwegian Bokmål', 'nn': 'Norwegian Nynorsk', 'ii': 'Nuosu', 'oc': 'Occitan (post 1500)', 'oj': 'Ojibwe', 'cu': 'Old Church Slavonic', 'or': 'Oriya', 'om': 'Oromo', 'os': 'Ossetian', 'pi': 'Pāli', 'pa': 'Panjabi', 'ps': 'Pashto', 'fa': 'Persian', 'pl': 'Polish', 'pt': 'Portuguese', 'qu': 'Quechua', 'ro': 'Romanian', 'rm': 'Romansh', 'ru': 'Russian', 'sm': 'Samoan', 'sg': 'Sango', 'sa': 'Sanskrit', 'sc': 'Sardinian', 'gd': 'Scottish Gaelic', 'sr': 'Serbian', 'sn': 'Shona', 'sd': 'Sindhi', 'si': 'Sinhala', 'sk': 'Slovak', 'sl': 'Slovenian', 'so': 'Somali', 'nr': 'Southern Ndebele', 'st': 'Southern Sotho', 'es': 'Spanish', 'su': 'Sundanese', 'sw': 'Swahili', 'ss': 'Swati', 'sv': 'Swedish', 'tl': 'Tagalog', 'ty': 'Tahitian', 'tg': 'Tajik', 'ta': 'Tamil', 'tt': 'Tatar', 'te': 'Telugu', 'th': 'Thai', 'bo': 'Tibetan', 'ti': 'Tigrinya', 'to': 'Tonga', 'ts': 'Tsonga', 'tn': 'Tswana', 'tr': 'Turkish', 'tk': 'Turkmen', 'tw': 'Twi', 'uk': 'Ukrainian', 'ur': 'Urdu', 'ug': 'Uyghur', 'uz': 'Uzbek', 've': 'Venda', 'vi': 'Vietnamese', 'vo': 'Volapük', 'wa': 'Walloon', 'cy': 'Welsh', 'fy': 'Western Frisian', 'wo': 'Wolof', 'xh': 'Xhosa', 'yi': 'Yiddish', 'yo': 'Yoruba', 'za': 'Zhuang', 'zu': 'Zulu'
-}
 
 
 class ModelDownloadTqdm(tqdm):
@@ -55,13 +53,32 @@ class ModelDownloadTqdm(tqdm):
                     _download_progress[model_size]["status"] = "downloading"
 
 
-def get_hf_repo_and_revision(model_size: str) -> tuple[str, str]:
-    hf_repo_id = model_size
-    rev = "main"
-    if model_size == "nllb-200-distilled-600M":
-        hf_repo_id = "JustFrederik/nllb-200-distilled-600M-ct2-int8"
-        rev = "302d78f00e6fdb50a1064059df7c392b735e9d05"
-    return hf_repo_id, rev
+def _hf_source(model_size: str) -> tuple[str, str]:
+    """The Hugging Face repository and revision to load ``model_size`` from.
+
+    A registered model comes from its pinned revision. Any other name is used as the
+    repository itself, as before the registry.
+    """
+    entry = get_translation_model(model_size)
+    if entry:
+        return entry.hf_repo, entry.hf_revision
+    return model_size, "main"
+
+
+def _engine_code(model_size: str, language_code: str, language_name: str) -> str | None:
+    """The code ``model_size`` uses for a language, looked up by ISO 639-1 code.
+
+    A model without a registry entry (an operator's own NLLB build, loaded from a path) uses
+    the NLLB-200 language codes. A caller that has only the English name gets it resolved
+    to its ISO code first; the name may also be the ISO code itself.
+    """
+    entry = get_translation_model(model_size) or NLLB_200_DISTILLED_600M
+    for code in (language_code, language_name):
+        engine_code = entry.engine_code(code) if code else None
+        if engine_code:
+            return engine_code
+    iso_code = getattr(pycountry.languages.get(name=language_name), "alpha_2", None)
+    return entry.engine_code(iso_code) if iso_code else None
 
 
 def trigger_download(model_size: str):
@@ -78,7 +95,7 @@ def trigger_download(model_size: str):
     try:
         from huggingface_hub import snapshot_download
 
-        hf_repo_id, rev = get_hf_repo_and_revision(model_size)
+        hf_repo_id, rev = _hf_source(model_size)
 
         snapshot_download(repo_id=hf_repo_id, revision=rev, tqdm_class=ScopedTqdm)
         with _progress_lock:
@@ -100,7 +117,7 @@ def get_download_progress(model_size: str):
     try:
         from huggingface_hub import snapshot_download
 
-        hf_repo_id, rev = get_hf_repo_and_revision(model_size)
+        hf_repo_id, rev = _hf_source(model_size)
 
         snapshot_download(repo_id=hf_repo_id, revision=rev, local_files_only=True)
         return {"status": "completed", "n": 1, "total": 1, "rate": 0}
@@ -168,7 +185,7 @@ def get_model_and_tokenizer(model_size: str):
                 with _progress_lock:
                     _download_progress[model_size] = {"n": 0, "total": 100, "rate": 0, "status": "downloading"}
 
-                hf_repo_id, rev = get_hf_repo_and_revision(model_size)
+                hf_repo_id, rev = _hf_source(model_size)
 
                 local_model_path = snapshot_download(repo_id=hf_repo_id, revision=rev, tqdm_class=ScopedTqdm)
                 with _progress_lock:
@@ -264,6 +281,7 @@ class LocalProvider(TranslationProvider, TranslationEngine):
                 target_lang_name=target.name,
                 target_lang_code=target.code,
                 source_lang_name=source.name,
+                source_lang_code=source.code,
                 model=model,
                 api_key=api_key,
                 persona=context.persona,
@@ -285,6 +303,7 @@ class LocalProvider(TranslationProvider, TranslationEngine):
         persona: str | None = None,
         style: str | None = None,
         vocabulary_entries: Sequence[Any] = (),
+        source_lang_code: str = "",
     ) -> str | None:
         logger.debug(
             f"[NLLB] translate called: source='{source_lang_name}' -> target='{target_lang_name}' "
@@ -302,25 +321,15 @@ class LocalProvider(TranslationProvider, TranslationEngine):
                 ", ".join(ignored),
             )
 
-
-        if target_lang_name in _CODE_TO_NAME:
-            target_lang_name = _CODE_TO_NAME[target_lang_name]
-        if source_lang_name in _CODE_TO_NAME:
-            source_lang_name = _CODE_TO_NAME[source_lang_name]
-
-        target_lang_token = NLLB_LANGUAGE_MAP.get(target_lang_name)
-        source_lang_token = NLLB_LANGUAGE_MAP.get(source_lang_name)
+        target_lang_token = _engine_code(model, target_lang_code, target_lang_name)
+        source_lang_token = _engine_code(model, source_lang_code, source_lang_name)
         if not target_lang_token:
             logger.error(
-                f"[NLLB] Target language '{target_lang_name}' not found in NLLB_LANGUAGE_MAP. "
-                f"Available keys (sample): {list(NLLB_LANGUAGE_MAP.keys())[:10]}"
+                "[NLLB] Model %r does not translate into %r (%s)", model, target_lang_code, target_lang_name
             )
             return None
         if not source_lang_token:
-            logger.error(
-                f"[NLLB] Source language '{source_lang_name}' not found in NLLB_LANGUAGE_MAP. "
-                f"Available keys (sample): {list(NLLB_LANGUAGE_MAP.keys())[:10]}"
-            )
+            logger.error("[NLLB] Model %r does not translate from %r (%s)", model, source_lang_code, source_lang_name)
             return None
 
         logger.debug(

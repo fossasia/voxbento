@@ -24,7 +24,7 @@ from portal.database import create_booth, delete_booth, list_booths_for_room
 from portal.models import DBBooth, Event, Room, RoomTranslationLanguage
 from portal.roles import INTERPRETER
 from portal.transcription.constants import ALLOWED_MODELS, ProviderEnum
-from portal.translations.constants import NLLB_LANGUAGE_MAP
+from portal.translations.registry import NLLB_200_DISTILLED_600M, get_translation_model
 from portal.tts.constants import DEEPGRAM_VOICE_MAPPING, SUPERTONIC_SUPPORTED_LANGS
 from portal.utils import _make_jitsi_url
 
@@ -252,7 +252,7 @@ def engine_catalog(event: Event) -> EngineCatalog:
         else:
             locked.append(_BRANDS[provider])
             locked_translation.append(_BRANDS[provider])
-    translation.append(Engine("local", "nllb-200-distilled-600M", "NLLB (built in)", _SELF_HOSTED))
+    translation.append(Engine("local", NLLB_200_DISTILLED_600M.id, "NLLB (built in)", _SELF_HOSTED))
     # After NLLB so new rooms keep the built-in default; the operator's server may be slow or stopped.
     if settings.self_hosted_llm_enabled:
         translation.append(
@@ -455,12 +455,9 @@ def parse_plan(
             "no voice service is set up for this event. Choose AI captions, or add a Deepgram key on API keys."
         )
     if ai_languages and plan.translation_engine == "local":
-        unsupported = [
-            language_name(code)
-            for code in dict.fromkeys((plan.spoken_language, *plan.ai_languages))
-            if not pycountry.languages.get(alpha_2=code)
-            or pycountry.languages.get(alpha_2=code).name not in NLLB_LANGUAGE_MAP
-        ]
+        chosen = catalog.find("translation", plan.translation_engine)
+        model = (get_translation_model(chosen.model) if chosen else None) or NLLB_200_DISTILLED_600M
+        unsupported = [language_name(code) for code in model.unsupported((plan.spoken_language, *plan.ai_languages))]
         if unsupported:
             errors.append(
                 f"The built-in translator doesn't support {', '.join(unsupported)}. "
