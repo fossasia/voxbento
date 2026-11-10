@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import logging
+
 import httpx
 import pytest
 
@@ -177,7 +179,6 @@ async def test_an_unreachable_control_api_is_non_fatal_and_keeps_the_cache(mtx, 
 
 
 async def test_an_unreachable_control_api_is_observable(mtx, monkeypatch, caplog):
-    import logging
 
     mtx(_FakeClient(list_fails=True))
     utils_mod._created_paths.add(CHANNEL)
