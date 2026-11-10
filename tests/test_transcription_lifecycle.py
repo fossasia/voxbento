@@ -15,6 +15,7 @@ from portal.transcription.worker import (
     active_workers,
     start_transcription_worker,
     stop_transcription_worker,
+    wait_for_worker_start,
 )
 
 _ORIGINAL_FFMPEG_AENTER = FfmpegProcess.__aenter__
@@ -119,6 +120,33 @@ async def test_transcription_worker_cancellation(mock_providers):
     # Verify cleanup
     assert worker.state == State.STOPPED
     assert booth_id not in active_workers
+
+
+@pytest.mark.anyio
+async def test_wait_for_worker_start_is_true_once_ffmpeg_is_up(mock_providers):
+    async def idle(*args, **kwargs):
+        await asyncio.sleep(10)
+
+    mock_providers["local"].run_stream = idle
+    await start_transcription_worker("evt", "fr", "booth_start_ok", None, "local", "base", None)
+
+    assert await wait_for_worker_start("booth_start_ok") is True
+
+
+@pytest.mark.anyio
+async def test_wait_for_worker_start_is_false_when_ffmpeg_cannot_be_launched(mock_providers):
+    async def no_ffmpeg(self):
+        raise FileNotFoundError("ffmpeg")
+
+    FfmpegProcess.__aenter__ = no_ffmpeg  # restored by the mock_ffmpeg_subprocess fixture
+    await start_transcription_worker("evt", "fr", "booth_start_bad", None, "local", "base", None)
+
+    assert await wait_for_worker_start("booth_start_bad") is False
+
+
+@pytest.mark.anyio
+async def test_wait_for_worker_start_ignores_a_booth_without_a_worker():
+    assert await wait_for_worker_start("booth_without_worker") is True
 
 
 @pytest.mark.anyio

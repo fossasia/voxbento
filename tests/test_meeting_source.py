@@ -14,7 +14,7 @@ from sqlalchemy import select
 from fastapi_app import app
 from portal import meeting_source as meeting
 from portal import program_ingest as ingest
-from portal.auth import create_user_token
+from portal.auth import create_user_token, decode_token, generate_admin_csrf_token
 from portal.booth_identity import make_booth_id, make_mediamtx_path
 from portal.config import settings
 from portal.database import configure, create_user, dispose, get_session, init_db
@@ -141,8 +141,13 @@ async def env(monkeypatch):
             await session.flush()
             event_id, room_id = event.id, room.id
         token = create_user_token(user_id=owner.id, email=owner.email, is_admin=True)
+        csrf_session_id = str(decode_token(token)["jti"])
+        csrf_token = generate_admin_csrf_token(csrf_session_id)
         async with httpx.AsyncClient(
-            transport=httpx.ASGITransport(app=app), base_url="http://test", cookies={"user_token": token}
+            transport=httpx.ASGITransport(app=app),
+            base_url="http://test",
+            cookies={"user_token": token, "admin_csrf": csrf_token},
+            headers={"X-CSRF-Token": csrf_token},
         ) as client:
             yield {
                 "client": client,
@@ -584,6 +589,41 @@ async def test_restart_reconciliation_restarts_missing_desired_agent(env):
     env["clock"].now += 60
     await meeting.reconcile_once()
     assert len(env["agents"].starts) == 1
+
+
+@pytest.mark.anyio
+async def test_restart_reconciliation_does_not_restart_agent_that_left_empty_room(env):
+    async with get_session() as session:
+        room = await session.get(Room, env["room_id"])
+        room.meeting_agent_enabled = True
+
+    env["agents"].rooms[env["key"]] = {
+        "event_slug": "meet-test",
+        "room_id": env["room_id"],
+        "state": "stopped",
+        "stage": "left_empty_room",
+        "exit_code": 0,
+    }
+
+    await meeting.reconcile_once()
+
+    async with get_session() as session:
+        room = await session.get(Room, env["room_id"])
+        assert room.meeting_agent_enabled is False
+
+    assert env["agents"].starts == []
+    assert meeting.health[env["room_id"]].state == "stopped"
+    assert "empty" in meeting.health[env["room_id"]].reason.lower()
+    status = (await env["client"].get(env["url"])).json()
+    assert status["state"] == "stopped"
+    assert "empty" in status["reason"].lower()
+
+    # Later passes keep the reason for this room and drop records nothing explains any more.
+    meeting.health[999_999] = meeting.AgentHealth(reason=meeting.EMPTY_ROOM_REASON)
+    await meeting.reconcile_once()
+    assert meeting.health[env["room_id"]].reason == meeting.EMPTY_ROOM_REASON
+    assert 999_999 not in meeting.health
+    assert env["agents"].starts == []
 
 
 @pytest.mark.anyio

@@ -12,7 +12,13 @@ os.environ["BOOTH_ACCESS_TOKEN"] = ""
 
 import pytest
 
-from portal.auth import create_user_token, hash_password, verify_password
+from portal.auth import (
+    create_user_token,
+    decode_token,
+    generate_admin_csrf_token,
+    hash_password,
+    verify_password,
+)
 
 # ---------------------------------------------------------------------------
 # Fixtures
@@ -41,7 +47,9 @@ async def admin_cookie():
             password_hash=hash_password("test-admin-pass"),
             is_admin=True,
         )
-    return {"user_token": create_user_token(user_id=user.id, email="admin@example.com", is_admin=True)}
+    token = create_user_token(user_id=user.id, email="admin@example.com", is_admin=True)
+    csrf = generate_admin_csrf_token(str(decode_token(token)["jti"]))
+    return {"user_token": token, "admin_csrf": csrf}
 
 
 def _client():
@@ -49,7 +57,10 @@ def _client():
 
     from fastapi_app import app
 
-    return AsyncClient(transport=ASGITransport(app=app), base_url="https://test")
+    return AsyncClient(
+        transport=ASGITransport(app=app),
+        base_url="https://test",
+    )
 
 
 async def _create_test_user(email="test@example.com", display_name="Test User", password="securepass123"):
@@ -539,6 +550,25 @@ class TestUserLogin:
         assert b"Invalid email or password" in resp.content
 
     @pytest.mark.anyio
+    async def test_failed_login_preserves_existing_csrf_cookie(self, setup_db):
+        async with _client() as client:
+            await client.get("/admin/login")
+            csrf_token = client.cookies.get("admin_csrf", domain="test.local", path="/")
+            assert csrf_token
+
+            response = await client.post(
+                "/login",
+                data={
+                    "email": "nobody@example.com",
+                    "password": "wrong-password",
+                },
+                follow_redirects=False,
+            )
+
+            assert response.status_code == 403
+            assert client.cookies.get("admin_csrf", domain="test.local", path="/") == csrf_token
+
+    @pytest.mark.anyio
     async def test_login_with_nonexistent_email(self, setup_db):
         async with _client() as c:
             resp = await c.post(
@@ -954,8 +984,15 @@ class TestUserLogout:
     async def test_logout_clears_cookie(self, setup_db):
         async with _client() as c:
             resp = await c.get("/logout", follow_redirects=False)
+
         assert resp.status_code == 303
         assert resp.headers["location"] == "/"
+
+        cleared = {header.split("=", 1)[0].strip().lower() for header in resp.headers.get_list("set-cookie")}
+        assert "user_token" in cleared
+        assert "session_token" in cleared
+        assert "admin_token" in cleared
+        assert "admin_csrf" in cleared
 
 
 # ---------------------------------------------------------------------------
@@ -1239,6 +1276,7 @@ class TestAdminUserManagement:
                 f"/admin/events/{event.id}/members/",
                 data={"email": user.email, "role": "interpreter"},
                 cookies=admin_cookie,
+                headers={"X-CSRF-Token": admin_cookie["admin_csrf"]},
                 follow_redirects=False,
             )
         assert resp.status_code == 303
@@ -1257,7 +1295,7 @@ class TestAdminUserManagement:
             resp = await c.post(
                 f"/admin/users/{user.id}/toggle-active",
                 cookies=admin_cookie,
-                headers={"origin": "http://test"},
+                headers={"origin": "http://test", "X-CSRF-Token": admin_cookie["admin_csrf"]},
                 follow_redirects=False,
             )
         assert resp.status_code == 303
@@ -1275,7 +1313,7 @@ class TestAdminUserManagement:
                 f"/admin/users/{user.id}/delete",
                 data={"confirm_email": user.email},
                 cookies=admin_cookie,
-                headers={"origin": "http://test"},
+                headers={"origin": "http://test", "X-CSRF-Token": admin_cookie["admin_csrf"]},
                 follow_redirects=False,
             )
         assert resp.status_code == 303

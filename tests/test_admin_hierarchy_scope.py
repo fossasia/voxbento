@@ -20,6 +20,9 @@ from sqlalchemy import select
 from portal.auth import create_user_token
 from portal.models import AuthToken, BoothMembership, EventMembership, InviteToken, RoomMembership
 
+# These tests are not about CSRF; their requests carry the token a real page would send.
+pytestmark = pytest.mark.usefixtures("auto_csrf")
+
 
 @pytest.fixture(autouse=True)
 async def setup_db():

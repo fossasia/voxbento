@@ -26,7 +26,7 @@ from portal.roles import INTERPRETER
 from portal.transcription.constants import ALLOWED_MODELS, ProviderEnum
 from portal.transcription.providers.base import get_api_key
 from portal.transcription.providers.sarvam import is_supported_sarvam_language
-from portal.translations.constants import NLLB_LANGUAGE_MAP
+from portal.translations.registry import NLLB_200_DISTILLED_600M, get_translation_model
 from portal.tts.constants import DEEPGRAM_VOICE_MAPPING, SUPERTONIC_SUPPORTED_LANGS
 from portal.utils import _make_jitsi_url
 
@@ -130,6 +130,8 @@ class EngineCatalog:
     # The part of `locked` that is a speech or a translation service, for the pages that show only one kind.
     locked_speech: tuple[str, ...] = ()
     locked_translation: tuple[str, ...] = ()
+    # Why a provider the server can't run is missing, by provider, so a saved booth can say so.
+    unavailable_reasons: dict[str, str] = field(default_factory=dict)
 
     @property
     def voice_support(self) -> dict[str, list[str]]:
@@ -212,6 +214,18 @@ _BRANDS = {
 }
 
 
+def brand_name(provider: str) -> str:
+    """The proper name of a provider ("OpenAI", "ElevenLabs"), for a provider that is no longer offered."""
+    return _BRANDS.get(provider, provider.capitalize())
+
+
+def server_unavailable_reason(provider: str) -> str | None:
+    """Why this server cannot run a speech service whatever the event's keys are, or None when it can."""
+    if provider == "nvidia" and (find_spec("riva") is None or not settings.nvidia_function_id):
+        return "NVIDIA needs the server's nvidia extra and NVIDIA_FUNCTION_ID"
+    return None
+
+
 def engine_catalog(event: Event) -> EngineCatalog:
     """List the engines this event can use, so the setup only offers choices that will work."""
     speech: list[Engine] = []
@@ -221,10 +235,13 @@ def engine_catalog(event: Event) -> EngineCatalog:
     locked_speech: list[str] = []
     locked_translation: list[str] = []
     unavailable: list[str] = []
+    unavailable_reasons: dict[str, str] = {}
 
     for provider, model, label, key_attr in _SPEECH_ENGINES:
-        if provider == "nvidia" and (find_spec("riva") is None or not settings.nvidia_function_id):
-            unavailable.append("NVIDIA needs the server's nvidia extra and NVIDIA_FUNCTION_ID")
+        reason = server_unavailable_reason(provider)
+        if reason:
+            unavailable.append(reason)
+            unavailable_reasons[provider] = reason
             continue
         # Cloud speech recognition also needs the event's switch (see program_ingest.pipeline_problem).
         raw_key = getattr(event, key_attr)
@@ -247,7 +264,7 @@ def engine_catalog(event: Event) -> EngineCatalog:
         else:
             locked.append(_BRANDS[provider])
             locked_translation.append(_BRANDS[provider])
-    translation.append(Engine("local", "nllb-200-distilled-600M", "NLLB (built in)", _SELF_HOSTED))
+    translation.append(Engine("local", NLLB_200_DISTILLED_600M.id, "NLLB (built in)", _SELF_HOSTED))
     # After NLLB so new rooms keep the built-in default; the operator's server may be slow or stopped.
     if settings.self_hosted_llm_enabled:
         translation.append(
@@ -273,6 +290,7 @@ def engine_catalog(event: Event) -> EngineCatalog:
         tuple(unavailable),
         tuple(locked_speech),
         tuple(locked_translation),
+        unavailable_reasons,
     )
 
 
@@ -458,12 +476,9 @@ def parse_plan(
             "no voice service is set up for this event. Choose AI captions, or add a Deepgram key on API keys."
         )
     if ai_languages and plan.translation_engine == "local":
-        unsupported = [
-            language_name(code)
-            for code in dict.fromkeys((plan.spoken_language, *plan.ai_languages))
-            if not pycountry.languages.get(alpha_2=code)
-            or pycountry.languages.get(alpha_2=code).name not in NLLB_LANGUAGE_MAP
-        ]
+        chosen = catalog.find("translation", plan.translation_engine)
+        model = (get_translation_model(chosen.model) if chosen else None) or NLLB_200_DISTILLED_600M
+        unsupported = [language_name(code) for code in model.unsupported((plan.spoken_language, *plan.ai_languages))]
         if unsupported:
             errors.append(
                 f"The built-in translator doesn't support {', '.join(unsupported)}. "
