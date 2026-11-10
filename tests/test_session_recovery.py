@@ -309,7 +309,9 @@ def test_tts_rejects_a_listener_code_cookie_the_event_does_not_have(recovery, ev
         _join_code_attempts.clear()
 
 
-def test_tts_listener_code_recheck_ignores_other_guesses_but_follows_code_changes(recovery):
+# A regenerated code with non-ASCII characters must close the socket too, not fail the comparison.
+@pytest.mark.parametrize("regenerated_code", ["regenerated-listener-code", "código-nuevo"])
+def test_tts_listener_code_recheck_ignores_other_guesses_but_follows_code_changes(recovery, regenerated_code):
     from portal.join_code_limit import JOIN_CODE_RATE_LIMIT, JoinCodeThrottled, _join_code_attempts, verify_join_code
 
     client, (_, _, event, room, _) = recovery
@@ -331,7 +333,7 @@ def test_tts_listener_code_recheck_ignores_other_guesses_but_follows_code_change
             broadcast(client, room)
             assert socket.receive_bytes().endswith(b"private-pcm")
 
-            asyncio.run(set_code("regenerated-listener-code"))
+            asyncio.run(set_code(regenerated_code))
             broadcast(client, room)
             with pytest.raises(WebSocketDisconnect) as exc:
                 socket.receive_bytes()

@@ -446,7 +446,7 @@ async def _authorize_tts(
         if recheck:
             # The connection was accepted with this code, so a recheck only confirms it is still the
             # event's code. It is not a guess: other clients' bad guesses from the same IP must not close it.
-            if not secrets.compare_digest(cookie_code, ev.listener_join_code):
+            if not secrets.compare_digest(cookie_code.encode(), ev.listener_join_code.encode()):
                 raise WSAuthError("Invalid listener join code.")
             return
         try:
