@@ -370,12 +370,6 @@ async def _handle_authorization_code_grant(
     if code_event is None:
         return JSONResponse(status_code=400, content={"error": "invalid_grant"})
 
-    if client.is_confidential and not event:
-        return JSONResponse(
-            status_code=400,
-            content={"error": "invalid_request", "error_description": "Confidential clients must supply 'event'"},
-        )
-
     if event is not None and event != code_event.slug:
         return JSONResponse(
             status_code=400,
