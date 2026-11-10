@@ -3,9 +3,10 @@ from __future__ import annotations
 import asyncio
 import logging
 
+from portal import youtube_captions
 from portal.database import get_session
 from portal.models import DBBooth, Event, Room, TranscriptTranslation
-from portal.transcription.timing import timing_metadata
+from portal.transcription.timing import segment_timing, timing_metadata
 from portal.translations.constants import OPENAI_COMPATIBLE_ENDPOINTS, TranslationProviderEnum
 from portal.translations.keys import get_translation_api_key
 from portal.translations.providers.anthropic import AnthropicProvider
@@ -31,6 +32,10 @@ PROVIDERS = {
 }
 for p in OPENAI_COMPATIBLE_ENDPOINTS.keys():
     PROVIDERS[p] = openai_provider
+PROVIDERS[TranslationProviderEnum.SELF_HOSTED.value] = openai_provider
+
+# Providers that run without a per-event API key.
+KEYLESS_PROVIDERS = {TranslationProviderEnum.LOCAL.value, TranslationProviderEnum.SELF_HOSTED.value}
 
 
 class TranslationWorker:
@@ -106,7 +111,7 @@ class TranslationWorker:
                 return
 
             api_key = self._get_translation_api_key(event, provider)
-            if not api_key and provider != TranslationProviderEnum.LOCAL.value:
+            if not api_key and provider not in KEYLESS_PROVIDERS:
                 logger.error(f"[{booth_id_str}] Translation API key not found for provider {provider}")
                 return
 
@@ -129,6 +134,13 @@ class TranslationWorker:
                         if t_booth_id:
                             await listener_manager.broadcast(t_booth_id, {"type": "translated_caption", "status": "final", "text": txt,
                                                                          "segment_id": u_seg_id, "seq": sq, **timing_metadata()})
+                        if b_id_str.endswith("-floor") and youtube_captions.wants(r_id, l_code):
+                            # The floor's own text is offered as "floor"; a YouTube track set to this
+                            # language code needs it offered under that code too.
+                            timing = segment_timing.get()
+                            youtube_captions.offer(
+                                r_id, l_code, txt, timing.source_received_at_ms if timing else None
+                            )
 
                     target_booth_id = f"{event.slug}-{room.id}-{lang.language_code}"
                     tasks.append(
@@ -140,7 +152,12 @@ class TranslationWorker:
                     from portal.websockets.manager import listener_manager
                     has_tts = tts_manager.has_listeners(room.id, lang.language_code, booth_id_str)
                     has_text = listener_manager.has_listeners(target_booth_id)
-                    if not has_tts and not has_text:
+                    # A language posted to YouTube's caption track is translated even with no listeners. Only the
+                    # floor's translations are posted there, so a booth's segments keep the listener rule.
+                    youtube_only = not has_tts and not has_text
+                    if youtube_only and not (
+                        booth_id_str.endswith("-floor") and youtube_captions.wants(room.id, lang.language_code)
+                    ):
                         continue
 
                     tasks.append(
@@ -161,6 +178,7 @@ class TranslationWorker:
                             seq,
                             target_booth_id,
                             segment.booth_id,
+                            synthesize_audio=not youtube_only,
                         )
                     )
 
@@ -189,8 +207,13 @@ class TranslationWorker:
         seq: int,
         target_booth_id: str | None = None,
         source_booth_id: int | None = None,
+        synthesize_audio: bool = True,
     ):
-        """Translate and deliver a segment, keeping advisory status failures outside inference."""
+        """Translate and deliver a segment, keeping advisory status failures outside inference.
+
+        ``synthesize_audio`` is False when nobody listens to this language (it is only translated for the
+        YouTube caption track), so no speech is generated for it.
+        """
         from portal.websockets.manager import tts_manager
 
         queue_key = f"{booth_id_str}:{lang_code}"
@@ -301,10 +324,19 @@ class TranslationWorker:
                     from portal.websockets.manager import listener_manager
                     await listener_manager.broadcast(target_booth_id, {"type": "translated_caption", "status": "final", "text": translated_text,
                                                                       "segment_id": uuid_segment_id, "seq": seq, **timing_metadata()})
+                if booth_id_str.endswith("-floor"):
+                    # Non-blocking: queues the translation for the room's YouTube caption track, if it asks for this language.
+                    timing = segment_timing.get()
+                    youtube_captions.offer(
+                        room.id, lang_code, translated_text, timing.source_received_at_ms if timing else None
+                    )
 
             # Decrement queue early so slow TTS doesn't cause new incoming segments to be dropped
             LANGUAGE_QUEUES[queue_key] -= 1
             queue_decremented = True
+
+            if not synthesize_audio:
+                return
 
             from portal.tts.worker import synthesize
 

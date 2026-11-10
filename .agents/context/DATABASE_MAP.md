@@ -199,6 +199,30 @@ Unique index on `(segment_id, language_code)`.
 
 ---
 
+### `interpreter_attendance`
+
+One row per visit to an interpreter booth (#1215). Written in batches by `portal/attendance.py`
+(`AttendanceTracker.flush`, every 60 s and at shutdown), never on the WebSocket path.
+
+| Column | Type | Notes |
+|---|---|---|
+| `id` | String(32) PK | Generated in memory when the visit starts; flushes upsert by it |
+| `event_id` | FK → events.id CASCADE | Resolved from the booth's event slug at flush time |
+| `room_id` | Integer nullable | Plain value, no FK, so records outlive a removed room |
+| `language_code` | String(10) | Booth language |
+| `user_id` | FK → users.id SET NULL, nullable | Registered user who joined |
+| `invite_public_id` | String(32) nullable | `invite_tokens.public_id` used to join, for invite-link visitors |
+| `display_name` | String(200) | Name typed on the booth page (fallback when there is no account) |
+| `role` | String(32) | Booth role at join time |
+| `joined_at` | DateTime(tz) | UTC |
+| `left_at` | DateTime(tz) nullable | Unset while open; on startup `close_stale_visits` sets it to `last_seen_at` |
+| `last_seen_at` | DateTime(tz) | Last flush time of an open visit |
+| `interpreting_seconds` | Integer | Seconds as active interpreter with `ingest_connected` and `mic_active` |
+
+Index: `(event_id, joined_at)`, `user_id`.
+
+---
+
 ### `room_translation_languages` & `booth_translation_languages`
 
 | Column | Type | Notes |
@@ -258,7 +282,8 @@ Tracks which languages the translation worker should generate for a given room o
 | 038 | `038_add_public_id_to_invite_tokens.py` | `invite_tokens.public_id` |
 | 039 | `039_add_atlascloud_api_key.py` | AtlasCloud API key setting |
 | 040 | `040_add_last_sign_in_at_to_users.py` | Nullable `users.last_sign_in_at` |
-| 041 | `041_youtube_connections.py` | `youtube_connections` table, `rooms.youtube_broadcast_id`, `rooms.youtube_stream_id` |
+| 041 | `041_add_interpreter_attendance.py` | `interpreter_attendance` table (#1215) |
+| 042 | `042_youtube_connections.py` | `youtube_connections` table, `rooms.youtube_broadcast_id`, `rooms.youtube_stream_id` |
 
 Run migrations: `uv run alembic upgrade head`
 
@@ -323,7 +348,7 @@ URL), `program_relay_key_enc` (Fernet ciphertext of the YouTube stream key; writ
 never serialize or log) and `program_relay_updated_at`. Helpers live in
 `portal/program_relay.py` (`store_destination`, `clear_destination`, `destination`).
 
-## Migration 041 — Sign in with YouTube (#1087)
+## Migration 042 — Sign in with YouTube (#1087)
 
 Table `youtube_connections` (model `YouTubeConnection`), one row per event (unique
 `event_id`, cascade on event delete): `channel_id` (String(64)), `channel_title`
@@ -366,6 +391,9 @@ VoxBento logo served by the site). No row means the defaults.
 
 Migration 036 adds nullable `users.sessions_valid_after`; Admin demotion and
 account deactivation advance it so existing booth sockets can be evicted.
+Password recovery advances it in the password/reset-token transaction and
+invalidates outstanding magic links. `redeem_auth_token` conditionally updates
+only unused, unexpired tokens, preventing two requests from redeeming one token.
 SQLite returns this value without timezone information; comparisons treat those
 values as UTC. Migration 037 adds nullable `invite_tokens.revoked_at`.
 Migration 038 adds a unique, non-null `invite_tokens.public_id`, backfilling

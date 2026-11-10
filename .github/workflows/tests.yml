@@ -256,8 +256,10 @@ jobs:
         run: |
           node --check portal/static/js/interpreter-booth.js
           node --check portal/static/js/booth-reconnect.js
+          node --check portal/static/js/mic-activity.js
           node --check portal/static/js/whep-listener.js
           node --check portal/static/js/admin.js
+          node --check portal/static/js/attendance.js
           node --check portal/static/js/booth-detail.js
           node --check portal/static/js/tabs.js
           node --check portal/static/js/overlay-builder.js
@@ -278,6 +280,8 @@ jobs:
           node --test tests/test_overlay_connection.js
           node tests/test_jules_review.mjs
           node tests/test_booth_reconnect.mjs
+          node tests/test_attendance.mjs
+          node tests/test_mic_activity.mjs
           node tests/test_booth_socket.mjs
           node tests/test_room_ai.mjs
           node tests/test_lang_picker.mjs

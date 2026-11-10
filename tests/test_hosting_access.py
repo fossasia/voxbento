@@ -1417,3 +1417,34 @@ async def test_transient_db_lock_during_redemption_returns_503():
 
 
 
+
+
+@pytest.mark.anyio
+async def test_invite_acceptance_user_cookie_is_secure_over_forwarded_https():
+    async with get_session() as session:
+        user = await create_user(
+            session,
+            email="secure-cookie@example.com",
+            display_name="Cookie Stub",
+            password_hash=None,
+            email_verified=False,
+            can_host=False,
+        )
+        raw_token, _ = await create_hosting_invite(session, user.id, 3600)
+
+    async with client() as http:
+        resp = await http.post(
+            f"/invite/accept/{raw_token}",
+            data={
+                "display_name": "Cookie Organizer",
+                "password": "ValidPassword123!",
+                "password_confirm": "ValidPassword123!",
+            },
+            headers={"Origin": "http://test", "x-forwarded-proto": "https"},
+            follow_redirects=False,
+        )
+
+    assert resp.status_code == 303
+    cookie = next(v for k, v in resp.headers.multi_items() if k == "set-cookie" and v.startswith("user_token="))
+    assert "Secure" in cookie
+    assert "HttpOnly" in cookie

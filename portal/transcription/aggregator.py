@@ -7,6 +7,7 @@ from dataclasses import dataclass, field
 
 from sqlalchemy import select, update
 
+from portal import youtube_captions
 from portal.database import get_session
 from portal.models import Room
 from portal.tasks import track_task
@@ -170,6 +171,11 @@ class CaptionAggregator:
             booth_id, {"type": "caption", "status": "final", "text": final_text, "segment_id": segment_id, "seq": seq,
                        **timing_metadata()}
         )
+
+        if self.room_id is not None and booth_id.endswith("-floor"):
+            # Non-blocking: queues the caption for the room's YouTube caption track, if one is set up.
+            timing = segment_timing.get()
+            youtube_captions.offer(self.room_id, "floor", final_text, timing.source_received_at_ms if timing else None)
 
         if self.room_id is not None:
             import asyncio

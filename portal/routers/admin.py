@@ -146,11 +146,13 @@ from portal.room_setup import (
     apply_plan,
     blank_plan,
     booth_speech_models,
+    brand_name,
     default_jitsi_url,
     engine_catalog,
     load_snapshot,
     parse_plan,
     room_audio_choice,
+    server_unavailable_reason,
     summarize,
 )
 from portal.room_setup import ALL_LANGUAGES as ROOM_ALL_LANGUAGES
@@ -170,10 +172,12 @@ from portal.team import remove_assignment as remove_team_assignment
 from portal.team import revoke_invite_link as revoke_team_invite_link
 from portal.transcription import ALLOWED_MODELS, ProviderConfig, ProviderEnum, get_api_key
 from portal.transcription.worker import (
+    State,
     WorkerCapacityError,
     active_workers,
     start_transcription_worker,
     stop_transcription_worker,
+    wait_for_worker_start,
 )
 from portal.translations.constants import TRANSLATION_MODELS, TranslationProviderEnum
 from portal.translations.vocabulary import (
@@ -202,6 +206,7 @@ templates = Jinja2Templates(
 )
 # Templates read role names and labels from portal.roles (#757).
 templates.env.globals["roles"] = roles_module
+templates.env.globals["brand_name"] = brand_name
 templates.env.filters["role_label"] = role_label
 
 
@@ -1576,6 +1581,8 @@ def _apply_ai_settings(room: Room, form: FormData, catalog: EngineCatalog) -> No
     translation = catalog.find("translation", str(form.get("floor_translation_provider", "")))
     if translation:
         model = str(form.get("floor_translation_model", "")).strip()[:100]
+        if translation.provider == TranslationProviderEnum.SELF_HOSTED.value:
+            model = settings.self_hosted_llm_model_or_default(model) or ""
         room.floor_translation_provider = translation.provider
         room.floor_translation_model = model or translation.model
     if "floor_ai_interpreter_persona" in form:
@@ -1608,6 +1615,11 @@ async def admin_edit_room(request: Request, event_id: int, room_id: int):
     floor_translation_enabled = form.get("floor_translation_enabled") == "on"
     floor_translation_provider = form.get("floor_translation_provider", "").strip() or None
     floor_translation_model = form.get("floor_translation_model", "").strip() or None
+    if floor_translation_provider == TranslationProviderEnum.SELF_HOSTED.value:
+        # Turning translation off must still work after the server setting is removed.
+        if floor_translation_enabled and form_section in ("", "translation") and not settings.self_hosted_llm_enabled:
+            raise HTTPException(status_code=400, detail="Self-hosted translation is not configured on this server")
+        floor_translation_model = settings.self_hosted_llm_model_or_default(floor_translation_model)
     floor_translation_languages = form.getlist("floor_translation_languages")
     floor_ai_interpreter_persona = form.get("floor_ai_interpreter_persona", "").strip() or None
     floor_ai_interpretation_style = form.get("floor_ai_interpretation_style", "").strip() or None
@@ -1828,7 +1840,9 @@ async def admin_delete_ai_vocabulary(request: Request, event_id: int, room_id: i
 
 @router.get("/api/admin/providers/translation/models", dependencies=[Depends(require_owner_or_coordinator)])
 async def get_translation_models():
-    return TRANSLATION_MODELS
+    if not settings.self_hosted_llm_enabled:
+        return TRANSLATION_MODELS
+    return {**TRANSLATION_MODELS, TranslationProviderEnum.SELF_HOSTED.value: list(settings.self_hosted_llm_model_list)}
 
 
 MAX_AUDIO_DELAY_MS = 10_000
@@ -2045,13 +2059,33 @@ BOOTH_SAVE_NOTICES = {
     "settings": "Booth details saved.",
 }
 BOOTH_WORKER_NOTICES = {
-    "restarted": "The caption worker was restarted with the new settings.",
+    "restarted": "The caption worker was restarted with the saved settings.",
     "stopped": "The caption worker was stopped.",
     "kept": "Nothing changed, so the caption worker kept running.",
     "off": "Captions stay off.",
     "failed": "The caption worker could not be started, so there are no live captions right now. Try saving again in a moment.",
 }
+BOOTH_ERROR_NOTICES = {
+    "model": "That caption model is no longer supported. Pick another model and save again; nothing was changed.",
+    "server": "That service is not available on this server. Pick another service and save again; nothing was changed.",
+    "api_off": "External transcription is turned off for this event. Turn it on under API keys, or pick Local; nothing was changed.",
+    "no_key": "That service has no API key on this event. Add its key under API keys, or pick another service; nothing was changed.",
+    "api_off_no_key": "External transcription is turned off for this event and that service has no API key. Turn it on and add the key under API keys, or pick Local; nothing was changed.",
+}
 BOOTH_IDLE_WORKER_NOTICE = "These settings are used the next time an interpreter goes live."
+
+
+def _kept_speech_hint(event: Event, catalog: EngineCatalog, provider: str) -> str:
+    """What to do to keep using a saved caption service that is no longer offered."""
+    if catalog.unavailable_reasons.get(provider):
+        return "not available on this server"
+    try:
+        has_key = bool(get_api_key(event, ProviderEnum(provider)))
+    except ValueError:  # a provider name this version no longer knows
+        has_key = False
+    if has_key and not event.transcription_api_enabled:
+        return "turn on external transcription to keep using it"
+    return "add its API key to keep using it"
 
 
 def _booth_saved_notice(request: Request) -> str | None:
@@ -2064,8 +2098,17 @@ def _booth_saved_notice(request: Request) -> str | None:
     return f"{saved} {worker}"
 
 
-def _booth_saved_url(request: Request, event_id: int, room_id: int, booth_id: int, saved: str, worker: str = "") -> str:
+def _booth_error_notice(request: Request) -> str | None:
+    return BOOTH_ERROR_NOTICES.get(request.query_params.get("error", ""))
+
+
+def _booth_saved_url(
+    request: Request, event_id: int, room_id: int, booth_id: int, saved: str, worker: str = "", error: str = ""
+) -> str:
     """Back to the booth page on the tab that was saved, with a note on what happened."""
+    if error:
+        query = urllib.parse.urlencode({"error": error})
+        return management_url(request, f"events/{event_id}/rooms/{room_id}/booths/{booth_id}/?{query}#{saved}")
     query = urllib.parse.urlencode({"saved": saved, **({"worker": worker} if worker else {})})
     return management_url(request, f"events/{event_id}/rooms/{room_id}/booths/{booth_id}/?{query}#{saved}")
 
@@ -2099,24 +2142,38 @@ async def admin_booth_detail(request: Request, event_id: int, room_id: int, boot
     ]
     translation_languages_dataset.sort(key=lambda x: x["name"])
     enabled_translation_language_codes = [lang.language_code for lang in db_booth.translation_languages if lang.enabled]
-    # The saved model stays selectable even when it is no longer offered, so saving never swaps it silently.
-    speech_models = {provider: list(models) for provider, models in booth_speech_models().items()}
-    translation_models = {
-        provider: [(model, model) for model in models] for provider, models in TRANSLATION_MODELS.items()
-    }
-    # Booths saved before the streaming ElevenLabs model was named scribe_v2_realtime still say scribe_v2.
+    # Coordinators only see the Overview tab, so only event owners need the engine catalog and model lists.
+    catalog = None
+    speech_models: dict = {}
+    translation_models: dict = {}
     saved_speech_model = db_booth.transcription_model
-    if saved_speech_model == "scribe_v2":
-        saved_speech_model = "scribe_v2_realtime"
-    for models, saved_provider, saved_model in (
-        (speech_models, db_booth.transcription_provider, saved_speech_model),
-        (translation_models, db_booth.translation_provider, db_booth.translation_model),
-    ):
-        if not saved_provider:  # a new booth has no translation service saved yet
-            continue
-        offered = models.setdefault(saved_provider, [])
-        if saved_model and saved_model not in {value for value, _ in offered}:
-            offered.append((saved_model, f"{saved_model} (current)"))
+    kept_speech_hint = ""
+    if admin_flags["is_event_owner"]:
+        # The saved model stays selectable even when it is no longer offered, so saving never swaps it silently.
+        speech_models = {provider: list(models) for provider, models in booth_speech_models().items()}
+        translation_models = {
+            provider: [(model, model) for model in models] for provider, models in TRANSLATION_MODELS.items()
+        }
+        # Booths saved before the streaming ElevenLabs model was named scribe_v2_realtime still say scribe_v2.
+        saved_speech_model = db_booth.transcription_model
+        if saved_speech_model == "scribe_v2":
+            saved_speech_model = "scribe_v2_realtime"
+        for models, saved_provider, saved_model in (
+            (speech_models, db_booth.transcription_provider, saved_speech_model),
+            (translation_models, db_booth.translation_provider, db_booth.translation_model),
+        ):
+            if not saved_provider:  # a new booth has no translation service saved yet
+                continue
+            offered = models.setdefault(saved_provider, [])
+            if saved_model and saved_model not in {value for value, _ in offered}:
+                offered.append((saved_model, f"{saved_model} (current)"))
+        if settings.self_hosted_llm_enabled:
+            # Set after the step above: a self-hosted model the server no longer lists can't be saved, so it isn't offered.
+            translation_models[TranslationProviderEnum.SELF_HOSTED.value] = [
+                (model, model) for model in settings.self_hosted_llm_model_list
+            ]
+        catalog = engine_catalog(event)
+        kept_speech_hint = _kept_speech_hint(event, catalog, db_booth.transcription_provider)
     return templates.TemplateResponse(
         request=request,
         name="admin/booth_detail.html",
@@ -2124,11 +2181,13 @@ async def admin_booth_detail(request: Request, event_id: int, room_id: int, boot
             "event": event,
             "room": room,
             "booth": db_booth,
-            "catalog": engine_catalog(event),
+            "catalog": catalog,
+            "kept_speech_hint": kept_speech_hint,
             "speech_models": speech_models,
             "saved_speech_model": saved_speech_model,
             "translation_models": translation_models,
             "saved_notice": _booth_saved_notice(request),
+            "error_notice": _booth_error_notice(request),
             "show_next_steps": not (db_booth.transcription_enabled or db_booth.translation_enabled),
             "booth_id": bid,
             "mediamtx_path": mediamtx_path,
@@ -2384,6 +2443,12 @@ async def admin_booth_translation_settings(
             TranslationProviderEnum(translation_provider)
         except ValueError:
             raise HTTPException(status_code=400, detail="Invalid translation provider")
+        # Checked only when translation is on, so a booth left on a removed server can still turn it off.
+        if translation_enabled and translation_provider == TranslationProviderEnum.SELF_HOSTED.value:
+            if not settings.self_hosted_llm_enabled:
+                raise HTTPException(status_code=400, detail="Self-hosted translation is not configured on this server")
+            if not settings.self_hosted_llm_allows(translation_model):
+                raise HTTPException(status_code=400, detail="That model is not allowed for self-hosted translation")
         db_booth.translation_enabled = translation_enabled
         db_booth.translation_provider = translation_provider
         db_booth.translation_model = translation_model
@@ -2450,20 +2515,44 @@ async def admin_transcription_settings(
         except ValueError:
             raise HTTPException(status_code=400, detail="Invalid transcription provider")
         if transcription_model not in ALLOWED_MODELS.get(provider_enum, set()):
-            raise HTTPException(
-                status_code=400, detail=f"Invalid model '{transcription_model}' for provider '{transcription_provider}'"
+            # The page keeps a saved model selectable even after it stops being supported. Turning captions
+            # off must still save with it; turning them on with it gets a notice on the Captions tab.
+            keeps_saved_model = (
+                not transcription_enabled
+                and transcription_provider == db_booth.transcription_provider
+                and transcription_model == db_booth.transcription_model
             )
+            if not keeps_saved_model:
+                if transcription_enabled:
+                    return safe_redirect(
+                        url=_booth_saved_url(request, event_id, room_id, booth_id, "captions", error="model"),
+                        status_code=status.HTTP_303_SEE_OTHER,
+                    )
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"Invalid model '{transcription_model}' for provider '{transcription_provider}'",
+                )
         event = await get_event_by_id(session, event_id)
         if event is None:
             raise HTTPException(status_code=404, detail="Event not found.")
         # Turning captions off must work even if the saved service lost its key, so the key and
         # external-API checks only apply when captions will be on.
+        if transcription_enabled and server_unavailable_reason(transcription_provider):
+            # A key cannot fix this: the server itself cannot run the service.
+            return safe_redirect(
+                url=_booth_saved_url(request, event_id, room_id, booth_id, "captions", error="server"),
+                status_code=status.HTTP_303_SEE_OTHER,
+            )
         if transcription_enabled and provider_enum != ProviderEnum.LOCAL:
-            if not event.transcription_api_enabled:
-                raise HTTPException(status_code=400, detail="External API transcription is disabled for this event.")
-            if not get_api_key(event, provider_enum):
-                raise HTTPException(
-                    status_code=400, detail=f"API key for {transcription_provider} is not configured on the event."
+            # Both are fixed on the API keys page, so say so on the Captions tab instead of showing a bare 400.
+            # Name both when both are missing, so fixing one does not lead to a second refusal.
+            api_off = not event.transcription_api_enabled
+            no_key = not get_api_key(event, provider_enum)
+            missing = "api_off_no_key" if api_off and no_key else "api_off" if api_off else "no_key" if no_key else ""
+            if missing:
+                return safe_redirect(
+                    url=_booth_saved_url(request, event_id, room_id, booth_id, "captions", error=missing),
+                    status_code=status.HTTP_303_SEE_OTHER,
                 )
         old_enabled = db_booth.transcription_enabled
         old_provider = db_booth.transcription_provider
@@ -2488,8 +2577,11 @@ async def admin_transcription_settings(
                 old_enabled != transcription_enabled
                 or old_provider != transcription_provider
                 or old_model != transcription_model
-                # A start that failed earlier left the settings saved but no worker: saving again retries it.
+                # A start that failed earlier left the settings saved but no worker (or a dead one still in the
+                # registry): saving again retries it. One that is shutting down is about to disappear, so it is
+                # replaced too: stop_transcription_worker waits for it to finish, then a new one starts.
                 or bid not in active_workers
+                or active_workers[bid].state in (State.STOPPING, State.STOPPED)
             ):
                 await stop_transcription_worker(bid)
                 await broadcast_transcription(bid, "")
@@ -2507,9 +2599,15 @@ async def admin_transcription_settings(
                         config,
                         room_id=db_booth.room_id,
                     )
-                    worker = "restarted"
+                    # The start call only schedules the worker; ffmpeg is launched right after, so wait for that.
+                    worker = "restarted" if await wait_for_worker_start(bid) else "failed"
                 except WorkerCapacityError:
                     logger.warning("Could not start caption worker for %s", bid, exc_info=True)
+                    worker = "failed"
+                except Exception:
+                    # Deliberately broad (#1155): the old worker is already stopped and the settings are saved,
+                    # so any start failure must show the notice, not a 500 that rolls the settings back.
+                    logger.exception("Caption worker for %s failed to start", bid)
                     worker = "failed"
     return safe_redirect(
         url=_booth_saved_url(request, event_id, room_id, booth_id, "captions", worker),
