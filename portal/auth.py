@@ -896,7 +896,6 @@ async def resolve_ws_auth(websocket: WebSocket, booth_id: str) -> dict:
         return payload
 
     await _validate_ws_origin(websocket)
-    payload = get_booth_session(websocket)
     if not payload:
         await _reject_ws_auth(websocket, 4001, "Missing WebSocket token and session cookie.")
 
