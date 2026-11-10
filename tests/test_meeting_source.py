@@ -757,3 +757,40 @@ async def test_deleted_event_worker_is_stopped_when_its_health_record_is_gone(en
     env["stop"].reset_mock()
     await meeting._stop_deleted_event_workers({env["room_id"]})
     env["stop"].assert_awaited_once_with(env["booth_id"])
+
+
+@pytest.mark.anyio
+async def test_meeting_source_blocks_sarvam_unsupported_floor_language_and_allows_supported(env):
+    from portal.crypto import encrypt_val
+
+    response = await env["client"].post(
+        env["url"], json={"action": "connect", "meeting_url": "https://meet.example.org/TrackA"}
+    )
+    assert response.status_code == 200, response.text
+    env["agents"].rooms[env["key"]]["stage"] = "in_meeting"
+    await meeting.reconcile_once()
+    publish(env, 100)
+
+    async with get_session() as session:
+        db_event = await session.get(Event, env["event_id"])
+        db_event.transcription_api_enabled = True
+        db_event.encrypted_sarvam_api_key = encrypt_val("sarvam-secret")
+        db_room = await session.get(Room, env["room_id"])
+        db_room.floor_transcription_provider = "sarvam"
+        db_room.floor_transcription_model = "saaras:v3-realtime"
+        db_room.floor_language_code = "fr"
+
+    await meeting.reconcile_once()
+    env["start"].assert_not_awaited()
+    status = await env["client"].get(env["url"])
+    assert status.json()["state"] == "degraded"
+    assert status.json()["reason"] == "Sarvam AI does not support language 'fr'."
+
+    async with get_session() as session:
+        db_room = await session.get(Room, env["room_id"])
+        db_room.floor_language_code = "hi"
+
+    await meeting.reconcile_once()
+    env["start"].assert_awaited_once()
+    assert env["start"].call_args.kwargs["provider"] == "sarvam"
+    assert env["start"].call_args.kwargs["transcription_language"] == "hi"

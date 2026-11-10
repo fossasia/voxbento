@@ -8,7 +8,7 @@ import portal.webhooks.worker as _wh_worker
 from portal.config import settings
 from portal.transcription.process import FfmpegProcess
 from portal.transcription.providers.atlascloud import AtlasCloudProvider
-from portal.transcription.providers.base import ProviderConfig
+from portal.transcription.providers.base import FatalTranscriptionError, ProviderConfig
 from portal.transcription.providers.deepgram import DeepgramProvider
 from portal.transcription.providers.elevenlabs import ElevenLabsProvider
 from portal.transcription.providers.local import LocalProvider
@@ -118,6 +118,7 @@ class TranscriptionWorkerSession:
                 )
 
                 # The context manager entirely encapsulates ffmpeg process lifecycle and cleanup.
+                terminal_failure = False
                 async with FfmpegProcess(self.rtsp_url, self.sample_rate, self.booth_id) as process:
                     try:
                         actual_language = self.transcription_language or self.language_code
@@ -162,10 +163,18 @@ class TranscriptionWorkerSession:
                     except asyncio.CancelledError:
                         logger.info(f"[{self.booth_id}][{self.session_id}] Transcription worker cancelled.")
                         raise
+                    except FatalTranscriptionError as e:
+                        logger.error(
+                            "[%s][%s] Fatal transcription failure; stopping worker: %s",
+                            self.booth_id,
+                            self.session_id,
+                            e,
+                        )
+                        terminal_failure = True
                     except Exception as e:
                         logger.error(f"[{self.booth_id}][{self.session_id}] Transcription error: {e}. Retrying...")
 
-                if self.state == State.STOPPING:
+                if terminal_failure or self.state == State.STOPPING:
                     break
 
                 retry_count += 1
@@ -191,6 +200,26 @@ class TranscriptionWorkerSession:
 active_workers: Dict[str, TranscriptionWorkerSession] = {}
 
 
+def is_worker_running(session: object | None) -> bool:
+    """Return True when a worker registry entry is actively starting or running."""
+    if session is None:
+        return False
+    state = getattr(session, "state", None)
+    if isinstance(state, State):
+        return state in (State.STARTING, State.RUNNING)
+    return True
+
+
+def is_worker_occupying_slot(session: object | None) -> bool:
+    """Return True when a worker entry holds a capacity slot (anything except STOPPED)."""
+    if session is None:
+        return False
+    state = getattr(session, "state", None)
+    if isinstance(state, State):
+        return state != State.STOPPED
+    return True
+
+
 async def start_transcription_worker(
     event_slug: str,
     language_code: str,
@@ -206,7 +235,8 @@ async def start_transcription_worker(
         async with active_workers_lock:
             existing_session = active_workers.get(booth_id)
             if not existing_session:
-                if len(active_workers) >= MAX_TOTAL_WORKERS:
+                active_count = sum(1 for session in active_workers.values() if is_worker_occupying_slot(session))
+                if active_count >= MAX_TOTAL_WORKERS:
                     raise WorkerCapacityError(
                         f"System at maximum capacity ({MAX_TOTAL_WORKERS} concurrent transcription booths)."
                     )

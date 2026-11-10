@@ -164,3 +164,29 @@ class TestCaptionAggregator:
 
         finals = [msg for bid, msg in received if msg.get("status") == "final"]
         assert len(finals) == 0
+
+    async def test_clear_partial_discards_unfinalized_state_without_finalizing(self):
+        received = []
+
+        async def fake_callback(booth_id, message):
+            await collect_broadcasts(booth_id, message, received)
+
+        aggregator = CaptionAggregator(fake_callback)
+        await aggregator.handle_final("booth-1", "Already finalized.")
+        await aggregator.handle_partial("booth-1", "Interrupted partial")
+        old_segment_id = aggregator.states["booth-1"].segment_id
+
+        received.clear()
+        await aggregator.clear_partial("booth-1")
+
+        assert received == [("booth-1", {"type": "caption", "status": "clear", "text": ""})]
+        assert aggregator.states["booth-1"].current_utterance == ""
+        assert aggregator.states["booth-1"].current_word_count == 0
+        assert aggregator.states["booth-1"].utterance_start_time == 0.0
+        assert aggregator.states["booth-1"].segment_id != old_segment_id
+
+        # Subsequent empty final or repeated clear_partial does not leak or duplicate clears.
+        received.clear()
+        await aggregator.handle_final("booth-1", "")
+        await aggregator.clear_partial("booth-1")
+        assert received == []

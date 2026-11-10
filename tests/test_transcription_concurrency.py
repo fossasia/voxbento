@@ -54,6 +54,21 @@ class MockProvider:
     def __init__(self, name):
         self.name = name
         self.received_configs = []
+        self._config_cond: asyncio.Condition | None = None
+
+    def _get_cond(self) -> asyncio.Condition:
+        if self._config_cond is None:
+            self._config_cond = asyncio.Condition()
+        return self._config_cond
+
+    def reset_configs(self) -> None:
+        self.received_configs.clear()
+        self._config_cond = None
+
+    async def wait_for_configs(self, count: int, timeout: float = 2.0) -> None:
+        cond = self._get_cond()
+        async with cond:
+            await asyncio.wait_for(cond.wait_for(lambda: len(self.received_configs) >= count), timeout=timeout)
 
     async def process_chunk(self, chunk, language_code, model_variant, config):
         pass
@@ -62,7 +77,10 @@ class MockProvider:
         self, process, language_code, model_variant, config, broadcast_callback, booth_id, room_id=None
     ):
         # Log the config key to assert cross-contamination did not occur
-        self.received_configs.append({"booth_id": booth_id, "api_key": config.get_key()})
+        cond = self._get_cond()
+        async with cond:
+            self.received_configs.append({"booth_id": booth_id, "api_key": config.get_key()})
+            cond.notify_all()
         # Simulate a long-lived streaming connection to keep the worker active
         try:
             await asyncio.sleep(2)
@@ -319,7 +337,7 @@ async def test_sarvam_api_key_isolation_across_concurrent_events():
         await session.flush()
         targets = [(e1.slug, r1.id, "hi"), (e2.slug, r2.id, "ta")]
 
-    mock_providers["sarvam"].received_configs.clear()
+    mock_providers["sarvam"].reset_configs()
     tok = create_user_token(user_id=1, email="admin@test.com", is_admin=True)
     cookies = {"user_token": tok}
 
@@ -333,7 +351,7 @@ async def test_sarvam_api_key_isolation_across_concurrent_events():
             ]
         )
         assert [r.status_code for r in responses] == [200, 200]
-        await asyncio.sleep(0.05)
+        await mock_providers["sarvam"].wait_for_configs(2)
 
         configs = {c["booth_id"]: c["api_key"] for c in mock_providers["sarvam"].received_configs}
         assert configs[f"sarvam-alpha-{targets[0][1]}-hi"] == "sarvam-key-alpha"

@@ -191,6 +191,17 @@ class CaptionAggregator:
 
             track_task(asyncio.create_task(_save_and_translate()))
 
+    async def clear_partial(self, booth_id: str) -> None:
+        """Discard any unfinalized partial caption without finalizing it."""
+        state = self.states.get(booth_id)
+        if state is None or not state.current_utterance:
+            return
+        state.current_utterance = ""
+        state.utterance_start_time = 0.0
+        state.current_word_count = 0
+        state.segment_id = str(uuid.uuid4())
+        await self.broadcast_callback(booth_id, {"type": "caption", "status": "clear", "text": ""})
+
     async def handle_clear(self, booth_id: str):
         """Called when silence is explicitly detected or a turn ends."""
         state = self._get_state(booth_id)

@@ -31,7 +31,13 @@ from portal.models import (
 from portal.rate_limit import auth_rate_limiter
 from portal.roles import EVENT_OWNER
 from portal.transcription.constants import ProviderEnum
-from portal.transcription.worker import active_workers, start_transcription_worker, stop_transcription_worker
+from portal.transcription.providers.sarvam import is_supported_sarvam_language
+from portal.transcription.worker import (
+    active_workers,
+    is_worker_running,
+    start_transcription_worker,
+    stop_transcription_worker,
+)
 from portal.translations.constants import TranslationProviderEnum
 from portal.websockets.revocation import revoke_booths_for_deleted_entity
 
@@ -592,6 +598,21 @@ def _check_self_hosted_translation(payload_dict: dict, room: Room | None) -> Non
     )
 
 
+def _check_sarvam_transcription(payload_dict: dict, room: Room | None) -> None:
+    """Reject enabling or keeping Sarvam floor transcription with an unsupported language."""
+    enabled = payload_dict.get("enable_transcription", room.floor_transcription_enabled if room else False)
+    provider = payload_dict.get("transcription_provider", room.floor_transcription_provider if room else "local")
+    provider_val = getattr(provider, "value", provider)
+    if not enabled or provider_val != ProviderEnum.SARVAM.value:
+        return
+    source_lang = payload_dict.get("source_language", room.floor_language_code if room else None)
+    if not is_supported_sarvam_language(source_lang):
+        raise HTTPException(
+            status_code=422,
+            detail=f"Sarvam AI does not support transcription language '{source_lang}'.",
+        )
+
+
 @router.put("/events/{event_slug}/rooms/{eventyay_room_id}")
 async def upsert_room(
     event_slug: str,
@@ -616,6 +637,7 @@ async def upsert_room(
 
     payload_dict = payload.model_dump(exclude_unset=True)
     _check_self_hosted_translation(payload_dict, room)
+    _check_sarvam_transcription(payload_dict, room)
 
     if room:
         _apply_floor_settings(room, payload_dict)
@@ -1013,7 +1035,7 @@ async def get_transcription_status(
             "is_active": booths.get_booth_sync(bid) is not None,
             # Running transcription is tracked by the worker registry, not on the
             # in-memory Booth, which has no transcription_task attribute.
-            "transcription_running": bid in active_workers,
+            "transcription_running": is_worker_running(active_workers.get(bid)),
         }
 
     return {"room_id": target_room_id, "statuses": statuses}
@@ -1156,7 +1178,8 @@ async def update_event_api_keys(
     for payload_field, event_attr in _API_KEY_FIELDS:
         value = payload_data[payload_field]
         if value is not None:
-            setattr(event, event_attr, encrypt_val(value) if value else None)
+            trimmed = value.strip()
+            setattr(event, event_attr, encrypt_val(trimmed) if trimmed else None)
 
     await db.commit()
     return {"status": "ok"}

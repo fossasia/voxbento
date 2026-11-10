@@ -35,6 +35,7 @@ from portal.models import Event, Room
 from portal.outage_log import OutageLog
 from portal.transcription.process import audio_progress
 from portal.transcription.providers.base import ProviderConfig, ProviderEnum, get_api_key
+from portal.transcription.providers.sarvam import is_supported_sarvam_language
 from portal.transcription.worker import active_workers, start_transcription_worker, stop_transcription_worker
 from portal.websockets.manager import broadcast_transcription
 
@@ -347,6 +348,8 @@ def pipeline_problem(room: Room, event: Event) -> str | None:
     provider = ProviderEnum(room.floor_transcription_provider)
     if provider != ProviderEnum.LOCAL and (not event.transcription_api_enabled or not get_api_key(event, provider)):
         return "Enable the event transcription API and configure its provider key."
+    if provider == ProviderEnum.SARVAM and not is_supported_sarvam_language(room.floor_language_code):
+        return f"Sarvam AI does not support language '{room.floor_language_code}'."
     return None
 
 

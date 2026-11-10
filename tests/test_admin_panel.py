@@ -1028,13 +1028,19 @@ class TestEventCRUD:
             "transcription_model": "saaras:v3-realtime",
         }
         async with _client() as c:
+            api_disabled = await c.post(f"{url}transcription-settings", data=sarvam_data, cookies=admin_cookie)
+        assert api_disabled.status_code == 400
+        assert api_disabled.json()["detail"] == "External API transcription is disabled for this event."
+
+        await _update_row(type(event), event.id, transcription_api_enabled=True)
+        async with _client() as c:
             no_key = await c.post(f"{url}transcription-settings", data=sarvam_data, cookies=admin_cookie)
         assert no_key.status_code == 400
+        assert no_key.json()["detail"] == "API key for sarvam is not configured on the event."
 
         await _update_row(
             type(event),
             event.id,
-            transcription_api_enabled=True,
             encrypted_sarvam_api_key=encrypt_val("sarvam-key"),
         )
         async with _client() as c:
@@ -1057,6 +1063,87 @@ class TestEventCRUD:
         assert saved.transcription_enabled is True
         assert saved.transcription_provider == "sarvam"
         assert saved.transcription_model == "saaras:v3-realtime"
+
+    @pytest.mark.anyio
+    async def test_booth_transcription_settings_rejects_unsupported_sarvam_language_and_whitespace_key(
+        self, admin_cookie, seed_event
+    ):
+        from portal.crypto import encrypt_val
+        from portal.database import create_booth, get_session
+
+        event, room, booth = seed_event
+        async with get_session() as session:
+            fr_booth = await create_booth(
+                session, event_id=event.id, room_id=room.id, language_code="fr", language_name="French"
+            )
+
+        await _update_row(
+            type(event),
+            event.id,
+            transcription_api_enabled=True,
+            encrypted_sarvam_api_key=encrypt_val("   "),
+        )
+        en_url = f"/admin/events/{event.id}/rooms/{room.id}/booths/{booth.id}/"
+        fr_url = f"/admin/events/{event.id}/rooms/{room.id}/booths/{fr_booth.id}/"
+        sarvam_data = {
+            "transcription_enabled": "true",
+            "transcription_provider": "sarvam",
+            "transcription_model": "saaras:v3-realtime",
+        }
+
+        # Whitespace-only Sarvam API key must be treated as missing.
+        async with _client() as c:
+            ws_key_resp = await c.post(f"{en_url}transcription-settings", data=sarvam_data, cookies=admin_cookie)
+        assert ws_key_resp.status_code == 400
+        assert ws_key_resp.json()["detail"] == "API key for sarvam is not configured on the event."
+
+        # With a valid key, unsupported booth language ('fr') is rejected when enabling, but allowed when disabling.
+        await _update_row(type(event), event.id, encrypted_sarvam_api_key=encrypt_val("sarvam-valid-key"))
+        async with _client() as c:
+            bad_lang = await c.post(f"{fr_url}transcription-settings", data=sarvam_data, cookies=admin_cookie)
+            disable_ok = await c.post(
+                f"{fr_url}transcription-settings",
+                data={**sarvam_data, "transcription_enabled": "false"},
+                cookies=admin_cookie,
+                follow_redirects=False,
+            )
+        assert bad_lang.status_code == 400
+        assert bad_lang.json()["detail"] == "Sarvam AI does not support language 'fr'."
+        assert disable_ok.status_code == 303
+
+        # Legacy DB rows with unsupported Sarvam language or whitespace-only key are also rejected on /transcription/start.
+        await _update_row(
+            type(fr_booth),
+            fr_booth.id,
+            transcription_enabled=True,
+            transcription_provider="sarvam",
+            transcription_model="saaras:v3-realtime",
+        )
+        async with _client() as c:
+            start_bad_lang = await c.post(
+                f"/api/events/{event.slug}/rooms/{room.id}/booths/fr/transcription/start",
+                cookies=admin_cookie,
+                headers={"Origin": "http://test"},
+            )
+        assert start_bad_lang.status_code == 400
+        assert start_bad_lang.json()["detail"] == "Sarvam AI does not support language 'fr'."
+
+        await _update_row(type(event), event.id, encrypted_sarvam_api_key=encrypt_val("   "))
+        await _update_row(
+            type(booth),
+            booth.id,
+            transcription_enabled=True,
+            transcription_provider="sarvam",
+            transcription_model="saaras:v3-realtime",
+        )
+        async with _client() as c:
+            start_ws_key = await c.post(
+                f"/api/events/{event.slug}/rooms/{room.id}/booths/en/transcription/start",
+                cookies=admin_cookie,
+                headers={"Origin": "http://test"},
+            )
+        assert start_ws_key.status_code == 400
+        assert start_ws_key.json()["detail"] == "sarvam API key missing. Cannot start transcription."
 
     @pytest.mark.anyio
     async def test_event_detail_shows_booth_links(self, admin_cookie, seed_event):

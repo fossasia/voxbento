@@ -169,9 +169,11 @@ from portal.team import parse_place as parse_team_place
 from portal.team import remove_assignment as remove_team_assignment
 from portal.team import revoke_invite_link as revoke_team_invite_link
 from portal.transcription import ALLOWED_MODELS, ProviderConfig, ProviderEnum, get_api_key
+from portal.transcription.providers.sarvam import is_supported_sarvam_language
 from portal.transcription.worker import (
     WorkerCapacityError,
     active_workers,
+    is_worker_running,
     start_transcription_worker,
     stop_transcription_worker,
 )
@@ -1568,6 +1570,15 @@ def _apply_ai_settings(room: Room, form: FormData, catalog: EngineCatalog) -> No
     """
     speech = catalog.find("speech", str(form.get("floor_transcription_provider", "")))
     if speech:
+        if (
+            room.floor_transcription_enabled
+            and speech.provider == ProviderEnum.SARVAM.value
+            and not is_supported_sarvam_language(room.floor_language_code)
+        ):
+            raise HTTPException(
+                status_code=400,
+                detail=f"Sarvam AI does not support language '{room.floor_language_code}'.",
+            )
         model = str(form.get("floor_transcription_model", ""))
         allowed = {value for value, _ in ROOM_SPEECH_MODELS.get(speech.provider, ())}
         room.floor_transcription_provider = speech.provider
@@ -1648,6 +1659,15 @@ async def admin_edit_room(request: Request, event_id: int, room_id: int):
             room.relay_booth_id = relay_booth_id
 
         if not form_section or form_section == "transcription":
+            if (
+                floor_transcription_enabled
+                and floor_transcription_provider == ProviderEnum.SARVAM.value
+                and not is_supported_sarvam_language(floor_language_code)
+            ):
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"Sarvam AI does not support language '{floor_language_code}'.",
+                )
             room.floor_transcription_enabled = floor_transcription_enabled
             room.floor_transcription_provider = floor_transcription_provider
             room.floor_transcription_model = floor_transcription_model
@@ -2485,6 +2505,11 @@ async def admin_transcription_settings(
                 raise HTTPException(
                     status_code=400, detail=f"API key for {transcription_provider} is not configured on the event."
                 )
+            if provider_enum == ProviderEnum.SARVAM and not is_supported_sarvam_language(db_booth.language_code):
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"Sarvam AI does not support language '{db_booth.language_code}'.",
+                )
         old_enabled = db_booth.transcription_enabled
         old_provider = db_booth.transcription_provider
         old_model = db_booth.transcription_model
@@ -2509,7 +2534,7 @@ async def admin_transcription_settings(
                 or old_provider != transcription_provider
                 or old_model != transcription_model
                 # A start that failed earlier left the settings saved but no worker: saving again retries it.
-                or bid not in active_workers
+                or not is_worker_running(active_workers.get(bid))
             ):
                 await stop_transcription_worker(bid)
                 await broadcast_transcription(bid, "")

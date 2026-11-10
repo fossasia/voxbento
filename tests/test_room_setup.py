@@ -165,6 +165,84 @@ def test_sarvam_engine_requires_api_key_and_transcription_switch():
     assert sarvam_engine.model == "saaras:v3-realtime"
     assert "Sarvam AI" not in enabled_catalog.locked_speech
 
+    whitespace_event = _event(encrypted_sarvam_api_key=encrypt_val("   "))
+    whitespace_event.transcription_api_enabled = True
+    whitespace_catalog = engine_catalog(whitespace_event)
+    assert "sarvam" not in [e.provider for e in whitespace_catalog.speech]
+    assert "Sarvam AI" in whitespace_catalog.locked_speech
+
+
+@pytest.mark.anyio
+async def test_sarvam_rejects_unsupported_spoken_language_in_room_setup_and_edit(admin_cookie, event_room):
+    event, room = event_room
+    async with get_session() as s:
+        db_event = await s.get(Event, event.id)
+        db_event.transcription_api_enabled = True
+        db_event.encrypted_sarvam_api_key = encrypt_val("sarvam-k")
+
+    # Guided setup rejects unsupported spoken language (French) when Sarvam is chosen.
+    async with _client() as c:
+        bad_new = await c.post(
+            f"/admin/events/{event.id}/rooms/new",
+            data={
+                "display_name": "French Hall",
+                "spoken_language": "fr",
+                "captions": "on",
+                "speech_engine": "sarvam",
+            },
+            headers=ORIGIN,
+            cookies=admin_cookie,
+        )
+        ok_new = await c.post(
+            f"/admin/events/{event.id}/rooms/new",
+            data={
+                "display_name": "Hindi Hall",
+                "spoken_language": "hi",
+                "captions": "on",
+                "speech_engine": "sarvam",
+            },
+            headers=ORIGIN,
+            cookies=admin_cookie,
+            follow_redirects=False,
+        )
+    assert bad_new.status_code == 400
+    assert "Sarvam AI doesn&#39;t support French" in bad_new.text
+    assert ok_new.status_code == 303
+
+    # Direct room edit (transcription section and AI section) also rejects unsupported language with Sarvam.
+    async with get_session() as s:
+        db_room = await s.get(Room, room.id)
+        db_room.floor_transcription_enabled = True
+        db_room.floor_language_code = "fr"
+
+    async with _client() as c:
+        bad_tx = await c.post(
+            f"/admin/events/{event.id}/rooms/{room.id}/edit",
+            data={
+                "form_section": "transcription",
+                "floor_transcription_enabled": "on",
+                "floor_transcription_provider": "sarvam",
+                "floor_transcription_model": "saaras:v3-realtime",
+                "floor_language_code": "fr",
+            },
+            headers=ORIGIN,
+            cookies=admin_cookie,
+        )
+        bad_ai = await c.post(
+            f"/admin/events/{event.id}/rooms/{room.id}/edit",
+            data={
+                "form_section": "ai",
+                "floor_transcription_provider": "sarvam",
+                "floor_transcription_model": "saaras:v3-realtime",
+            },
+            headers=ORIGIN,
+            cookies=admin_cookie,
+        )
+    assert bad_tx.status_code == 400
+    assert "Sarvam AI does not support language 'fr'" in bad_tx.json()["detail"]
+    assert bad_ai.status_code == 400
+    assert "Sarvam AI does not support language 'fr'" in bad_ai.json()["detail"]
+
 
 def test_engines_with_keys_are_offered_first():
     key = encrypt_val("sk-test")

@@ -17,6 +17,10 @@ logger = logging.getLogger(__name__)
 TRANSIENT_STATUS_CODES = (429, 502, 503, 504)
 
 
+class FatalTranscriptionError(Exception):
+    """Non-retryable provider failure that must stop the transcription worker."""
+
+
 def is_retryable_transcription_error(exc: BaseException) -> bool:
     """Retry transient network/HTTP failures; let auth, quota and client errors propagate."""
     if isinstance(exc, (httpx.ReadTimeout, httpx.ConnectError)):
@@ -48,7 +52,13 @@ def get_api_key(event: Event, provider: ProviderEnum) -> str | None:
         ProviderEnum.SARVAM: event.encrypted_sarvam_api_key,
     }
     encrypted = key_map.get(provider)
-    return decrypt_val(encrypted) if encrypted else None
+    if not encrypted:
+        return None
+    decrypted = decrypt_val(encrypted)
+    if not decrypted:
+        return None
+    trimmed = decrypted.strip()
+    return trimmed or None
 
 
 @dataclass

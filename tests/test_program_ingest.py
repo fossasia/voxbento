@@ -718,3 +718,50 @@ async def test_deleted_event_feed_is_released_while_media_listing_fails(environm
     async with get_session() as session:
         assert (await session.get(Room, room.id)).program_session_id is None
     assert (await client.post("/internal/media-auth", json=credentials(room, token))).status_code == 401
+
+
+@pytest.mark.anyio
+async def test_reconcile_blocks_sarvam_unsupported_floor_language_and_allows_supported(environment):
+    from portal.crypto import encrypt_val
+
+    client, event, rooms, media, _, start, _ = environment
+    room = rooms[0]
+    await connect_whip(client, event, room, media)
+
+    async with get_session() as session:
+        db_event = await session.get(Event, event.id)
+        db_event.transcription_api_enabled = True
+        db_event.encrypted_sarvam_api_key = encrypt_val("sarvam-secret")
+        db_room = await session.get(Room, room.id)
+        db_room.floor_transcription_provider = "sarvam"
+        db_room.floor_transcription_model = "saaras:v3-realtime"
+        db_room.floor_language_code = "fr"
+
+    await ingest.reconcile_once()
+    start.assert_not_awaited()
+    assert ingest.health[room.id].state == "degraded"
+    assert ingest.health[room.id].reason == "Sarvam AI does not support language 'fr'."
+
+    # Switching to a supported 3-letter Sarvam language unblocks worker startup.
+    async with get_session() as session:
+        db_room = await session.get(Room, room.id)
+        db_room.floor_language_code = "kok-IN"
+
+    await ingest.reconcile_once()
+    start.assert_awaited_once()
+    assert start.call_args.kwargs["provider"] == "sarvam"
+    assert start.call_args.kwargs["transcription_language"] == "kok-IN"
+
+    # Unrelated providers retain existing behaviour for 'fr'.
+    start.reset_mock()
+    async with get_session() as session:
+        db_event = await session.get(Event, event.id)
+        db_event.encrypted_deepgram_api_key = encrypt_val("dg-secret")
+        db_room = await session.get(Room, room.id)
+        db_room.floor_transcription_provider = "deepgram"
+        db_room.floor_transcription_model = "nova-3"
+        db_room.floor_language_code = "fr"
+
+    await ingest.reconcile_once()
+    start.assert_awaited_once()
+    assert start.call_args.kwargs["provider"] == "deepgram"

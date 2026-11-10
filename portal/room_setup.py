@@ -24,6 +24,8 @@ from portal.database import create_booth, delete_booth, list_booths_for_room
 from portal.models import DBBooth, Event, Room, RoomTranslationLanguage
 from portal.roles import INTERPRETER
 from portal.transcription.constants import ALLOWED_MODELS, ProviderEnum
+from portal.transcription.providers.base import get_api_key
+from portal.transcription.providers.sarvam import is_supported_sarvam_language
 from portal.translations.constants import NLLB_LANGUAGE_MAP
 from portal.tts.constants import DEEPGRAM_VOICE_MAPPING, SUPERTONIC_SUPPORTED_LANGS
 from portal.utils import _make_jitsi_url
@@ -225,7 +227,14 @@ def engine_catalog(event: Event) -> EngineCatalog:
             unavailable.append("NVIDIA needs the server's nvidia extra and NVIDIA_FUNCTION_ID")
             continue
         # Cloud speech recognition also needs the event's switch (see program_ingest.pipeline_problem).
-        if getattr(event, key_attr) and event.transcription_api_enabled:
+        raw_key = getattr(event, key_attr)
+        has_key = bool(raw_key)
+        if has_key and provider == "sarvam":
+            try:
+                has_key = bool(get_api_key(event, ProviderEnum.SARVAM))
+            except ValueError:
+                has_key = False
+        if has_key and event.transcription_api_enabled:
             speech.append(Engine(provider, model, label, _KEY_ADDED))
         else:
             locked.append(_BRANDS[provider])
@@ -431,6 +440,15 @@ def parse_plan(
 
     if plan.uses_speech_recognition and catalog.find("speech", plan.speech_engine) is None:
         errors.append("Choose a service to make the captions.")
+    if (
+        plan.uses_speech_recognition
+        and plan.speech_engine == "sarvam"
+        and not is_supported_sarvam_language(plan.spoken_language)
+    ):
+        errors.append(
+            f"Sarvam AI doesn't support {language_name(plan.spoken_language)} for speech recognition. "
+            "Choose another caption service or change the spoken language."
+        )
     if ai_languages and catalog.find("translation", plan.translation_engine) is None:
         errors.append("Choose a service to translate the AI languages.")
     voice = catalog.find("voice", plan.voice_engine)

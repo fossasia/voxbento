@@ -621,3 +621,159 @@ async def test_perform_cleanup_swallows_process_lookup_error(monkeypatch):
     with patch.object(FfmpegProcess, "_kill_windows_tree", new=AsyncMock(side_effect=ProcessLookupError())):
         # Must not raise.
         await fp._perform_cleanup()
+
+
+@pytest.mark.anyio
+async def test_worker_stops_on_fatal_transcription_error_without_restarting():
+    """FatalTranscriptionError must stop the outer worker loop cleanly without restarting FFmpeg."""
+    from portal.transcription.providers.base import FatalTranscriptionError, ProviderConfig
+    from portal.transcription.providers.sarvam import SarvamProvider
+
+    sarvam_provider = SarvamProvider()
+    calls = 0
+
+    async def _fatal_run_stream(*args, **kwargs):
+        nonlocal calls
+        calls += 1
+        raise FatalTranscriptionError("Invalid Sarvam key")
+
+    with (
+        patch.object(sarvam_provider, "run_stream", side_effect=_fatal_run_stream),
+        patch.dict("portal.transcription.worker.PROVIDERS", {"sarvam": sarvam_provider}),
+    ):
+        await start_transcription_worker(
+            "evt",
+            "hi",
+            "evt-1-hi",
+            AsyncMock(),
+            "sarvam",
+            "saaras:v3-realtime",
+            ProviderConfig(api_key="bad"),
+        )
+        session = active_workers["evt-1-hi"]
+        await asyncio.wait_for(session.wait_until_stopped(), timeout=2.0)
+
+    assert calls == 1
+    assert session.state == State.STOPPED
+
+
+@pytest.mark.anyio
+async def test_worker_stops_when_sarvam_exhausts_reconnect_attempts():
+    """Exhausting Sarvam reconnects must terminate the outer worker rather than looping forever."""
+    from portal.transcription.providers import sarvam as sarvam_mod
+    from portal.transcription.providers.base import ProviderConfig
+    from portal.transcription.providers.sarvam import SarvamProvider
+
+    sarvam_provider = SarvamProvider()
+    connect_mock = MagicMock(side_effect=OSError("network unreachable"))
+
+    with (
+        patch.dict("portal.transcription.worker.PROVIDERS", {"sarvam": sarvam_provider}),
+        patch("websockets.connect", connect_mock),
+        patch.object(sarvam_mod, "MAX_RECONNECT_ATTEMPTS", 2),
+        patch.object(sarvam_mod, "BACKOFF_BASE_SECONDS", 0.001),
+    ):
+        await start_transcription_worker(
+            "evt",
+            "hi",
+            "evt-1-hi-exhaust",
+            AsyncMock(),
+            "sarvam",
+            "saaras:v3-realtime",
+            ProviderConfig(api_key="sarvam-secret"),
+        )
+        session = active_workers["evt-1-hi-exhaust"]
+        await asyncio.wait_for(session.wait_until_stopped(), timeout=2.0)
+
+    assert connect_mock.call_count == 2
+    assert session.state == State.STOPPED
+
+
+@pytest.mark.anyio
+async def test_worker_retries_on_normal_eof_return(mock_providers):
+    """Returning normally from run_stream (stream EOF) must preserve outer worker retry behavior."""
+    first_eof = asyncio.Event()
+    second_run = asyncio.Event()
+    calls = 0
+
+    async def _eof_then_wait(*args, **kwargs):
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            first_eof.set()
+            return
+        second_run.set()
+        await asyncio.sleep(10)
+
+    mock_providers["local"].run_stream = _eof_then_wait
+
+    await start_transcription_worker("evt", "en", "evt-1-en-eof", AsyncMock(), "local", "tiny", None)
+    await asyncio.wait_for(first_eof.wait(), timeout=2.0)
+    await asyncio.wait_for(second_run.wait(), timeout=2.5)
+
+    assert calls == 2
+    await stop_transcription_worker("evt-1-en-eof")
+    assert active_workers.get("evt-1-en-eof") is None
+
+
+@pytest.mark.anyio
+async def test_stopped_worker_does_not_consume_capacity_slot():
+    """A worker stopped by FatalTranscriptionError remains inspectable but must not consume capacity."""
+    from portal.transcription.providers.base import FatalTranscriptionError, ProviderConfig
+    from portal.transcription.providers.sarvam import SarvamProvider
+    from portal.transcription.worker import MAX_TOTAL_WORKERS, WorkerCapacityError
+
+    sarvam_provider = SarvamProvider()
+    other_started = asyncio.Event()
+
+    async def _fatal_run_stream(*_args, **_kwargs):
+        raise FatalTranscriptionError("Invalid key")
+
+    async def _hold_stream(*_args, **_kwargs):
+        other_started.set()
+        await asyncio.sleep(10)
+
+    with (
+        patch.object(sarvam_provider, "run_stream", side_effect=_fatal_run_stream),
+        patch.dict("portal.transcription.worker.PROVIDERS", {"sarvam": sarvam_provider}),
+    ):
+        await start_transcription_worker(
+            "evt",
+            "hi",
+            "evt-1-hi-stopped",
+            AsyncMock(),
+            "sarvam",
+            "saaras:v3-realtime",
+            ProviderConfig(api_key="bad"),
+        )
+        stopped_session = active_workers["evt-1-hi-stopped"]
+        await asyncio.wait_for(stopped_session.wait_until_stopped(), timeout=2.0)
+
+    assert stopped_session.state == State.STOPPED
+    assert "evt-1-hi-stopped" in active_workers
+
+    # Fill all MAX_TOTAL_WORKERS - 1 remaining slots with RUNNING sessions (total dict entries == MAX_TOTAL_WORKERS).
+    dummy_ids = [f"dummy-{i}" for i in range(MAX_TOTAL_WORKERS - 1)]
+    for bid in dummy_ids:
+        sess = MagicMock()
+        sess.state = State.RUNNING
+        active_workers[bid] = sess
+
+    assert len(active_workers) == MAX_TOTAL_WORKERS
+
+    local_mock = MagicMock()
+    local_mock.run_stream = _hold_stream
+    with patch.dict("portal.transcription.worker.PROVIDERS", {"local": local_mock}):
+        # Must succeed because evt-1-hi-stopped is State.STOPPED and does not consume a slot.
+        await start_transcription_worker("evt", "en", "evt-1-en-new", AsyncMock(), "local", "tiny", None)
+        await asyncio.wait_for(other_started.wait(), timeout=2.0)
+
+        # Now all MAX_TOTAL_WORKERS active slots are occupied, so another booth must hit WorkerCapacityError.
+        with pytest.raises(WorkerCapacityError):
+            await start_transcription_worker("evt", "fr", "evt-1-fr-over", AsyncMock(), "local", "tiny", None)
+
+    for bid in dummy_ids:
+        active_workers.pop(bid, None)
+    await stop_transcription_worker("evt-1-en-new")
+    await stop_transcription_worker("evt-1-hi-stopped")
+    assert "evt-1-hi-stopped" not in active_workers

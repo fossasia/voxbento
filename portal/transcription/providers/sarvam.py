@@ -6,8 +6,14 @@ import json
 import logging
 import time
 import urllib.parse
+from collections import deque
 
-from portal.transcription.providers.base import BoothTranscriptionState, ProviderConfig, TranscriptionProvider
+from portal.transcription.providers.base import (
+    BoothTranscriptionState,
+    FatalTranscriptionError,
+    ProviderConfig,
+    TranscriptionProvider,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -17,11 +23,14 @@ SARVAM_ALLOWED_MODELS = frozenset({SARVAM_DEFAULT_MODEL})
 SARVAM_SAMPLE_RATE = 16000
 AUDIO_CHUNK_BYTES = 4096
 PING_INTERVAL_SECONDS = 15.0
+SESSION_BEGIN_TIMEOUT_SECONDS = 5.0
 STABLE_SESSION_SECONDS = 10.0
 EOF_DRAIN_TIMEOUT_SECONDS = 5.0
 MAX_RECONNECT_ATTEMPTS = 5
 BACKOFF_BASE_SECONDS = 1.0
 BACKOFF_MAX_SECONDS = 16.0
+# ~2s of 16 kHz mono PCM (4096 bytes/chunk ≈ 0.128s/chunk); bounds live latency during reconnects.
+MAX_AUDIO_BUFFER_CHUNKS = 16
 
 # Statuses that represent transient server/rate-limit conditions when closing a stream.
 TRANSIENT_HTTP_STATUS_CODES = frozenset({408, 429, 500, 502, 503, 504})
@@ -97,6 +106,14 @@ class _SarvamTransientError(Exception):
     """Retryable stream disconnection or transient server failure."""
 
 
+class _StdoutReadError(Exception):
+    """Local FFmpeg stdout read failure; must propagate to restart FFmpeg rather than retry WS."""
+
+    def __init__(self, original: BaseException) -> None:
+        super().__init__(str(original))
+        self.original = original
+
+
 def validate_sarvam_model(model_variant: str | None) -> str:
     """Validate and normalize the Sarvam realtime model identifier."""
     model = (model_variant or "").strip() or SARVAM_DEFAULT_MODEL
@@ -108,7 +125,10 @@ def validate_sarvam_model(model_variant: str | None) -> str:
 
 
 def map_sarvam_language_code(language_code: str | None) -> str:
-    """Map a VoxBento language code to a Sarvam realtime BCP-47 code or 'auto'."""
+    """Map a VoxBento language code to a Sarvam realtime BCP-47 code or 'auto'.
+
+    Raises ``ValueError`` for explicit language codes not supported by Sarvam realtime STT.
+    """
     if not language_code:
         return "auto"
     lower = language_code.strip().replace("_", "-").lower()
@@ -118,7 +138,19 @@ def map_sarvam_language_code(language_code: str | None) -> str:
         return _SARVAM_BCP47_MAP[lower]
     if lower in _SARVAM_ISO_MAP:
         return _SARVAM_ISO_MAP[lower]
-    return "auto"
+    raise ValueError(
+        f"Unsupported Sarvam language code '{language_code}'. "
+        f"Supported codes: {', '.join(SUPPORTED_SARVAM_LANGUAGE_CODES)}"
+    )
+
+
+def is_supported_sarvam_language(language_code: str | None) -> bool:
+    """Return True when ``language_code`` is supported by Sarvam realtime STT (or floor/auto)."""
+    try:
+        map_sarvam_language_code(language_code)
+    except ValueError:
+        return False
+    return True
 
 
 def build_sarvam_ws_url(language_code: str | None, model_variant: str | None) -> str:
@@ -218,6 +250,87 @@ async def _cancel_and_await(*tasks: asyncio.Task) -> None:
         await asyncio.gather(*tasks, return_exceptions=True)
 
 
+class _BoundedAudioBuffer:
+    """Bounded FIFO audio buffer coordinating persistent stdout draining and in-flight replay.
+
+    Total unsent audio (one optional in-flight ``pending`` chunk plus ``queue``) is capped at
+    ``max_chunks``. On overflow, the oldest audio is evicted first: ``pending`` if present
+    (since it precedes every queued chunk), otherwise the oldest queued chunk.
+    """
+
+    def __init__(self, max_chunks: int) -> None:
+        self._max_chunks = max(1, max_chunks)
+        self._queue: deque[tuple[int, bytes]] = deque()
+        self._pending: tuple[int, bytes] | None = None
+        self._next_seq = 0
+        self._eof = False
+        self._error: BaseException | None = None
+        self._cond = asyncio.Condition()
+        self.stream_ended_event = asyncio.Event()
+        self.dropped_chunks = 0
+
+    @property
+    def error(self) -> BaseException | None:
+        return self._error
+
+    def _update_stream_ended(self) -> None:
+        if self._eof and self._pending is None and not self._queue:
+            self.stream_ended_event.set()
+        else:
+            self.stream_ended_event.clear()
+
+    def has_unsent(self) -> bool:
+        return self._pending is not None or bool(self._queue)
+
+    def is_at_clean_eof(self) -> bool:
+        return self._eof and self._error is None and not self.has_unsent()
+
+    async def push(self, chunk: bytes) -> None:
+        async with self._cond:
+            seq = self._next_seq
+            self._next_seq += 1
+            while (len(self._queue) + (1 if self._pending is not None else 0)) >= self._max_chunks:
+                self.dropped_chunks += 1
+                if self._pending is not None:
+                    self._pending = None
+                elif self._queue:
+                    self._queue.popleft()
+            self._queue.append((seq, chunk))
+            self._update_stream_ended()
+            self._cond.notify_all()
+
+    async def mark_eof(self) -> None:
+        async with self._cond:
+            self._eof = True
+            self._update_stream_ended()
+            self._cond.notify_all()
+
+    async def mark_error(self, exc: BaseException) -> None:
+        async with self._cond:
+            self._error = exc
+            self._eof = True
+            self._update_stream_ended()
+            self._cond.notify_all()
+
+    async def next_chunk_or_eof(self) -> tuple[int, bytes] | None:
+        async with self._cond:
+            while self._pending is None and not self._queue and not self._eof:
+                await self._cond.wait()
+            if self._pending is not None:
+                return self._pending
+            if self._queue:
+                self._pending = self._queue.popleft()
+                return self._pending
+            if self._error is not None:
+                raise self._error
+            return None
+
+    def ack_sent(self, seq: int) -> None:
+        if self._pending is not None and self._pending[0] == seq:
+            self._pending = None
+            self._update_stream_ended()
+
+
 class SarvamProvider(TranscriptionProvider):
     """Streaming speech-to-text provider backed by Sarvam AI's realtime WebSocket API."""
 
@@ -229,7 +342,7 @@ class SarvamProvider(TranscriptionProvider):
         config: ProviderConfig,
         booth_state: BoothTranscriptionState | None = None,
     ) -> str:
-        return ""
+        raise NotImplementedError("SarvamProvider is streaming-only; use run_stream().")
 
     async def run_stream(
         self,
@@ -242,123 +355,199 @@ class SarvamProvider(TranscriptionProvider):
         room_id: int | None = None,
     ) -> None:
         import websockets
+        from websockets.exceptions import WebSocketException
 
         from portal.transcription.aggregator import CaptionAggregator
 
         api_key = (config.get_key() or "").strip() if config else ""
         if not api_key:
             logger.error(f"[{booth_id}] Sarvam API key missing")
-            return
+            raise FatalTranscriptionError("Sarvam API key missing")
 
-        url = build_sarvam_ws_url(language_code, model_variant)
+        try:
+            url = build_sarvam_ws_url(language_code, model_variant)
+        except ValueError as exc:
+            raise FatalTranscriptionError(str(exc)) from exc
+
         aggregator = CaptionAggregator(broadcast_callback, room_id=room_id)
         headers = {"Api-Subscription-Key": api_key}
+        buffer = _BoundedAudioBuffer(MAX_AUDIO_BUFFER_CHUNKS)
 
-        consecutive_errors = 0
-        while process.returncode is None:
-            session_started = False
-            transcript_received = False
-            connected_at = time.monotonic()
-
+        async def stdout_reader() -> None:
             try:
-                async with websockets.connect(url, additional_headers=headers) as ws:
-                    send_lock = asyncio.Lock()
+                while True:
+                    chunk = await process.stdout.read(AUDIO_CHUNK_BYTES)
+                    if not chunk:
+                        await buffer.mark_eof()
+                        return
+                    await buffer.push(chunk)
+            except asyncio.CancelledError:
+                raise
+            except (OSError, ValueError, RuntimeError) as exc:
+                await buffer.mark_error(_StdoutReadError(exc))
 
-                    async def send_json(payload: dict) -> None:
-                        async with send_lock:
-                            await ws.send(json.dumps(payload))
+        stdout_reader_task = asyncio.create_task(stdout_reader())
+        consecutive_errors = 0
+        outage_logged = False
+        attempt = 0
 
-                    async def sender() -> str:
-                        while True:
-                            chunk = await process.stdout.read(AUDIO_CHUNK_BYTES)
-                            if not chunk:
-                                return "EOF"
-                            await send_json(
-                                {
-                                    "event": "audio_input",
-                                    "audio": base64.b64encode(chunk).decode("utf-8"),
-                                }
-                            )
+        try:
+            while not stdout_reader_task.done() or buffer.has_unsent():
+                if attempt > 0:
+                    if buffer.error is not None and not buffer.has_unsent():
+                        raise buffer.error
+                    if buffer.is_at_clean_eof():
+                        return
+                attempt += 1
 
-                    async def pinger() -> str:
-                        while True:
-                            await asyncio.sleep(PING_INTERVAL_SECONDS)
-                            await send_json({"event": "ping"})
+                session_started = False
+                session_ended_cleanly = False
+                transcript_received = False
+                connected_at = time.monotonic()
 
-                    async def receiver() -> str:
-                        nonlocal consecutive_errors, session_started, transcript_received
-                        async for raw_msg in ws:
-                            data = json.loads(raw_msg)
-                            event = data.get("event")
+                try:
+                    async with websockets.connect(url, additional_headers=headers) as ws:
+                        send_lock = asyncio.Lock()
+                        session_ready = asyncio.Event()
+                        receiver_done = asyncio.Event()
 
-                            if event == "session.begin":
-                                session_started = True
-                                logger.info(
-                                    f"[{booth_id}] Sarvam session started (request_id={data.get('request_id')})"
+                        async def send_json(payload: dict) -> None:
+                            async with send_lock:
+                                await ws.send(json.dumps(payload))
+
+                        async def sender() -> str:
+                            while True:
+                                item = await buffer.next_chunk_or_eof()
+                                if item is None:
+                                    return "EOF"
+                                seq, chunk = item
+                                await send_json(
+                                    {
+                                        "event": "audio_input",
+                                        "audio": base64.b64encode(chunk).decode("utf-8"),
+                                    }
                                 )
-                            elif event == "transcript.partial":
-                                if session_started:
-                                    transcript_received = True
-                                    consecutive_errors = 0
-                                text = (data.get("text") or "").strip()
-                                if text:
-                                    await aggregator.handle_partial(booth_id, text)
-                            elif event == "transcript.final":
-                                if session_started:
-                                    transcript_received = True
-                                    consecutive_errors = 0
-                                text = (data.get("text") or "").strip()
-                                if text:
-                                    await aggregator.handle_final(booth_id, text)
-                                else:
-                                    await aggregator.handle_clear(booth_id)
-                            elif event == "session.end":
-                                logger.info(
-                                    f"[{booth_id}] Sarvam session ended "
-                                    f"(request_id={data.get('request_id')}, "
-                                    f"audio_duration_s={data.get('audio_duration_s')})"
-                                )
-                                return "SESSION_END"
-                            elif event == "error":
-                                code = data.get("code")
-                                status_code = data.get("status_code")
-                                is_fatal = bool(data.get("is_fatal", False))
-                                message = data.get("message", "")
-                                logger.error(
-                                    f"[{booth_id}] Sarvam WS error "
-                                    f"(code={code}, status_code={status_code}, is_fatal={is_fatal}): {message}"
-                                )
-                                if is_fatal:
-                                    if _is_fatal_error_event(data):
-                                        raise _SarvamFatalError(
-                                            f"Sarvam fatal error (code={code}, status={status_code}): {message}"
+                                buffer.ack_sent(seq)
+
+                        async def pinger() -> str:
+                            while True:
+                                await asyncio.sleep(PING_INTERVAL_SECONDS)
+                                await send_json({"event": "ping"})
+
+                        async def receiver() -> str:
+                            nonlocal consecutive_errors, outage_logged, session_started, session_ended_cleanly, transcript_received
+                            try:
+                                async for raw_msg in ws:
+                                    try:
+                                        data = json.loads(raw_msg)
+                                    except (json.JSONDecodeError, TypeError, UnicodeDecodeError) as exc:
+                                        logger.warning(f"[{booth_id}] Ignoring malformed JSON frame from Sarvam: {exc}")
+                                        continue
+
+                                    if not isinstance(data, dict):
+                                        logger.warning(
+                                            f"[{booth_id}] Ignoring non-object Sarvam WebSocket frame of type "
+                                            f"{type(data).__name__}"
                                         )
-                                    raise _SarvamTransientError(
-                                        f"Sarvam stream error (code={code}, status={status_code}): {message}"
-                                    )
-                            elif event in ("pong", "vad.speech_start", "vad.speech_end", "config.updated"):
-                                logger.debug(f"[{booth_id}] Sarvam event {event}: {data}")
-                        return "CLOSED"
+                                        continue
 
-                    sender_task = asyncio.create_task(sender())
-                    receiver_task = asyncio.create_task(receiver())
-                    ping_task = asyncio.create_task(pinger())
-                    tasks = (sender_task, receiver_task, ping_task)
+                                    event = data.get("event")
+                                    if not isinstance(event, str):
+                                        logger.warning(
+                                            f"[{booth_id}] Ignoring Sarvam frame with invalid event type: {event!r}"
+                                        )
+                                        continue
 
-                    try:
-                        done, _ = await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
+                                    if event == "session.begin":
+                                        session_started = True
+                                        outage_logged = False
+                                        session_ready.set()
+                                        logger.info(
+                                            f"[{booth_id}] Sarvam session started (request_id={data.get('request_id')})"
+                                        )
+                                    elif event == "transcript.partial":
+                                        raw_text = data.get("text")
+                                        if raw_text is not None and not isinstance(raw_text, str):
+                                            logger.warning(
+                                                f"[{booth_id}] Ignoring Sarvam transcript.partial with non-string text: "
+                                                f"{type(raw_text).__name__}"
+                                            )
+                                            continue
+                                        if session_started:
+                                            transcript_received = True
+                                            consecutive_errors = 0
+                                        text = raw_text.strip() if isinstance(raw_text, str) else ""
+                                        if text:
+                                            await aggregator.handle_partial(booth_id, text)
+                                    elif event == "transcript.final":
+                                        raw_text = data.get("text")
+                                        if raw_text is not None and not isinstance(raw_text, str):
+                                            logger.warning(
+                                                f"[{booth_id}] Ignoring Sarvam transcript.final with non-string text: "
+                                                f"{type(raw_text).__name__}"
+                                            )
+                                            continue
+                                        if session_started:
+                                            transcript_received = True
+                                            consecutive_errors = 0
+                                        text = raw_text.strip() if isinstance(raw_text, str) else ""
+                                        if text:
+                                            await aggregator.handle_final(booth_id, text)
+                                        else:
+                                            await aggregator.handle_clear(booth_id)
+                                    elif event == "session.end":
+                                        session_ended_cleanly = True
+                                        logger.info(
+                                            f"[{booth_id}] Sarvam session ended "
+                                            f"(request_id={data.get('request_id')}, "
+                                            f"audio_duration_s={data.get('audio_duration_s')})"
+                                        )
+                                        return "SESSION_END"
+                                    elif event == "error":
+                                        code = data.get("code")
+                                        status_code = data.get("status_code")
+                                        is_fatal = bool(data.get("is_fatal", False))
+                                        message = data.get("message")
+                                        if message is None:
+                                            message = data.get("error", "")
+                                        if is_fatal:
+                                            if _is_fatal_error_event(data):
+                                                logger.error(
+                                                    f"[{booth_id}] Sarvam WS error "
+                                                    f"(code={code}, status_code={status_code}, is_fatal={is_fatal}): "
+                                                    f"{message}"
+                                                )
+                                                raise _SarvamFatalError(
+                                                    f"Sarvam fatal error (code={code}, status={status_code}): {message}"
+                                                )
+                                            logger.debug(
+                                                f"[{booth_id}] Sarvam WS transient error event "
+                                                f"(code={code}, status_code={status_code}, is_fatal={is_fatal}): "
+                                                f"{message}"
+                                            )
+                                            raise _SarvamTransientError(
+                                                f"Sarvam stream error (code={code}, status={status_code}): {message}"
+                                            )
+                                        logger.warning(
+                                            f"[{booth_id}] Sarvam WS non-fatal error "
+                                            f"(code={code}, status_code={status_code}): {message}"
+                                        )
+                                    elif event in ("pong", "vad.speech_start", "vad.speech_end", "config.updated"):
+                                        logger.debug(f"[{booth_id}] Sarvam event {event}: {data}")
+                                    else:
+                                        logger.debug(f"[{booth_id}] Ignoring unknown Sarvam event '{event}': {data}")
+                                return "CLOSED"
+                            finally:
+                                receiver_done.set()
 
-                        sender_eof = (
-                            sender_task in done
-                            and not sender_task.cancelled()
-                            and sender_task.exception() is None
-                            and sender_task.result() == "EOF"
-                        )
-                        if sender_eof:
-                            await _cancel_and_await(ping_task)
+                        async def handle_eof(
+                            recv_task: asyncio.Task, ping_t: asyncio.Task | None
+                        ) -> None:
+                            if ping_t is not None:
+                                await _cancel_and_await(ping_t)
 
-                            if receiver_task.done():
-                                recv_exc = None if receiver_task.cancelled() else receiver_task.exception()
+                            if recv_task.done():
+                                recv_exc = None if recv_task.cancelled() else recv_task.exception()
                                 if isinstance(recv_exc, _SarvamFatalError):
                                     raise recv_exc
                                 if recv_exc is not None and _is_ws_usable(ws, recv_exc):
@@ -367,80 +556,157 @@ class SarvamProvider(TranscriptionProvider):
                                     )
                                     try:
                                         await send_json({"event": "end"})
-                                    except Exception as exc:
+                                    except (WebSocketException, OSError, TimeoutError, RuntimeError) as exc:
                                         logger.debug(f"[{booth_id}] Sarvam end signal failed during EOF: {exc}")
                                 else:
                                     logger.debug(
                                         f"[{booth_id}] Stream ended at EOF with receiver already finished: "
-                                        f"{recv_exc or receiver_task.result()}"
+                                        f"{recv_exc or recv_task.result()}"
                                     )
                                 return
 
                             if _is_ws_usable(ws, None):
                                 try:
                                     await send_json({"event": "end"})
-                                except Exception as exc:
+                                except (WebSocketException, OSError, TimeoutError, RuntimeError) as exc:
                                     logger.debug(f"[{booth_id}] Sarvam end signal failed during EOF: {exc}")
 
-                            if not receiver_task.done():
+                            if not recv_task.done():
                                 try:
                                     await asyncio.wait_for(
-                                        asyncio.shield(receiver_task),
+                                        asyncio.shield(recv_task),
                                         timeout=EOF_DRAIN_TIMEOUT_SECONDS,
                                     )
                                 except TimeoutError:
                                     logger.warning(f"[{booth_id}] Timed out waiting for Sarvam session.end after EOF")
                                 except _SarvamFatalError:
                                     raise
-                                except Exception as exc:
+                                except (WebSocketException, _SarvamTransientError, OSError, RuntimeError) as exc:
                                     logger.debug(f"[{booth_id}] Receiver closed during EOF drain: {exc}")
 
-                            if receiver_task.done() and not receiver_task.cancelled():
-                                recv_exc = receiver_task.exception()
+                            if recv_task.done() and not recv_task.cancelled():
+                                recv_exc = recv_task.exception()
                                 if isinstance(recv_exc, _SarvamFatalError):
                                     raise recv_exc
-                            return
 
-                        for task in done:
-                            if not task.cancelled():
-                                exc = task.exception()
-                                if exc is not None:
-                                    raise exc
+                        receiver_task = asyncio.create_task(receiver())
+                        sender_task: asyncio.Task | None = None
+                        ping_task: asyncio.Task | None = None
 
-                        if process.returncode is not None:
-                            return
+                        try:
+                            ready_wait = asyncio.create_task(session_ready.wait())
+                            done_wait = asyncio.create_task(receiver_done.wait())
+                            try:
+                                await asyncio.wait(
+                                    (ready_wait, done_wait),
+                                    timeout=SESSION_BEGIN_TIMEOUT_SECONDS,
+                                    return_when=asyncio.FIRST_COMPLETED,
+                                )
+                            finally:
+                                await _cancel_and_await(ready_wait, done_wait)
 
-                        raise _SarvamTransientError("Sarvam WebSocket closed unexpectedly before stream EOF")
-                    finally:
-                        await _cancel_and_await(*tasks)
+                            if not session_ready.is_set():
+                                if receiver_done.is_set():
+                                    recv_exc = None if receiver_task.cancelled() else receiver_task.exception()
+                                    if isinstance(recv_exc, _SarvamFatalError):
+                                        raise recv_exc
+                                    if not stdout_reader_task.done():
+                                        await asyncio.sleep(0)
+                                    if buffer.error is not None and not buffer.has_unsent():
+                                        raise buffer.error
+                                    if buffer.is_at_clean_eof():
+                                        await handle_eof(receiver_task, None)
+                                        return
+                                    if recv_exc is not None:
+                                        raise recv_exc
+                                    raise _SarvamTransientError("Sarvam WebSocket closed before session.begin")
+                                raise _SarvamTransientError("Timed out waiting for Sarvam session.begin")
 
-            except asyncio.CancelledError:
-                raise
-            except _SarvamFatalError as exc:
-                logger.error(f"[{booth_id}] Sarvam fatal configuration/authentication error; not reconnecting: {exc}")
-                return
-            except Exception as exc:
-                if _is_fatal_ws_exception(exc):
-                    logger.error(
-                        f"[{booth_id}] Sarvam fatal rejection "
-                        f"(http_status={_http_status_from_exc(exc)}, "
-                        f"close_code={_ws_close_code_from_exc(exc)}); not reconnecting: {exc}"
-                    )
-                    return
+                            sender_task = asyncio.create_task(sender())
+                            ping_task = asyncio.create_task(pinger())
+                            tasks = (sender_task, receiver_task, ping_task)
 
-                if session_started and (
-                    transcript_received or (time.monotonic() - connected_at) >= STABLE_SESSION_SECONDS
-                ):
-                    consecutive_errors = 0
+                            done, _ = await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
 
-                consecutive_errors += 1
-                logger.error(
-                    f"[{booth_id}] Sarvam WS connection error ({consecutive_errors}/{MAX_RECONNECT_ATTEMPTS}): {exc}"
-                )
+                            sender_eof = (
+                                sender_task in done
+                                and not sender_task.cancelled()
+                                and sender_task.exception() is None
+                                and sender_task.result() == "EOF"
+                            )
+                            if sender_eof:
+                                await handle_eof(receiver_task, ping_task)
+                                return
 
-                if consecutive_errors >= MAX_RECONNECT_ATTEMPTS:
-                    logger.error(f"[{booth_id}] Sarvam Realtime connection repeatedly failed. Giving up.")
-                    break
+                            for task in done:
+                                if not task.cancelled():
+                                    exc = task.exception()
+                                    if exc is not None:
+                                        raise exc
 
-                delay = min(BACKOFF_BASE_SECONDS * (2 ** (consecutive_errors - 1)), BACKOFF_MAX_SECONDS)
-                await asyncio.sleep(delay)
+                            if buffer.is_at_clean_eof():
+                                return
+
+                            raise _SarvamTransientError("Sarvam WebSocket closed unexpectedly before stream EOF")
+                        finally:
+                            cleanup_tasks = [t for t in (sender_task, receiver_task, ping_task) if t is not None]
+                            await _cancel_and_await(*cleanup_tasks)
+
+                except asyncio.CancelledError:
+                    raise
+                except _StdoutReadError:
+                    raise
+                except _SarvamFatalError as exc:
+                    logger.error(f"[{booth_id}] Sarvam fatal configuration/authentication error; not reconnecting: {exc}")
+                    raise FatalTranscriptionError(str(exc)) from exc
+                except (_SarvamTransientError, WebSocketException, OSError, TimeoutError, EOFError) as exc:
+                    if buffer.error is not None and not buffer.has_unsent():
+                        raise buffer.error
+
+                    if _is_fatal_ws_exception(exc):
+                        logger.error(
+                            f"[{booth_id}] Sarvam fatal rejection "
+                            f"(http_status={_http_status_from_exc(exc)}, "
+                            f"close_code={_ws_close_code_from_exc(exc)}); not reconnecting: {exc}"
+                        )
+                        raise FatalTranscriptionError(str(exc)) from exc
+
+                    if session_started and (
+                        transcript_received or (time.monotonic() - connected_at) >= STABLE_SESSION_SECONDS
+                    ):
+                        consecutive_errors = 0
+
+                    consecutive_errors += 1
+                    if not outage_logged:
+                        logger.error(
+                            f"[{booth_id}] Sarvam WS connection error ({consecutive_errors}/{MAX_RECONNECT_ATTEMPTS}): {exc}"
+                        )
+                        outage_logged = True
+                    else:
+                        logger.warning(
+                            f"[{booth_id}] Sarvam WS reconnect attempt failed "
+                            f"({consecutive_errors}/{MAX_RECONNECT_ATTEMPTS}): {exc}"
+                        )
+
+                    if consecutive_errors >= MAX_RECONNECT_ATTEMPTS:
+                        logger.error(f"[{booth_id}] Sarvam Realtime connection repeatedly failed. Giving up.")
+                        raise FatalTranscriptionError(
+                            f"Sarvam Realtime connection failed after {consecutive_errors} attempts: {exc}"
+                        ) from exc
+
+                    if not session_ended_cleanly and not buffer.is_at_clean_eof():
+                        await aggregator.clear_partial(booth_id)
+
+                    delay = min(BACKOFF_BASE_SECONDS * (2 ** (consecutive_errors - 1)), BACKOFF_MAX_SECONDS)
+                    try:
+                        await asyncio.wait_for(buffer.stream_ended_event.wait(), timeout=delay)
+                        if buffer.error is not None:
+                            raise buffer.error
+                        return
+                    except TimeoutError:
+                        pass
+        except _StdoutReadError as exc:
+            logger.error(f"[{booth_id}] FFmpeg stdout read failed; stopping Sarvam stream: {exc.original}")
+            raise exc.original from exc
+        finally:
+            await _cancel_and_await(stdout_reader_task)
