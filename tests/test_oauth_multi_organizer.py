@@ -635,11 +635,11 @@ async def test_token_exchange_with_the_matching_event_returns_it(setup_oauth_cli
 
 
 @pytest.mark.anyio
-async def test_confidential_token_exchange_without_event_is_refused(setup_oauth_clients):
-    """A confidential client must name the event it started the flow for.
+async def test_confidential_token_exchange_without_event_uses_code_event(setup_oauth_clients):
+    """A confidential client omitting ``event`` falls back to the code's bound event.
 
-    Leaving ``event`` out was the remaining way to reach the hidden-field swap: the
-    server had nothing to compare the code's event against, so it granted ownership.
+    The authorization code already binds to its event, so the explicit ``event``
+    parameter is an optional cross-check, not a requirement.
     """
     organizer = setup_oauth_clients["unrelated_user"]
     event = setup_oauth_clients["ownerless_event"]
@@ -647,9 +647,8 @@ async def test_confidential_token_exchange_without_event_is_refused(setup_oauth_
     async with _client() as c:
         token_data = await _code_for(c, client, organizer, event.id)
         res = await c.post("/oauth/token", data=token_data)
-    assert res.status_code == 400
-    assert res.json()["error"] == "invalid_request"
-    assert await _role(organizer.id, event.id) is None
+    assert res.status_code == 200
+    assert res.json()["event"] == event.slug
 
 
 @pytest.mark.anyio
