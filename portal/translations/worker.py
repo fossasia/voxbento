@@ -7,8 +7,10 @@ from portal.database import get_session
 from portal.models import DBBooth, Event, Room, TranscriptTranslation
 from portal.transcription.timing import timing_metadata
 from portal.translations.constants import OPENAI_COMPATIBLE_ENDPOINTS, TranslationProviderEnum
+from portal.translations.engine import EngineKind, Language, TranslationContext, TranslationEngine
 from portal.translations.keys import get_translation_api_key
 from portal.translations.providers.anthropic import AnthropicProvider
+from portal.translations.providers.base import ProviderEngine
 from portal.translations.providers.gemini import GeminiProvider
 from portal.translations.providers.local import LocalProvider
 from portal.translations.providers.openai import OpenAIProvider
@@ -24,13 +26,18 @@ VOCABULARY_LOOKUP_TIMEOUT = 2.0
 
 openai_provider = OpenAIProvider()
 
-PROVIDERS = {
-    TranslationProviderEnum.GEMINI.value: GeminiProvider(),
-    TranslationProviderEnum.ANTHROPIC.value: AnthropicProvider(),
+#: The engine behind each translation provider a room or booth can select.
+ENGINES: dict[str, TranslationEngine] = {
+    TranslationProviderEnum.GEMINI.value: ProviderEngine(
+        TranslationProviderEnum.GEMINI.value, GeminiProvider(), EngineKind.LLM_API
+    ),
+    TranslationProviderEnum.ANTHROPIC.value: ProviderEngine(
+        TranslationProviderEnum.ANTHROPIC.value, AnthropicProvider(), EngineKind.LLM_API
+    ),
     TranslationProviderEnum.LOCAL.value: LocalProvider(),
 }
 for p in OPENAI_COMPATIBLE_ENDPOINTS.keys():
-    PROVIDERS[p] = openai_provider
+    ENGINES[p] = ProviderEngine(p, openai_provider, EngineKind.OPENAI_COMPATIBLE_LLM)
 
 
 class TranslationWorker:
@@ -354,22 +361,22 @@ class TranslationWorker:
         style: str | None = None,
         vocabulary_entries: list | None = None,
     ) -> str | None:
-        provider_instance = PROVIDERS.get(provider)
-        if not provider_instance:
+        engine = ENGINES.get(provider)
+        if not engine:
             logger.error(f"Translation provider {provider} not supported.")
             return None
 
-        translated = await provider_instance.translate(
-            provider_name=provider,
-            text=text,
-            target_lang_name=target_lang_name,
-            target_lang_code=target_lang_code,
-            source_lang_name=source_lang_name,
+        translated = await engine.translate_text(
+            Language(code=source_language_code or "", name=source_lang_name),
+            Language(code=target_lang_code, name=target_lang_name),
+            text,
+            TranslationContext(
+                persona=persona,
+                style=style,
+                vocabulary={target_lang_code: vocabulary_entries} if vocabulary_entries else {},
+            ),
             model=model,
             api_key=api_key,
-            persona=persona,
-            style=style,
-            vocabulary_entries=vocabulary_entries or (),
         )
         if not translated:
             logger.warning(f"Provider {provider} returned empty translation for text: '{text}'")
