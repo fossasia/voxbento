@@ -38,6 +38,13 @@ ENGINES: dict[str, TranslationEngine] = {
 }
 for p in OPENAI_COMPATIBLE_ENDPOINTS.keys():
     ENGINES[p] = ProviderEngine(p, openai_provider, EngineKind.OPENAI_COMPATIBLE_LLM)
+# The operator's self-hosted server speaks the same protocol; the provider picks its endpoint by name.
+ENGINES[TranslationProviderEnum.SELF_HOSTED.value] = ProviderEngine(
+    TranslationProviderEnum.SELF_HOSTED.value, openai_provider, EngineKind.OPENAI_COMPATIBLE_LLM
+)
+
+# Providers that run without a per-event API key.
+KEYLESS_PROVIDERS = {TranslationProviderEnum.LOCAL.value, TranslationProviderEnum.SELF_HOSTED.value}
 
 
 class TranslationWorker:
@@ -113,7 +120,7 @@ class TranslationWorker:
                 return
 
             api_key = self._get_translation_api_key(event, provider)
-            if not api_key and provider != TranslationProviderEnum.LOCAL.value:
+            if not api_key and provider not in KEYLESS_PROVIDERS:
                 logger.error(f"[{booth_id_str}] Translation API key not found for provider {provider}")
                 return
 

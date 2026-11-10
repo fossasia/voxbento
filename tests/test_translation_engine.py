@@ -293,12 +293,14 @@ async def test_nllb_applies_each_targets_glossary(monkeypatch):
 
 
 def test_every_selectable_provider_has_an_engine():
-    assert set(ENGINES) == {provider.value for provider in TranslationProviderEnum} == set(TRANSLATION_MODELS)
+    # The self-hosted provider's models come from the operator's settings, so it has no fixed model list.
+    assert set(ENGINES) == {provider.value for provider in TranslationProviderEnum}
+    assert set(TRANSLATION_MODELS) <= set(ENGINES)
     assert all(isinstance(engine, TranslationEngine) for engine in ENGINES.values())
 
 
 def test_engines_keep_the_provider_name_that_picks_their_endpoint():
-    for name in OPENAI_COMPATIBLE_ENDPOINTS:
+    for name in [*OPENAI_COMPATIBLE_ENDPOINTS, TranslationProviderEnum.SELF_HOSTED.value]:
         engine = ENGINES[name]
         assert isinstance(engine, ProviderEngine)
         assert (engine.provider_name, engine.kind) == (name, EngineKind.OPENAI_COMPATIBLE_LLM)
