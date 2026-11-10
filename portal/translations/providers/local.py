@@ -14,10 +14,12 @@ if TYPE_CHECKING:
     import ctranslate2
     from transformers import PreTrainedTokenizer, PreTrainedTokenizerFast
 
+from huggingface_hub.utils import LocalEntryNotFoundError
 from tqdm.auto import tqdm
 
 from portal.translations.constants import NLLB_LANGUAGE_MAP
 from portal.translations.providers.base import TranslationProvider
+from portal.translations.vocabulary import protect_terms, restore_terms
 
 logger = logging.getLogger(__name__)
 
@@ -80,6 +82,7 @@ def trigger_download(model_size: str):
 
 
 def get_download_progress(model_size: str):
+    """Return download/cache status; cache misses are normal, other probe failures warn."""
     with _progress_lock:
         prog = _download_progress.get(model_size)
         if prog:
@@ -93,7 +96,10 @@ def get_download_progress(model_size: str):
 
         snapshot_download(repo_id=hf_repo_id, revision=rev, local_files_only=True)
         return {"status": "completed", "n": 1, "total": 1, "rate": 0}
-    except Exception:
+    except LocalEntryNotFoundError:
+        return {}
+    except Exception as exc:
+        logger.warning("Local model cache lookup failed (%s); download status unavailable", type(exc).__name__)
         return {}
 
 
@@ -240,19 +246,16 @@ class LocalProvider(TranslationProvider):
             f"[NLLB] translate called: source='{source_lang_name}' -> target='{target_lang_name}' "
             f"model='{model}' text_len={len(text)}"
         )
-        # NLLB is sequence-to-sequence and has no system-prompt channel, so the room's
-        # interpretation settings cannot be applied here. Say so once per process rather
-        # than letting configured settings look active.
-        ignored = [
-            name
-            for name, value in (("persona", persona), ("style", style), ("vocabulary", vocabulary_entries))
-            if value
-        ]
+        # NLLB is sequence-to-sequence and has no system-prompt channel, so persona and style
+        # cannot be applied here (glossary terms are, through placeholders). Say so once per
+        # process rather than letting configured settings look active.
+        ignored = [name for name, value in (("persona", persona), ("style", style)) if value]
         if ignored and not LocalProvider._warned_unsupported_settings:
             LocalProvider._warned_unsupported_settings = True
             logger.warning(
-                f"[NLLB] The local provider ignores {', '.join(ignored)}: NLLB takes no system prompt. "
-                "Select a cloud translation provider for these settings to take effect."
+                "[NLLB] The local provider ignores %s: NLLB takes no system prompt. "
+                "Select a cloud translation provider for these settings to take effect.",
+                ", ".join(ignored),
             )
 
 
@@ -279,6 +282,18 @@ class LocalProvider(TranslationProvider):
         logger.debug(
             f"[NLLB] Language tokens resolved: source_token='{source_lang_token}' target_token='{target_lang_token}'"
         )
+        segment = protect_terms(text, vocabulary_entries)
+        if segment.target_terms:
+            translated = await asyncio.to_thread(
+                self._run_inference, segment.text, source_lang_token, target_lang_token, model
+            )
+            if translated is None:
+                return None
+            restored = restore_terms(translated, segment)
+            if restored is not None:
+                return restored
+            # Never show a placeholder to listeners: translate the original segment instead.
+            logger.debug("[NLLB] Glossary placeholders did not survive translation; using the plain translation")
         return await asyncio.to_thread(self._run_inference, text, source_lang_token, target_lang_token, model)
 
     def _run_inference(self, text: str, source_lang_token: str, target_lang_token: str, model_size: str) -> str | None:

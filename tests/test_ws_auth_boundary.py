@@ -1035,7 +1035,11 @@ async def test_booth_connect_handles_database_session_cutoff(monkeypatch, naive_
 
     monkeypatch.setattr(handlers, "get_session", session)
     monkeypatch.setattr(handlers, "get_user_by_id", AsyncMock(return_value=user))
-    monkeypatch.setattr(handlers, "resolve_ws_auth", AsyncMock(return_value={"sub": "10", "user": True}))
+    monkeypatch.setattr(
+        handlers,
+        "resolve_ws_auth",
+        AsyncMock(return_value={"sub": "10", "user": True, "iat": datetime.now(timezone.utc).timestamp()}),
+    )
     monkeypatch.setattr(handlers, "resolve_booth_role", AsyncMock(return_value="interpreter"))
     monkeypatch.setattr(handlers, "get_booth_language_name", AsyncMock(return_value="English"))
     monkeypatch.setattr(handlers, "manager", ConnectionManager())
@@ -1049,3 +1053,35 @@ async def test_booth_connect_handles_database_session_cutoff(monkeypatch, naive_
     else:
         assert ws.closed_with is None
         ws.receive_text.assert_awaited_once()
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("transport_state", ["missing", "unsupported", "raising"])
+async def test_timed_out_close_warns_and_removes_revoked_session(transport_state, monkeypatch, caplog):
+    """Transport cleanup failures must warn while the revoked session is removed."""
+    manager = ConnectionManager()
+    ws = MockWebSocket(hang_close=True)
+    session = _make_session()
+    manager.add(ws, session)
+
+    if transport_state == "unsupported":
+        ws.transport = object()
+    elif transport_state == "raising":
+        ws.transport = ws
+
+        def fail_abort():
+            raise OSError("private transport details")
+
+        monkeypatch.setattr(ws, "abort", fail_abort)
+
+    await manager.close_session(ws, timeout=0.001)
+
+    assert session.revoked is True
+    assert session.granted_role is None
+    assert manager.get_session(ws) is None
+    assert ws.sent_messages == []
+    if transport_state == "raising":
+        assert "Could not force-abort revoked WebSocket transport (OSError)" in caplog.text
+    else:
+        assert "Could not force-abort revoked WebSocket: no usable transport" in caplog.text
+    assert "private transport details" not in caplog.text

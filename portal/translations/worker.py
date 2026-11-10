@@ -31,6 +31,10 @@ PROVIDERS = {
 }
 for p in OPENAI_COMPATIBLE_ENDPOINTS.keys():
     PROVIDERS[p] = openai_provider
+PROVIDERS[TranslationProviderEnum.SELF_HOSTED.value] = openai_provider
+
+# Providers that run without a per-event API key.
+KEYLESS_PROVIDERS = {TranslationProviderEnum.LOCAL.value, TranslationProviderEnum.SELF_HOSTED.value}
 
 
 class TranslationWorker:
@@ -106,7 +110,7 @@ class TranslationWorker:
                 return
 
             api_key = self._get_translation_api_key(event, provider)
-            if not api_key and provider != TranslationProviderEnum.LOCAL.value:
+            if not api_key and provider not in KEYLESS_PROVIDERS:
                 logger.error(f"[{booth_id_str}] Translation API key not found for provider {provider}")
                 return
 
@@ -190,6 +194,7 @@ class TranslationWorker:
         target_booth_id: str | None = None,
         source_booth_id: int | None = None,
     ):
+        """Translate and deliver a segment, keeping advisory status failures outside inference."""
         from portal.websockets.manager import tts_manager
 
         queue_key = f"{booth_id_str}:{lang_code}"
@@ -242,8 +247,12 @@ class TranslationWorker:
                             prog = get_download_progress(model)
                             if prog and prog.get("status") == "downloading":
                                 timeout_val = 0.1  # Fail fast if downloading
-                        except Exception:
-                            pass
+                        except Exception as exc:
+                            # Download status is advisory; inference keeps its normal timeout.
+                            logger.warning(
+                                "Local model download status unavailable (%s); using standard inference timeout",
+                                type(exc).__name__,
+                            )
 
                     translated_text = await asyncio.wait_for(
                         self._call_llm(
