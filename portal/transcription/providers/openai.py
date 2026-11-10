@@ -205,6 +205,12 @@ class OpenAIProvider(TranscriptionProvider):
                         for task in pending:
                             task.cancel()
                         return
+                    for task in done:
+                        exc = task.exception() if not task.cancelled() else None
+                        if isinstance(exc, TranscriptionAuthError):
+                            for t in pending:
+                                t.cancel()
+                            raise exc
                     for task in pending:
                         task.cancel()
                     raise Exception("WebSocket disconnected.")
