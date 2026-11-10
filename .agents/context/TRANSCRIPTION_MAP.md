@@ -89,7 +89,6 @@ Jitsi Meet Floor Conference
 | `portal/transcription/providers/nvidia.py` | `NVIDIAProvider` — Parakeet-RNNT/CTC via Riva gRPC |
 | `portal/transcription/providers/elevenlabs.py` | `ElevenLabsProvider` — scribe_v2 |
 | `portal/transcription/providers/sarvam.py` | `SarvamProvider` — saaras:v3-realtime WebSocket streaming, backoff reconnect |
-| `portal/translations/worker.py` | `start_translation_worker()`, LLM translation loop, multithreaded translation dispatch |
 | `portal/translations/worker.py` | `TranslationWorker`: per-language translation dispatch, timeouts and delivery; `ENGINES` maps each provider to its `TranslationEngine` |
 | `portal/translations/engine.py` | `TranslationEngine` interface (`translate_batch`, `translate_text`), `Language`, `TranslationContext`, `EngineKind`; the worker calls engines only through it |
 | `portal/translations/providers/` | Backends: `LocalProvider` (NLLB, an engine itself) and the prompt-based cloud providers, wrapped by `ProviderEngine` in `base.py` |

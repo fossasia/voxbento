@@ -154,8 +154,8 @@ from portal.room_setup import (
     load_snapshot,
     parse_plan,
     room_audio_choice,
-    speech_language_problem,
     server_unavailable_reason,
+    speech_language_problem,
     summarize,
 )
 from portal.room_setup import ALL_LANGUAGES as ROOM_ALL_LANGUAGES
@@ -2201,10 +2201,9 @@ async def admin_booth_detail(request: Request, event_id: int, room_id: int, boot
             "event": event,
             "room": room,
             "booth": db_booth,
-            "catalog": engine_catalog(event),
             "speech_engines": [
                 engine
-                for engine in engine_catalog(event).speech
+                for engine in catalog.speech
                 if not speech_language_problem(engine.provider, db_booth.language_code)
             ],
             "speech_provider_unsupported": bool(
@@ -2558,9 +2557,6 @@ async def admin_transcription_settings(
                 and transcription_provider == db_booth.transcription_provider
                 and transcription_model == db_booth.transcription_model
             )
-        language_problem = speech_language_problem(transcription_provider, db_booth.language_code)
-        if language_problem:
-            raise HTTPException(status_code=400, detail=language_problem)
             if not keeps_saved_model:
                 if transcription_enabled:
                     return safe_redirect(
@@ -2571,7 +2567,10 @@ async def admin_transcription_settings(
                     status_code=400,
                     detail=f"Invalid model '{transcription_model}' for provider '{transcription_provider}'",
                 )
-        event = await get_event_by_id(session, event_id)
+        language_problem = speech_language_problem(transcription_provider, db_booth.language_code)
+        if language_problem:
+            raise HTTPException(status_code=400, detail=language_problem)
+        event =await get_event_by_id(session, event_id)
         if event is None:
             raise HTTPException(status_code=404, detail="Event not found.")
         # Turning captions off must work even if the saved service lost its key, so the key and

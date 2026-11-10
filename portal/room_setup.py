@@ -220,6 +220,8 @@ def speech_language_problem(provider: str | None, language_code: str | None) -> 
         f"{_BRANDS.get(provider, provider)} can't make captions in {language_name(language_code)}. "
         "Choose another caption service or change the language spoken in the room."
     )
+
+
 def brand_name(provider: str) -> str:
     """The proper name of a provider ("OpenAI", "ElevenLabs"), for a provider that is no longer offered."""
     return _BRANDS.get(provider, provider.capitalize())
