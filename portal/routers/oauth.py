@@ -264,6 +264,18 @@ async def authorize_post(
 
     expected_mac = _event_binding_mac(event_id, client_id, str(user["sub"]))
     if not hmac.compare_digest(event_binding.encode(), expected_mac.encode()):
+        # Rejected consent: swap attempt or stale form. Logged so repeated attempts
+        # are visible to operators, without storing the submitted binding itself.
+        db.add(
+            OAuthAuditLog(
+                client_id=client.id,
+                event_id=event_id,
+                action="authorize_binding_rejected",
+                request_path="/oauth/authorize",
+                status_code=400,
+            )
+        )
+        await db.flush()
         raise HTTPException(status_code=400, detail="Event binding verification failed.")
 
     # Ensure event exists
@@ -371,12 +383,32 @@ async def _handle_authorization_code_grant(
         return JSONResponse(status_code=400, content={"error": "invalid_grant"})
 
     if client.is_confidential and not event:
+        db.add(
+            OAuthAuditLog(
+                client_id=client.id,
+                event_id=code_event.id,
+                action="token_exchange_event_missing",
+                request_path="/oauth/token",
+                status_code=400,
+            )
+        )
+        await db.flush()
         return JSONResponse(
             status_code=400,
             content={"error": "invalid_request", "error_description": "Confidential clients must supply 'event'"},
         )
 
     if event is not None and event != code_event.slug:
+        db.add(
+            OAuthAuditLog(
+                client_id=client.id,
+                event_id=code_event.id,
+                action="token_exchange_event_mismatch",
+                request_path="/oauth/token",
+                status_code=400,
+            )
+        )
+        await db.flush()
         return JSONResponse(
             status_code=400,
             content={"error": "invalid_grant", "error_description": "Code was issued for another event"},
