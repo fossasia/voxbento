@@ -43,11 +43,32 @@ UNREACHABLE_REASON = "Could not reach YouTube to post the caption."
 _LOCAL_TIME = re.compile(r"local=(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?)")
 
 
+def _secret_forms(url: str) -> frozenset[str]:
+    """Every spelling of a caption URL that a log line could contain.
+
+    httpx logs the URL it normalised (lower-case scheme and host, default port dropped), which can differ
+    from the string that was stored, so the stored string, the normalised one and the bare `cid` all count.
+    """
+    forms = {url}
+    try:
+        parsed = httpx.URL(url)
+    except httpx.InvalidURL:
+        return frozenset(forms)
+    forms.add(str(parsed))
+    forms.update(value for value in parsed.params.get_list("cid") if value)
+    return frozenset(forms)
+
+
 @dataclass
 class CaptionTarget:
     language: str  # "floor" or a target language code
     url: str = field(repr=False)  # capability URL: never log or return it
     seq: int = 0
+    # What the httpx log filter must hide for this URL; worked out once, when the target is created.
+    secrets: frozenset[str] = field(init=False, repr=False, compare=False, default=frozenset())
+
+    def __post_init__(self) -> None:
+        self.secrets = _secret_forms(self.url)
 
 
 @dataclass
@@ -80,28 +101,16 @@ MAX_REMEMBERED_STREAMS = 100
 _transport: httpx.AsyncBaseTransport | None = None
 
 
-def _secret_forms(url: str) -> set[str]:
-    """Every spelling of a caption URL that a log line could contain.
-
-    httpx logs the URL it normalised (lower-case scheme and host, default port dropped), which can differ
-    from the string that was stored, so the stored string, the normalised one and the bare `cid` all count.
-    """
-    forms = {url}
-    try:
-        parsed = httpx.URL(url)
-    except httpx.InvalidURL:
-        return forms
-    forms.add(str(parsed))
-    forms.update(value for value in parsed.params.get_list("cid") if value)
-    return forms
-
-
 class _HideCaptionUrls(logging.Filter):
-    """httpx logs every request URL at INFO; a caption URL is a secret, so drop those records."""
+    """httpx logs every request URL at INFO; a caption URL is a secret, so drop those records.
+
+    The strings to look for are worked out once per target (``CaptionTarget.secrets``), not per log record.
+    """
 
     def filter(self, record: logging.LogRecord) -> bool:
         message = record.getMessage()
-        return not any(form in message for target in targets.values() for form in _secret_forms(target.url))
+        # A copy, so a target added or removed while a record is being filtered cannot break the iteration.
+        return not any(secret in message for target in list(targets.values()) for secret in target.secrets)
 
 
 logging.getLogger("httpx").addFilter(_HideCaptionUrls())

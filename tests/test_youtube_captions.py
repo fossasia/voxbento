@@ -230,6 +230,22 @@ async def test_caption_url_is_not_logged_when_httpx_normalises_it(monkeypatch, c
     assert "upload.youtube.com" not in caplog.text.lower()
 
 
+def test_the_log_filter_uses_secrets_worked_out_once_per_target(monkeypatch):
+    target = yc.CaptionTarget(language="floor", url="https://Upload.YouTube.com:443/closedcaption?cid=SECRETCID123")
+    yc.targets[1] = target
+    calls = []
+    monkeypatch.setattr(yc, "_secret_forms", lambda url: calls.append(url) or frozenset())
+    record = logging.LogRecord("httpx", logging.INFO, __file__, 0, "HTTP Request: POST %s", (target.url,), None)
+
+    hidden = [not yc._HideCaptionUrls().filter(record) for _ in range(3)]
+
+    assert hidden == [True, True, True]
+    assert calls == []  # nothing is recomputed per log record
+    assert "SECRETCID123" in target.secrets
+    assert "https://upload.youtube.com/closedcaption?cid=SECRETCID123" in target.secrets
+    assert "SECRETCID123" not in repr(target)
+
+
 @pytest.mark.anyio
 async def test_activate_upgrades_a_mixed_case_http_scheme():
     await yc.activate(1, "floor", "HTTP://upload.youtube.com/closedcaption?cid=SECRETCID123")
