@@ -828,7 +828,7 @@ async def _validate_ws_payload_scope(
     if payload.get("is_admin") or payload.get("admin"):
         return
 
-    if payload.get("role") == "listener":
+    if is_listener_token(payload):
         await _validate_listener_scope(
             websocket,
             booth_id,
