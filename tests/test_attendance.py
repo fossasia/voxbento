@@ -498,3 +498,43 @@ async def test_a_deleted_user_does_not_block_the_flush(event_setup, clock):
         rows = {row.display_name: row for row in (await session.execute(select(InterpreterAttendance))).scalars()}
     assert rows["Gone"].user_id is None
     assert rows["Ana"].user_id == event_setup["ana"]
+
+
+@pytest.mark.anyio
+async def test_shutdown_retries_a_failed_final_flush(event_setup, clock, monkeypatch):
+    """A save that fails at shutdown (say a user deleted mid-flush) is retried, not lost."""
+    import asyncio
+
+    from sqlalchemy.exc import IntegrityError
+
+    import portal.attendance as attendance
+
+    real_save = attendance.save_visits
+    calls = 0
+
+    async def flaky(visits, now):
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            raise IntegrityError("INSERT", {}, Exception("foreign key"))
+        return await real_save(visits, now)
+
+    monkeypatch.setattr(attendance, "save_visits", flaky)
+    monkeypatch.setattr(attendance, "SHUTDOWN_RETRY_DELAY_SECS", 0)
+    registry = BoothRegistry(attendance=AttendanceTracker(clock=clock))
+    await registry.join_participant(
+        booth_id=f"conf-{event_setup['room']}-de", display_name="Ana", role=INTERPRETER, language=LANG,
+        channel_id=CHANNEL,
+    )
+    task = asyncio.create_task(registry.attendance.run(interval=3600))
+    await asyncio.sleep(0.05)  # let it start and wait for the first interval
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+
+    assert calls == 2
+    assert registry.attendance._closed == []
+    async with get_session() as session:
+        saved = list((await session.execute(select(InterpreterAttendance))).scalars())
+    assert [row.display_name for row in saved] == ["Ana"]
+    assert saved[0].left_at is not None

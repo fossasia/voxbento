@@ -34,6 +34,9 @@ logger = logging.getLogger(__name__)
 FLUSH_INTERVAL_SECS = 60.0
 # Finished visits kept for retry while the database is down; the oldest go first.
 MAX_PENDING_CLOSED = 5000
+# The last flush at shutdown has no next interval to fall back on, so it gets a few tries.
+SHUTDOWN_FLUSH_ATTEMPTS = 3
+SHUTDOWN_RETRY_DELAY_SECS = 0.5
 
 
 def _utc_now() -> datetime:
@@ -194,7 +197,14 @@ class AttendanceTracker:
                 await self.flush()
         finally:
             self.close_all()
-            await self.flush()
+            for attempt in range(SHUTDOWN_FLUSH_ATTEMPTS):
+                if attempt:
+                    await asyncio.sleep(SHUTDOWN_RETRY_DELAY_SECS)
+                await self.flush()
+                if not self._closed:
+                    break
+            else:
+                logger.warning("attendance_shutdown_flush_failed unsaved=%d", len(self._closed))
 
 
 async def save_visits(visits: Iterable[Visit], now: datetime) -> int:
