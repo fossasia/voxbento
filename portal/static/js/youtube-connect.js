@@ -67,8 +67,13 @@ function offerSignInAgain(error) {
   if (error.lastError) signInAgain.hidden = false;
 }
 
+// State-changing requests carry the admin CSRF token from the page's meta tag (double-submit cookie).
+const csrfToken = () => document.querySelector('meta[name="csrf-token"]')?.content || '';
+
 function request(url, options = {}) {
-  return fetch(url, {cache: 'no-store', credentials: 'same-origin', ...options});
+  const headers = {...options.headers};
+  if (options.method && options.method !== 'GET') headers['X-CSRF-Token'] = csrfToken();
+  return fetch(url, {cache: 'no-store', credentials: 'same-origin', ...options, headers});
 }
 
 function showState(state) {

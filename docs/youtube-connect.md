@@ -120,7 +120,8 @@ feature is off (except the status route). Their JSON responses, and the callback
 back to the room page, answer `Cache-Control: no-store`; the callback's error responses
 (400 expired or mismatched state, 403 another user or no ownership) are the portal's
 standard error pages, which do not set that header and carry no token or code. PUT and DELETE check `Origin` against
-`PUBLIC_BASE_URL`.
+`PUBLIC_BASE_URL` and require the admin CSRF token (`X-CSRF-Token`, `require_admin_csrf`),
+which the room page script reads from the page's `csrf-token` meta tag.
 
 ## Data stored
 

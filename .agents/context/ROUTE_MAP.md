@@ -241,7 +241,8 @@ with `?error=invalid_role&role=…` and the page explains why.
 `portal/routers/youtube.py`; see `docs/youtube-connect.md`. Event-owner
 (`require_event_owner`), `Cache-Control: no-store`, 404 while
 `YOUTUBE_OAUTH_CLIENT_ID`/`_SECRET` are unset (except the status route, which
-returns `available: false`). PUT/DELETE are origin-checked.
+returns `available: false`). PUT/DELETE are origin-checked and require
+the admin CSRF token (`require_admin_csrf`, `X-CSRF-Token`).
 
 - `GET /workspace/events/{event_id}/youtube`: `{available, connected, channel_title,
   channel_id, connected_at, last_error}`. `DELETE` revokes the refresh token at Google

@@ -23,7 +23,7 @@ from fastapi_app import app
 from portal import program_ingest as ingest
 from portal import program_relay as relay
 from portal import youtube_account as yt
-from portal.auth import create_user_token, decode_token
+from portal.auth import create_user_token, decode_token, generate_admin_csrf_token
 from portal.config import Settings, settings
 from portal.crypto import decrypt_val
 from portal.database import configure, create_user, dispose, get_session, init_db, set_event_membership
@@ -186,13 +186,16 @@ async def yt_env(monkeypatch):
         tokens = {
             user.email: create_user_token(user_id=user.id, email=user.email) for user in (owner, co_owner, stranger)
         }
+        csrf_token = owner_csrf(tokens[owner.email])
         async with httpx.AsyncClient(
             transport=httpx.ASGITransport(app=app, client=("127.0.0.1", 1234)),
             base_url="http://test",
-            cookies={"user_token": tokens[owner.email]},
+            cookies={"user_token": tokens[owner.email], "admin_csrf": csrf_token},
+            headers={"X-CSRF-Token": csrf_token},
         ) as client:
             yield {
                 "client": client,
+                "csrf_token": csrf_token,
                 "google": google,
                 "event": event,
                 "rooms": rooms,
@@ -205,6 +208,11 @@ async def yt_env(monkeypatch):
     yt._status.clear()
     ingest.room_locks.clear()
     await dispose()
+
+
+def owner_csrf(user_token):
+    """A CSRF token bound to ``user_token``'s session, as the room page renders it."""
+    return generate_admin_csrf_token(str(decode_token(user_token)["jti"]))
 
 
 def event_url(env, suffix=""):
@@ -512,6 +520,33 @@ async def test_link_rejects_foreign_unbound_and_malformed_broadcasts(yt_env):
 
 
 @pytest.mark.anyio
+async def test_youtube_changes_require_the_csrf_token(yt_env):
+    client, room = yt_env["client"], yt_env["rooms"][0]
+    await connect(yt_env)
+    await link_relay_room(yt_env)
+    other_session = owner_csrf(create_user_token(user_id=yt_env["owner"].id, email=yt_env["owner"].email))
+    for token in ("", "forged-token", other_session):
+        for method, url in (
+            ("PUT", broadcast_url(yt_env, room)),
+            ("DELETE", broadcast_url(yt_env, room)),
+            ("DELETE", event_url(yt_env)),
+        ):
+            response = await client.request(
+                method,
+                url,
+                json={"broadcast": UPCOMING_ID} if method == "PUT" else None,
+                headers={"X-CSRF-Token": token},
+            )
+            assert response.status_code == 403, (token, method, url, response.status_code)
+            assert response.json()["detail"] == "Invalid CSRF token"
+    # Nothing changed: the room keeps its broadcast and key, and the channel stays connected.
+    saved = await stored_room(room.id)
+    assert saved.youtube_broadcast_id == LIVE_ID and saved.program_relay_key_enc is not None
+    assert await stored_connection(yt_env) is not None
+    assert yt_env["google"]["revoked"] == []
+
+
+@pytest.mark.anyio
 async def test_invalid_grant_needs_a_new_sign_in(yt_env):
     client, google = yt_env["client"], yt_env["google"]
     await connect(yt_env)
@@ -576,6 +611,9 @@ async def test_owner_routes_need_ownership_and_the_feature(yt_env, monkeypatch):
     assert await stored_connection(yt_env) is not None
 
     client.cookies.set("user_token", yt_env["tokens"]["yt-owner@example.com"])
+    # The stranger's requests were answered with a CSRF cookie for their own session.
+    client.cookies.delete("admin_csrf")
+    client.cookies.set("admin_csrf", yt_env["csrf_token"])
     monkeypatch.setattr(settings, "youtube_oauth_client_secret", "")
     status = await client.get(event_url(yt_env))
     assert status.status_code == 200 and status.json() == {"available": False, "connected": False}
@@ -766,7 +804,12 @@ def owner_client(env, state_cookie):
     return httpx.AsyncClient(
         transport=httpx.ASGITransport(app=app, client=("127.0.0.1", 1234)),
         base_url="http://test",
-        cookies={"user_token": env["tokens"]["yt-owner@example.com"], "vb_yt_oauth": state_cookie},
+        cookies={
+            "user_token": env["tokens"]["yt-owner@example.com"],
+            "vb_yt_oauth": state_cookie,
+            "admin_csrf": env["csrf_token"],
+        },
+        headers={"X-CSRF-Token": env["csrf_token"]},
     )
 
 

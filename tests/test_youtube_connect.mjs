@@ -33,7 +33,11 @@ async function page(routes) {
   const calls = [];
   const timers = [];
   const context = vm.createContext({
-    document: { hidden: false, getElementById: (id) => elements[id], querySelector: () => null },
+    document: {
+      hidden: false,
+      getElementById: (id) => elements[id],
+      querySelector: (selector) => (selector === 'meta[name="csrf-token"]' ? { content: 'csrf-123' } : null),
+    },
     window: { location: { search: '', pathname: '/room/', hash: '#audio' }, addEventListener() {}, confirm: () => true },
     history: { replaceState() {} },
     URLSearchParams,
@@ -45,7 +49,7 @@ async function page(routes) {
     clearInterval() {},
     fetch: async (url, options = {}) => {
       const key = `${options.method || 'GET'} ${url}`;
-      calls.push({ key, body: options.body ? JSON.parse(options.body) : undefined });
+      calls.push({ key, body: options.body ? JSON.parse(options.body) : undefined, headers: options.headers || {} });
       const [status, body] = routes[key] ? routes[key]() : [404, { detail: 'not found' }];
       return { ok: status < 400, status, json: async () => body };
     },
@@ -75,6 +79,11 @@ const whipStatus = () => [200, { enabled: true, mode: 'whip', destination: { con
   elements['youtube-broadcast-form'].handlers.submit({ preventDefault() {} });
   await flush();
   assert.deepEqual(calls.filter((call) => call.key === 'PUT /room/yt').map((call) => call.body), [{ broadcast: 'LiveVideo01' }]);
+  // Changes carry the page's CSRF token; reads do not need it.
+  const put = calls.find((call) => call.key === 'PUT /room/yt');
+  assert.equal(put.headers['X-CSRF-Token'], 'csrf-123');
+  assert.equal(put.headers['Content-Type'], 'application/json');
+  assert.equal(calls.find((call) => call.key === 'GET /yt').headers['X-CSRF-Token'], undefined);
 
   link.value = 'https://youtu.be/BBBBBBBBBBB';
   link.handlers.input();
