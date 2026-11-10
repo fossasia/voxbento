@@ -143,6 +143,21 @@ Both namespaces use the same underlying management handlers, so the route split 
 
 Room deletion checks that the requested room belongs to the event specified in the workspace URL before removing it and its dependent booths, invites, and memberships. An unknown room or a room from another event returns HTTP 404 without deleting any data.
 
+API v1 event upserts recheck current account state and event-management access.
+An existing event outside the token's event scope can only be updated by an
+active user who currently owns it, which lets a client retry an event it created.
+Creating a new event checks
+the grant's original event and holds its mutation lock through the request, so a
+removed public-client organizer, a deactivated account, or a deleted authorizing
+event cannot bootstrap new ownership. Active Admins and trusted confidential
+clients retain their existing access rules.
+
+API v1 room deletion uses the shared database cleanup, which clears relay
+relationships before deleting booths and their room. This also supports a room
+relaying from its own booth and clears references from surviving rooms without
+changing unrelated relay selections. Publishing booths still block deletion with
+HTTP 409; successful deletion returns HTTP 204.
+
 ## The Transcription & Translation Pipeline
 
 When live captions or translations are enabled, Voxbento spawns background workers to process the audio in real-time. This pipeline supports both **Booth Audio** (interpreters) and **Floor Audio** (the main conference).
@@ -424,6 +439,38 @@ MediaMTX is configured to allow only one publisher per stream path at a time. Ev
 
 Password sign-in requires a verified email address. `/login` allows 10 attempts
 per email address per hour.
+
+Password recovery commits the new password and a `users.sessions_valid_after`
+cutoff together with redemption of the reset token and invalidation of outstanding
+magic sign-in links. Auth tokens are redeemed with a conditional database update
+so overlapping requests cannot use the same token twice. Account authentication checks
+the JWT issuance time against that cutoff on HTTP requests, booth pages and booth
+WebSocket connections. User JWT issuance retains fractional seconds so the fresh
+recovery session works even when it is issued in the same second as the cutoff.
+Password, magic-link and hosting-invitation sign-ins bind that issuance time and a
+session-cutoff version to the credential snapshot, so an in-flight sign-in cannot bypass a
+concurrent recovery, including while the reset is waiting to commit.
+Existing booth sockets are closed after the transaction commits; reconnecting
+with the old token cannot renew its authorization. Listener pages and hosting
+invitation acceptance also validate the account session; an old cookie cannot
+skip a hosting invitation's password check and obtain a fresh session. The
+interpreter lobby and account-authenticated caption subscriptions also enforce
+the cutoff.
+
+TTS subscriptions authorize Admins from their current account record, rather
+than an Admin claim saved at sign-in. Each subscription rechecks its credentials
+before sending a text/audio bundle, at most once every 5 seconds, so existing connections
+stop receiving within that window after access is revoked or the token expires. Listener and invitation credentials
+keep their existing scope checks, including independent listener-code access.
+A listener-code recheck only confirms that the code the socket connected with is still
+the event's code. It is not counted as a join-code guess, so failed guesses from other
+clients on the same IP cannot close an accepted subscription; a regenerated code still does.
+An unrelated or revoked account cookie does not hide a separately valid invitation
+cookie. Invitation authorization reads current revocation state before delivery;
+TTS subscribers are checked concurrently so one slow check does not hold up others,
+with a small cap on simultaneous checks so a large audience cannot take every
+database connection. If a TTS authorization database check fails, that bundle is
+withheld and the subscriber stays connected; the next bundle checks again.
 
 ## Program floor source
 

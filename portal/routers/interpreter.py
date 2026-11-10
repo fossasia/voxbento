@@ -8,7 +8,7 @@ from fastapi.templating import Jinja2Templates
 from sqlalchemy import or_, select
 from sqlalchemy.orm import joinedload
 
-from portal.auth import get_booth_sessions, is_invite_token_revoked, resolve_booth_role
+from portal.auth import get_booth_sessions, is_invite_token_revoked, resolve_booth_role, resolve_session_user
 from portal.booth_identity import make_booth_id, make_mediamtx_path
 from portal.config import settings
 from portal.database import (
@@ -46,6 +46,8 @@ async def interpreter_landing_page(request: Request) -> Any:
 
     user_sess = sessions.get("user_token")
     invite_sess = sessions.get("session_token")
+    if user_sess and await resolve_session_user(user_sess) is None:
+        user_sess = None
 
     if user_sess and user_sess.get("sub"):
         try:
