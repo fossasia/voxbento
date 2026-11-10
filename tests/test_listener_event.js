@@ -228,6 +228,7 @@ function make(tagName, id) {
   'tts-sync-group',
   'tts-sync-toggle',
   'captions-container',
+  'tap-to-listen-btn',
 ].forEach((id) => make('div', id));
 ['room-select', 'language-select', 'caption-mode-select', 'translation-lang-select'].forEach((id) =>
   make('select', id),
@@ -274,9 +275,13 @@ listenerData.textContent = JSON.stringify({
 // ── Stubbed browser APIs ─────────────────────────────────────────────────
 
 let whepOpts = null;
+let resumeCalls = 0;
 const WhepListener = {
   start(opts) {
     whepOpts = opts;
+  },
+  resume() {
+    resumeCalls++;
   },
   stop() {
     if (whepOpts) whepOpts.onState({ peerConnection: 'closed', ice: 'closed', audioActive: false });
@@ -313,7 +318,12 @@ Object.assign(globalThis, {
   WebSocket: FakeWebSocket,
   fetch,
   window: {
-    location: { protocol: 'http:', host: 'portal.test' },
+    location: { protocol: 'http:', host: 'portal.test', href: 'http://portal.test/listener/demo', search: '' },
+    history: {
+      replaceState(_state, _title, url) {
+        globalThis.window.location.href = String(url);
+      },
+    },
     setTimeout,
     setInterval: () => 0,
     addEventListener: () => {},
@@ -341,6 +351,10 @@ async function run() {
   await import(pathToFileURL(path.join(__dirname, '..', 'portal', 'static', 'js', 'listener-event.js')).href);
   choose(roomSelect, '1');
 
+  console.log('\n── Shareable listener link ──');
+  assert(new URL(window.location.href).searchParams.get('room') === '1', 'choosing a room puts it in the address bar');
+  assert(!new URL(window.location.href).searchParams.has('code'), 'the address bar never carries a join code');
+
   console.log('\n── Status badge (#985) ──');
 
   choose(languageSelect, 'http://mtx/floor/whep');
@@ -363,6 +377,26 @@ async function run() {
     whepOpts.onState({ peerConnection: state, ice: state, audioActive: false });
     assert(statusText() === 'Reconnecting...', state + ' connections show Reconnecting...');
   }
+
+  console.log('\n── Tap to listen when autoplay is blocked ──');
+  const tapButton = document.getElementById('tap-to-listen-btn');
+  whepOpts.onState({ peerConnection: 'connected', ice: 'connected', audioActive: false, playbackBlocked: true });
+  assert(tapButton.hidden === false, 'blocked playback shows the Tap to listen button');
+  assert(statusText() === 'Ready — tap to listen', 'blocked playback says to tap, got "' + statusText() + '"');
+
+  whepOpts.onState({ peerConnection: 'connected', ice: 'connected', audioActive: true, playbackBlocked: true });
+  assert(statusText() !== 'Live (WebRTC)', 'a suspended delayed stream is not shown as Live');
+
+  tapButton.dispatchEvent(new Event('click'));
+  assert(resumeCalls === 1, 'tapping the button asks the player to start playback');
+
+  whepOpts.onState({ peerConnection: 'connected', ice: 'connected', audioActive: true, playbackBlocked: false });
+  assert(tapButton.hidden === true, 'the button hides once audio plays');
+  assert(statusText() === 'Live (WebRTC)', 'playback after the tap shows Live');
+
+  whepOpts.onState({ peerConnection: 'connected', ice: 'connected', audioActive: false, playbackBlocked: true });
+  choose(languageSelect, '');
+  assert(tapButton.hidden === true, 'stopping the stream hides the button');
 
   choose(languageSelect, 'http://mtx/es/whep');
   assert(statusText() !== 'Live (WebRTC)', 'switching to a booth does not show Live before its state is known');
