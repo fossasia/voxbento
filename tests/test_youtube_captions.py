@@ -24,13 +24,13 @@ def anyio_backend():
 
 @pytest.fixture(autouse=True)
 def clean_state(monkeypatch):
-    for store in (yc.targets, yc.health, yc.clock_offset_ms, yc._queues, yc._tasks):
+    for store in (yc.targets, yc.health, yc.clock_offset_ms, yc._queues, yc._tasks, yc._last_seq):
         store.clear()
     monkeypatch.setattr(yc, "RETRY_DELAY_S", 0)
     yield
     for task in list(yc._tasks.values()):
         task.cancel()
-    for store in (yc.targets, yc.health, yc.clock_offset_ms, yc._queues, yc._tasks):
+    for store in (yc.targets, yc.health, yc.clock_offset_ms, yc._queues, yc._tasks, yc._last_seq):
         store.clear()
     yc._transport = None
 
@@ -215,6 +215,94 @@ async def test_caption_url_is_never_logged(monkeypatch, caplog):
     assert "upload.youtube.com" not in caplog.text
     assert "secret test" not in caplog.text
     assert "SECRETCID123" not in repr(yc.targets[1])
+
+
+@pytest.mark.anyio
+async def test_caption_url_is_not_logged_when_httpx_normalises_it(monkeypatch, caplog):
+    requests = mock_youtube(monkeypatch, lambda request: httpx.Response(200))
+    # httpx lower-cases the host and drops the default port before it logs the request.
+    await yc.activate(1, "floor", "HTTPS://Upload.YouTube.com:443/closedcaption?cid=SECRETCID123")
+    with caplog.at_level(logging.DEBUG):
+        yc.offer(1, "floor", "hello")
+        await drain(1, 1, requests)
+        await asyncio.sleep(0.05)
+    assert "SECRETCID123" not in caplog.text
+    assert "upload.youtube.com" not in caplog.text.lower()
+
+
+@pytest.mark.anyio
+async def test_activate_upgrades_a_mixed_case_http_scheme():
+    await yc.activate(1, "floor", "HTTP://upload.youtube.com/closedcaption?cid=SECRETCID123")
+    assert yc.targets[1].url.startswith("https://upload.youtube.com/")
+
+
+@pytest.mark.anyio
+async def test_reactivating_a_stream_keeps_counting_the_seq(monkeypatch):
+    requests = mock_youtube(monkeypatch, lambda request: httpx.Response(200))
+    await yc.activate(1, "floor", CAPTION_URL)
+    yc.offer(1, "floor", "one")
+    yc.offer(1, "floor", "two")
+    await drain(1, 2, requests)
+    await yc.deactivate(1)
+    await yc.activate(1, "floor", CAPTION_URL)
+    yc.offer(1, "floor", "three")
+    await drain(1, 3, requests)
+    assert [r.url.params["seq"] for r in requests] == ["1", "2", "3"]
+
+
+@pytest.mark.anyio
+async def test_a_different_stream_starts_counting_from_one(monkeypatch):
+    requests = mock_youtube(monkeypatch, lambda request: httpx.Response(200))
+    await yc.activate(1, "floor", CAPTION_URL)
+    yc.offer(1, "floor", "one")
+    await drain(1, 1, requests)
+    await yc.activate(1, "floor", CAPTION_URL + "&other=1")
+    assert yc.targets[1].seq == 0
+
+
+def test_unusable_target_reason():
+    assert yc.unusable_target_reason("floor", False, set()) is None
+    assert yc.unusable_target_reason("fr", True, {"fr", "es"}) is None
+    assert "Floor translation is off" in yc.unusable_target_reason("fr", False, {"fr"})
+    assert "not enabled" in yc.unusable_target_reason("de", True, {"fr"})
+
+
+@pytest.mark.anyio
+async def test_the_final_rejection_is_what_health_reports(monkeypatch):
+    skew = "Timestamp skew from local=2026-11-05T11:26:10.685 larger than 60 sec in /closedcaption"
+    replies = iter([httpx.Response(400, text=skew), httpx.Response(400, text="bad request")])
+    requests = mock_youtube(monkeypatch, lambda request: next(replies))
+    await yc.activate(1, "floor", CAPTION_URL)
+    yc.offer(1, "floor", "late")
+    await drain(1, 2, requests)
+    assert yc.health[1].state == "failing"
+    assert yc.health[1].reason == yc.REJECTED_REASON.format(status=400)
+
+
+@pytest.mark.anyio
+async def test_stale_chunks_of_a_long_caption_are_dropped_when_newer_ones_wait(monkeypatch):
+    requests = mock_youtube(monkeypatch, lambda request: httpx.Response(200))
+    await yc.activate(1, "floor", CAPTION_URL)
+    long_text = " ".join(["word"] * 100)  # many chunks
+    old = int(time.time() * 1000) - yc.MAX_CAPTION_AGE_MS - 1000
+    yc.offer(1, "floor", long_text, received_at_ms=old)
+    yc.offer(1, "floor", "fresh")
+    await drain(1, 2, requests)
+    await asyncio.sleep(0.05)
+    assert len(requests) == 2  # the first chunk of the old caption, then the fresh one
+    assert requests[-1].content.decode().splitlines()[1] == "fresh"
+
+
+@pytest.mark.anyio
+async def test_a_long_caption_is_sent_in_full_when_nothing_is_waiting(monkeypatch):
+    requests = mock_youtube(monkeypatch, lambda request: httpx.Response(200))
+    await yc.activate(1, "floor", CAPTION_URL)
+    long_text = " ".join(["word"] * 100)
+    old = int(time.time() * 1000) - yc.MAX_CAPTION_AGE_MS - 1000
+    yc.offer(1, "floor", long_text, received_at_ms=old)
+    expected = len(yc.chunks(long_text))
+    await drain(1, expected, requests)
+    assert len(requests) == expected
 
 
 @pytest.mark.anyio

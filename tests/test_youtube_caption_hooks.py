@@ -19,10 +19,16 @@ CAPTION_URL = "https://upload.youtube.com/closedcaption?cid=SECRETCID123"
 
 @pytest.fixture(autouse=True)
 def clean_state():
-    for store in (youtube_captions.targets, youtube_captions.health, youtube_captions.clock_offset_ms):
+    stores = (
+        youtube_captions.targets,
+        youtube_captions.health,
+        youtube_captions.clock_offset_ms,
+        youtube_captions._last_seq,
+    )
+    for store in stores:
         store.clear()
     yield
-    for store in (youtube_captions.targets, youtube_captions.health, youtube_captions.clock_offset_ms):
+    for store in stores:
         store.clear()
 
 
@@ -126,6 +132,7 @@ async def translate(data, booth_id_str: str) -> list[str]:
     """Run the translation worker for the segment; returns the language names that were actually translated."""
     worker = TranslationWorker(AsyncMock())
     translated: list[str] = []
+    synth = data["synth"] = AsyncMock(return_value=b"audio")
 
     async def fake_llm(provider, model, api_key, text, lang_name, source_lang_name, **kwargs):
         translated.append(lang_name)
@@ -133,7 +140,7 @@ async def translate(data, booth_id_str: str) -> list[str]:
 
     with (
         patch.object(worker, "_call_llm", new=fake_llm),
-        patch("portal.tts.worker.synthesize", new=AsyncMock(return_value=b"audio")),
+        patch("portal.tts.worker.synthesize", new=synth),
         patch("portal.websockets.manager.TTSConnectionManager.broadcast_bundle", new_callable=AsyncMock),
     ):
         await worker.handle_translation(
@@ -172,3 +179,38 @@ async def test_a_translation_for_an_interpreter_booth_is_not_offered(room_with_l
     booth = f"{data['event'].slug}-{data['room'].id}-fr"
     await translate(data, booth)
     assert offered == []
+
+
+@pytest.mark.anyio
+async def test_an_interpreter_booth_is_not_translated_just_for_the_youtube_track(room_with_languages, offered):
+    data = room_with_languages
+    await youtube_captions.activate(data["room"].id, "fr", CAPTION_URL)
+    booth = f"{data['event'].slug}-{data['room'].id}-fr"
+    assert await translate(data, booth) == []  # nothing is posted for a booth, so nothing is paid for
+
+
+@pytest.mark.anyio
+async def test_a_language_only_youtube_needs_gets_no_speech_synthesis(room_with_languages, offered):
+    data = room_with_languages
+    await youtube_captions.activate(data["room"].id, "fr", CAPTION_URL)
+    booth = f"{data['event'].slug}-{data['room'].id}-floor"
+    assert await translate(data, booth) == ["French"]
+    data["synth"].assert_not_awaited()
+
+
+@pytest.mark.anyio
+async def test_a_language_with_a_tts_listener_still_gets_speech(room_with_languages, offered):
+    data = room_with_languages
+    booth = f"{data['event'].slug}-{data['room'].id}-floor"
+    with patch("portal.websockets.manager.TTSConnectionManager.has_listeners", return_value=True):
+        assert sorted(await translate(data, booth)) == ["French", "Spanish"]
+    assert data["synth"].await_count == 2
+
+
+@pytest.mark.anyio
+async def test_the_floor_language_is_offered_to_a_youtube_track_set_to_that_code(room_with_languages, offered):
+    data = room_with_languages
+    await youtube_captions.activate(data["room"].id, "en", CAPTION_URL)  # the floor language itself is "en"
+    booth = f"{data['event'].slug}-{data['room'].id}-floor"
+    await translate(data, booth)
+    assert offered == [(data["room"].id, "en", "Hello world", None)]

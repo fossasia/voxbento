@@ -28,6 +28,8 @@ logger = logging.getLogger(__name__)
 MAX_QUEUE = 50
 CHUNK_CHARS = 80
 CHUNK_SPACING_MS = 1200
+# Once a caption is older than this and newer ones are waiting, its remaining chunks are dropped.
+MAX_CAPTION_AGE_MS = 15_000
 POST_TIMEOUT_S = 5.0
 RETRY_DELAY_S = 1.0
 # YouTube rejects a timestamp more than 60 s from its own clock with HTTP 400 (plans/002-results.md, step 4).
@@ -70,9 +72,28 @@ health: dict[int, CaptionHealth] = {}
 clock_offset_ms: dict[int, int] = {}
 _queues: dict[int, asyncio.Queue] = {}
 _tasks: dict[int, asyncio.Task] = {}
+# The last `seq` used per caption URL, so deactivating and activating the same stream does not restart at 1.
+_last_seq: dict[str, int] = {}
+MAX_REMEMBERED_STREAMS = 100
 
 # Tests replace this to avoid real network access.
 _transport: httpx.AsyncBaseTransport | None = None
+
+
+def _secret_forms(url: str) -> set[str]:
+    """Every spelling of a caption URL that a log line could contain.
+
+    httpx logs the URL it normalised (lower-case scheme and host, default port dropped), which can differ
+    from the string that was stored, so the stored string, the normalised one and the bare `cid` all count.
+    """
+    forms = {url}
+    try:
+        parsed = httpx.URL(url)
+    except httpx.InvalidURL:
+        return forms
+    forms.add(str(parsed))
+    forms.update(value for value in parsed.params.get_list("cid") if value)
+    return forms
 
 
 class _HideCaptionUrls(logging.Filter):
@@ -80,7 +101,7 @@ class _HideCaptionUrls(logging.Filter):
 
     def filter(self, record: logging.LogRecord) -> bool:
         message = record.getMessage()
-        return not any(target.url in message for target in targets.values())
+        return not any(form in message for target in targets.values() for form in _secret_forms(target.url))
 
 
 logging.getLogger("httpx").addFilter(_HideCaptionUrls())
@@ -143,7 +164,22 @@ def learn_clock(room_id: int, reply: PostReply) -> int | None:
 
 def _https(url: str) -> str:
     """The API returns an http:// caption URL; its cid is the stream key, so post over https."""
-    return "https://" + url[len("http://") :] if url.startswith("http://") else url
+    return "https://" + url[len("http://") :] if url[: len("http://")].lower() == "http://" else url
+
+
+def unusable_target_reason(language: str, floor_translation_enabled: bool, enabled_languages: set[str]) -> str | None:
+    """Why a caption language cannot produce captions for a room, or None when it can.
+
+    The floor's own language is always available. A translated language needs floor translation to be on
+    and that language to be enabled, otherwise nothing would ever be posted to the track.
+    """
+    if language == "floor":
+        return None
+    if not floor_translation_enabled:
+        return "Floor translation is off for this room, so no translated captions can be posted."
+    if language not in enabled_languages:
+        return "That language is not enabled for this room's translation."
+    return None
 
 
 def chunks(text: str) -> list[str]:
@@ -208,7 +244,9 @@ async def activate(room_id: int, language: str, url: str, server_time_ms: int | 
     that set the broadcast up); with it even the first caption is stamped correctly.
     """
     await deactivate(room_id)
-    targets[room_id] = CaptionTarget(language=language, url=_https(url))
+    url = _https(url)
+    # YouTube wants the counter to keep rising for a stream, so a re-activated stream continues where it stopped.
+    targets[room_id] = CaptionTarget(language=language, url=url, seq=_last_seq.get(url, 0))
     health[room_id] = CaptionHealth(state="waiting")
     if server_time_ms is not None:
         clock_offset_ms[room_id] = server_time_ms - host_now_ms()
@@ -273,17 +311,24 @@ async def _send_one(
     client: httpx.AsyncClient, room_id: int, target: CaptionTarget, received_at_ms: int, index: int, piece: str
 ) -> None:
     target.seq += 1
+    _last_seq.pop(target.url, None)  # re-insert last, so the oldest stream is the one forgotten
+    _last_seq[target.url] = target.seq
+    while len(_last_seq) > MAX_REMEMBERED_STREAMS:
+        _last_seq.pop(next(iter(_last_seq)))
     url = _with_seq(target.url, target.seq)
     reply = await _deliver(client, url, _caption_body(room_id, received_at_ms, index, piece))
     shift = learn_clock(room_id, reply)
-    skewed = reply.status == 400 and (
-        "skew" in reply.text.lower() or (shift is not None and abs(shift) > CLOCK_SHIFT_MS)
-    )
+    skewed = _is_skew(reply, shift)
     if skewed and shift is not None:
         # The offset was just refreshed from this answer: stamp the caption again and try once more.
         reply = await _deliver(client, url, _caption_body(room_id, received_at_ms, index, piece))
-        learn_clock(room_id, reply)
+        # What is recorded is the answer to the retry, so classify that one, not the first.
+        skewed = _is_skew(reply, learn_clock(room_id, reply))
     _record(room_id, reply, skewed)
+
+
+def _is_skew(reply: PostReply, shift: int | None) -> bool:
+    return reply.status == 400 and ("skew" in reply.text.lower() or (shift is not None and abs(shift) > CLOCK_SHIFT_MS))
 
 
 async def _sender(room_id: int) -> None:
@@ -298,4 +343,8 @@ async def _sender(room_id: int) -> None:
                 target = targets.get(room_id)
                 if target is None:
                     return
+                if index and not queue.empty() and host_now_ms() - received_at_ms > MAX_CAPTION_AGE_MS:
+                    # A long final should not hold up newer captions for minutes: the rest of it is stale.
+                    logger.warning("youtube_captions stale_chunks_skipped room_id=%s", room_id)
+                    break
                 await _send_one(client, room_id, target, received_at_ms, index, piece)
