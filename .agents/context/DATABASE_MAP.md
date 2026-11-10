@@ -283,7 +283,7 @@ Tracks which languages the translation worker should generate for a given room o
 | 038 | `038_add_public_id_to_invite_tokens.py` | `invite_tokens.public_id` |
 | 039 | `039_add_atlascloud_api_key.py` | AtlasCloud API key setting |
 | 040 | `040_add_last_sign_in_at_to_users.py` | Nullable `users.last_sign_in_at` |
-| 041 | `041_add_sarvam_api_key.py` | Sarvam AI API key setting |
+| 042 | `042_add_sarvam_api_key.py` | Sarvam AI API key setting |
 
 Run migrations: `uv run alembic upgrade head`
 
