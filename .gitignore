@@ -20,6 +20,9 @@ instance/
 hls-output/
 *.egg-info/
 *.db
+*.db-shm
+*.db-wal
+*.db-journal
 
 # OS
 .DS_Store
