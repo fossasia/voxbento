@@ -20,6 +20,7 @@ from portal.auth import (
     load_membership_scope,
     resolve_booth_role,
     security,
+    user_session_is_valid,
 )
 from portal.booth_identity import make_booth_id, make_mediamtx_path, validate_event_slug, validate_language_code
 from portal.config import settings
@@ -101,7 +102,7 @@ async def _verify_event_access(
         except (TypeError, ValueError):
             user_id = 0
         user = await get_user_by_id(session, user_id)
-        if user is None or not user.is_active:
+        if not user_session_is_valid(user, payload):
             raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Invalid or inactive user.")
         if user.is_admin:
             return
