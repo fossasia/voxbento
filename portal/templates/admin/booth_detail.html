@@ -196,6 +196,7 @@
   <p class="rs-note">More services ({{ catalog.locked_speech | join(', ') }}) appear here once you add their API key on <a href="{{ management_prefix }}/events/{{ event.id }}/api-settings/">API keys</a> and tick “Enable External Transcription APIs” there.</p>
   {% endif %}
   <form method="post" action="{{ booth_url }}/transcription-settings">
+    <input type="hidden" name="csrf_token" value="{{ request.state.admin_csrf_token }}" />
     <div class="room-card">
       <h2>Live captions</h2>
       <p class="room-card-sub">If an interpreter is live when you save, the caption worker restarts straight away with the new settings, so captions pause for a moment.</p>
@@ -255,6 +256,7 @@
   <p class="rs-note">More services ({{ catalog.locked_translation | join(', ') }}) appear here once you add their API key on <a href="{{ management_prefix }}/events/{{ event.id }}/api-settings/">API keys</a>.</p>
   {% endif %}
   <form method="post" action="{{ booth_url }}/translation-settings">
+    <input type="hidden" name="csrf_token" value="{{ request.state.admin_csrf_token }}" />
     <div class="room-card">
       <h2>Translation</h2>
       <p class="room-card-sub">Translated captions need live captions to be on.</p>
@@ -315,6 +317,7 @@
 
 <section class="room-panel" id="booth-panel-settings" role="tabpanel" aria-labelledby="booth-tab-settings" data-booth-panel="settings">
   <form method="post" action="{{ booth_url }}/edit">
+    <input type="hidden" name="csrf_token" value="{{ request.state.admin_csrf_token }}" />
     <div class="room-card">
       <h2>Booth details</h2>
       <p class="room-card-sub">The name interpreters and listeners see, and the language code this booth uses.</p>
@@ -339,6 +342,7 @@
     <form method="post" action="{{ booth_url }}/delete"
           class="inline-delete"
           data-confirm="Delete the {{ booth.language_name }} booth? All invite tokens will be removed.">
+      <input type="hidden" name="csrf_token" value="{{ request.state.admin_csrf_token }}" />
       <button type="submit" class="btn btn-danger">Delete Booth</button>
       <span class="danger-text">This removes all invite tokens for this booth.</span>
     </form>
