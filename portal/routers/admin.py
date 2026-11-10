@@ -22,7 +22,7 @@ from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import joinedload
 from starlette.datastructures import FormData, UploadFile
-from starlette.types import Message
+from starlette.types import Message, Receive
 
 from portal import meeting_source
 from portal import roles as roles_module
@@ -198,7 +198,7 @@ from portal.translations.term_suggestions import (
     extract_terms,
     parse_accepted_suggestions,
     propose_translations,
-    source_language_name,
+    source_language,
     suggestion_engine,
     suggestion_languages,
 )
@@ -1798,24 +1798,34 @@ async def admin_upload_ai_vocabulary(request: Request, event_id: int, room_id: i
 SOURCE_DOCUMENT_SLOTS = asyncio.Semaphore(2)
 
 
-def limit_request_body(request: Request, max_bytes: int) -> Request:
-    """The same request, answering 413 once its body passes ``max_bytes`` instead of spooling all of it."""
+def limited_receive(receive: Receive, max_bytes: int) -> Receive:
+    """``receive``, answering 413 once the body passes ``max_bytes`` instead of spooling all of it."""
     received = 0
 
-    async def receive() -> Message:
+    async def limited() -> Message:
         nonlocal received
-        message = await request.receive()
+        message = await receive()
         received += len(message.get("body", b""))
         if received > max_bytes:
             # Answering mid-upload can show as a connection reset, so a moderately oversized file
             # is read to its end, unstored, for the browser to display the message.
             while message.get("more_body") and received <= MAX_DISCARDED_UPLOAD_BYTES:
-                message = await request.receive()
+                message = await receive()
                 received += len(message.get("body", b""))
             raise HTTPException(status_code=413, detail=TOO_LARGE_MESSAGE)
         return message
 
-    return Request(request.scope, receive)
+    return limited
+
+
+async def limit_source_upload(request: Request) -> None:
+    """Cap the talk-material upload before any later dependency parses the form.
+
+    Listed ahead of ``require_admin_csrf``, which reads the form for its token: without this, that
+    parse would spool an oversized file in full. Starlette exposes no setter for a request's
+    stream, so the private ``_receive`` is replaced; the form parsed through it is cached and reused.
+    """
+    request._receive = limited_receive(request.receive, MAX_SOURCE_BYTES + MAX_MULTIPART_OVERHEAD_BYTES)
 
 
 async def read_suggestion_terms(upload: UploadFile, existing_terms: list[str]) -> list[TermSuggestion]:
@@ -1836,7 +1846,8 @@ async def read_suggestion_terms(upload: UploadFile, existing_terms: list[str]) -
 
 @router.post(
     "/admin/events/{event_id}/rooms/{room_id}/ai-vocabulary/suggest",
-    dependencies=[Depends(require_event_owner)],
+    # Order matters: the size limit has to be in place before the CSRF check reads the form.
+    dependencies=[Depends(require_event_owner), Depends(limit_source_upload), Depends(require_admin_csrf)],
 )
 async def admin_suggest_ai_vocabulary(request: Request, event_id: int, room_id: int):
     """Show suggested glossary terms for review. The upload is discarded when its terms are out."""
@@ -1859,10 +1870,11 @@ async def admin_suggest_ai_vocabulary(request: Request, event_id: int, room_id: 
         )
         languages = suggestion_languages(room)
         engine = suggestion_engine(event, room)
-        source_language = source_language_name(room)
+        source = source_language(room)
 
-    # The context manager deletes the spooled upload as soon as its terms are out.
-    async with limit_request_body(request, MAX_SOURCE_BYTES + MAX_MULTIPART_OVERHEAD_BYTES).form() as form:
+    # The form was parsed, within the size limit, by the CSRF dependency; this reuses it, and
+    # the context manager deletes the spooled upload as soon as its terms are out.
+    async with request.form() as form:
         upload = form.get("source_file")
         if not isinstance(upload, UploadFile) or not upload.filename:
             raise HTTPException(status_code=400, detail="Select a file with the talk's material.")
@@ -1874,7 +1886,7 @@ async def admin_suggest_ai_vocabulary(request: Request, event_id: int, room_id: 
     proposals = None
     if wants_translations and engine and suggestions:
         proposals = await propose_translations(
-            engine, source_language, languages, [suggestion.term for suggestion in suggestions]
+            engine, source, languages, [suggestion.term for suggestion in suggestions]
         )
         if not proposals.complete:
             warnings.append("The translation service did not answer for every term. Those rows show the original term.")
@@ -1896,7 +1908,7 @@ async def admin_suggest_ai_vocabulary(request: Request, event_id: int, room_id: 
 
 @router.post(
     "/admin/events/{event_id}/rooms/{room_id}/ai-vocabulary/accept",
-    dependencies=[Depends(require_event_owner)],
+    dependencies=[Depends(require_event_owner), Depends(require_admin_csrf)],
 )
 async def admin_accept_ai_vocabulary(request: Request, event_id: int, room_id: int):
     """Save only the suggestions the owner ticked, through the normal glossary validation."""

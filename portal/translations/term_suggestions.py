@@ -8,6 +8,7 @@ only rows the owner accepts reach the glossary, through ``validate_vocabulary_en
 from __future__ import annotations
 
 import asyncio
+import logging
 import re
 from collections import Counter
 from collections.abc import Iterable, Sequence
@@ -19,6 +20,7 @@ from starlette.datastructures import FormData
 
 from portal.models import Event, Room
 from portal.translations.constants import TranslationProviderEnum
+from portal.translations.engine import EngineKind, Language, TranslationContext
 from portal.translations.keys import get_translation_api_key
 from portal.translations.prompts import MAX_TERM_CHARS
 from portal.translations.vocabulary import (
@@ -27,9 +29,14 @@ from portal.translations.vocabulary import (
     VocabularyRowError,
     validate_vocabulary_entry,
 )
-from portal.translations.worker import PROVIDERS
+from portal.translations.worker import ENGINES
+
+logger = logging.getLogger(__name__)
 
 MAX_SUGGESTIONS = 100
+#: Engines that follow an instruction such as "keep each number"; machine-translation APIs and
+#: sequence-to-sequence models would translate the numbered list as plain text.
+LLM_ENGINE_KINDS = frozenset({EngineKind.OPENAI_COMPATIBLE_LLM, EngineKind.LLM_API})
 MAX_PHRASE_WORDS = 4
 MAX_ACRONYM_CHARS = 8
 MAX_WORD_CHARS = 64
@@ -111,7 +118,9 @@ class TermSuggestion:
 
 
 @dataclass(frozen=True)
-class TranslationEngine:
+class TermTranslator:
+    """The room's translation LLM and the credentials to call it with."""
+
     provider: str
     model: str
     api_key: str | None
@@ -309,11 +318,12 @@ def extract_terms(text: str, existing_terms: Iterable[str] = (), limit: int = MA
     return [suggestion for _, suggestion in suggestions[:limit]]
 
 
-def suggestion_engine(event: Event, room: Room) -> TranslationEngine | None:
+def suggestion_engine(event: Event, room: Room) -> TermTranslator | None:
     """The room's translation LLM, or None when it has no LLM to ask (NLLB, or no key)."""
     provider = room.floor_translation_provider
     model = room.floor_translation_model
-    if not provider or not model or provider == TranslationProviderEnum.LOCAL.value or provider not in PROVIDERS:
+    engine = ENGINES.get(provider or "")
+    if not model or engine is None or engine.kind not in LLM_ENGINE_KINDS:
         return None
     try:
         api_key = get_translation_api_key(event, provider)
@@ -322,7 +332,7 @@ def suggestion_engine(event: Event, room: Room) -> TranslationEngine | None:
         return None
     if not api_key and provider != TranslationProviderEnum.SELF_HOSTED.value:
         return None
-    return TranslationEngine(provider, model, api_key)
+    return TermTranslator(provider, model, api_key)
 
 
 def suggestion_languages(room: Room) -> tuple[tuple[str, str], ...]:
@@ -335,10 +345,10 @@ def suggestion_languages(room: Room) -> tuple[tuple[str, str], ...]:
     return languages or (ALL_LANGUAGES,)
 
 
-def source_language_name(room: Room) -> str:
+def source_language(room: Room) -> Language:
     code = room.floor_language_code
     language = pycountry.languages.get(alpha_2=code) if code else None
-    return language.name if language else (code or "English")
+    return Language(code=code or "", name=language.name if language else (code or "English"))
 
 
 def parse_numbered_reply(reply: str, batch: Sequence[str]) -> dict[str, str]:
@@ -353,27 +363,34 @@ def parse_numbered_reply(reply: str, batch: Sequence[str]) -> dict[str, str]:
 
 
 async def propose_translations(
-    engine: TranslationEngine,
-    source_language: str,
+    translator: TermTranslator,
+    source: Language,
     languages: Sequence[tuple[str, str]],
     terms: Sequence[str],
 ) -> TranslationProposals:
     """Ask the room's LLM to translate the terms. Only the terms are sent, never the document."""
     semaphore = asyncio.Semaphore(TRANSLATION_CONCURRENCY)
+    context = TranslationContext(style=TERM_LIST_STYLE)
 
     async def translate_batch(code: str, name: str, batch: Sequence[str]) -> tuple[str, dict[str, str]]:
+        engine = ENGINES[translator.provider]
         numbered = "\n".join(f"{position}. {term}" for position, term in enumerate(batch, 1))
         async with semaphore:
-            reply = await PROVIDERS[engine.provider].translate(
-                provider_name=engine.provider,
-                text=numbered,
-                target_lang_name=name,
-                target_lang_code=code,
-                source_lang_name=source_language,
-                model=engine.model,
-                api_key=engine.api_key,
-                style=TERM_LIST_STYLE,
-            )
+            # An engine raises when its only request fails, with whatever error its backend gave.
+            # Proposals are optional, so that batch keeps the original terms. Only the error's type
+            # is logged: its text can quote the terms, which come from a possibly confidential file.
+            try:
+                reply = await engine.translate_text(
+                    source,
+                    Language(code=code, name=name),
+                    numbered,
+                    context,
+                    model=translator.model,
+                    api_key=translator.api_key,
+                )
+            except Exception as exc:
+                logger.warning("Proposing glossary translations into %s failed: %s", code, type(exc).__name__)
+                reply = None
         return code, parse_numbered_reply(reply or "", batch)
 
     batches = [terms[start : start + TERM_BATCH_SIZE] for start in range(0, len(terms), TERM_BATCH_SIZE)]

@@ -26,6 +26,7 @@
   {% if rows %}
     <p class="room-card-sub">Nothing is added until you tick a row and save. Change any term or translation first, and clear a translation to skip that language.</p>
     <form method="post" action="{{ management_prefix }}/events/{{ event.id }}/rooms/{{ room.id }}/ai-vocabulary/accept">
+      <input type="hidden" name="csrf_token" value="{{ request.state.admin_csrf_token }}" />
       <div class="ai-vocabulary-table-wrap">
         <table class="data-table ai-vocabulary-table ai-vocabulary-suggestions">
           <thead>

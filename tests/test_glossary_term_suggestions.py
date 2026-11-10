@@ -12,7 +12,7 @@ from types import SimpleNamespace
 os.environ["BOOTH_ACCESS_TOKEN"] = ""
 
 import pytest
-from fastapi import HTTPException, Request
+from fastapi import HTTPException
 from httpx import ASGITransport, AsyncClient
 from sqlalchemy import select
 from starlette.datastructures import FormData, UploadFile
@@ -34,13 +34,15 @@ from portal.database import (
     set_room_membership,
 )
 from portal.models import AIVocabularyEntry, Event, RoomTranslationLanguage
-from portal.routers.admin import limit_request_body
+from portal.routers.admin import limited_receive
 from portal.translations import source_documents, term_suggestions
+from portal.translations.engine import EngineKind, Language
+from portal.translations.providers.base import ProviderEngine
 from portal.translations.source_documents import SourceDocumentError, extract_source_text
 from portal.translations.term_suggestions import (
     ALL_LANGUAGES,
     TermSuggestion,
-    TranslationEngine,
+    TermTranslator,
     TranslationProposals,
     build_suggestion_rows,
     extract_terms,
@@ -253,16 +255,22 @@ class FakeProvider:
         return "\n".join(f"{line.split('. ', 1)[0]}. {target_lang_code}-{line.split('. ', 1)[1]}" for line in text.splitlines())
 
 
-ENGINE = TranslationEngine("fake", "fake-model", "key")
+ENGINE = TermTranslator("fake", "fake-model", "key")
+ENGLISH = Language(code="en", name="English")
+
+
+def fake_engine(provider: object) -> ProviderEngine:
+    """A prompt-based provider stub behind the real engine adapter, as the worker registers them."""
+    return ProviderEngine("fake", provider, EngineKind.LLM_API)
 
 
 @pytest.mark.anyio
 async def test_only_the_terms_are_sent_and_every_term_gets_a_translation(monkeypatch):
     provider = FakeProvider()
-    monkeypatch.setitem(term_suggestions.PROVIDERS, "fake", provider)
+    monkeypatch.setitem(term_suggestions.ENGINES, "fake", fake_engine(provider))
     terms = [f"Term{index}" for index in range(30)]
 
-    proposals = await propose_translations(ENGINE, "English", [("de", "German")], terms)
+    proposals = await propose_translations(ENGINE, ENGLISH, [("de", "German")], terms)
 
     assert proposals.complete is True
     assert proposals.by_language["de"]["Term29"] == "de-Term29"
@@ -272,12 +280,34 @@ async def test_only_the_terms_are_sent_and_every_term_gets_a_translation(monkeyp
 
 @pytest.mark.anyio
 async def test_a_failed_language_is_reported_and_keeps_the_others(monkeypatch):
-    monkeypatch.setitem(term_suggestions.PROVIDERS, "fake", FakeProvider(failing=frozenset({"fr"})))
+    monkeypatch.setitem(term_suggestions.ENGINES, "fake", fake_engine(FakeProvider(failing=frozenset({"fr"}))))
 
-    proposals = await propose_translations(ENGINE, "English", [("de", "German"), ("fr", "French")], ["Docker"])
+    proposals = await propose_translations(ENGINE, ENGLISH, [("de", "German"), ("fr", "French")], ["Docker"])
 
     assert proposals.complete is False
     assert proposals.by_language == {"de": {"Docker": "de-Docker"}, "fr": {}}
+
+
+@pytest.mark.anyio
+async def test_an_engine_error_keeps_the_original_terms(monkeypatch, caplog):
+    class BrokenProvider:
+        async def translate(self, **_kwargs: object) -> str:
+            raise RuntimeError("upstream said: secret term Docker")
+
+    monkeypatch.setitem(term_suggestions.ENGINES, "fake", fake_engine(BrokenProvider()))
+
+    proposals = await propose_translations(ENGINE, ENGLISH, [("de", "German")], ["Docker"])
+
+    assert proposals == TranslationProposals({"de": {}}, complete=False)
+    assert "RuntimeError" in caplog.text
+    assert "secret term" not in caplog.text
+
+
+def test_only_llm_engines_are_asked_for_proposals():
+    with_key = Event(encrypted_groq_api_key=encrypt_val("secret"))
+    assert suggestion_engine(with_key, room_with("local")) is None
+    assert suggestion_engine(with_key, room_with("unknown-provider")) is None
+    assert suggestion_engine(Event(encrypted_gemini_api_key=encrypt_val("g")), room_with("gemini")) is not None
 
 
 @pytest.mark.anyio
@@ -287,10 +317,10 @@ async def test_slow_translation_stops_at_the_budget(monkeypatch):
             await asyncio.sleep(30)
             return "1. late"
 
-    monkeypatch.setitem(term_suggestions.PROVIDERS, "fake", HangingProvider())
+    monkeypatch.setitem(term_suggestions.ENGINES, "fake", fake_engine(HangingProvider()))
     monkeypatch.setattr(term_suggestions, "TRANSLATION_BUDGET_SECONDS", 0.01)
 
-    proposals = await propose_translations(ENGINE, "English", [("de", "German")], ["Docker"])
+    proposals = await propose_translations(ENGINE, ENGLISH, [("de", "German")], ["Docker"])
 
     assert proposals.complete is False
 
@@ -303,7 +333,7 @@ def test_engine_needs_a_cloud_provider_with_a_key():
     with_key = Event(encrypted_groq_api_key=encrypt_val("secret"))
     without_key = Event()
 
-    assert suggestion_engine(with_key, room_with("groq")) == TranslationEngine("groq", "some-model", "secret")
+    assert suggestion_engine(with_key, room_with("groq")) == TermTranslator("groq", "some-model", "secret")
     assert suggestion_engine(without_key, room_with("groq")) is None
     assert suggestion_engine(with_key, room_with("groq", model=None)) is None
     assert suggestion_engine(with_key, room_with(None)) is None
@@ -321,7 +351,7 @@ def test_engine_treats_an_undecryptable_key_as_no_key():
 
 @pytest.mark.anyio
 async def test_no_translatable_language_is_a_complete_no_op():
-    proposals = await propose_translations(ENGINE, "English", [ALL_LANGUAGES], ["Docker"])
+    proposals = await propose_translations(ENGINE, ENGLISH, [ALL_LANGUAGES], ["Docker"])
     assert proposals.complete is True
 
 
@@ -447,8 +477,28 @@ async def setup():
     await dispose()
 
 
-def client() -> AsyncClient:
-    return AsyncClient(transport=ASGITransport(app=app), base_url="http://test", headers={"origin": "http://test"})
+class CSRFClient(AsyncClient):
+    """Sends a session-bound CSRF token with each POST, as the admin pages do.
+
+    A POST whose cookies already carry ``admin_csrf`` is sent unchanged, so a test can supply
+    its own token (or a wrong one).
+    """
+
+    async def post(self, url, *, cookies=None, headers=None, **kwargs):
+        if cookies is not None and "admin_csrf" not in cookies:
+            bootstrap = await self.get("/admin/events/", cookies=cookies)
+            token = bootstrap.cookies.get("admin_csrf", "")
+            cookies = {**cookies, "admin_csrf": token}
+            headers = {**(headers or {}), "X-CSRF-Token": token}
+        return await super().post(url, cookies=cookies, headers=headers, **kwargs)
+
+
+def client() -> CSRFClient:
+    return CSRFClient(transport=ASGITransport(app=app), base_url="http://test", headers={"origin": "http://test"})
+
+
+async def csrf_token_for(c: AsyncClient, cookies: dict) -> str:
+    return (await c.get("/admin/events/", cookies=cookies)).cookies.get("admin_csrf", "")
 
 
 async def saved_entries(room_id: int) -> list[AIVocabularyEntry]:
@@ -521,11 +571,11 @@ async def test_body_limit_stops_before_the_upload_is_handed_to_the_parser():
         body = chunks.pop(0)
         return {"type": "http.request", "body": body, "more_body": bool(chunks)}
 
-    limited = limit_request_body(Request({"type": "http"}, receive), max_bytes=10)
-    first = await limited.receive()
+    limited = limited_receive(receive, max_bytes=10)
+    first = await limited()
     assert first["body"] == b"x" * 6
     with pytest.raises(HTTPException) as rejected:
-        await limited.receive()
+        await limited()
     assert rejected.value.status_code == 413
     # The rest was read and dropped, so the browser can receive the error.
     assert chunks == []
@@ -539,6 +589,49 @@ async def test_body_over_the_limit_is_rejected_by_the_route(setup, monkeypatch):
         response = await post_file(c, setup, "big.txt", b"x" * 100_000)
     assert response.status_code == 413
     assert b"10 MB or smaller" in response.content
+
+
+@pytest.mark.anyio
+async def test_forms_post_their_csrf_token_as_a_field(setup):
+    """Browsers send the token as a form field, not a header, through both forms."""
+    async with client() as c:
+        token = await csrf_token_for(c, setup["admin"])
+        cookies = {**setup["admin"], "admin_csrf": token}
+        suggested = await c.post(
+            f"{setup['url']}/suggest",
+            files={"source_file": ("a.txt", b"The WebRTC talk", "text/plain")},
+            data={"csrf_token": token},
+            cookies=cookies,
+        )
+        accepted = await c.post(
+            f"{setup['url']}/accept",
+            data={"csrf_token": token, "accept": ["0"], "source_0": "WebRTC", "target_0_de": "WebRTC"},
+            cookies=cookies,
+            follow_redirects=False,
+        )
+    assert suggested.status_code == 200
+    assert f'name="csrf_token" value="{token}"'.encode() in suggested.content
+    assert accepted.status_code == 303
+
+
+@pytest.mark.anyio
+async def test_posts_without_a_csrf_token_are_refused(setup):
+    async with client() as c:
+        token = await csrf_token_for(c, setup["admin"])
+        cookies = {**setup["admin"], "admin_csrf": token}
+        suggested = await c.post(
+            f"{setup['url']}/suggest",
+            files={"source_file": ("a.txt", b"The WebRTC talk", "text/plain")},
+            cookies=cookies,
+        )
+        accepted = await c.post(
+            f"{setup['url']}/accept",
+            data={"accept": ["0"], "source_0": "WebRTC", "target_0_de": "WebRTC"},
+            cookies=cookies,
+        )
+    assert suggested.status_code == 403
+    assert accepted.status_code == 403
+    assert await saved_entries(setup["room"]) == []
 
 
 @pytest.mark.anyio
@@ -672,10 +765,10 @@ async def test_accepting_a_term_already_in_the_glossary_is_reported(setup):
 @pytest.mark.anyio
 async def test_translations_are_requested_only_when_ticked(setup, monkeypatch):
     provider = FakeProvider()
-    monkeypatch.setitem(term_suggestions.PROVIDERS, "fake", provider)
+    monkeypatch.setitem(term_suggestions.ENGINES, "fake", fake_engine(provider))
     monkeypatch.setattr(
         "portal.routers.admin.suggestion_engine",
-        lambda _event, _room: TranslationEngine("fake", "fake-model", "key"),
+        lambda _event, _room: TermTranslator("fake", "fake-model", "key"),
     )
     async with client() as c:
         await post_file(c, setup, "a.txt", b"The WebRTC talk")
@@ -727,10 +820,10 @@ async def test_upload_is_closed_before_translation_starts(setup, monkeypatch):
             return "1. Übersetzt"
 
     monkeypatch.setattr(UploadFile, "close", tracking_close)
-    monkeypatch.setitem(term_suggestions.PROVIDERS, "fake", RecordingProvider())
+    monkeypatch.setitem(term_suggestions.ENGINES, "fake", fake_engine(RecordingProvider()))
     monkeypatch.setattr(
         "portal.routers.admin.suggestion_engine",
-        lambda _event, _room: TranslationEngine("fake", "fake-model", "key"),
+        lambda _event, _room: TermTranslator("fake", "fake-model", "key"),
     )
     async with client() as c:
         await post_file(c, setup, "secret.txt", b"The WebRTC talk", propose_translations="on")
