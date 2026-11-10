@@ -701,6 +701,57 @@ def test_ws_standby_cannot_set_mic_active():
     assert err_msg["type"] == "booth:error"
 
 
+def test_ws_standby_cannot_set_themselves_active():
+    """Standby interpreter gets booth:error when naming themselves in booth:set-active."""
+    from portal.globals import booths
+
+    with (
+        client.websocket_connect("/ws/booth/standby-self-active-booth", cookies=_ws_auth()) as ws_a,
+        client.websocket_connect("/ws/booth/standby-self-active-booth", cookies=_ws_auth()) as ws_b,
+    ):
+        ws_a.send_text(
+            json.dumps(
+                {
+                    "type": "booth:join",
+                    "display_name": "A",
+                    "role": "interpreter",
+                    "language": "French",
+                    "channel_id": "standby-self-active-audio",
+                }
+            )
+        )
+        joined_a = json.loads(ws_a.receive_text())
+        if joined_a["type"] != "booth:joined":
+            joined_a = json.loads(ws_a.receive_text())
+        ws_a.receive_text()  # drain booth:state broadcast on ws_a
+        ws_b.receive_text()  # drain booth:state broadcast from IntA joining
+
+        ws_b.send_text(
+            json.dumps(
+                {
+                    "type": "booth:join",
+                    "display_name": "B",
+                    "role": "interpreter",
+                    "language": "French",
+                    "channel_id": "standby-self-active-audio",
+                }
+            )
+        )
+        joined_b = json.loads(ws_b.receive_text())
+        if joined_b["type"] != "booth:joined":
+            joined_b = json.loads(ws_b.receive_text())
+        ws_b.receive_text()  # drain booth:state on ws_b
+        ws_a.receive_text()  # drain broadcast to ws_a when ws_b joined
+
+        ws_b.send_text(json.dumps({"type": "booth:set-active", "target_id": joined_b["participant_id"]}))
+        err_msg = json.loads(ws_b.receive_text())
+        # Read the live booth while both sockets are still joined.
+        active_after = booths.get_booth_sync("standby-self-active-booth").active_interpreter_id
+
+    assert err_msg["type"] == "booth:error"
+    assert active_after == joined_a["participant_id"]
+
+
 def test_ws_three_way_coordinator_flow():
     """Full 3-connection scenario: two interpreters + coordinator.
 
@@ -2699,6 +2750,84 @@ def test_ws_tts_rejects_mismatched_room():
     assert exc_info.value.code == 4003
 
 
+def test_ws_tts_throttles_wrong_listener_cookies():
+    """Cookie guesses on /ws/tts spend the same join-code budget as /ws/captions."""
+    import anyio
+    from fastapi.websockets import WebSocketDisconnect
+
+    from portal import join_code_limit
+    from portal.database import Event, Room, get_session
+
+    async def setup():
+        async with get_session() as session:
+            ev = Event(slug="ttstest-throttle", display_name="TTS Throttle", listener_join_code="secret123")
+            session.add(ev)
+            await session.flush()
+            room = Room(display_name="r", event_id=ev.id, audio_delay_ms=0)
+            session.add(room)
+            await session.flush()
+            return room.id
+
+    room_id = anyio.run(setup)
+    url = f"/ws/tts/{room_id}/en/ttstest-throttle-{room_id}-en"
+    headers = {"Origin": "http://testserver"}
+
+    join_code_limit._join_code_attempts.clear()
+    try:
+        for i in range(join_code_limit.JOIN_CODE_RATE_LIMIT):
+            with pytest.raises(WebSocketDisconnect) as exc_info:
+                with client.websocket_connect(
+                    url, cookies={"listener_code_ttstest-throttle": f"wrong{i}"}, headers=headers
+                ):
+                    pass
+            assert exc_info.value.code == 4003
+
+        # The budget is spent, so even the right code is refused until the window ends.
+        with pytest.raises(WebSocketDisconnect) as exc_info:
+            with client.websocket_connect(
+                url, cookies={"listener_code_ttstest-throttle": "secret123"}, headers=headers
+            ):
+                pass
+        assert exc_info.value.code == 4003
+    finally:
+        join_code_limit._join_code_attempts.clear()
+
+
+def test_ws_tts_listener_cookie_for_event_without_code_is_not_an_attempt():
+    """An event with no join code has nothing to guess, so the cookie is refused without spending the budget."""
+    import anyio
+    from fastapi.websockets import WebSocketDisconnect
+
+    from portal import join_code_limit
+    from portal.database import Event, Room, get_session
+
+    async def setup():
+        async with get_session() as session:
+            ev = Event(slug="ttstest-nocode", display_name="TTS No Code")
+            session.add(ev)
+            await session.flush()
+            room = Room(display_name="r", event_id=ev.id, audio_delay_ms=0)
+            session.add(room)
+            await session.flush()
+            return room.id
+
+    room_id = anyio.run(setup)
+
+    join_code_limit._join_code_attempts.clear()
+    try:
+        with pytest.raises(WebSocketDisconnect) as exc_info:
+            with client.websocket_connect(
+                f"/ws/tts/{room_id}/en/ttstest-nocode-{room_id}-en",
+                cookies={"listener_code_ttstest-nocode": "anything"},
+                headers={"Origin": "http://testserver"},
+            ):
+                pass
+        assert exc_info.value.code == 4003
+        assert not join_code_limit._join_code_attempts
+    finally:
+        join_code_limit._join_code_attempts.clear()
+
+
 def test_ws_tts_cleanup_on_disconnect():
     import anyio
 
@@ -3148,3 +3277,18 @@ def test_embed_rendered_html_uses_sanitized_theme_values():
     assert '"audio_delay_ms"' in res.text
     # CSP header is still emitted with the sanitized policy.
     assert "frame-ancestors" in res.headers.get("content-security-policy", "")
+
+
+def test_unhandled_exception_response_has_security_headers():
+    @app.get("/__boom", include_in_schema=False)
+    async def boom():
+        raise RuntimeError("boom")
+
+    try:
+        res = TestClient(app, raise_server_exceptions=False).get("/__boom")
+    finally:
+        app.router.routes = [r for r in app.router.routes if getattr(r, "path", "") != "/__boom"]
+
+    assert res.status_code == 500
+    assert res.headers["x-content-type-options"] == "nosniff"
+    assert res.headers["content-security-policy"] == "frame-ancestors 'self'"

@@ -30,6 +30,10 @@ active_workers_lock = asyncio.Lock()
 MAX_TOTAL_WORKERS = 10
 
 
+class WorkerCapacityError(ValueError):
+    """Raised when starting a worker would exceed MAX_TOTAL_WORKERS."""
+
+
 class State(Enum):
     STARTING = "STARTING"
     RUNNING = "RUNNING"
@@ -65,6 +69,9 @@ class TranscriptionWorkerSession:
         self.stop_event = asyncio.Event()
         self.task: asyncio.Task | None = None
         self.loop_entered = False
+        # Set once the first ffmpeg process is up, or once the loop ends without ever getting one.
+        self.ready = asyncio.Event()
+        self.start_error: BaseException | None = None
 
         from portal.booth_identity import make_mediamtx_path
 
@@ -113,6 +120,7 @@ class TranscriptionWorkerSession:
 
                 # The context manager entirely encapsulates ffmpeg process lifecycle and cleanup.
                 async with FfmpegProcess(self.rtsp_url, self.sample_rate, self.booth_id) as process:
+                    self.ready.set()
                     try:
                         actual_language = self.transcription_language or self.language_code
                         if actual_language == "floor":
@@ -170,7 +178,13 @@ class TranscriptionWorkerSession:
                     await asyncio.wait_for(self.stop_event.wait(), timeout=1.0)
                 except TimeoutError:
                     pass
+        except Exception as exc:
+            # ffmpeg could not even be started: remember why, for whoever is waiting in wait_for_worker_start.
+            if not self.ready.is_set():
+                self.start_error = exc
+            raise
         finally:
+            self.ready.set()
             self.state = State.STOPPED
             await _wh_worker.enqueue_webhook(
                 "booth.transcription.stopped", {"booth_id": self.booth_id, "session_id": self.session_id, "event_slug": self.event_slug}
@@ -201,7 +215,7 @@ async def start_transcription_worker(
             existing_session = active_workers.get(booth_id)
             if not existing_session:
                 if len(active_workers) >= MAX_TOTAL_WORKERS:
-                    raise ValueError(
+                    raise WorkerCapacityError(
                         f"System at maximum capacity ({MAX_TOTAL_WORKERS} concurrent transcription booths)."
                     )
 
@@ -243,6 +257,23 @@ async def start_transcription_worker(
             f"[{booth_id}] start_transcription_worker actively waiting for old session [{existing_session.session_id}] to STOP."
         )
         await existing_session.wait_until_stopped()
+
+
+async def wait_for_worker_start(booth_id: str, timeout: float = 3.0) -> bool:
+    """False when the worker for this booth is known to have failed to start its ffmpeg process.
+
+    ``start_transcription_worker`` returns as soon as the session task is scheduled, so a failure to launch
+    ffmpeg happens afterwards. This waits (briefly) for that first launch. A worker that is still starting
+    when the timeout ends, or that is not in the registry, counts as fine: only a known failure is reported.
+    """
+    session = active_workers.get(booth_id)
+    if session is None:
+        return True
+    try:
+        await asyncio.wait_for(session.ready.wait(), timeout=timeout)
+    except TimeoutError:
+        return True
+    return session.start_error is None
 
 
 async def stop_transcription_worker(booth_id: str):
