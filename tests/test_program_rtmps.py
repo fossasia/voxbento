@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json
-from datetime import timedelta
+from datetime import datetime, timedelta, timezone
 from unittest import mock
 from unittest.mock import AsyncMock
 from uuid import uuid4
@@ -19,6 +19,7 @@ from portal.auth import create_user_token
 from portal.config import settings
 from portal.database import configure, create_user, dispose, get_session, init_db
 from portal.models import Event, Room
+from portal.transcription.worker import active_workers
 
 RELAY_SECRET = "r" * 64
 YOUTUBE_SERVER = "rtmps://a.rtmps.youtube.com/live2"
@@ -382,15 +383,39 @@ async def test_switching_rtmps_off_disconnects_a_live_feed(rtmps_env, monkeypatc
 
 
 @pytest.mark.anyio
-async def test_deleted_event_stops_and_refuses_rtmps(rtmps_env):
+async def test_deleted_event_rtmps_feed_is_released_while_media_listing_fails(rtmps_env, monkeypatch):
     env = rtmps_env
     client, event, room = env["client"], env["event"], env["rooms"][0]
     secret = await enable_rtmps(client, event, room)
     auth = await connect_live(env, room, secret)
-    assert await reconcile_live_feed(env, room) == []
+    await ingest.reconcile_once()
+    assert ingest.health[room.id].ingest_state == "connected"
+    monkeypatch.setitem(active_workers, f"rtmps-test-{room.id}-floor", object())  # the running worker
+
     async with get_session() as session:
-        (await session.get(Event, event.id)).deleted_at = ingest.utc_now()
-    assert auth["id"] in await reconcile_live_feed(env, room)
-    ingest.health.clear()
-    response = await client.post("/internal/media-auth", json=rtmps_publish(room, secret))
-    assert response.status_code == 401
+        other = Event(slug="other-event", display_name="Other Event")
+        session.add(other)
+        await session.flush()
+        session.add(Room(event_id=other.id, display_name="Other Room", floor_source="program_ingest"))
+        (await session.get(Event, event.id)).deleted_at = datetime.now(timezone.utc)
+
+    # Another room is still active, so the media paths are requested, and that request fails.
+    monkeypatch.setattr(ingest, "media_paths", AsyncMock(side_effect=httpx.ConnectError("media down")))
+    kicked: list[tuple[str, str]] = []
+    orig_kick = ingest.kick
+
+    async def spy_kick(path, source):
+        if source is not None:
+            kicked.append((source.type, source.id))
+        return await orig_kick(path, source)
+
+    ingest.stop_transcription_worker.reset_mock()
+    with mock.patch.object(ingest, "kick", spy_kick):
+        await ingest.reconcile_once()
+    # The worker, the RTMPS publisher and the reservation of the deleted room are released.
+    ingest.stop_transcription_worker.assert_awaited_once_with(f"rtmps-test-{room.id}-floor")
+    assert ("rtmpsConn", auth["id"]) in kicked
+    async with get_session() as session:
+        assert (await session.get(Room, room.id)).program_session_id is None
+    # The encoder reconnecting is refused.
+    assert (await client.post("/internal/media-auth", json=rtmps_publish(room, secret))).status_code == 401
