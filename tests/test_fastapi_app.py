@@ -2680,6 +2680,84 @@ def test_ws_tts_rejects_mismatched_room():
     assert exc_info.value.code == 4003
 
 
+def test_ws_tts_throttles_wrong_listener_cookies():
+    """Cookie guesses on /ws/tts spend the same join-code budget as /ws/captions."""
+    import anyio
+    from fastapi.websockets import WebSocketDisconnect
+
+    from portal import join_code_limit
+    from portal.database import Event, Room, get_session
+
+    async def setup():
+        async with get_session() as session:
+            ev = Event(slug="ttstest-throttle", display_name="TTS Throttle", listener_join_code="secret123")
+            session.add(ev)
+            await session.flush()
+            room = Room(display_name="r", event_id=ev.id, audio_delay_ms=0)
+            session.add(room)
+            await session.flush()
+            return room.id
+
+    room_id = anyio.run(setup)
+    url = f"/ws/tts/{room_id}/en/ttstest-throttle-{room_id}-en"
+    headers = {"Origin": "http://testserver"}
+
+    join_code_limit._join_code_attempts.clear()
+    try:
+        for i in range(join_code_limit.JOIN_CODE_RATE_LIMIT):
+            with pytest.raises(WebSocketDisconnect) as exc_info:
+                with client.websocket_connect(
+                    url, cookies={"listener_code_ttstest-throttle": f"wrong{i}"}, headers=headers
+                ):
+                    pass
+            assert exc_info.value.code == 4003
+
+        # The budget is spent, so even the right code is refused until the window ends.
+        with pytest.raises(WebSocketDisconnect) as exc_info:
+            with client.websocket_connect(
+                url, cookies={"listener_code_ttstest-throttle": "secret123"}, headers=headers
+            ):
+                pass
+        assert exc_info.value.code == 4003
+    finally:
+        join_code_limit._join_code_attempts.clear()
+
+
+def test_ws_tts_listener_cookie_for_event_without_code_is_not_an_attempt():
+    """An event with no join code has nothing to guess, so the cookie is refused without spending the budget."""
+    import anyio
+    from fastapi.websockets import WebSocketDisconnect
+
+    from portal import join_code_limit
+    from portal.database import Event, Room, get_session
+
+    async def setup():
+        async with get_session() as session:
+            ev = Event(slug="ttstest-nocode", display_name="TTS No Code")
+            session.add(ev)
+            await session.flush()
+            room = Room(display_name="r", event_id=ev.id, audio_delay_ms=0)
+            session.add(room)
+            await session.flush()
+            return room.id
+
+    room_id = anyio.run(setup)
+
+    join_code_limit._join_code_attempts.clear()
+    try:
+        with pytest.raises(WebSocketDisconnect) as exc_info:
+            with client.websocket_connect(
+                f"/ws/tts/{room_id}/en/ttstest-nocode-{room_id}-en",
+                cookies={"listener_code_ttstest-nocode": "anything"},
+                headers={"Origin": "http://testserver"},
+            ):
+                pass
+        assert exc_info.value.code == 4003
+        assert not join_code_limit._join_code_attempts
+    finally:
+        join_code_limit._join_code_attempts.clear()
+
+
 def test_ws_tts_cleanup_on_disconnect():
     import anyio
 

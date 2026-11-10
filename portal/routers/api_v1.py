@@ -11,6 +11,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from portal.auth import coordinates_room, load_membership_scope, require_oauth_scope
 from portal.booth_identity import make_booth_id, make_mediamtx_path, validate_language_code
+from portal.database import delete_room as delete_db_room
 from portal.database import get_db_session
 from portal.globals import booths
 from portal.models import (
@@ -24,6 +25,7 @@ from portal.models import (
     RoomTranslationLanguage,
     TranscriptSegment,
     TranscriptTranslation,
+    User,
 )
 from portal.rate_limit import auth_rate_limiter
 from portal.roles import EVENT_OWNER
@@ -210,6 +212,13 @@ def _extract_room_id(room: Room | Any, room_id: int | str) -> int:
         except ValueError:
             pass
     return getattr(room, "id", room_id)
+
+
+def _validate_lang(language_code: str) -> str:
+    try:
+        return validate_language_code(language_code)
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
 
 
 @router.get("/events/{event_slug}", response_model=EventResponse)
@@ -403,29 +412,20 @@ async def create_event(
         if existing_event.deleted_at is not None:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Event not found")
 
-        # Verify caller is authorized to modify memberships on this existing event
-        is_authorized = False
         if token.event_id == existing_event.id:
-            is_authorized = True
-        elif token.user_id:
-            user_mem = (
-                (
-                    await db.execute(
-                        select(EventMembership).where(
-                            EventMembership.user_id == token.user_id,
-                            EventMembership.event_id == existing_event.id,
-                            EventMembership.role == EVENT_OWNER,
-                        )
-                    )
+            await _verify_token_rbac(db, token, existing_event, manage=True)
+        else:
+            # Outside the token's scope only a current owner passes, e.g. retrying a creation.
+            user = await db.get(User, token.user_id)
+            owner_membership = await db.scalar(
+                select(EventMembership.id).where(
+                    EventMembership.user_id == token.user_id,
+                    EventMembership.event_id == existing_event.id,
+                    EventMembership.role == EVENT_OWNER,
                 )
-                .scalars()
-                .first()
             )
-            if user_mem:
-                is_authorized = True
-
-        if not is_authorized:
-            raise HTTPException(status_code=403, detail="Not authorized to manage memberships for this event.")
+            if user is None or not user.is_active or owner_membership is None:
+                raise HTTPException(status_code=403, detail="Not authorized to manage memberships for this event.")
 
         # Update the display name if the event already exists (e.g. from OAuth auto-provisioning)
         if existing_event.display_name != payload.name:
@@ -435,6 +435,12 @@ async def create_event(
         await _ensure_event_memberships(db, existing_event.id, token.user_id, payload.organizer_emails)
         return {"id": existing_event.id, "slug": existing_event.slug, "name": existing_event.display_name}
     else:
+        # A retained token must not bootstrap new ownership after its grant loses access.
+        authorizing_event = await db.get(Event, token.event_id)
+        if authorizing_event is None:
+            raise HTTPException(status_code=404, detail="Event not found")
+        await _verify_token_rbac(db, token, authorizing_event, manage=True, lock_event=True, write_lock=True)
+
         event = Event(slug=slug, display_name=payload.name)
         db.add(event)
         await db.flush()
@@ -745,7 +751,7 @@ async def delete_room(
         await booths.remove_booth(event_slug, b["room_id"], b["language_code"])
 
     await revoke_booths_for_deleted_entity(db, level="room", target_id=room.id)
-    await db.delete(room)
+    await delete_db_room(db, room.id)
 
     audit = OAuthAuditLog(
         token_id=token.id,
@@ -820,6 +826,7 @@ async def get_booth(
 
     room = await _verify_token_rbac(db, token, event, room_id, lock_event=True)
     target_room_id = _extract_room_id(room, room_id)
+    language_code = _validate_lang(language_code)
 
     result = await db.execute(select(DBBooth).where(DBBooth.room_id == target_room_id, DBBooth.language_code == language_code, DBBooth.event_id == event.id))
     booth = result.scalars().first()
@@ -850,6 +857,12 @@ async def create_booth(
         db, token, event, room_id, manage=True, lock_event=True, write_lock=True
     )
     target_room_id = _extract_room_id(room, room_id)
+    language_code = _validate_lang(language_code)
+    if language_code == "floor":
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="'floor' is not a valid booth language for a room.",
+        )
 
     result = await db.execute(select(DBBooth).where(DBBooth.room_id == target_room_id, DBBooth.language_code == language_code))
     if result.scalars().first():
@@ -881,6 +894,7 @@ async def delete_booth_endpoint(
         db, token, event, room_id, manage=True, lock_event=True, write_lock=True
     )
     target_room_id = _extract_room_id(room, room_id)
+    language_code = _validate_lang(language_code)
 
     result = await db.execute(select(DBBooth).where(DBBooth.room_id == target_room_id, DBBooth.language_code == language_code, DBBooth.event_id == event.id))
     booth = result.scalars().first()
@@ -908,6 +922,7 @@ async def start_transcription(
 
     room = await _verify_token_rbac(db, token, event, room_id, lock_event=True, write_lock=True)
     target_room_id = _extract_room_id(room, room_id)
+    language_code = _validate_lang(language_code)
 
     booth_id = make_booth_id(event_slug, target_room_id, language_code)
 
@@ -935,6 +950,7 @@ async def stop_transcription(
 
     room = await _verify_token_rbac(db, token, event, room_id, lock_event=True, write_lock=True)
     target_room_id = _extract_room_id(room, room_id)
+    language_code = _validate_lang(language_code)
 
     booth_id = make_booth_id(event_slug, target_room_id, language_code)
     await stop_transcription_worker(booth_id)
@@ -1005,6 +1021,7 @@ async def export_transcript(
 
     room = await _verify_token_rbac(db, token, event, room_id, lock_event=True)
     target_room_id = _extract_room_id(room, room_id)
+    language_code = _validate_lang(language_code)
 
     # Validate that the booth exists within this event/room
     result = await db.execute(
