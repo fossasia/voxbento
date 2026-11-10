@@ -293,14 +293,18 @@ class TranslationWorker:
                     logger.error(f"[{booth_id_str}] Translation LLM timed out after {timeout_val}s for {lang_code}.")
                     translated_text = None
 
-                # None: the engine could not translate. An empty string: it ran and produced no text,
-                # which the engine contract does not count as a failure. For listeners both mean there
-                # is nothing to show, store or speak for this segment, and the listener page has no
-                # state for an empty translation (it would wait on "Translation pending"), so the
-                # worker reports both as pipeline_failed.
-                if translated_text is None or translated_text == "":
+                if translated_text is None:
                     await tts_manager.broadcast_bundle(
                         room.id, lang_code, booth_id_str, b"", uuid_segment_id, seq, text, "", "pipeline_failed"
+                    )
+                    return
+
+                if not translated_text.strip():
+                    # The engine ran and had nothing to say for this segment, which is not a failure.
+                    # Close the segment (no error, no audio to wait for) so listeners move on without
+                    # a message; there is nothing to store or speak.
+                    await tts_manager.broadcast_bundle(
+                        room.id, lang_code, booth_id_str, b"", uuid_segment_id, seq, text, "", None, audio_pending=False
                     )
                     return
 

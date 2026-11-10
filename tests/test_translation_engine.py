@@ -7,7 +7,7 @@ import copy
 import dataclasses
 import pickle
 from types import SimpleNamespace
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock, MagicMock, call
 
 import pytest
 
@@ -407,9 +407,19 @@ async def test_the_worker_returns_none_for_a_provider_without_an_engine():
     assert result is None
 
 
-@pytest.mark.parametrize("answer", [None, ""], ids=["failed", "empty"])
-async def test_the_worker_delivers_nothing_for_a_failed_or_empty_translation(monkeypatch, answer):
-    """An empty translation is not an engine failure, but listeners get nothing to show, store or speak."""
+@pytest.mark.parametrize(
+    ("answer", "closing_bundle"),
+    [
+        # The engine could not translate: listeners are told so.
+        (None, call(7, "fr", "floor", b"", "uuid-1", 3, "Hello", "", "pipeline_failed")),
+        # The engine ran and had nothing to say: the segment is closed without an error.
+        ("", call(7, "fr", "floor", b"", "uuid-1", 3, "Hello", "", None, audio_pending=False)),
+        ("  \n", call(7, "fr", "floor", b"", "uuid-1", 3, "Hello", "", None, audio_pending=False)),
+    ],
+    ids=["failed", "empty", "blank"],
+)
+async def test_the_worker_tells_a_failed_translation_from_an_empty_one(monkeypatch, answer, closing_bundle):
+    """Neither is stored, captioned or spoken, but only the failure is reported to listeners as one."""
     monkeypatch.setitem(worker_module.ENGINES, "fake", FakeEngine(rows=[[answer]]))
     bundle = AsyncMock()
     monkeypatch.setattr("portal.websockets.manager.tts_manager.broadcast_bundle", bundle)
@@ -428,7 +438,7 @@ async def test_the_worker_delivers_nothing_for_a_failed_or_empty_translation(mon
         42, "Hello", "floor", "uuid-1", 3, "event-7-fr",
     )
 
-    bundle.assert_awaited_once_with(7, "fr", "floor", b"", "uuid-1", 3, "Hello", "", "pipeline_failed")
+    assert bundle.await_args_list == [closing_bundle]
     captions.assert_not_awaited()
     synthesize.assert_not_awaited()
     stored.assert_not_called()

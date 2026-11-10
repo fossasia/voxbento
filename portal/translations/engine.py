@@ -26,7 +26,7 @@ logger = logging.getLogger(__name__)
 
 #: One row per source text, one column per target language, in the order they were passed.
 #: ``None`` marks a translation that failed. An empty string means the engine ran and produced
-#: no text, which is not an engine failure; what to do with it is the caller's decision.
+#: no text, which is not a failure: the worker closes the segment and listeners see nothing.
 TranslationRows = list[list[str | None]]
 
 
