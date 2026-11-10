@@ -4,9 +4,6 @@ sidebarTitle: "Self-Hosted Translation LLMs"
 description: "Run Hy-MT2, EuroLLM or other translation-specialised models on your own hardware and connect them to VoxBento for glossary- and style-aware interpretation."
 ---
 
-import Tabs from "@theme/Tabs";
-import TabItem from "@theme/TabItem";
-
 This guide covers deploying translation-specialised LLMs on your own server and connecting them to VoxBento through the [self-hosted translation provider](/admin/ai-interpretation#self-hosted-translation-server). Room-specific glossary, persona and style are applied through VoxBento's prompt builder — the same one that drives cloud providers.
 
 :::info Prerequisites
@@ -90,10 +87,10 @@ llama.cpp's built-in server provides an OpenAI-compatible `/v1/chat/completions`
 - `--alias hy-mt2-1.8b` sets the model name reported by the `/v1/models` endpoint — use this same name in VoxBento's `SELF_HOSTED_LLM_MODELS`.
 - `--jinja` enables the model's chat template.
 - `--ctx-size 4096` is sufficient for translation segments (VoxBento sends short segments of up to ~50 words plus the system prompt).
-- `--host 127.0.0.1` binds to localhost only. If VoxBento runs on a different machine, bind to the appropriate interface and add `--api-key YOUR_KEY` to require authentication.
+- `--host 127.0.0.1` binds to localhost only. This is safe when VoxBento runs directly on the same machine (not in Docker). For Docker Compose setups, see the note below.
 
 :::warning Network exposure
-Without `--api-key`, anyone who can reach the server port can submit inference requests and consume your compute. On a shared network, always set an API key or restrict access with a firewall.
+If you bind to `0.0.0.0` (required for Docker Compose), anyone who can reach the port can submit inference requests. Always combine wider binding with `--api-key` and a firewall that restricts access to trusted hosts only.
 :::
 
 ### 4. Verify the server is running
@@ -145,7 +142,7 @@ With Docker Compose, add the variables to `.env` and recreate the portal:
 docker compose up -d portal
 ```
 
-From inside a Docker container, use `http://host.docker.internal:8081/v1` as the base URL. On Linux, also add to your `docker-compose.yml`:
+**Docker Compose:** The portal container connects to the host via `host.docker.internal`, which resolves to the host's gateway address — not `127.0.0.1`. You must start the inference server with `--host 0.0.0.0` (instead of `127.0.0.1`) so it is reachable from the container, and set `--api-key` to prevent unauthorised access. Then use `http://host.docker.internal:8081/v1` as the base URL. On Linux, also add to your `docker-compose.yml`:
 
 ```yaml
 services:
@@ -197,7 +194,7 @@ vLLM downloads the model from Hugging Face on first start. The server exposes an
 - For multi-GPU setups, add `--tensor-parallel-size N` where N is the number of GPUs.
 
 :::warning Network and code safety
-Without `--api-key`, anyone who can reach the server port can submit inference requests. `--trust-remote-code` runs arbitrary Python from the model repository — pin a known revision and run the server with least privilege (a dedicated user, not root).
+`--api-key` protects the `/v1/chat/completions` route but vLLM also exposes unauthenticated operational endpoints. If the server is reachable beyond localhost, use a firewall or reverse proxy to restrict access to trusted hosts — do not rely on `--api-key` alone. See the [vLLM security documentation](https://docs.vllm.ai/en/stable/usage/security/) for details. `--trust-remote-code` runs arbitrary Python from the model repository — pin a known revision (`--revision COMMIT_HASH`) and run the server with least privilege (a dedicated user, not root).
 :::
 
 <details>
@@ -276,7 +273,7 @@ vllm serve utter-project/EuroLLM-9B-Instruct-2512 \
 ```
 
 :::warning Network exposure
-Without `--api-key`, anyone who can reach the server port can submit inference requests and consume your GPU. Always set an API key for servers reachable beyond localhost.
+`--api-key` protects the `/v1/chat/completions` route but vLLM also exposes unauthenticated operational endpoints. If the server is reachable beyond localhost, use a firewall or reverse proxy to restrict access to trusted hosts — do not rely on `--api-key` alone.
 :::
 
 ### 3. Verify the server is running
@@ -430,7 +427,7 @@ The latency figures below for Hy-MT2 and EuroLLM are **estimates** based on para
 
 ### Comparison table
 
-VoxBento gives the inference server a 10-second HTTP timeout per request. The translation worker applies a 12-second overall timeout, but this is an inference timeout — time spent queuing for a server slot (when multiple rooms share the model) is not counted against it, so total wall-clock time from segment to translation can be longer under load.
+VoxBento gives the inference server a 10-second HTTP timeout per request. The translation worker applies a 12-second inference timeout that starts after the worker acquires one of its two per-language inference slots. Time spent waiting for a worker inference slot is **not** counted, so total wall-clock time from segment to translation can be longer under concurrent load. Time the model server spends queuing a request internally (e.g. when vLLM batches requests) **is** counted against the 12 seconds.
 
 A segment is typically 10–50 words (roughly 15–80 tokens of output).
 
