@@ -32,7 +32,7 @@ from portal.rate_limit import auth_rate_limiter
 from portal.roles import EVENT_OWNER
 from portal.transcription.constants import ProviderEnum
 from portal.transcription.worker import active_workers, start_transcription_worker, stop_transcription_worker
-from portal.translations.constants import TranslationProviderEnum
+from portal.translations.constants import LIBRETRANSLATE_MODEL_ID, TranslationProviderEnum
 from portal.websockets.revocation import revoke_booths_for_deleted_entity
 
 logger = logging.getLogger(__name__)
@@ -591,6 +591,28 @@ def _check_self_hosted_translation(payload_dict: dict, room: Room | None) -> Non
     )
 
 
+def _check_libretranslate(payload_dict: dict, room: Room | None) -> None:
+    """Reject LibreTranslate when it isn't configured, before anything is written.
+
+    An update that turns translation off is never rejected, so it still works after the
+    server setting is removed.
+    """
+    if not {"translation_provider", "translation_model", "enable_translation"} & payload_dict.keys():
+        return
+    if payload_dict.get("enable_translation") is False:
+        return
+    current_provider = room.floor_translation_provider if room else None
+    if payload_dict.get("translation_provider", current_provider) != TranslationProviderEnum.LIBRETRANSLATE.value:
+        return
+    if not settings.libretranslate_enabled:
+        raise HTTPException(status_code=422, detail="LibreTranslate is not configured on this server")
+    model = payload_dict.get("translation_model")
+    if model is not None and model != LIBRETRANSLATE_MODEL_ID:
+        raise HTTPException(status_code=422, detail="translation_model is not valid for LibreTranslate")
+    # Pin the one valid model when the caller left it out or sent the default.
+    payload_dict["translation_model"] = LIBRETRANSLATE_MODEL_ID
+
+
 @router.put("/events/{event_slug}/rooms/{eventyay_room_id}")
 async def upsert_room(
     event_slug: str,
@@ -615,6 +637,7 @@ async def upsert_room(
 
     payload_dict = payload.model_dump(exclude_unset=True)
     _check_self_hosted_translation(payload_dict, room)
+    _check_libretranslate(payload_dict, room)
 
     if room:
         _apply_floor_settings(room, payload_dict)

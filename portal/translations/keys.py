@@ -15,6 +15,9 @@ def get_translation_api_key(event: Event, provider: str) -> str | None:
     """
     if provider == TranslationProviderEnum.SELF_HOSTED.value:
         return settings.self_hosted_llm_api_key or None
+    if provider == TranslationProviderEnum.LIBRETRANSLATE.value:
+        # LibreTranslate's key is optional (self-hosted instances often leave it off).
+        return settings.libretranslate_api_key or None
     key_map = {
         TranslationProviderEnum.OPENAI.value: event.encrypted_translation_openai_api_key,
         TranslationProviderEnum.OPENROUTER.value: event.encrypted_openrouter_api_key,

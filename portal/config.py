@@ -156,6 +156,12 @@ class Settings(BaseSettings):
     self_hosted_llm_api_key: str = Field(default="", repr=False)
     self_hosted_llm_models: str = ""
 
+    # LibreTranslate: a self-hosted machine-translation server (https://libretranslate.com).
+    # Only the operator sets the URL, so event owners can't aim requests at internal addresses.
+    # The API key is optional: a self-hosted instance without API keys leaves it blank.
+    libretranslate_base_url: str = ""
+    libretranslate_api_key: str = Field(default="", repr=False)
+
     # Supertonic synthesis quality/speed trade-off. Fewer diffusion steps =
     # faster (lower real-time factor) at a small quality cost. 4 keeps CPU
     # synthesis at/below real-time so audio never backs up; 8 is reference
@@ -242,6 +248,32 @@ class Settings(BaseSettings):
         if self.self_hosted_llm_allows(model):
             return model
         return self.self_hosted_llm_model_list[0] if self.self_hosted_llm_enabled else None
+
+    @field_validator("libretranslate_base_url")
+    @classmethod
+    def validate_libretranslate_base_url(cls, value: str) -> str:
+        """Accept only a plain http(s) base URL; the key belongs in LIBRETRANSLATE_API_KEY."""
+        value = value.strip().rstrip("/")
+        if not value:
+            return ""
+        parsed = urlparse(value)
+        if parsed.scheme not in {"http", "https"} or not parsed.hostname:
+            raise ValueError("libretranslate_base_url must be an http(s) URL such as http://localhost:5000")
+        if not _is_ip(parsed.hostname) and not re.fullmatch(r"[A-Za-z0-9._-]+", parsed.hostname):
+            raise ValueError("libretranslate_base_url has an invalid host name")
+        # Reading the port raises ValueError for one that isn't a number in 0-65535.
+        if parsed.port == 0:
+            raise ValueError("libretranslate_base_url port must be between 1 and 65535")
+        if parsed.username or parsed.password or parsed.query or parsed.fragment:
+            raise ValueError("libretranslate_base_url must not include credentials, a query string or a fragment")
+        if parsed.path.endswith("/translate"):
+            raise ValueError("libretranslate_base_url is the base URL; leave out /translate")
+        return value
+
+    @property
+    def libretranslate_enabled(self) -> bool:
+        """LibreTranslate is offered only when the operator has set its base URL."""
+        return bool(self.libretranslate_base_url)
 
 
 settings = Settings()
