@@ -1,67 +1,24 @@
 // Room page (owner view): tabs, the room audio chooser and the AI settings pickers.
 // Values the page needs come from data attributes on #room-detail (no inline script).
 
+import { initTabs } from './tabs.js';
+
 const root = document.getElementById('room-detail');
 
-// ── Tabs ────────────────────────────────────────────────────────────────
-// Without JavaScript every section shows in order. The open tab is remembered per
-// room, so saving a setting (which reloads the page) returns to the same tab.
+// ── Tabs ────────────────────────────────────────────────────────────────────────────
+// Shared with the booth page (tabs.js). The open tab is remembered per room, so saving
+// a setting (which reloads the page) returns to the same tab.
 
-function initTabs() {
-  const tabList = document.querySelector('[data-room-tabs]');
-  if (!tabList || !root) return;
-  const tabs = [...tabList.querySelectorAll('[data-room-tab]')];
-  const panels = [...document.querySelectorAll('[data-room-panel]')];
-  const storageKey = `voxbento:room-tab:${root.dataset.roomId}`;
-
-  function show(name, { focus = false } = {}) {
-    const target = tabs.find((t) => t.dataset.roomTab === name) || tabs[0];
-    tabs.forEach((tab) => {
-      const selected = tab === target;
-      tab.setAttribute('aria-selected', String(selected));
-      tab.tabIndex = selected ? 0 : -1;
-      tab.classList.toggle('is-active', selected);
-    });
-    panels.forEach((panel) => { panel.hidden = panel.dataset.roomPanel !== target.dataset.roomTab; });
-    if (focus) target.focus();
-    try { sessionStorage.setItem(storageKey, target.dataset.roomTab); } catch (err) { console.debug('Tab not remembered', err); }
-    if (window.location.hash !== `#${target.dataset.roomTab}`) {
-      history.replaceState(null, '', `${window.location.pathname}${window.location.search}#${target.dataset.roomTab}`);
-    }
-  }
-
-  tabs.forEach((tab, index) => {
-    tab.addEventListener('click', () => show(tab.dataset.roomTab));
-    tab.addEventListener('keydown', (e) => {
-      const step = { ArrowRight: 1, ArrowLeft: -1 }[e.key];
-      if (e.key === 'Home' || e.key === 'End' || step) {
-        e.preventDefault();
-        const next = e.key === 'Home' ? 0 : e.key === 'End' ? tabs.length - 1 : (index + step + tabs.length) % tabs.length;
-        show(tabs[next].dataset.roomTab, { focus: true });
-      }
-    });
-  });
-
+function openingRoomTab(hash) {
   const params = new URLSearchParams(window.location.search);
-  // Links elsewhere on the page (e.g. the next-steps list) can open a tab.
-  document.querySelectorAll('[data-room-tab-link]').forEach((link) => {
-    link.addEventListener('click', (e) => {
-      e.preventDefault();
-      show(link.dataset.roomTabLink, { focus: true });
-    });
-  });
-  let initial = window.location.hash.slice(1);
+  let initial = hash;
   // Back from a vocabulary upload: show the result where it was uploaded.
   if (!initial && [...params.keys()].some((key) => key.startsWith('vocab'))) initial = 'ai';
   // Older links used other tab names.
   initial = { source: 'audio', captions: 'ai' }[initial] || initial;
   // Back from room setup: show the saved languages and the next steps.
   if (params.has('created') || params.has('updated')) initial = 'overview';
-  if (!initial) {
-    try { initial = sessionStorage.getItem(storageKey) || ''; } catch (err) { console.debug('No remembered tab', err); }
-  }
-  tabList.hidden = false;
-  show(initial || 'overview');
+  return initial;
 }
 
 // ── Room audio ──────────────────────────────────────────────────────────
@@ -111,24 +68,33 @@ function initAiSettings() {
     const savedModel = root.dataset.initialTranslationModel || '';
     const localNote = document.querySelector('[data-local-translation-note]');
     let catalog = null;
+    let loads = 0;
 
     async function loadModels() {
+      const load = ++loads;
       const provider = transProvider.value;
       if (localNote) localNote.hidden = provider !== 'local';
       transModel.replaceChildren(new Option('Recommended for this service', ''));
       if (!provider) return;
       try {
+        // Only a list that loaded is kept, so a failed load tries again on the next change.
         if (!catalog) {
           const res = await fetch('/api/admin/providers/translation/models');
-          catalog = res.ok ? await res.json() : {};
+          if (res.ok) catalog = await res.json();
+          else console.error('Could not load translation models', res.status);
         }
       } catch (err) {
         console.error('Could not load translation models', err);
-        catalog = {};
       }
-      const models = [...(catalog[provider] || [])];
+      // The service may have changed while the list was loading; only the latest call fills the list.
+      if (load !== loads) return;
+      const listed = catalog?.[provider];
+      const models = [...(listed || [])];
       const keep = provider === savedProvider ? savedModel : '';
-      if (keep && !models.includes(keep)) models.unshift(keep);
+      // Cloud services accept any model name, but a self-hosted model must be on the server's list.
+      // If the list didn't load, keep the saved model and let the server check it on save.
+      const mustBeListed = provider === 'self_hosted' && Boolean(listed);
+      if (keep && !models.includes(keep) && !mustBeListed) models.unshift(keep);
       models.forEach((model) => transModel.append(new Option(model, model, false, model === keep)));
     }
 
@@ -150,6 +116,13 @@ function initAiSettings() {
   }
 }
 
-initTabs();
+if (root) {
+  initTabs({
+    name: 'room',
+    storageKey: `voxbento:room-tab:${root.dataset.roomId}`,
+    resolveInitial: openingRoomTab,
+    fallback: 'overview',
+  });
+}
 initAudioChooser();
 initAiSettings();

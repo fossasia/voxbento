@@ -31,6 +31,10 @@ PROVIDERS = {
 }
 for p in OPENAI_COMPATIBLE_ENDPOINTS.keys():
     PROVIDERS[p] = openai_provider
+PROVIDERS[TranslationProviderEnum.SELF_HOSTED.value] = openai_provider
+
+# Providers that run without a per-event API key.
+KEYLESS_PROVIDERS = {TranslationProviderEnum.LOCAL.value, TranslationProviderEnum.SELF_HOSTED.value}
 
 
 class TranslationWorker:
@@ -106,7 +110,7 @@ class TranslationWorker:
                 return
 
             api_key = self._get_translation_api_key(event, provider)
-            if not api_key and provider != TranslationProviderEnum.LOCAL.value:
+            if not api_key and provider not in KEYLESS_PROVIDERS:
                 logger.error(f"[{booth_id_str}] Translation API key not found for provider {provider}")
                 return
 
