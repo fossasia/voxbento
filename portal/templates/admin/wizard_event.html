@@ -9,11 +9,12 @@
 
   <div class="wizard-card">
     <h2>Create your event</h2>
-    <p class="wizard-sub">Give your event a name. We'll walk you through rooms, language booths and invites next.</p>
+    <p class="wizard-sub">Give your event a name. Next you'll add its rooms and choose their languages, then invite your team.</p>
 
     {% if error %}<div class="alert alert-danger">{{ error }}</div>{% endif %}
 
     <form method="post" action="{{ management_prefix }}/setup">
+      <input type="hidden" name="csrf_token" value="{{ request.state.admin_csrf_token }}" />
       <div class="field">
         <label for="display_name">Event name</label>
         <input type="text" id="display_name" name="display_name" placeholder="e.g. PyCon 2026"

@@ -3,7 +3,7 @@ from __future__ import annotations
 import asyncio
 import json
 import struct
-from datetime import timedelta
+from datetime import datetime, timedelta, timezone
 from unittest.mock import AsyncMock
 from uuid import uuid4
 
@@ -12,11 +12,12 @@ import pytest
 
 from fastapi_app import app
 from portal import program_ingest as ingest
-from portal.auth import create_user_token
+from portal.auth import create_user_token, decode_token, generate_admin_csrf_token
 from portal.config import settings
 from portal.database import configure, create_user, dispose, get_session, init_db
 from portal.models import Event, Room, RoomTranslationLanguage, TranscriptSegment
 from portal.transcription.aggregator import CaptionAggregator
+from portal.transcription.worker import active_workers
 from portal.websockets.manager import tts_manager
 
 
@@ -75,12 +76,19 @@ async def environment(monkeypatch):
             ]
             session.add_all(rooms)
         admin_token = create_user_token(user_id=admin.id, email=admin.email, is_admin=True)
+        session_id = decode_token(admin_token)["jti"]
+        csrf_token = generate_admin_csrf_token(str(session_id))
+
+        session_id = decode_token(admin_token)["jti"]
+        csrf_token = generate_admin_csrf_token(str(session_id))
+
         async with httpx.AsyncClient(
             transport=httpx.ASGITransport(app=app, client=("127.0.0.1", 1234)),
             base_url="http://test",
-            cookies={"user_token": admin_token},
+            cookies={"user_token": admin_token, "admin_csrf": csrf_token},
+            headers={"X-CSRF-Token": csrf_token},
         ) as client:
-            yield client, event, rooms, media, calls, start, stop
+            yield client, event, rooms, media, calls, start, stop, csrf_token
     ingest.health.clear()
     ingest.failures.clear()
     ingest.room_locks.clear()
@@ -254,7 +262,7 @@ async def test_only_sync_actions_change_saved_offset(environment):
 
 @pytest.mark.anyio
 async def test_credentials_scope_rotation_expiry_and_no_leaks(environment, caplog):
-    client, event, rooms, _, _, _, _ = environment
+    client, event, rooms, *_ = environment
     room, other = rooms
     token = await enable(client, event, room)
     url = admin_url(event, room)
@@ -289,36 +297,50 @@ async def test_credentials_scope_rotation_expiry_and_no_leaks(environment, caplo
 
 @pytest.mark.anyio
 async def test_auth_throttling_and_anonymous_floor_denial(environment):
-    client, event, rooms, _, _, _, _ = environment
+    client, event, rooms, *_ = environment
     await enable(client, event, rooms[0])
     for _ in range(10):
         assert (await client.post("/internal/media-auth", json=credentials(rooms[0], ""))).status_code == 401
     assert (await client.post("/internal/media-auth", json=credentials(rooms[0], ""))).status_code == 429
     assert (await client.post("/internal/media-auth", json={"token": "secret"})).status_code == 401
+    # Interpreter booth paths share the throttle and no longer bypass authorization (#783).
     assert (
         await client.post("/internal/media-auth", json=credentials(rooms[0], "", path="program-test/1/fr"))
-    ).status_code == 204
+    ).status_code == 429
 
 
 @pytest.mark.anyio
 async def test_owner_guard_csrf_and_cross_event(environment):
-    client, event, rooms, *_ = environment
+    client, event, rooms, *_rest, csrf_token = environment
     url = admin_url(event, rooms[0])
     admin_token = client.cookies.get("user_token")
     client.cookies.clear()
+
     assert (await client.post(url, json={"action": "enable"})).status_code == 403
+
     client.cookies.set("user_token", admin_token)
+    client.cookies.set("admin_csrf", csrf_token)
+
     assert (
-        await client.post(url, json={"action": "enable"}, headers={"Origin": "https://evil.example"})
+        await client.post(
+            url,
+            json={"action": "enable"},
+            headers={"Origin": "https://evil.example", "X-CSRF-Token": csrf_token},
+        )
     ).status_code == 403
+
     assert (
-        await client.post(url.replace(f"events/{event.id}", "events/999"), json={"action": "enable"})
+        await client.post(
+            url.replace(f"events/{event.id}", "events/999"),
+            json={"action": "enable"},
+            headers={"X-CSRF-Token": csrf_token},
+        )
     ).status_code == 404
 
 
 @pytest.mark.anyio
 async def test_source_conflict_capacity_and_recovery(environment, monkeypatch):
-    client, event, rooms, media, calls, start, stop = environment
+    client, event, rooms, media, calls, start, stop, *_ = environment
     room = rooms[0]
     token = await enable(client, event, room)
     auth = credentials(room, token)
@@ -357,7 +379,7 @@ async def test_source_conflict_capacity_and_recovery(environment, monkeypatch):
 
 @pytest.mark.anyio
 async def test_reconnect_reuses_room_worker_without_duplicate_start(environment):
-    client, event, rooms, media, _, start, stop = environment
+    client, event, rooms, media, calls, start, stop, *_ = environment
     room = rooms[0]
     token = await enable(client, event, room)
     stop_before = stop.await_count
@@ -391,7 +413,7 @@ async def test_reconnect_reuses_room_worker_without_duplicate_start(environment)
 
 @pytest.mark.anyio
 async def test_reconnect_does_not_reuse_stale_worker_start_time(environment, monkeypatch):
-    client, event, rooms, media, _, start, stop = environment
+    client, event, rooms, media, _, start, stop, *_ = environment
     room = rooms[0]
     monkeypatch.setattr(settings, "program_ingest_stall_secs", 10)
     token = await enable(client, event, room)
@@ -460,7 +482,7 @@ async def test_reconnect_gets_fresh_negotiation_grace_after_previous_grace_elaps
 
 @pytest.mark.anyio
 async def test_video_only_and_two_room_isolation(environment):
-    client, event, rooms, media, _, start, _ = environment
+    client, event, rooms, media, _, start, _, *_ = environment
     for room in rooms:
         token = await enable(client, event, room)
         auth = credentials(room, token)
@@ -541,3 +563,178 @@ async def test_program_final_pipeline_preserves_timing_and_multiple_languages(en
     finally:
         for lang in ["fr", "es"]:
             tts_manager._rooms.pop(tts_manager._get_key(room.id, lang, booth), None)
+
+
+@pytest.mark.anyio
+async def test_deleted_event_room_worker_is_stopped(environment, monkeypatch):
+    client, event, rooms, media, _, start, stop, *_ = environment
+    room = rooms[0]
+    token = await enable(client, event, room)
+    auth = credentials(room, token)
+    assert (await client.post("/internal/media-auth", json=auth)).status_code == 204
+    media[auth["path"]] = {
+        "name": auth["path"],
+        "ready": True,
+        "source": {"type": "webRTCSession", "id": auth["id"]},
+        "tracks": ["Opus"],
+        "bytesReceived": 10,
+    }
+    await ingest.reconcile_once()
+    assert start.await_count == 1
+    monkeypatch.setitem(active_workers, f"program-test-{room.id}-floor", object())  # the running worker
+
+    async with get_session() as session:
+        db_event = await session.get(Event, event.id)
+        db_event.deleted_at = datetime.now(timezone.utc)
+
+    start.reset_mock()
+    stop.reset_mock()
+    await ingest.reconcile_once()
+    start.assert_not_awaited()
+    stop.assert_awaited_once_with(f"program-test-{room.id}-floor")
+    assert room.id not in ingest.health
+
+
+@pytest.mark.anyio
+async def test_deleted_event_worker_is_stopped_while_media_listing_fails(environment, monkeypatch):
+    client, event, rooms, media, _, start, stop, *_ = environment
+    room = rooms[0]
+    token = await enable(client, event, room)
+    auth = credentials(room, token)
+    assert (await client.post("/internal/media-auth", json=auth)).status_code == 204
+    media[auth["path"]] = {
+        "name": auth["path"],
+        "ready": True,
+        "source": {"type": "webRTCSession", "id": auth["id"]},
+        "tracks": ["Opus"],
+        "bytesReceived": 10,
+    }
+    await ingest.reconcile_once()
+    assert start.await_count == 1
+    monkeypatch.setitem(active_workers, f"program-test-{room.id}-floor", object())  # the running worker
+
+    async with get_session() as session:
+        other = Event(slug="other-event", display_name="Other Event")
+        session.add(other)
+        await session.flush()
+        session.add(Room(event_id=other.id, display_name="Other Room", floor_source="program_ingest"))
+        db_event = await session.get(Event, event.id)
+        db_event.deleted_at = datetime.now(timezone.utc)
+
+    # Another room is still active, so the media paths are requested, and that request fails.
+    monkeypatch.setattr(ingest, "media_paths", AsyncMock(side_effect=httpx.ConnectError("media down")))
+    stop.reset_mock()
+    await ingest.reconcile_once()
+    stop.assert_awaited_once_with(f"program-test-{room.id}-floor")
+
+
+@pytest.mark.anyio
+async def test_deleted_event_worker_is_stopped_after_its_health_record_is_dropped(environment, monkeypatch):
+    client, event, rooms, media, _, start, stop, *_ = environment
+    room = rooms[0]
+    booth_id = f"program-test-{room.id}-floor"
+    token = await enable(client, event, room)
+    auth = credentials(room, token)
+    assert (await client.post("/internal/media-auth", json=auth)).status_code == 204
+    media[auth["path"]] = {
+        "name": auth["path"],
+        "ready": True,
+        "source": {"type": "webRTCSession", "id": auth["id"]},
+        "tracks": ["Opus"],
+        "bytesReceived": 10,
+    }
+    await ingest.reconcile_once()
+    assert start.await_count == 1
+    monkeypatch.setitem(active_workers, booth_id, object())  # the running worker
+    # close_sender_session drops the room's health record without stopping its worker.
+    ingest.health.pop(room.id, None)
+
+    async with get_session() as session:
+        db_event = await session.get(Event, event.id)
+        db_event.deleted_at = datetime.now(timezone.utc)
+
+    stop.reset_mock()
+    await ingest.reconcile_once()
+    stop.assert_awaited_once_with(booth_id)
+
+
+async def soft_delete(event):
+    async with get_session() as session:
+        (await session.get(Event, event.id)).deleted_at = datetime.now(timezone.utc)
+
+
+async def connect_whip(client, event, room, media):
+    token = await enable(client, event, room)
+    auth = credentials(room, token)
+    assert (await client.post("/internal/media-auth", json=auth)).status_code == 204
+    media[auth["path"]] = {
+        "name": auth["path"],
+        "ready": True,
+        "source": {"type": "webRTCSession", "id": auth["id"]},
+        "tracks": ["Opus"],
+        "bytesReceived": 10,
+    }
+    return token, auth
+
+
+@pytest.mark.anyio
+async def test_deleted_event_publisher_is_kicked_and_reservation_released(environment):
+    client, event, rooms, media, calls, *_ = environment
+    room = rooms[0]
+    token, auth = await connect_whip(client, event, room, media)
+    await ingest.reconcile_once()
+    await soft_delete(event)
+
+    calls.clear()
+    await ingest.reconcile_once()
+    assert ("POST", f"/v3/webrtcsessions/kick/{auth['id']}") in calls
+    async with get_session() as session:
+        assert (await session.get(Room, room.id)).program_session_id is None
+    # The same encoder reconnecting is refused, so the reservation cannot be taken back.
+    retry = credentials(room, token)
+    assert (await client.post("/internal/media-auth", json=retry)).status_code == 401
+
+
+@pytest.mark.anyio
+async def test_deleted_event_reservation_is_kept_until_the_kick_succeeds(environment, monkeypatch):
+    client, event, rooms, media, *_ = environment
+    room = rooms[0]
+    await connect_whip(client, event, room, media)
+    await ingest.reconcile_once()
+    await soft_delete(event)
+
+    with monkeypatch.context() as patch:
+        patch.setattr(ingest, "kick", AsyncMock(side_effect=httpx.ConnectError("media down")))
+        await ingest.reconcile_once()
+    async with get_session() as session:
+        assert (await session.get(Room, room.id)).program_session_id is not None
+
+    await ingest.reconcile_once()
+    async with get_session() as session:
+        assert (await session.get(Room, room.id)).program_session_id is None
+
+
+@pytest.mark.anyio
+async def test_deleted_event_feed_is_released_while_media_listing_fails(environment, monkeypatch):
+    client, event, rooms, media, calls, _, stop, *_ = environment
+    room = rooms[0]
+    token, auth = await connect_whip(client, event, room, media)
+    await ingest.reconcile_once()
+    monkeypatch.setitem(active_workers, f"program-test-{room.id}-floor", object())  # the running worker
+    async with get_session() as session:
+        other = Event(slug="other-event", display_name="Other Event")
+        session.add(other)
+        await session.flush()
+        session.add(Room(event_id=other.id, display_name="Other Room", floor_source="program_ingest"))
+    await soft_delete(event)
+
+    # Another room is still active, so the media paths are requested, and that request fails.
+    monkeypatch.setattr(ingest, "media_paths", AsyncMock(side_effect=httpx.ConnectError("media down")))
+    calls.clear()
+    stop.reset_mock()
+    await ingest.reconcile_once()
+    stop.assert_awaited_once_with(f"program-test-{room.id}-floor")
+    assert ("POST", f"/v3/webrtcsessions/kick/{auth['id']}") in calls
+    async with get_session() as session:
+        assert (await session.get(Room, room.id)).program_session_id is None
+    assert (await client.post("/internal/media-auth", json=credentials(room, token))).status_code == 401

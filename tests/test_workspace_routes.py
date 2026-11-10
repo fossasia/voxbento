@@ -36,15 +36,20 @@ async def setup_db():
 
 
 def client():
-    return AsyncClient(transport=ASGITransport(app=app), base_url="http://test")
+    return AsyncClient(
+        transport=ASGITransport(app=app),
+        base_url="http://test",
+        cookies={"admin_csrf": "test-csrf-token"},
+        headers={"X-CSRF-Token": "test-csrf-token"},
+    )
 
 
 @pytest.mark.parametrize(
     ("workspace_path", "handler_path"),
     [
-        ("/workspace", "/admin"),
         ("/workspace/events", "/admin/events"),
         ("/workspace/setup", "/admin/setup"),
+        ("/workspace/events/1/caption-overlays/", "/admin/events/1/caption-overlays/"),
         ("/workspace/api/events/1/api-keys", "/admin/api/events/1/api-keys"),
         ("/workspace/models/trigger_download", "/admin/models/trigger_download"),
         ("/workspace/models/download_progress", "/admin/models/download_progress"),
@@ -65,12 +70,32 @@ def client():
             "/workspace/events/1/rooms/2/booths/3/tokens/" + "a1b2c3d4" * 8 + "/revoke",
             "/admin/events/1/rooms/2/booths/3/tokens/" + "a1b2c3d4" * 8 + "/revoke",
         ),
+        (
+            "/workspace/events/1/rooms/2/ai-vocabulary/upload",
+            "/admin/events/1/rooms/2/ai-vocabulary/upload",
+        ),
+        (
+            "/workspace/events/1/rooms/2/ai-vocabulary/export",
+            "/admin/events/1/rooms/2/ai-vocabulary/export",
+        ),
+        (
+            "/workspace/events/1/rooms/2/ai-vocabulary/delete",
+            "/admin/events/1/rooms/2/ai-vocabulary/delete",
+        ),
     ],
 )
 @pytest.mark.anyio
 async def test_workspace_route_inventory_maps_only_known_route_families(workspace_path, handler_path):
     assert workspace_to_admin_path(workspace_path) == handler_path
     assert legacy_admin_to_workspace_path(handler_path) == workspace_path
+
+
+@pytest.mark.anyio
+async def test_my_events_is_not_mapped_but_legacy_admin_home_still_points_to_it():
+    # "/workspace/" is "My events" (#766), served by its own route.
+    assert workspace_to_admin_path("/workspace/") is None
+    assert workspace_to_admin_path("/workspace") is None
+    assert legacy_admin_to_workspace_path("/admin/") == "/workspace/"
 
 
 @pytest.mark.parametrize(
@@ -89,6 +114,7 @@ async def test_workspace_route_inventory_maps_only_known_route_families(workspac
         "/workspace/events/1/rooms/2/booths/3/tokens/abc123/revoke",
         "/workspace/events/1/rooms/2/booths/3/tokens/" + "A1B2C3D4" * 8 + "/revoke",
         "/workspace/events/1/rooms/2/booths/3/tokens/" + "a1b2c3d4" * 8 + "0/revoke",
+        "/workspace/events/1/rooms/2/ai-vocabulary/bogus",
     ],
 )
 @pytest.mark.anyio
@@ -100,16 +126,25 @@ async def test_workspace_route_inventory_rejects_unknown_and_deep_paths(path):
 async def organizer():
     async with get_session() as session:
         event = await create_event(session, slug="shared-event", display_name="Shared Event")
-        user = await create_user(session, email="owner@example.com", display_name="Event Owner")
+        # Existing owners got hosting access in migration 029; creating events needs it.
+        user = await create_user(session, email="owner@example.com", display_name="Event Owner", can_host=True)
         await set_event_membership(session, user_id=user.id, event_id=event.id, role="event_owner")
         event_id = event.id
         user_id = user.id
         email = user.email
 
+    user_token = create_user_token(user_id=user_id, email=email)
+    from portal.auth import decode_token, generate_admin_csrf_token
+
+    csrf_token = generate_admin_csrf_token(decode_token(user_token)["jti"])
+
     return {
         "event_id": event_id,
         "user_id": user_id,
-        "cookies": {"user_token": create_user_token(user_id=user_id, email=email)},
+        "cookies": {
+            "user_token": user_token,
+            "admin_csrf": csrf_token,
+        },
     }
 
 
@@ -141,8 +176,11 @@ async def test_legacy_admin_event_url_redirects_owner_and_preserves_query(organi
 
 
 @pytest.mark.anyio
-async def test_workspace_form_submission_stays_in_workspace_namespace(organizer):
-    async with client() as http:
+async def test_workspace_form_submission_rejects_missing_csrf(organizer):
+    async with AsyncClient(
+        transport=ASGITransport(app=app),
+        base_url="http://test",
+    ) as http:
         response = await http.post(
             f"/workspace/events/{organizer['event_id']}/rooms/",
             data={"display_name": "Main Hall"},
@@ -150,12 +188,29 @@ async def test_workspace_form_submission_stays_in_workspace_namespace(organizer)
             follow_redirects=False,
         )
 
+    assert response.status_code == 403
+
+
+@pytest.mark.anyio
+async def test_workspace_form_submission_stays_in_workspace_namespace(organizer):
+    async with client() as http:
+        response = await http.post(
+            f"/workspace/events/{organizer['event_id']}/rooms/",
+            data={
+                "display_name": "Main Hall",
+                "csrf_token": organizer["cookies"]["admin_csrf"],
+            },
+            headers={"X-CSRF-Token": organizer["cookies"]["admin_csrf"]},
+            cookies=organizer["cookies"],
+            follow_redirects=False,
+        )
+    print(response.text)
     assert response.status_code == 303
     assert response.headers["location"] == f"/workspace/events/{organizer['event_id']}/rooms/"
 
 
 @pytest.mark.anyio
-async def test_super_admin_retains_admin_namespace(organizer):
+async def test_admin_retains_admin_namespace(organizer):
     async with get_session() as s:
         admin_user = await create_user(
             s,
@@ -177,6 +232,45 @@ async def test_super_admin_retains_admin_namespace(organizer):
     assert f"/workspace/events/{organizer['event_id']}/rooms/" not in response.text
 
 
+@pytest.mark.parametrize("page", ["rooms/", "team/", "caption-overlays/"])
+@pytest.mark.anyio
+async def test_admin_nav_is_complete_on_event_pages(organizer, page):
+    async with get_session() as s:
+        admin_user = await create_user(
+            s,
+            email="nav-pages-admin@test.com",
+            display_name="Super Admin",
+            password_hash="hash",
+            is_admin=True,
+        )
+    cookies = {"user_token": create_user_token(user_id=admin_user.id, email=admin_user.email, is_admin=True)}
+    async with client() as http:
+        response = await http.get(f"/admin/events/{organizer['event_id']}/{page}", cookies=cookies)
+
+    assert response.status_code == 200
+    # Admins open Mission Control from each event, not from an Admin tab.
+    assert 'href="/mission-control/"' not in response.text
+    assert 'href="/admin/users/"' in response.text
+    assert 'href="/admin/developer-accounts"' in response.text
+
+
+@pytest.mark.parametrize("page", ["rooms/", "team/", "caption-overlays/"])
+@pytest.mark.anyio
+async def test_event_owner_event_pages_show_my_events_header(organizer, page):
+    # The "My events" area has no header links (#766); the shared user menu and the
+    # breadcrumb back to the event page (which opens Mission Control) replace them.
+    async with client() as http:
+        response = await http.get(f"/workspace/events/{organizer['event_id']}/{page}", cookies=organizer["cookies"])
+        event_page = await http.get(f"/workspace/events/{organizer['event_id']}/", cookies=organizer["cookies"])
+
+    assert response.status_code == 200
+    assert '<span class="app-area app-area--events">My events</span>' in response.text
+    assert 'data-user-menu-button' in response.text
+    assert f'href="/workspace/events/{organizer["event_id"]}/"' in response.text.replace("'", '"')
+    assert 'href="/admin/users/"' not in response.text
+    assert 'href="/mission-control/shared-event/"' in event_page.text
+
+
 @pytest.mark.anyio
 async def test_workspace_api_uses_workspace_namespace(organizer):
     async with client() as http:
@@ -194,6 +288,52 @@ async def test_workspace_api_uses_workspace_namespace(organizer):
     assert response.json() == []
     assert legacy.status_code == 307
     assert legacy.headers["location"] == f"/workspace/api/events/{organizer['event_id']}/api-keys"
+
+
+@pytest.mark.anyio
+async def test_workspace_api_rejects_missing_csrf(organizer):
+    async with AsyncClient(
+        transport=ASGITransport(app=app),
+        base_url="http://test",
+    ) as http:
+        response = await http.post(
+            f"/workspace/api/events/{organizer['event_id']}/api-keys",
+            json={"name": "test-key"},
+            cookies=organizer["cookies"],
+        )
+
+    assert response.status_code == 403
+
+
+@pytest.mark.anyio
+async def test_workspace_mutation_routes_reject_missing_csrf(organizer):
+    event_id = organizer["event_id"]
+
+    paths = [
+        ("POST", f"/workspace/events/{event_id}/rooms/"),
+        ("POST", f"/workspace/api/events/{event_id}/api-keys"),
+        ("POST", f"/workspace/events/{event_id}/members/"),
+        ("POST", f"/workspace/events/{event_id}/team/add"),
+        ("POST", f"/workspace/events/{event_id}/regenerate_join_code/"),
+        ("POST", f"/workspace/events/{event_id}/api-settings"),
+        ("POST", f"/workspace/events/{event_id}/delete"),
+    ]
+
+    async with AsyncClient(
+        transport=ASGITransport(app=app),
+        base_url="http://test",
+    ) as http:
+        for method, path in paths:
+            response = await http.request(
+                method,
+                path,
+                cookies=organizer["cookies"],
+                follow_redirects=False,
+            )
+
+            assert response.status_code == 403, (
+                f"Expected 403 for {method} {path} without CSRF token, got {response.status_code}: {response.text}"
+            )
 
 
 @pytest.mark.anyio
@@ -230,12 +370,13 @@ async def test_organizer_navigation_points_to_workspace(organizer):
     async with client() as http:
         home = await http.get("/", cookies=organizer["cookies"])
         account = await http.get("/account", cookies=organizer["cookies"])
+        my_events = await http.get("/workspace/", cookies=organizer["cookies"])
 
     assert home.status_code == 200
     assert 'href="/workspace/"' in home.text
     assert account.status_code == 200
-    assert 'href="/workspace/">Organizer Workspace</a>' in account.text
-    assert f'href="/workspace/events/{organizer["event_id"]}/"' in account.text
+    assert 'class="app-user-item" href="/workspace/"' in account.text
+    assert f'href="/workspace/events/{organizer["event_id"]}/"' in my_events.text
 
 
 @pytest.mark.anyio
@@ -256,15 +397,15 @@ async def test_unrelated_user_cannot_access_workspace_event(organizer):
 @pytest.mark.anyio
 async def test_event_owner_can_access_general_workspace_routes(organizer):
     async with client() as http:
-        dashboard = await http.get(
+        my_events = await http.get(
             "/workspace/",
             cookies=organizer["cookies"],
             follow_redirects=False,
         )
         setup = await http.get("/workspace/setup", cookies=organizer["cookies"])
 
-    assert dashboard.status_code == 303
-    assert dashboard.headers["location"] == f"/workspace/events/{organizer['event_id']}/"
+    assert my_events.status_code == 200
+    assert f'href="/workspace/events/{organizer["event_id"]}/" class="me-action">Manage event</a>' in my_events.text
     assert setup.status_code == 200
 
 
@@ -324,6 +465,7 @@ async def test_workspace_event_creation_assigns_creator_ownership(organizer, pat
             path,
             data={"slug": slug, "display_name": display_name},
             cookies=organizer["cookies"],
+            headers={"X-CSRF-Token": organizer["cookies"]["admin_csrf"]},
             follow_redirects=False,
         )
 
@@ -364,14 +506,15 @@ async def test_room_coordinator_navigation_uses_mission_control(organizer):
     async with client() as http:
         home = await http.get("/", cookies=coordinator_cookies)
         account = await http.get("/account", cookies=coordinator_cookies)
+        my_events = await http.get("/workspace/", cookies=coordinator_cookies)
 
     assert home.status_code == 200
     assert 'href="/mission-control/"' in home.text
     assert 'href="/workspace/"' not in home.text
     assert account.status_code == 200
-    assert 'href="/mission-control/">Mission Control</a>' in account.text
-    assert 'href="/mission-control/shared-event/"' in account.text
-    assert f'href="/workspace/events/{organizer["event_id"]}/"' not in account.text
+    assert 'class="app-user-item" href="/workspace/"' in account.text
+    assert 'href="/mission-control/shared-event/"' in my_events.text
+    assert f'href="/workspace/events/{organizer["event_id"]}/"' not in my_events.text
 
 
 @pytest.mark.anyio
@@ -383,7 +526,7 @@ async def test_mission_control_titles_name_the_brand_once(organizer):
     assert event_list.status_code == 200
     assert "<title>Mission Control Events — Voxbento</title>" in event_list.text
     assert grid.status_code == 200
-    assert "<title>Mission Control - Shared Event — Voxbento</title>" in grid.text
+    assert "<title>Mission Control — Shared Event — Voxbento</title>" in grid.text
 
 
 @pytest.mark.anyio
@@ -427,8 +570,16 @@ async def test_regular_user_navigation_omits_management_dashboard():
     assert '<span class="max-sm:hidden">Dashboard</span>' not in home.text
     assert 'href="/account"' in home.text
     assert account.status_code == 200
-    nav_html = account.text.split('<nav class="header-nav">')[1].split("</nav>")[0]
-    assert nav_html.count("My Account") == 1
+    menu_html = account.text.split('<nav aria-label="User menu">')[1].split("</nav>")[0]
+    assert [
+        label
+        for label in ("My events", "Account", "Developer API", "Admin", "Logout")
+        if f"<span>{label}</span>" in menu_html
+    ] == [
+        "My events",
+        "Account",
+        "Logout",
+    ]
 
 
 @pytest.mark.anyio

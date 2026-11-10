@@ -16,9 +16,10 @@ os.environ["BOOTH_ACCESS_TOKEN"] = ""
 from datetime import datetime, timedelta, timezone
 
 import pytest
+from httpx import ASGITransport, AsyncClient
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
-from portal.auth import create_participant_token, decode_token
+from portal.auth import create_participant_token, create_user_token, decode_token
 from portal.database import (
     create_booth,
     create_event,
@@ -125,7 +126,7 @@ class TestCreateParticipantToken:
             "interpreter",
             "room_coordinator",
             "event_owner",
-            "super_admin",
+            "admin",
         ],
     )
     def test_all_roles_accepted(self, role):
@@ -360,7 +361,11 @@ class TestJoinRoute:
     @pytest.mark.anyio
     async def test_token_with_different_roles(self, _seed):
         _, _, booth = _seed
-        for role in ["interpreter", "room_coordinator", "event_owner", "super_admin"]:
+        # Invite links only give booth roles (#757).
+        for role in ["event_owner", "admin"]:
+            with pytest.raises(ValueError):
+                await self._make_token(booth.id, role=role)
+        for role in ["interpreter", "room_coordinator"]:
             token_str = await self._make_token(booth.id, role=role)
 
             from httpx import ASGITransport, AsyncClient
@@ -710,7 +715,7 @@ class TestCombinedSessionAndInvitePrecedence:
 
             booth_id = make_booth_id(seed_data["event"].slug, booth.room_id, booth.language_code)
             resolved = await resolve_booth_role(list(sessions.values()), booth_id)
-            assert resolved == "super_admin"
+            assert resolved == "admin"
 
     @pytest.mark.anyio
     async def test_invite_cannot_grant_access_to_unrelated_booth_or_event(self, seed_data):
@@ -792,6 +797,55 @@ class TestCombinedSessionAndInvitePrecedence:
             assert resp.status_code == 200
             assert "data-display-name='Ada Lovelace'" in resp.text
             assert "data-granted-role='interpreter'" in resp.text
+
+    @pytest.mark.anyio
+    async def test_booth_page_email_fallback_fits_display_name_limit(self, seed_data):
+        """A long email used as the booth display name is cut to what booth:join accepts."""
+        from fastapi_app import app
+
+        user = seed_data["user"]
+        booth = seed_data["booth"]
+        long_email = "a" * 240 + "@example.com"
+        user_jwt = create_user_token(user_id=user.id, email=long_email, display_name="", is_admin=False)
+        invite_jwt = create_participant_token(
+            booth_id=booth.id,
+            role="interpreter",
+            event_slug=seed_data["event"].slug,
+            room_id=booth.room_id,
+            language_code=booth.language_code,
+        )
+
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+            resp = await client.get(
+                f"/interpreter/{seed_data['event'].slug}/{booth.room_id}/{booth.language_code}",
+                cookies={"user_token": user_jwt, "session_token": invite_jwt},
+            )
+            assert resp.status_code == 200
+            assert f"data-display-name='{'a' * 200}'" in resp.text
+
+    @pytest.mark.anyio
+    async def test_booth_page_handles_missing_display_name_and_email(self, seed_data):
+        """A session with no display name or email still renders the booth page."""
+        from fastapi_app import app
+
+        user = seed_data["user"]
+        booth = seed_data["booth"]
+        user_jwt = create_user_token(user_id=user.id, email=None, display_name=None, is_admin=False)
+        invite_jwt = create_participant_token(
+            booth_id=booth.id,
+            role="interpreter",
+            event_slug=seed_data["event"].slug,
+            room_id=booth.room_id,
+            language_code=booth.language_code,
+        )
+
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+            resp = await client.get(
+                f"/interpreter/{seed_data['event'].slug}/{booth.room_id}/{booth.language_code}",
+                cookies={"user_token": user_jwt, "session_token": invite_jwt},
+            )
+            assert resp.status_code == 200
+            assert "data-display-name=''" in resp.text
 
     @pytest.mark.anyio
     async def test_malformed_and_two_part_booth_ids_rejected(self, seed_data):

@@ -1,10 +1,12 @@
+from __future__ import annotations
+
 import asyncio
 from unittest.mock import AsyncMock, patch
 
 import pytest
 
 from portal.database import get_session
-from portal.models import DBBooth, Event, Room, RoomTranslationLanguage, TranscriptSegment
+from portal.models import AIVocabularyEntry, DBBooth, Event, Room, RoomTranslationLanguage, TranscriptSegment
 from portal.translations.worker import TranslationWorker
 
 
@@ -57,11 +59,12 @@ async def db_data(setup_db):
 @pytest.mark.anyio
 async def test_language_independence(db_data, mock_broadcast):
     worker = TranslationWorker(mock_broadcast)
+    synthesized_text = {}
 
     # We will mock _call_llm and synthesize.
     # We want French to be slow and Spanish to be fast.
 
-    async def fake_call_llm(provider, model, api_key, text, lang_name, source_lang_name):
+    async def fake_call_llm(provider, model, api_key, text, lang_name, source_lang_name, **kwargs):
         if lang_name == "French":
             await asyncio.sleep(0.2)
             return "Bonjour le monde"
@@ -70,6 +73,7 @@ async def test_language_independence(db_data, mock_broadcast):
         return "Unknown"
 
     async def fake_synthesize(room_id, text, lang_code):
+        synthesized_text[lang_code] = text
         return b"fake_audio"
 
     with patch.object(worker, "_call_llm", new=fake_call_llm):
@@ -108,13 +112,225 @@ async def test_language_independence(db_data, mock_broadcast):
                 assert fr_call.args[7] == "Bonjour le monde"
                 assert fr_call.args[8] is None
 
+                # TTS consumes the exact contextual translation broadcast to caption listeners;
+                # it does not perform a second, context-free translation.
+                assert synthesized_text == {
+                    "es": "Hola mundo",
+                    "fr": "Bonjour le monde",
+                }
+
+
+@pytest.mark.anyio
+async def test_vocabulary_lookup_failure_still_translates(db_data, mock_broadcast):
+    worker = TranslationWorker(mock_broadcast)
+    seen_vocabulary = {}
+
+    async with get_session() as s:
+        room = await s.get(Room, db_data["room"].id)
+        room.floor_ai_vocabulary_enabled = True
+
+    async def fake_call_llm(provider, model, api_key, text, lang_name, source_lang_name, **kwargs):
+        seen_vocabulary[lang_name] = kwargs.get("vocabulary_entries")
+        return f"translated {lang_name}"
+
+    async def boom(*args, **kwargs):
+        raise RuntimeError("glossary database is down")
+
+    async def fake_synthesize(room_id, text, lang_code):
+        return b"fake_audio"
+
+    with patch.object(worker, "_call_llm", new=fake_call_llm):
+        with patch("portal.translations.worker.resolve_vocabulary_entries", new=boom):
+            with patch("portal.tts.worker.synthesize", new=fake_synthesize):
+                with patch("portal.websockets.manager.tts_manager.has_listeners", return_value=True):
+                    with patch(
+                        "portal.websockets.manager.TTSConnectionManager.broadcast_bundle", new_callable=AsyncMock
+                    ) as mock_bundle:
+                        await worker.handle_translation(
+                            room_id=db_data["room"].id,
+                            segment_id=db_data["segment"].id,
+                            text="Hello world",
+                            booth_id_str="floor",
+                            uuid_segment_id="1234-uuid",
+                            seq=1,
+                        )
+
+    es_call = next(c for c in mock_bundle.call_args_list if c.args[1] == "es")
+    assert es_call.args[7] == "translated Spanish"
+    assert es_call.args[8] is None
+    assert seen_vocabulary["Spanish"] == []
+
+
+@pytest.mark.anyio
+async def test_vocabulary_lookup_timeout_still_translates(db_data, mock_broadcast):
+    from portal.translations import worker as worker_module
+
+    worker = TranslationWorker(mock_broadcast)
+    seen_vocabulary = {}
+
+    async with get_session() as s:
+        room = await s.get(Room, db_data["room"].id)
+        room.floor_ai_vocabulary_enabled = True
+
+    async def fake_call_llm(provider, model, api_key, text, lang_name, source_lang_name, **kwargs):
+        seen_vocabulary[lang_name] = kwargs.get("vocabulary_entries")
+        return f"translated {lang_name}"
+
+    async def stalls(*args, **kwargs):
+        await asyncio.sleep(30)
+
+    async def fake_synthesize(room_id, text, lang_code):
+        return b"fake_audio"
+
+    with patch.object(worker_module, "VOCABULARY_LOOKUP_TIMEOUT", 0.05):
+        with patch.object(worker, "_call_llm", new=fake_call_llm):
+            with patch("portal.translations.worker.resolve_vocabulary_entries", new=stalls):
+                with patch("portal.tts.worker.synthesize", new=fake_synthesize):
+                    with patch("portal.websockets.manager.tts_manager.has_listeners", return_value=True):
+                        with patch(
+                            "portal.websockets.manager.TTSConnectionManager.broadcast_bundle", new_callable=AsyncMock
+                        ) as mock_bundle:
+                            await worker.handle_translation(
+                                room_id=db_data["room"].id,
+                                segment_id=db_data["segment"].id,
+                                text="Hello world",
+                                booth_id_str="floor",
+                                uuid_segment_id="1234-uuid",
+                                seq=1,
+                            )
+
+    es_call = next(c for c in mock_bundle.call_args_list if c.args[1] == "es")
+    assert es_call.args[7] == "translated Spanish"
+    assert es_call.args[8] is None
+    assert seen_vocabulary["Spanish"] == []
+
+
+@pytest.mark.anyio
+async def test_captions_and_tts_share_one_contextual_translation(db_data, mock_broadcast):
+    """The glossary-aware translation is produced once and reused for TTS.
+
+    Verifies there is no second, context-free translation on the TTS path.
+    """
+    worker = TranslationWorker(mock_broadcast)
+    llm_calls = []
+    synthesized = {}
+
+    async with get_session() as s:
+        room = await s.get(Room, db_data["room"].id)
+        room.floor_ai_vocabulary_enabled = True
+        room.floor_ai_interpreter_persona = "A conference interpreter."
+        room.floor_ai_interpretation_style = "Formal register."
+        s.add(
+            AIVocabularyEntry(
+                event_id=db_data["event"].id,
+                room_id=room.id,
+                source_term="Voxbento",
+                target_language="all",
+                target_term="Voxbento",
+                priority=100,
+            )
+        )
+
+    async def fake_call_llm(provider, model, api_key, text, lang_name, source_lang_name, **kwargs):
+        llm_calls.append(
+            {
+                "lang": lang_name,
+                "text": text,
+                "persona": kwargs.get("persona"),
+                "style": kwargs.get("style"),
+                "vocabulary": [e.source_term for e in kwargs.get("vocabulary_entries") or []],
+            }
+        )
+        return f"Willkommen bei Voxbento ({lang_name})"
+
+    async def fake_synthesize(room_id, text, lang_code):
+        synthesized[lang_code] = text
+        return b"fake_audio"
+
+    with patch.object(worker, "_call_llm", new=fake_call_llm):
+        with patch("portal.tts.worker.synthesize", new=fake_synthesize):
+            with patch("portal.websockets.manager.tts_manager.has_listeners", return_value=True):
+                with patch(
+                    "portal.websockets.manager.TTSConnectionManager.broadcast_bundle", new_callable=AsyncMock
+                ) as mock_bundle:
+                    await worker.handle_translation(
+                        room_id=db_data["room"].id,
+                        segment_id=db_data["segment"].id,
+                        text="Welcome to Voxbento",
+                        booth_id_str="floor",
+                        uuid_segment_id="1234-uuid",
+                        seq=1,
+                    )
+
+    # One translation per target language, not two (captions + TTS would be two).
+    assert sorted(call["lang"] for call in llm_calls) == ["French", "Spanish"]
+
+    # The configuration reached that single call.
+    for call in llm_calls:
+        assert call["persona"] == "A conference interpreter."
+        assert call["style"] == "Formal register."
+        assert call["vocabulary"] == ["Voxbento"]
+
+    # What listeners read and what listeners hear are the same string.
+    for lang_code, lang_name in (("es", "Spanish"), ("fr", "French")):
+        caption = next(c for c in mock_bundle.call_args_list if c.args[1] == lang_code and c.args[7])
+        assert caption.args[7] == f"Willkommen bei Voxbento ({lang_name})"
+        assert synthesized[lang_code] == caption.args[7]
+
+
+@pytest.mark.anyio
+async def test_glossary_lookup_does_not_hold_an_inference_slot(db_data, mock_broadcast):
+    """A slow lookup must not occupy one of the two per-language inference slots."""
+    from portal.translations import worker as worker_module
+
+    worker = TranslationWorker(mock_broadcast)
+    held_during_lookup = []
+
+    async with get_session() as s:
+        room = await s.get(Room, db_data["room"].id)
+        room.floor_ai_vocabulary_enabled = True
+
+    async def slow_lookup(*args, **kwargs):
+        # Record how many inference slots are taken while the lookup is in flight.
+        sem = worker_module.LANGUAGE_SEMAPHORES.get("es")
+        held_during_lookup.append(0 if sem is None else 2 - sem._value)
+        await asyncio.sleep(0.2)
+        return []
+
+    async def fake_call_llm(provider, model, api_key, text, lang_name, source_lang_name, **kwargs):
+        return f"translated {lang_name}"
+
+    async def fake_synthesize(room_id, text, lang_code):
+        return b"fake_audio"
+
+    with patch.object(worker, "_call_llm", new=fake_call_llm):
+        with patch("portal.translations.worker.resolve_vocabulary_entries", new=slow_lookup):
+            with patch("portal.tts.worker.synthesize", new=fake_synthesize):
+                with patch("portal.websockets.manager.tts_manager.has_listeners", return_value=True):
+                    with patch(
+                        "portal.websockets.manager.TTSConnectionManager.broadcast_bundle", new_callable=AsyncMock
+                    ):
+                        await worker.handle_translation(
+                            room_id=db_data["room"].id,
+                            segment_id=db_data["segment"].id,
+                            text="Hello world",
+                            booth_id_str="floor",
+                            uuid_segment_id="1234-uuid",
+                            seq=1,
+                        )
+
+    assert held_during_lookup, "the lookup never ran"
+    assert max(held_during_lookup) == 0, (
+        f"glossary lookup held {max(held_during_lookup)} inference slot(s); it must resolve before acquiring one"
+    )
+
 
 @pytest.mark.anyio
 async def test_pipeline_failure_degrades_gracefully(db_data, mock_broadcast):
     worker = TranslationWorker(mock_broadcast)
 
     # Simulate LLM failure for Spanish, and TTS timeout for French
-    async def fake_call_llm(provider, model, api_key, text, lang_name, source_lang_name):
+    async def fake_call_llm(provider, model, api_key, text, lang_name, source_lang_name, **kwargs):
         if lang_name == "Spanish":
             return None  # Simulate failure
         return "Bonjour le monde"
@@ -180,3 +396,470 @@ async def test_source_language_bypass(db_data, mock_broadcast):
         assert en_call.args[6] == "Hello world"  # original text
         assert en_call.args[7] == "Hello world"  # translation == original text
         assert en_call.args[8] is None  # no error
+
+
+@pytest.mark.anyio
+async def test_queue_counter_restored_when_glossary_lookup_cancelled(db_data, mock_broadcast):
+    """Cancelling a task during glossary lookup must not leak the per-language queue slot."""
+    import asyncio
+
+    from portal.translations import worker as worker_module
+
+    worker = TranslationWorker(mock_broadcast)
+    lang = "zz-cancel"
+    queue_key = f"floor:{lang}"
+    worker_module.LANGUAGE_QUEUES[queue_key] = 0
+
+    async with get_session() as s:
+        room = await s.get(Room, db_data["room"].id)
+        room.floor_ai_vocabulary_enabled = True
+        event = await s.get(Event, db_data["event"].id)
+
+    started = asyncio.Event()
+
+    async def hanging_lookup(*args, **kwargs):
+        started.set()
+        await asyncio.Event().wait()
+
+    async def fake_call_llm(provider, model, api_key, text, lang_name, source_lang_name, **kwargs):
+        return "done"
+
+    async def fake_synthesize(room_id, text, lang_code):
+        return b"audio"
+
+    with patch("portal.translations.worker.resolve_vocabulary_entries", new=hanging_lookup):
+        task = asyncio.create_task(
+            worker._translate_and_broadcast(
+                event,
+                room,
+                "local",
+                "nllb",
+                "k",
+                lang,
+                "Lang",
+                "en",
+                "English",
+                db_data["segment"].id,
+                "Hello",
+                "floor",
+                "uuid",
+                1,
+            )
+        )
+        await asyncio.wait_for(started.wait(), timeout=2)
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+
+    assert worker_module.LANGUAGE_QUEUES[queue_key] == 0
+
+    # A subsequent translation for the same language is still accepted.
+    with patch.object(worker, "_call_llm", new=fake_call_llm):
+        with patch("portal.tts.worker.synthesize", new=fake_synthesize):
+            with patch("portal.websockets.manager.tts_manager.has_listeners", return_value=True):
+                with patch(
+                    "portal.websockets.manager.TTSConnectionManager.broadcast_bundle", new_callable=AsyncMock
+                ) as bundle:
+                    room.floor_ai_vocabulary_enabled = False
+                    await worker._translate_and_broadcast(
+                        event,
+                        room,
+                        "local",
+                        "nllb",
+                        "k",
+                        lang,
+                        "Lang",
+                        "en",
+                        "English",
+                        db_data["segment"].id,
+                        "Hello",
+                        "floor",
+                        "uuid2",
+                        2,
+                    )
+    assert bundle.call_count >= 1
+    assert worker_module.LANGUAGE_QUEUES[queue_key] == 0
+
+
+@pytest.mark.anyio
+async def test_handle_translation_missing_segment_aborts(db_data, mock_broadcast):
+    """A segment id that does not exist must abort without broadcasting anything."""
+    worker = TranslationWorker(mock_broadcast)
+
+    with patch(
+        "portal.websockets.manager.TTSConnectionManager.broadcast_bundle", new_callable=AsyncMock
+    ) as mock_bundle:
+        await worker.handle_translation(
+            room_id=db_data["room"].id,
+            segment_id=999999,
+            text="Hello world",
+            booth_id_str="floor",
+            uuid_segment_id="missing-uuid",
+            seq=1,
+        )
+
+    assert mock_bundle.call_count == 0
+
+
+@pytest.mark.anyio
+async def test_handle_translation_no_active_listeners_skips_translation(db_data, mock_broadcast):
+    """With no TTS or caption listeners, only the source-language bypass broadcast fires."""
+    worker = TranslationWorker(mock_broadcast)
+
+    with (
+        patch("portal.websockets.manager.tts_manager.has_listeners", return_value=False),
+        patch("portal.websockets.manager.listener_manager.has_listeners", return_value=False),
+        patch("portal.websockets.manager.TTSConnectionManager.broadcast_bundle", new_callable=AsyncMock) as mock_bundle,
+    ):
+        await worker.handle_translation(
+            room_id=db_data["room"].id,
+            segment_id=db_data["segment"].id,
+            text="Hello world",
+            booth_id_str="floor",
+            uuid_segment_id="no-listeners-uuid",
+            seq=1,
+        )
+
+    # fr/es are skipped (no listeners); only the "en" source-language bypass is broadcast.
+    assert mock_bundle.call_count == 1
+    assert mock_bundle.call_args_list[0].args[1] == "en"
+
+
+@pytest.mark.anyio
+async def test_handle_translation_floor_disabled_aborts(db_data, mock_broadcast):
+    """When floor translation is disabled, a floor segment must not be translated."""
+    from sqlalchemy import select
+
+    worker = TranslationWorker(mock_broadcast)
+
+    async with get_session() as s:
+        room = await s.scalar(select(Room).where(Room.id == db_data["room"].id))
+        room.floor_translation_enabled = False
+        await s.flush()
+
+    try:
+        with patch(
+            "portal.websockets.manager.TTSConnectionManager.broadcast_bundle", new_callable=AsyncMock
+        ) as mock_bundle:
+            await worker.handle_translation(
+                room_id=db_data["room"].id,
+                segment_id=db_data["segment"].id,
+                text="Hello world",
+                booth_id_str="floor",
+                uuid_segment_id="floor-off-uuid",
+                seq=1,
+            )
+        assert mock_bundle.call_count == 0
+    finally:
+        async with get_session() as s2:
+            room = await s2.scalar(select(Room).where(Room.id == db_data["room"].id))
+            room.floor_translation_enabled = True
+            await s2.flush()
+
+
+# ── Unit coverage for the extracted handle_translation helpers ──
+
+
+def test_resolve_source_lang_name():
+    """Source language name resolution: known code -> name, unknown -> code, None -> English."""
+    from portal.translations.worker import _resolve_source_lang_name
+
+    assert _resolve_source_lang_name("en") == "English"
+    assert _resolve_source_lang_name("fr") == "French"
+    # Unknown alpha-2 code falls back to the code itself.
+    assert _resolve_source_lang_name("zz") == "zz"
+    # No source language falls back to English.
+    assert _resolve_source_lang_name(None) == "English"
+
+
+def test_enabled_translation_langs_filters_disabled():
+    """The shared enabled-languages helper must drop disabled languages for any owner."""
+    from portal.translations.worker import _enabled_translation_langs
+
+    class _Lang:
+        """Mock language model with an enabled flag."""
+
+        def __init__(self, code, enabled):
+            self.language_code = code
+            self.enabled = enabled
+
+    class _Owner:
+        """Mock owner (Room or DBBooth) containing translation languages."""
+
+        translation_languages = [_Lang("en", True), _Lang("fr", False), _Lang("es", True)]
+
+    result = _enabled_translation_langs(_Owner())
+    assert [lang.language_code for lang in result] == ["en", "es"]
+
+
+@pytest.mark.anyio
+async def test_broadcast_source_language_with_and_without_target_booth():
+    """Source bypass broadcasts translation == original text and only hits listener_manager with a target."""
+    from portal.translations.worker import _broadcast_source_language
+
+    with (
+        patch("portal.websockets.manager.tts_manager.broadcast_bundle", new_callable=AsyncMock) as bundle,
+        patch("portal.websockets.manager.listener_manager.broadcast", new_callable=AsyncMock) as listener_bcast,
+    ):
+        await _broadcast_source_language(1, "en", "booth", "uuid-1", 5, "hello", "evt-1-en")
+
+        bundle.assert_awaited_once()
+        args = bundle.await_args.args
+        assert args[3] == b""  # no audio
+        assert args[6] == "hello"  # original text
+        assert args[7] == "hello"  # translation equals original
+        assert args[8] is None  # no error
+        listener_bcast.assert_awaited_once()
+
+    with (
+        patch("portal.websockets.manager.tts_manager.broadcast_bundle", new_callable=AsyncMock) as bundle2,
+        patch("portal.websockets.manager.listener_manager.broadcast", new_callable=AsyncMock) as listener_bcast2,
+    ):
+        await _broadcast_source_language(1, "en", "booth", "uuid-2", 6, "hi", None)
+
+        bundle2.assert_awaited_once()
+        listener_bcast2.assert_not_awaited()
+
+
+def _make_resolved_job():
+    """Create a mock resolved translation job for task builder unit tests."""
+    from unittest.mock import MagicMock
+
+    from portal.translations.worker import _ResolvedTranslation
+
+    return _ResolvedTranslation(
+        event=MagicMock(slug="evt"),
+        room=MagicMock(id=1),
+        provider="local",
+        model="m",
+        api_key="k",
+        enabled_langs=[
+            MagicMock(language_code="en", language_name="English"),
+            MagicMock(language_code="fr", language_name="French"),
+        ],
+        source_lang_code="en",
+        source_lang_name="English",
+    )
+
+
+def test_build_language_tasks_bypass_and_listener_gating():
+    """Source language is always queued; other languages are skipped when nobody is listening."""
+    from portal.translations.worker import TranslationWorker
+
+    worker = TranslationWorker(AsyncMock())
+    job = _make_resolved_job()
+
+    with (
+        patch("portal.websockets.manager.tts_manager.has_listeners", return_value=False),
+        patch("portal.websockets.manager.listener_manager.has_listeners", return_value=False),
+    ):
+        no_listeners = worker._build_language_tasks(job, 1, "text", "booth", "uuid", 1)
+    for coro in no_listeners:
+        coro.close()
+    # Only the source-language bypass task is created; "fr" is skipped.
+    assert len(no_listeners) == 1
+
+    with (
+        patch("portal.websockets.manager.tts_manager.has_listeners", return_value=True),
+        patch("portal.websockets.manager.listener_manager.has_listeners", return_value=False),
+    ):
+        with_listeners = worker._build_language_tasks(job, 1, "text", "booth", "uuid", 1)
+    for coro in with_listeners:
+        coro.close()
+    # Source bypass + one real translation task.
+    assert len(with_listeners) == 2
+
+
+@pytest.mark.anyio
+async def test_translation_provider_exception_degrades_gracefully(db_data, mock_broadcast):
+    """A provider that raises must degrade to pipeline_failed, not crash the worker loop."""
+    worker = TranslationWorker(mock_broadcast)
+
+    async def boom(provider, model, api_key, text, lang_name, source_lang_name, **kwargs):
+        """Simulate an unexpected provider failure."""
+        raise RuntimeError("provider exploded")
+
+    with (
+        patch.object(worker, "_call_llm", new=boom),
+        patch("portal.websockets.manager.tts_manager.has_listeners", return_value=True),
+        patch("portal.websockets.manager.TTSConnectionManager.broadcast_bundle", new_callable=AsyncMock) as mock_bundle,
+    ):
+        await worker.handle_translation(
+            room_id=db_data["room"].id,
+            segment_id=db_data["segment"].id,
+            text="Hello world",
+            booth_id_str="floor",
+            uuid_segment_id="boom-uuid",
+            seq=1,
+        )
+
+    calls = mock_bundle.call_args_list
+    # Both translated languages fail with pipeline_failed...
+    for code in ("fr", "es"):
+        lang_calls = [c for c in calls if c.args[1] == code]
+        assert lang_calls, f"expected a broadcast for {code}"
+        assert lang_calls[-1].args[3] == b""  # no audio
+        assert lang_calls[-1].args[8] == "pipeline_failed"
+
+    # ...while the source-language bypass still succeeds.
+    en_call = next(c for c in calls if c.args[1] == "en")
+    assert en_call.args[8] is None
+
+
+@pytest.mark.anyio
+async def test_translate_and_broadcast_queue_full_drops_and_broadcasts_failure(db_data, mock_broadcast):
+    """When the language queue depth reaches 15, drop segment and broadcast pipeline_failed."""
+    from portal.translations import worker as worker_module
+
+    worker = TranslationWorker(mock_broadcast)
+    queue_key = "floor:fr"
+    worker_module.LANGUAGE_QUEUES[queue_key] = 15
+
+    try:
+        with patch(
+            "portal.websockets.manager.TTSConnectionManager.broadcast_bundle", new_callable=AsyncMock
+        ) as mock_bundle:
+            await worker._translate_and_broadcast(
+                event=db_data["event"],
+                room=db_data["room"],
+                provider="local",
+                model="m",
+                api_key="k",
+                lang_code="fr",
+                lang_name="French",
+                source_lang_code="en",
+                source_lang_name="English",
+                segment_id=db_data["segment"].id,
+                text="Hello world",
+                booth_id_str="floor",
+                uuid_segment_id="qfull-uuid",
+                seq=10,
+            )
+        assert mock_bundle.call_count == 1
+        args = mock_bundle.call_args.args
+        assert args[1] == "fr"
+        assert args[5] == 10  # seq
+        assert args[8] == "pipeline_failed"  # error status
+        assert worker_module.LANGUAGE_QUEUES[queue_key] == 15  # not incremented
+    finally:
+        worker_module.LANGUAGE_QUEUES[queue_key] = 0
+
+
+def test_accumulate_sentence_combines_fragments_and_punctuation():
+    """Sentence accumulation handles normalization, chunk concatenation, and punctuation attachment."""
+    worker = TranslationWorker(AsyncMock())
+
+    # Single input normalization
+    assert worker._accumulate_sentence("Hello world") == "Hello world"
+    assert worker._accumulate_sentence("  Hello world  ") == "Hello world"
+
+    # Fragment concatenation
+    assert worker._accumulate_sentence("Hello", "world") == "Hello world"
+    assert worker._accumulate_sentence("  Hello  ", "  world  ") == "Hello world"
+
+    # Punctuation attachment without extra space
+    assert worker._accumulate_sentence("Hello world", "!") == "Hello world!"
+    assert worker._accumulate_sentence("Hello world", ".") == "Hello world."
+    assert worker._accumulate_sentence("Hello world", ",") == "Hello world,"
+    assert worker._accumulate_sentence("Hello world", "...") == "Hello world..."
+
+    # Empty and None cases
+    assert worker._accumulate_sentence(None, "Hello") == "Hello"
+    assert worker._accumulate_sentence("", "Hello") == "Hello"
+    assert worker._accumulate_sentence("Hello", "") == "Hello"
+    assert worker._accumulate_sentence(None, "") == ""
+
+
+@pytest.mark.anyio
+async def test_process_completed_sentence_orchestrates_tasks():
+    """_process_completed_sentence resolves the job and executes generated tasks."""
+    worker = TranslationWorker(AsyncMock())
+    mock_job = _make_resolved_job()
+    executed_tasks = []
+
+    async def fake_task():
+        executed_tasks.append("ran")
+
+    with (
+        patch.object(worker, "_resolve_translation_job", new=AsyncMock(return_value=mock_job)),
+        patch.object(worker, "_build_language_tasks", return_value=[fake_task()]),
+    ):
+        tasks = await worker._process_completed_sentence(
+            session=AsyncMock(),
+            room_id=1,
+            segment=AsyncMock(),
+            segment_id=10,
+            text="Completed sentence",
+            booth_id_str="floor",
+            uuid_segment_id="uuid-1",
+            seq=1,
+        )
+
+    assert tasks is not None
+    assert len(tasks) == 1
+    assert executed_tasks == ["ran"]
+
+
+@pytest.mark.anyio
+async def test_process_completed_sentence_aborts_when_job_unresolved():
+    """When _resolve_translation_job returns None, _process_completed_sentence returns None and aborts."""
+    worker = TranslationWorker(AsyncMock())
+
+    with (
+        patch.object(worker, "_resolve_translation_job", new=AsyncMock(return_value=None)),
+        patch.object(worker, "_build_language_tasks") as mock_build,
+    ):
+        result = await worker._process_completed_sentence(
+            session=AsyncMock(),
+            room_id=1,
+            segment=AsyncMock(),
+            segment_id=10,
+            text="Completed sentence",
+            booth_id_str="floor",
+            uuid_segment_id="uuid-1",
+            seq=1,
+        )
+
+    assert result is None
+    mock_build.assert_not_called()
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("failure_location", ["status_helper", "cache_probe"])
+async def test_download_status_failure_preserves_inference_timeout(db_data, mock_broadcast, caplog, failure_location):
+    """Both status-failure paths must preserve successful translation and its timeout."""
+    worker = TranslationWorker(mock_broadcast)
+    target = (
+        "portal.translations.providers.local.get_download_progress"
+        if failure_location == "status_helper"
+        else "huggingface_hub.snapshot_download"
+    )
+    with (
+        patch(target, side_effect=PermissionError("private model path")),
+        patch.object(worker, "_call_llm", new_callable=AsyncMock, return_value="Bonjour"),
+        patch("portal.tts.worker.synthesize", new_callable=AsyncMock, return_value=b"audio"),
+        patch("portal.websockets.manager.tts_manager.broadcast_bundle", new_callable=AsyncMock) as bundle,
+        patch("portal.translations.worker.asyncio.wait_for", wraps=asyncio.wait_for) as wait_for,
+    ):
+        await worker._translate_and_broadcast(
+            event=db_data["event"],
+            room=db_data["room"],
+            provider="local",
+            model="uncached-test-model",
+            api_key="",
+            lang_code="fr",
+            lang_name="French",
+            source_lang_code="en",
+            source_lang_name="English",
+            segment_id=db_data["segment"].id,
+            text="Hello",
+            booth_id_str="floor",
+            uuid_segment_id="probe-test",
+            seq=1,
+        )
+
+    assert wait_for.call_args_list[0].kwargs["timeout"] == 60.0
+    assert bundle.await_count == 2
+    assert all(call.args[7] == "Bonjour" and call.args[8] is None for call in bundle.call_args_list)
+    assert "PermissionError" in caplog.text
+    assert "private model path" not in caplog.text

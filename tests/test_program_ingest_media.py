@@ -32,17 +32,47 @@ pytestmark = [
 ]
 
 
+_RESERVED_PORTS: set[int] = set()
+
+
+def free_ports(count: int) -> list[int]:
+    sockets: list[socket.socket] = []
+    ports: list[int] = []
+    try:
+        for _ in range(count):
+            while True:
+                sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+                sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+                sock.bind(("127.0.0.1", 0))
+                port = sock.getsockname()[1]
+                if port not in _RESERVED_PORTS:
+                    _RESERVED_PORTS.add(port)
+                    sockets.append(sock)
+                    ports.append(port)
+                    break
+                sock.close()
+    finally:
+        for sock in sockets:
+            sock.close()
+    return ports
+
+
 def free_port() -> int:
-    with socket.socket() as sock:
-        sock.bind(("127.0.0.1", 0))
-        return sock.getsockname()[1]
+    while True:
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
+            sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+            sock.bind(("127.0.0.1", 0))
+            port = sock.getsockname()[1]
+            if port not in _RESERVED_PORTS:
+                _RESERVED_PORTS.add(port)
+                return port
 
 
 async def test_native_whip_auth_decode_revoke(tmp_path, monkeypatch):
     assert shutil.which("ffmpeg")
     configure(f"sqlite+aiosqlite:///{tmp_path}/test.db")
     await init_db()
-    http_port, api_port, whip_port, rtsp_port, ice_port = [free_port() for _ in range(5)]
+    http_port, api_port, whip_port, rtsp_port, ice_port = free_ports(5)
     monkeypatch.setattr(settings, "program_ingest_enabled", True)
     monkeypatch.setattr(settings, "mediamtx_api_base", f"http://127.0.0.1:{api_port}")
     monkeypatch.setattr(settings, "program_ingest_disconnect_grace_secs", 0)

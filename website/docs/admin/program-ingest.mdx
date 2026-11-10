@@ -1,0 +1,132 @@
+---
+title: "Program Stream Ingest and YouTube Relay — Voxbento Admin"
+sidebarTitle: "Program Ingest & Relay"
+description: "Ingest floor audio directly from hardware encoders via authenticated HTTPS WHIP or RTMPS with optional YouTube relay."
+---
+
+import Tabs from "@theme/Tabs";
+import TabItem from "@theme/TabItem";
+
+While Voxbento default floor audio monitoring uses the self-hosted Jitsi Meet bot (`floor-bot`), high-production conferences often prefer ingesting clean program audio directly from an external hardware video switcher (e.g. Blackmagic ATEM, OBS, vMix).
+
+Voxbento supports **room-scoped Program Stream Ingest** (#690), optional **RTMPS ingest as an extra destination** (#1087) and optional **YouTube RTMPS Relay** (#749).
+
+## Architecture Overview
+
+```
+                      ┌──────────────────────────────────────────────┐
+                      │              MediaMTX Server                 │
+                      │                                              │
+                      │  /pycon2026/14/floor                         │
+                      └───────▲───────────────────────────────┬──────┘
+                              │ HTTPS WHIP / RTMPS            │ RTSP
+                              │                               ▼
+[ External Video Switcher ]───┘                    [ Transcription Pipeline ]
+                                                              │
+                                                              ▼
+                                                   [ Translation & TTS ]
+                                                              │
+                                                              ▼
+                                                   [ Listeners (WHEP / WS) ]
+```
+
+- Ingest audio terminates directly in MediaMTX on the canonical floor path (`{event_slug}/{room_id}/floor`).
+- FastAPI validates stream credentials via private callback (`/internal/media-auth`) and never handles media bytes.
+- Only one floor source owns a room at any time: either the **Meeting Agent** (`jitsi_bot`) or **Program Ingest** (`program_ingest`).
+
+## Ingest Modes
+
+<Tabs>
+<TabItem value="whip" label="HTTPS WHIP Ingest (Default)">
+
+The external encoder sends a WebRTC stream via HTTPS WHIP directly to MediaMTX.
+
+- **URL format**: `https://{domain}:{port}/{event_slug}/{room_id}/floor/whip`
+- **Authentication**: Bearer stream key generated on the room page.
+- **Latency**: Sub-second end-to-end delay.
+- **Best for**: Encoders with native WHIP output (OBS Studio 30+, modern hardware encoders).
+
+</TabItem>
+<TabItem value="rtmps" label="RTMPS Extra Destination">
+
+The streaming tool keeps sending to YouTube and also pushes an authenticated RTMPS stream to MediaMTX for captions, translation and TTS. Nothing is relayed, so a VoxBento outage never touches YouTube.
+
+- **URL format**: `rtmps://{domain}:1936/{event_slug}/{room_id}`
+- **Stream Key format**: `floor?key={program_key}`
+- **Best for**: StreamYard, Restream, vMix, Zoom/Teams live streaming or OBS with a multi-output plugin, which can add a "Custom RTMP" destination. Acceptance of the `floor?key=…` format is still being verified; rehearse with the exact tool before the event.
+
+</TabItem>
+<TabItem value="rtmps-relay" label="RTMPS Relay Mode">
+
+The encoder pushes a single secure RTMPS stream (`H.264 + AAC`) to MediaMTX. MediaMTX makes the audio available for transcription and translation, while a dedicated `program-relay` service forwards the untouched video and audio stream to YouTube.
+
+- **URL format**: `rtmps://{domain}:1936/{event_slug}/{room_id}`
+- **Stream Key format**: `floor?key={program_key}`
+- **Destination**: Stream key is Fernet-encrypted in the database and forwarded only to allow-listed YouTube ingest servers.
+- **Best for**: Broadcast setups wanting to simultaneously interpret a live conference stage and livestream it to YouTube without running duplicate encoder outputs.
+
+</TabItem>
+</Tabs>
+
+## Enabling Program Ingest on a Room
+
+### 1. Configure Floor Transcription Prerequisites
+
+Before connecting your encoder, configure the room's transcription settings so the worker can launch as soon as media frames arrive:
+
+1. Open your room in the workspace (`/workspace/events/{event_id}/rooms/{room_id}/` or `/admin/...`).
+2. Click **Edit languages**, choose the language the speakers use, and turn on **Captions** (or choose AI voice or AI captions for a language, which turns captions on).
+3. Optionally, on the **AI settings** tab, choose the captions **Service** (for example Whisper built in, OpenAI, Deepgram, NVIDIA Parakeet or ElevenLabs; cloud services need their API key under API keys) and click **Save AI settings**.
+
+### 2. Enable Ingest and Generate Credentials (OBS streams to YouTube itself)
+
+1. On the room page, open **Room audio** and choose **From streaming software**.
+2. Under *How does your stream reach YouTube?* choose **OBS streams to YouTube itself** and click **Enable ingest and create token**. If a Meeting Agent is running, confirm the source change.
+3. Copy the **WHIP server URL** (`https://{domain}/{event_slug}/{room_id}/floor/whip`) and the one-time **Bearer token**.
+4. Send VoxBento a **separate** WHIP stream while YouTube keeps receiving your normal one. OBS *Settings → Stream* holds only one destination, so choosing **WHIP** there replaces your YouTube output. Use one of:
+   - a second encoder (or a second OBS instance) with *Settings → Stream*, Service **WHIP**, the URL and the Bearer token;
+   - a multi-output plugin or an external distribution service that supports WHIP alongside YouTube;
+   - or, if you only want one output from OBS, **VoxBento forwards to YouTube** instead (below).
+
+   Rehearse the exact second-output setup before the event (see `docs/program-stream-ingest.md`).
+5. Start streaming. *Encoder → VoxBento* turns **Connected**, and floor transcription starts as soon as audio arrives (provided floor transcription, a floor language and a usable provider are configured).
+
+## Add VoxBento as an Extra Destination
+
+Use this when your streaming tool already sends to YouTube and can add a second **Custom RTMP** destination. YouTube keeps receiving the tool's own output; VoxBento only listens to its copy.
+
+If the option says *Not switched on for this server yet*, the server operator runs `scripts/setup-youtube-relay.sh --ingest-only` once (see `docs/program-relay.md` → *RTMPS ingest only*).
+
+1. On the room page, open **Room audio → From streaming software** and choose **Add VoxBento as an extra destination**.
+2. Click **Create stream key**. Copy the **Server** (`rtmps://{domain}:1936/{event_slug}/{room_id}`) and the **Stream key** (`floor?key=…`, shown once, valid 30 days). Tools with a single URL field use **Copy full URL**.
+3. In StreamYard, Restream, vMix, Zoom/Teams live streaming or your OBS multi-output plugin, add a **Custom RTMP** destination and paste the server and stream key. Send **AAC** audio.
+4. Keep your YouTube destination as it is and start streaming. *Encoder → VoxBento* turns **Connected**, and captions start as soon as audio arrives.
+
+Rehearse with your exact tool before the event: not every platform accepts every stream key shape.
+
+## Sending a Browser Tab's Audio (Chrome or Edge)
+
+To caption a stream that plays in a browser tab, such as a YouTube live stream, you do not need Jitsi or the Meeting Agent:
+
+1. Open the stream yourself in one tab. On the room page, open **Room audio → From a computer at the sound desk** and open the sender page in another tab.
+2. Choose **Browser tab** as the source and tick that you have the right to interpret and caption the stream.
+3. Click **Start sending**, pick the stream's tab and keep **Also share tab audio** ticked.
+4. Keep both tabs open and the computer awake. If you click **Stop sharing**, the sender stops; start again and pick the tab again.
+5. To show the captions on the stream, copy a URL from **Captions on the stream** on the sender page into OBS or vMix as a browser source. The room needs floor transcription and the event a listener join code.
+
+## YouTube Relay: Step-by-Step for Organizers
+
+Use **VoxBento forwards to YouTube** when OBS should send a single stream. VoxBento passes it to YouTube unchanged and uses its audio for captions. While this mode is on, a VoxBento outage interrupts YouTube, so do a test run with an unlisted stream first.
+
+If the option says *Not switched on for this server yet*, the server operator runs `scripts/setup-youtube-relay.sh` once (see `docs/program-relay.md` → *Server setup*).
+
+1. **YouTube Studio:** **Create → Go live → Stream**, choose *Unlisted* for the test run, and copy the **Stream key**. Turn **Auto-start off** (so you can check the preview before anyone sees it) and **Auto-stop off** (so a short reconnect does not end the broadcast).
+2. **Room page → Room audio → From streaming software:** choose **VoxBento forwards to YouTube**.
+3. **Step 1, Add your YouTube stream key:** paste the key and click **Save stream key**. The server URL is optional. YouTube's own `rtmp://a.rtmp.youtube.com/live2` URL, or a full URL with the key, is accepted and always sent over RTMPS. The key is encrypted and never shown again.
+4. **Step 2, Connect OBS:** click **Create stream key**. Copy the **Server** (`rtmps://{domain}:1936/{event_slug}/{room_id}`) and the **Stream key** (`floor?key=…`, shown once, valid 30 days). Encoders with a single URL field use **Copy full URL**.
+5. **OBS:** *Settings → Stream*, Service **Custom…**, paste Server and Stream Key. In *Output*, use x264 or a hardware **H.264** encoder (not HEVC/AV1), CBR at YouTube's recommended bitrate, keyframe interval **2 s**, and **AAC** audio at 48 kHz.
+6. **Step 3, Go live and check:** start streaming. Wait for *Encoder → VoxBento* **Connected**, *VoxBento → YouTube* **Live** and *Captions and translation* **Processing**. The badge reads **Live on YouTube**. Check the YouTube Studio preview, then click **Go live** in Studio.
+
+Each step shows a check mark when it is done. To change the YouTube key, paste a new one and click **Replace stream key** (OBS stays connected). **Remove** stops forwarding, and **Revoke stream key** disconnects the encoder.
+
+The YouTube key is Fernet-encrypted at rest, write-only, and only sent to allow-listed YouTube RTMPS hosts. The `program-relay` container copies the stream with `ffmpeg -c copy` (no re-encoding). A troubleshooting table covering every status message is in `docs/program-relay.md`.

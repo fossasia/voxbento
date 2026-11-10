@@ -7,8 +7,10 @@ from dataclasses import dataclass, field
 
 from sqlalchemy import select, update
 
+from portal import youtube_captions
 from portal.database import get_session
 from portal.models import Room
+from portal.tasks import track_task
 from portal.transcription.timing import SegmentTiming, segment_timing, timing_metadata
 
 logger = logging.getLogger(__name__)
@@ -170,6 +172,11 @@ class CaptionAggregator:
                        **timing_metadata()}
         )
 
+        if self.room_id is not None and booth_id.endswith("-floor"):
+            # Non-blocking: queues the caption for the room's YouTube caption track, if one is set up.
+            timing = segment_timing.get()
+            youtube_captions.offer(self.room_id, "floor", final_text, timing.source_received_at_ms if timing else None)
+
         if self.room_id is not None:
             import asyncio
 
@@ -188,7 +195,7 @@ class CaptionAggregator:
                 except Exception as e:
                     logger.error(f"[{booth_id}] _save_and_translate failed: {e}", exc_info=True)
 
-            asyncio.create_task(_save_and_translate())
+            track_task(asyncio.create_task(_save_and_translate()))
 
     async def handle_clear(self, booth_id: str):
         """Called when silence is explicitly detected or a turn ends."""

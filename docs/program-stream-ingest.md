@@ -2,14 +2,18 @@
 
 Keep streaming directly to YouTube; add VoxBento as a second destination.
 VoxBento consumes the organizer's copy, not a YouTube watch/embed URL. It never
-needs a YouTube stream key. This is not an OBS replacement or a YouTube relay.
+needs a YouTube stream key. This is not an OBS replacement or a YouTube relay; for a
+single-output RTMPS workflow where VoxBento relays to YouTube, see
+[RTMPS ingest with YouTube relay](program-relay.md).
 
 ## Transport and rollout
 
 V1 supports **HTTPS WHIP with a bearer token**, Opus audio, and optional video.
 Choose H.264 for broad encoder/browser compatibility. MediaMTX terminates WebRTC;
-Caddy terminates HTTPS signalling. Media never flows through FastAPI. RTMP/SRT
-encoder outputs are not supported in this version; use a WHIP-capable output or
+Caddy terminates HTTPS signalling. Media never flows through FastAPI. Streaming
+tools without WHIP can instead send an authenticated **RTMPS** stream when the
+operator opts in ([RTMPS as an extra destination](#rtmps-as-an-extra-destination)).
+Plaintext RTMP and SRT are not supported; otherwise use a WHIP-capable output or
 external distribution service, or retain the Jitsi floor bot.
 
 The integration is pinned to MediaMTX **1.18.2**. The opt-in native transport test
@@ -28,7 +32,8 @@ Operator rollout (not an automatic deployment):
    Compose. Set `MEDIAMTX_AUTH_HOOK_SECRET` to the same strong random value for the
    portal and MediaMTX (`openssl rand -hex 32`); Compose wires the value to both.
    The portal refuses production startup without it. Never forward 9997/8554 at
-   the firewall. No public RTMP/SRT listener.
+   the firewall. No public RTMP/SRT listener; RTMPS on 1936 opens only with the
+   opt-in `docker-compose.rtmps.yml` or `docker-compose.relay.yml` override.
 3. Set `PUBLIC_BASE_URL` to the actual HTTPS origin and `MEDIAMTX_WHIP_BASE` to
    the same public origin. Set `PROGRAM_INGEST_ENABLED=true` after validating
    this boundary. Default is off. Set the reachable public IP/domain in MediaMTX's
@@ -41,9 +46,9 @@ Operator rollout (not an automatic deployment):
    consistent with the existing BoothRegistry. Horizontal scaling needs shared
    coordination; it is not supported by this feature.
 
-The HTTP authentication policy changes only floor publishing: interpreter paths
-retain their existing publishing behavior. This is **not a general authorization
-redesign for interpreter WHIP**. Every public floor publish is room/token checked;
+The same callback also authorizes interpreter booth paths (#783): the active
+interpreter's browser presents a single-use ticket issued over the booth
+WebSocket, so anonymous booth publishes are refused. Every public floor publish is room/token checked;
 bot RTSP publishing is allowed only from private addresses while `jitsi_bot` owns
 the floor. Read access remains the existing public listener model. Do not expose
 the callback behind another proxy without equivalent blocking and private ports.
@@ -76,15 +81,45 @@ token. Revocation is committed before media cleanup: if MediaMTX cannot confirm
 the disconnect, the API returns `202` with `cleanup_pending: true`, the old token
 remains invalid, and reconciliation retries cleanup. Revoke keeps program
 ownership (it does not silently restart the bot).
-“Switch to Jitsi bot” explicitly returns ownership; connect the meeting from the
-room's **Meeting source** card. Connecting the meeting while program ingest owns
+“Switch to the online meeting” explicitly returns ownership; connect the meeting from the
+room's **Room audio → From the online meeting** panel. Connecting the meeting while program ingest owns
 the floor asks for confirmation, then performs the same switch.
 All source changes affect VoxBento only, not the independent YouTube output.
+
+### RTMPS as an extra destination
+
+StreamYard, Restream, vMix, Zoom/Teams live streaming and OBS multi-output plugins
+can add a **Custom RTMP** destination next to YouTube. In this mode VoxBento accepts
+that second, authenticated RTMPS stream for captions, translation and TTS, while
+YouTube keeps receiving the tool's own output, so a VoxBento outage never touches
+YouTube. Nothing is relayed and `program-relay` is not needed. The server operator
+turns it on once with `scripts/setup-youtube-relay.sh --ingest-only`, which sets
+`PROGRAM_RTMPS_ENABLED=true` through `docker-compose.rtmps.yml`
+([server setup](program-relay.md#rtmps-ingest-only-no-relay)); until then the option
+says *Not switched on for this server yet*.
+
+1. Room page → **Room audio → From streaming software** → **Add VoxBento as an extra
+   destination**, then **Create stream key**.
+2. In the streaming tool add a **Custom RTMP** destination and paste the **Server**
+   (`rtmps://<host>:1936/{event_slug}/{room_id}`) and the **Stream key**
+   (`floor?key=…`, shown once, valid 30 days). Tools with a single URL field use
+   **Copy full URL**.
+3. Keep the YouTube destination as it is and start streaming. *Encoder → VoxBento*
+   turns **Connected**; captions start when audio arrives (send AAC audio).
+
+The key is bound to RTMPS over TLS (`rtmpEncryption: strict`); it never works over
+WHIP, and a browser-sender session secret never works over RTMPS. Which platforms
+accept the `floor?key=…` key shape is being verified in
+[plan 002 step 2](../plans/002-youtube-intake-spike.md); rehearse with your exact
+tool before an event.
 
 ## Browser program-audio sender
 
 For venue sound desks without a WHIP encoder, the event owner can publish the floor
-directly from the room page's **Program audio sender** panel. It selects a local
+directly from a dedicated sender page, opened in its own tab from the room page's
+**Room audio → From a computer at the sound desk** panel (`GET /workspace/events/{id}/rooms/{id}/sender/`,
+event owners only). Because the stream lives in that tab, owners can navigate the
+rest of the console without stopping the floor. It selects a local
 audio input (use a USB sound-desk feed), shows a live level meter, and publishes
 Opus over authenticated WHIP to the same canonical `{event_slug}/{room_id}/floor`
 path. Media never traverses FastAPI; the browser negotiates WebRTC with MediaMTX.
@@ -108,9 +143,44 @@ that session (and only when a browser session was actually open, so a rejected s
 or stray Stop can never disconnect an encoder), leaving any encoder credential and the
 `program_ingest` floor selection intact. Rotating/revoking/switching the source from
 the ingest panel also invalidates any in-flight sender session. The sender UI state
-machine covers connecting, live, reconnecting, no-audio, permission-denied, and
+machine covers sound check, connecting, live, muted, reconnecting, no-audio, permission-denied, and
 stopped; on a transient WebRTC failure it drops the stale WHIP resource, releases the
-old session, and reconnects with a fresh one.
+old session, and reconnects with a fresh one. Reconnects never give up while the
+owner wants to send: back-off doubles to a 30 s cap and retries immediately when the
+browser comes back online. Only a refusal stops the sender: any 4xx except 429,
+such as 409 (another source owns the floor) or 401/403/404 (lost access). A peer
+that recovers by itself cancels any queued rebuild. Mute keeps the session and the floor but
+sends silence (`track.enabled = false`); the meter keeps reading the input so the
+operator can see the desk feed before unmuting. The page also holds a screen wake
+lock, warns before the tab is closed while live, remembers the chosen input per room
+in `localStorage`, re-opens a USB input that is unplugged and reconnected, and swaps
+inputs in place with `replaceTrack`. A **sound check** (meter with a good / quiet /
+clipping hint, plus a 5-second record-and-play-back) runs locally and is never
+sent to listeners. Starting without `sync_offset_ms` keeps the room's saved
+YouTube sync delay.
+
+### Capturing a browser tab
+
+The sender can also publish the audio of a browser tab instead of a local input, so a
+stream playing in a normal tab (for example a YouTube live stream) reaches the floor
+without sharing it into a Jitsi meeting and without the floor bot. This works in
+Chrome and Edge only. Pick **Browser tab** as the source, tick the box
+confirming you have the right to interpret and caption the stream, open the stream
+yourself in another tab of the same browser, click **Start sending**, pick that tab
+in the browser's share dialog and keep **Also share tab audio** ticked. Keep both
+tabs open and do not let the computer sleep. Clicking the browser's **Stop sharing**
+(or closing the shared tab) stops the sender; start again and pick the tab again,
+because a tab cannot be re-shared without a click. Network drops reconnect without
+asking for the tab again. Tab audio bypasses echo cancellation, noise suppression
+and gain control like any other program feed, and the tab stays audible locally. The
+chosen source is remembered per room in `localStorage`, and it cannot be changed
+while sending, testing or recording a sound check. VoxBento never embeds or downloads YouTube:
+it only captures what you explicitly share through the browser's picker.
+
+The sender page also lists the room's caption overlay URLs (floor and any
+translations) with copy buttons, so the operator can add the captions of the
+shared stream to OBS or vMix without leaving the page. They appear once the room
+has floor transcription and the event has a listener join code.
 
 ## Processing, recovery, and capacity
 
@@ -131,6 +201,14 @@ the first. Reconnects may wait for the **15-second disconnect grace** plus one p
 before their old reservation is released. Configure with
 `PROGRAM_INGEST_DISCONNECT_GRACE_SECS`.
 
+Replacing the event's speech-provider API key restarts affected floor processing
+on the next reconciliation pass. Saving the same key again keeps the worker running.
+
+Rooms of a deleted event are skipped by the reconciler, which then stops the room's floor
+worker and its relay, disconnects its encoder and releases its reservation, so the room no longer
+counts against `PROGRAM_INGEST_MAX_ROOMS`. A deleted event no longer authorizes new publishes.
+These steps do not wait for the MediaMTX path list, so they also run while it is unavailable.
+
 States: disabled, waiting, receiving (audio decoder starting), processing (PCM
 progress observed), degraded (no supported audio, stalled decoder, missing STT
 configuration, capacity/control failure), disconnected. Decoder/no-progress
@@ -142,6 +220,10 @@ credentials, or upstream errors. Authentication failures are bounded to 10/IP/mi
 with a bounded process-local cache. Do not enable HTTP request-body/debug logging
 on the media-auth route. The access-log filter redacts the hook key. Monitor
 degraded/disconnected rooms and worker capacity.
+While MediaMTX or the database stays unavailable, the 2 s reconciler logs
+`program_ingest path_list_unavailable` / `program_ingest database_unavailable` once,
+then an `ongoing` reminder every 5 minutes and a `recovered` line when it clears
+(`portal/outage_log.py`, #964), instead of one line per retry.
 
 ## Synchronization
 
@@ -183,7 +265,7 @@ and differs by viewer/network; this is manual calibration, not frame-accurate sy
   This last external/encoder rehearsal is required before production sign-off;
   an automated local test cannot establish it.
 
-Rollback: disable/revoke room ingest and click **Connect meeting** in the room's Meeting source,
+Rollback: disable/revoke room ingest and click **Connect meeting** in the room's Room audio → From the online meeting panel,
 then set the feature flag false. Keep the floor authentication boundary and
 private ports; do not restore anonymous public floor publishing. Migration 025
 supports downgrade, but back up first: downgrade removes program configuration

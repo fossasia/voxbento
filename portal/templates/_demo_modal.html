@@ -1,0 +1,434 @@
+<!-- Demo Request Modal -->
+<style>
+  .demo-modal-root {
+    position: fixed;
+    inset: 0;
+    z-index: 9999;
+    display: none;
+    align-items: center;
+    justify-content: center;
+  }
+  .demo-modal-root.is-open {
+    display: flex;
+  }
+  .demo-modal-backdrop {
+    position: absolute;
+    inset: 0;
+    background: rgba(13, 15, 16, 0.6);
+    backdrop-filter: blur(4px);
+  }
+  .demo-modal-dialog {
+    position: relative;
+    background: #ffffff;
+    border-radius: 12px;
+    box-shadow: 8px 8px 0px #0d0f10;
+    border: 3px solid #0d0f10;
+    width: 100%;
+    max-width: 500px;
+    margin: 16px;
+    overflow: hidden;
+    display: flex;
+    flex-direction: column;
+    max-height: 90vh;
+  }
+  .demo-modal-header {
+    padding: 20px 24px;
+    border-bottom: 2px solid #eef2f6;
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    background: #f8fafc;
+  }
+  .demo-modal-title {
+    margin: 0;
+    font-size: 1.25rem;
+    font-weight: 800;
+    color: #0d0f10;
+  }
+  .demo-modal-close {
+    background: none;
+    border: none;
+    cursor: pointer;
+    color: #64748b;
+    padding: 4px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+  }
+  .demo-modal-close:hover {
+    color: #0d0f10;
+  }
+  .demo-modal-body {
+    padding: 24px;
+    overflow-y: auto;
+  }
+  .demo-modal-form {
+    display: flex;
+    flex-direction: column;
+    gap: 16px;
+  }
+  .demo-modal-step {
+    display: flex;
+    flex-direction: column;
+    gap: 16px;
+  }
+  .demo-modal-step.is-hidden {
+    display: none;
+  }
+  .demo-modal-input,
+  .demo-modal-select {
+    width: 100%;
+    padding: 12px 16px;
+    border-radius: 6px;
+    border: 2px solid #cbd5e1;
+    box-sizing: border-box;
+    font-size: 14px;
+    color: #0d0f10;
+    background: #f8fafc;
+    font-family: inherit;
+  }
+  .demo-modal-input:focus,
+  .demo-modal-select:focus {
+    outline: none;
+    border-color: #0d0f10;
+    background: #ffffff;
+  }
+  .demo-modal-checkbox-row {
+    display: flex;
+    align-items: flex-start;
+    gap: 8px;
+  }
+  .demo-modal-checkbox {
+    margin-top: 4px;
+    width: 16px;
+    height: 16px;
+    flex-shrink: 0;
+    cursor: pointer;
+  }
+  .demo-modal-checkbox-label {
+    font-size: 12px;
+    color: #64748b;
+    line-height: 1.4;
+  }
+  .demo-modal-link {
+    color: #2563eb;
+    text-decoration: underline;
+  }
+  .demo-modal-grid-2 {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 12px;
+  }
+  .demo-modal-phone-row {
+    display: grid;
+    grid-template-columns: 1fr 2fr;
+    gap: 12px;
+  }
+  .demo-modal-phonecode {
+    padding: 12px 8px;
+  }
+  .demo-modal-submit-btn {
+    width: 100%;
+    margin-top: 8px;
+    background: #fbbf24;
+    border: 2px solid #0d0f10;
+    border-radius: 6px;
+    box-shadow: 4px 4px 0px #0d0f10;
+    font-weight: 800;
+    padding: 14px;
+    cursor: pointer;
+    text-transform: uppercase;
+    font-size: 14px;
+    letter-spacing: 0.5px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 8px;
+    color: #0d0f10;
+    transition: all 0.1s ease;
+  }
+  .demo-modal-submit-btn:hover {
+    background: #f59e0b;
+  }
+  .demo-modal-submit-btn:active {
+    box-shadow: 0px 0px 0px #0d0f10;
+    transform: translate(4px, 4px);
+  }
+  .demo-modal-submit-btn.is-hidden {
+    display: none;
+  }
+  .demo-modal-spinner {
+    width: 20px;
+    height: 20px;
+    animation: demo-spin 1s linear infinite;
+    display: none;
+  }
+  .demo-modal-spinner.is-active {
+    display: inline-block;
+  }
+  .demo-modal-spinner-circle {
+    opacity: 0.25;
+  }
+  .demo-modal-spinner-path {
+    opacity: 0.75;
+  }
+  @keyframes demo-spin {
+    from { transform: rotate(0deg); }
+    to { transform: rotate(360deg); }
+  }
+  .demo-modal-alert {
+    padding: 16px;
+    border-radius: 6px;
+    font-size: 14px;
+    text-align: center;
+    font-weight: 700;
+    display: none;
+  }
+  .demo-modal-alert.is-visible {
+    display: block;
+  }
+  .demo-modal-alert--success {
+    color: #16a34a;
+    background: #f0fdf4;
+    border: 2px solid #86efac;
+  }
+  .demo-modal-alert--error {
+    color: #dc2626;
+    background: #fef2f2;
+    border: 2px solid #fca5a5;
+  }
+  body.demo-modal-no-scroll {
+    overflow: hidden;
+  }
+</style>
+
+<div id="demo-modal" class="demo-modal-root" aria-hidden="true">
+    <!-- Backdrop -->
+    <div class="demo-modal-backdrop" onclick="closeDemoModal()"></div>
+    
+    <!-- Modal Content -->
+    <div class="demo-modal-dialog">
+        <!-- Header -->
+        <div class="demo-modal-header">
+            <h2 class="demo-modal-title">Request Hosting Access / Demo</h2>
+            <button type="button" class="demo-modal-close" onclick="closeDemoModal()" aria-label="Close demo modal" title="Close">
+                <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18 6 6 18"/><path d="m6 6 12 12"/></svg>
+            </button>
+        </div>
+        
+        <!-- Form Body -->
+        <div class="demo-modal-body">
+            <form id="demo-request-form" class="demo-modal-form">
+                <!-- Step 1: Email -->
+                <div id="demo-step-1" class="demo-modal-step">
+                    <div>
+                        <input type="email" id="demo-email" required placeholder="Your work email*" value="{{ (user.email if user else '') }}" class="demo-modal-input">
+                    </div>
+                    
+                    <div class="demo-modal-checkbox-row">
+                        <input type="checkbox" id="demo-privacy" required class="demo-modal-checkbox">
+                        <label for="demo-privacy" class="demo-modal-checkbox-label">I agree to VoxBento's <a href="https://voxbento.com/privacy" target="_blank" class="demo-modal-link">Privacy Policy</a> and consent to receive communications.</label>
+                    </div>
+                </div>
+
+                <!-- Step 2: Details (Hidden initially) -->
+                <div id="demo-step-2" class="demo-modal-step is-hidden">
+                    <div class="demo-modal-grid-2">
+                        <input type="text" id="demo-firstname" placeholder="First Name*" value="{{ (user.display_name.split(' ')[0] if user and user.display_name else '') }}" class="demo-modal-input">
+                        <input type="text" id="demo-lastname" placeholder="Last Name*" value="{{ (user.display_name.split(' ')[1] if user and user.display_name and ' ' in user.display_name else '') }}" class="demo-modal-input">
+                    </div>
+                    <div class="demo-modal-phone-row">
+                        <select id="demo-phonecode" class="demo-modal-select demo-modal-phonecode">
+                            <option value="+1">+1 (US)</option>
+                            <option value="+44">+44 (UK)</option>
+                            <option value="+91">+91 (IN)</option>
+                            <option value="other">Other</option>
+                        </select>
+                        <input type="tel" id="demo-phone" placeholder="Phone Number*" class="demo-modal-input">
+                    </div>
+                    <div>
+                        <input type="text" id="demo-company" placeholder="Company / Organization Name*" class="demo-modal-input">
+                    </div>
+                    <div>
+                        <select id="demo-country" class="demo-modal-select">
+                            <option value="" disabled selected>Country*</option>
+                            <option value="US">United States</option>
+                            <option value="UK">United Kingdom</option>
+                            <option value="IN">India</option>
+                            <option value="CA">Canada</option>
+                            <option value="AU">Australia</option>
+                            <option value="DE">Germany</option>
+                            <option value="FR">France</option>
+                            <option value="Other">Other</option>
+                        </select>
+                    </div>
+                    <div class="demo-modal-grid-2">
+                        <select id="demo-industry" class="demo-modal-select">
+                            <option value="" disabled selected>Industry</option>
+                            <option value="Technology">Technology</option>
+                            <option value="Education">Education</option>
+                            <option value="Enterprise">Enterprise</option>
+                            <option value="Non-Profit">Non-Profit</option>
+                            <option value="Other">Other</option>
+                        </select>
+                        <select id="demo-size" class="demo-modal-select">
+                            <option value="" disabled selected>Company Size</option>
+                            <option value="1-50">1-50</option>
+                            <option value="51-200">51-200</option>
+                            <option value="201-1000">201-1000</option>
+                            <option value="1000+">1000+</option>
+                        </select>
+                    </div>
+                    <div>
+                        <select id="demo-language" class="demo-modal-select">
+                            <option value="" disabled selected>I need language support for...*</option>
+                            <option value="Conferences">Conferences</option>
+                            <option value="Internal Meetings">Internal Meetings</option>
+                            <option value="Webinars">Webinars</option>
+                            <option value="Other">Other</option>
+                        </select>
+                    </div>
+                </div>
+                
+                <button type="submit" id="demo-submit-btn" class="demo-modal-submit-btn">
+                    <span>Continue</span>
+                    <svg class="demo-modal-spinner" id="demo-spinner" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
+                        <circle class="demo-modal-spinner-circle" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
+                        <path class="demo-modal-spinner-path" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+                    </svg>
+                </button>
+                
+                <div id="demo-success" class="demo-modal-alert demo-modal-alert--success">
+                    Thank you! We've received your request and will be in touch shortly.
+                </div>
+                <div id="demo-error" class="demo-modal-alert demo-modal-alert--error">
+                    Oops! Something went wrong. Please try again.
+                </div>
+            </form>
+        </div>
+    </div>
+</div>
+
+<script>
+    let demoStep = 1;
+
+    function openDemoModal() {
+        const modal = document.getElementById('demo-modal');
+        if (!modal) return;
+        modal.classList.add('is-open');
+        modal.setAttribute('aria-hidden', 'false');
+        document.body.classList.add('demo-modal-no-scroll');
+        demoStep = 1;
+        const step1 = document.getElementById('demo-step-1');
+        const step2 = document.getElementById('demo-step-2');
+        const successEl = document.getElementById('demo-success');
+        const errorEl = document.getElementById('demo-error');
+        const submitBtn = document.getElementById('demo-submit-btn');
+
+        if (step1) step1.classList.remove('is-hidden');
+        if (step2) step2.classList.add('is-hidden');
+        if (successEl) successEl.classList.remove('is-visible');
+        if (errorEl) errorEl.classList.remove('is-visible');
+        if (submitBtn) {
+            submitBtn.classList.remove('is-hidden');
+            const span = submitBtn.querySelector('span');
+            if (span) span.textContent = 'Continue';
+        }
+    }
+
+    function closeDemoModal() {
+        const modal = document.getElementById('demo-modal');
+        if (!modal) return;
+        modal.classList.remove('is-open');
+        modal.setAttribute('aria-hidden', 'true');
+        document.body.classList.remove('demo-modal-no-scroll');
+    }
+
+    const demoForm = document.getElementById('demo-request-form');
+    if (demoForm) {
+        demoForm.addEventListener('submit', async function(e) {
+            e.preventDefault();
+            
+            if (demoStep === 1) {
+                const email = document.getElementById('demo-email').value;
+                const privacy = document.getElementById('demo-privacy').checked;
+                
+                if (email && privacy) {
+                    demoStep = 2;
+                    const step1 = document.getElementById('demo-step-1');
+                    const step2 = document.getElementById('demo-step-2');
+                    if (step1) step1.classList.add('is-hidden');
+                    if (step2) step2.classList.remove('is-hidden');
+                    
+                    document.getElementById('demo-firstname').required = true;
+                    document.getElementById('demo-lastname').required = true;
+                    document.getElementById('demo-phone').required = true;
+                    document.getElementById('demo-company').required = true;
+                    document.getElementById('demo-country').required = true;
+                    document.getElementById('demo-language').required = true;
+
+                    const submitBtn = document.getElementById('demo-submit-btn');
+                    if (submitBtn) {
+                        const span = submitBtn.querySelector('span');
+                        if (span) span.textContent = 'Submit Request';
+                    }
+                }
+            } else {
+                const btn = document.getElementById('demo-submit-btn');
+                const spinner = document.getElementById('demo-spinner');
+                const errorEl = document.getElementById('demo-error');
+                
+                btn.disabled = true;
+                if (spinner) spinner.classList.add('is-active');
+                if (errorEl) errorEl.classList.remove('is-visible');
+                
+                const data = {
+                    email: document.getElementById('demo-email').value,
+                    firstName: document.getElementById('demo-firstname').value,
+                    lastName: document.getElementById('demo-lastname').value,
+                    phoneNumber: document.getElementById('demo-phonecode').value + " " + document.getElementById('demo-phone').value,
+                    companyName: document.getElementById('demo-company').value,
+                    country: document.getElementById('demo-country').value,
+                    industry: document.getElementById('demo-industry').value,
+                    companySize: document.getElementById('demo-size').value,
+                    languageSupport: document.getElementById('demo-language').value
+                };
+                
+                try {
+                    const response = await fetch('/api/request-demo', {
+                        method: 'POST',
+                        headers: {
+                            'Content-Type': 'application/json'
+                        },
+                        body: JSON.stringify(data)
+                    });
+                    
+                    const result = await response.json();
+                    
+                    if (result.ok) {
+                        const step2 = document.getElementById('demo-step-2');
+                        if (step2) step2.classList.add('is-hidden');
+                        btn.classList.add('is-hidden');
+                        const successEl = document.getElementById('demo-success');
+                        if (successEl) successEl.classList.add('is-visible');
+                        setTimeout(closeDemoModal, 3000);
+                        setTimeout(() => { window.location.reload(); }, 3200);
+                    } else {
+                        if (errorEl) {
+                            errorEl.textContent = result.detail || 'Oops! Something went wrong. Please try again.';
+                            errorEl.classList.add('is-visible');
+                        }
+                    }
+                } catch(err) {
+                    if (errorEl) {
+                        errorEl.textContent = 'Oops! Something went wrong. Please try again.';
+                        errorEl.classList.add('is-visible');
+                    }
+                } finally {
+                    btn.disabled = false;
+                    if (spinner) spinner.classList.remove('is-active');
+                }
+            }
+        });
+    }
+</script>

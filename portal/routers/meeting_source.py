@@ -7,7 +7,7 @@ from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 
 from portal import meeting_source
-from portal.auth import require_event_owner
+from portal.auth import require_admin_csrf, require_event_owner
 from portal.config import settings
 from portal.database import get_event_by_id, get_room_by_id, get_session
 from portal.program_ingest import room_lock
@@ -30,7 +30,7 @@ async def meeting_status(event_id: int, room_id: int) -> JSONResponse:
         return JSONResponse(meeting_source.status(room), headers={"Cache-Control": "no-store"})
 
 
-@router.post("/admin/events/{event_id}/rooms/{room_id}/meeting-source", dependencies=[Depends(require_event_owner)])
+@router.post("/admin/events/{event_id}/rooms/{room_id}/meeting-source", dependencies=[Depends(require_event_owner), Depends(require_admin_csrf)])
 async def meeting_change(request: Request, event_id: int, room_id: int, change: MeetingChange) -> JSONResponse:
     origin = request.headers.get("origin")
     if origin and origin.rstrip("/") != settings.public_base_url.rstrip("/"):
