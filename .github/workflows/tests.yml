@@ -291,6 +291,13 @@ jobs:
       - name: Run unit tests
         run: uv run pytest tests/ -v
 
+      - name: Translation load test (small configuration)
+        shell: bash
+        run: |
+          uv run python tests/translation_load_harness.py \
+            --rooms 3 --languages 1,4 --segments 6 --interval 0.5 --latency 0.1 --markdown \
+            | tee -a "$GITHUB_STEP_SUMMARY"
+
   overlay-browser:
     runs-on: ubuntu-24.04
     timeout-minutes: 10
