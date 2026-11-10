@@ -6,6 +6,7 @@ import csv
 import io
 from dataclasses import dataclass
 from datetime import date, datetime, timezone, tzinfo
+from urllib.parse import unquote
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from fastapi import APIRouter, Depends, HTTPException, Request
@@ -96,7 +97,8 @@ TZ_COOKIE = "vb_tz"
 
 
 def _viewer_tz(request: Request) -> tzinfo:
-    name = request.cookies.get(TZ_COOKIE, "")
+    # The browser percent-encodes the value ("Asia%2FKolkata") and Starlette keeps it encoded.
+    name = unquote(request.cookies.get(TZ_COOKIE, ""))
     if name and len(name) <= 64:
         try:
             return ZoneInfo(name)
@@ -196,8 +198,8 @@ async def event_attendance_export(
                     _csv_text(person.name),
                     _csv_text(person.detail),
                     _csv_text(data.booth_names.get((visit.room_id, visit.language_code), visit.language_code)),
-                    visit.joined_at.astimezone(timezone.utc).strftime("%Y-%m-%d %H:%M:%S"),
-                    visit.left_at.astimezone(timezone.utc).strftime("%Y-%m-%d %H:%M:%S") if visit.left_at else "",
+                    f"{visit.joined_at.astimezone(timezone.utc):%Y-%m-%d %H:%M:%S}",
+                    f"{visit.left_at.astimezone(timezone.utc):%Y-%m-%d %H:%M:%S}" if visit.left_at else "",
                     f"{visit.present_seconds / 60:.1f}",
                     f"{visit.interpreting_seconds / 60:.1f}",
                 )

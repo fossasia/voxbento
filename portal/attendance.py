@@ -22,6 +22,8 @@ from datetime import date, datetime, timezone, tzinfo
 from typing import TYPE_CHECKING
 from uuid import uuid4
 
+from sqlalchemy.exc import SQLAlchemyError
+
 from portal.outage_log import OutageLog
 
 if TYPE_CHECKING:
@@ -171,7 +173,7 @@ class AttendanceTracker:
             return 0
         try:
             written = await save_visits(visits, now)
-        except Exception:
+        except (SQLAlchemyError, OSError):
             self._outage.failed()
             logger.debug("Attendance flush failed", exc_info=True)
             return 0
@@ -184,7 +186,7 @@ class AttendanceTracker:
     async def run(self, interval: float = FLUSH_INTERVAL_SECS) -> None:
         try:
             await close_stale_visits()
-        except Exception:
+        except (SQLAlchemyError, OSError):
             logger.warning("attendance_recovery_failed", exc_info=True)
         try:
             while True:
@@ -200,7 +202,7 @@ async def save_visits(visits: Iterable[Visit], now: datetime) -> int:
     from sqlalchemy import select, update
 
     from portal.database import get_session
-    from portal.models import Event, InterpreterAttendance
+    from portal.models import Event, InterpreterAttendance, User
 
     visits = list(visits)
     slugs = {visit.event_slug for visit in visits}
@@ -208,7 +210,14 @@ async def save_visits(visits: Iterable[Visit], now: datetime) -> int:
     async with get_session() as session:
         result = await session.execute(select(Event.slug, Event.id).where(Event.slug.in_(slugs)))
         event_ids = dict(result.all())
+        # A user deleted since joining must not fail the whole batch on the foreign key. The
+        # visit is kept without the account; if the deletion races this check, this flush
+        # fails and the next one, reading users again, saves it.
+        wanted = {visit.user_id for visit in visits if visit.user_id is not None}
+        existing = set((await session.execute(select(User.id).where(User.id.in_(wanted)))).scalars()) if wanted else set()
         for visit in visits:
+            if visit.user_id is not None and visit.user_id not in existing:
+                visit.user_id = None
             event_id = event_ids.get(visit.event_slug)
             if event_id is None:
                 continue  # the event was deleted; nothing to report under

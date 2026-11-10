@@ -460,7 +460,7 @@ async def test_day_tabs_and_booth_filter_narrow_the_page_and_the_csv(event_setup
     owner = cookies(event_setup["owner"], "owner@example.com")
     base = f"/workspace/events/{event_setup['event']}/attendance/"
     async with client() as http:
-        http.cookies.set("vb_tz", "Asia/Kolkata")
+        http.cookies.set("vb_tz", "Asia%2FKolkata")  # as the browser writes it
         everything = await http.get(base, cookies=owner)
         day_two = await http.get(f"{base}?day=2026-11-10", cookies=owner)
         late_day = await http.get(f"{base}?day=2026-11-11", cookies=owner)
@@ -477,3 +477,24 @@ async def test_day_tabs_and_booth_filter_narrow_the_page_and_the_csv(event_setup
     assert bogus.status_code == 200 and "<script>" not in bogus.text
     assert "2026-11-10" in export.headers["content-disposition"]
     assert "Day two French" in export.text and "Day one German" not in export.text
+    assert "Late German" not in export.text, "the late visit belongs to the 11th, not the 10th"
+
+
+@pytest.mark.anyio
+async def test_a_deleted_user_does_not_block_the_flush(event_setup, clock):
+    """The visit is kept without the account, and other visits in the batch still save."""
+    booth_id = f"conf-{event_setup['room']}-de"
+    registry = BoothRegistry(attendance=AttendanceTracker(clock=clock))
+    await registry.join_participant(
+        booth_id=booth_id, display_name="Gone", role=INTERPRETER, language=LANG, channel_id=CHANNEL, user_id=999_999
+    )
+    await registry.join_participant(
+        booth_id=booth_id, display_name="Ana", role=INTERPRETER, language=LANG, channel_id=CHANNEL,
+        user_id=event_setup["ana"],
+    )
+    assert await registry.attendance.flush() == 2
+
+    async with get_session() as session:
+        rows = {row.display_name: row for row in (await session.execute(select(InterpreterAttendance))).scalars()}
+    assert rows["Gone"].user_id is None
+    assert rows["Ana"].user_id == event_setup["ana"]
