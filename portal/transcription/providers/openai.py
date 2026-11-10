@@ -82,7 +82,7 @@ class OpenAIProvider(TranscriptionProvider):
         code = str(error.get("code") or "").lower()
         detail = str(error.get("message") or error).strip()
         if code in cls._AUTH_ERROR_CODES or any(t in detail.lower() for t in cls._AUTH_ERROR_TOKENS):
-            return TranscriptionAuthError("openai", f"OpenAI API key was rejected ({detail}).")
+            return TranscriptionAuthError("openai", "OpenAI API key was rejected.")
         return None
 
     async def run_stream(
