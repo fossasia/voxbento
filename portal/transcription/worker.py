@@ -30,6 +30,10 @@ active_workers_lock = asyncio.Lock()
 MAX_TOTAL_WORKERS = 10
 
 
+class WorkerCapacityError(ValueError):
+    """Raised when starting a worker would exceed MAX_TOTAL_WORKERS."""
+
+
 class State(Enum):
     STARTING = "STARTING"
     RUNNING = "RUNNING"
@@ -201,7 +205,7 @@ async def start_transcription_worker(
             existing_session = active_workers.get(booth_id)
             if not existing_session:
                 if len(active_workers) >= MAX_TOTAL_WORKERS:
-                    raise ValueError(
+                    raise WorkerCapacityError(
                         f"System at maximum capacity ({MAX_TOTAL_WORKERS} concurrent transcription booths)."
                     )
 

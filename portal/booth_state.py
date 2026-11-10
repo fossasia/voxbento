@@ -5,6 +5,7 @@ from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
 from uuid import uuid4
 
+from portal.attendance import AttendanceTracker
 from portal.booth_identity import (
     BoothInstance,
     make_booth_id,
@@ -42,6 +43,9 @@ class Participant:
     updated_at: str = field(default_factory=utc_now_iso)
     # Key of the session that joined (see portal.auth.booth_session_key). Server-only.
     joined_by: str | None = field(default=None, repr=False)
+    # Who this is, for attendance records (#1215). Server-only.
+    user_id: int | None = field(default=None, repr=False)
+    invite_public_id: str | None = field(default=None, repr=False)
 
 
 def participant_public_dict(participant: Participant) -> dict:
@@ -51,7 +55,8 @@ def participant_public_dict(participant: Participant) -> dict:
     names, so roles stay defined only in portal.roles.
     """
     public = asdict(participant)
-    del public["joined_by"]
+    for server_only in ("joined_by", "user_id", "invite_public_id"):
+        del public[server_only]
     return {
         **public,
         "role_label": role_label(participant.role),
@@ -134,9 +139,11 @@ def _pick_next_interpreter(booth: Booth) -> str | None:
 
 
 class BoothRegistry:
-    def __init__(self) -> None:
+    def __init__(self, attendance: AttendanceTracker | None = None) -> None:
         self._booths: dict[str, Booth] = {}
         self._lock = asyncio.Lock()
+        # Told about every participant change, under the lock (#1215).
+        self.attendance = attendance or AttendanceTracker()
 
     def _get_or_create_booth(
         self,
@@ -241,6 +248,8 @@ class BoothRegistry:
         *,
         reclaim: bool = False,
         joined_by: str | None = None,
+        user_id: int | None = None,
+        invite_public_id: str | None = None,
     ) -> tuple[Participant, dict]:
         """Add a participant, auto-assigning the active slot if it is free.
 
@@ -260,6 +269,8 @@ class BoothRegistry:
                 language=language.strip() or booth.language,
                 channel_id=channel_id.strip() or booth.channel_id,
                 joined_by=joined_by,
+                user_id=user_id,
+                invite_public_id=invite_public_id,
             )
             booth.participants[participant.participant_id] = participant
             # Auto-assign active slot to any role that can go live.
@@ -270,6 +281,7 @@ class BoothRegistry:
                 and booth.active_interpreter_id is None
             ):
                 booth.active_interpreter_id = participant.participant_id
+            self.attendance.observe(booth)
             return participant, booth.as_public_dict()
 
     async def leave_participant(self, booth_id: str, participant_id: str, language: str, channel_id: str) -> dict:
@@ -291,6 +303,7 @@ class BoothRegistry:
             if not booth.participants:
                 booth.ingest_status = "disconnected"
                 booth.handoff_state = "idle"
+            self.attendance.observe(booth)
             return booth.as_public_dict()
 
     async def set_broadcast_unlocked(
@@ -314,6 +327,7 @@ class BoothRegistry:
                     participant.ingest_connected = False
                     participant.updated_at = utc_now_iso()
                 booth.ingest_status = "disconnected"
+            self.attendance.observe(booth)
 
             # Enqueue webhook in background
             import asyncio
@@ -336,6 +350,17 @@ class BoothRegistry:
         language: str,
         channel_id: str,
     ) -> dict:
+        """Make *target_id* the active interpreter and take everyone else off air.
+
+        Only roles that can set active (room coordinators, event owners,
+        Admins) or the current active interpreter may do this. A passive
+        interpreter cannot name themselves here: that would take the mic from
+        whoever is live, so they have to use the handoff flow instead.
+
+        Raises ``ValueError`` if either participant is missing or the target
+        cannot go live, and ``PermissionError`` if the requester may not
+        reassign.
+        """
         async with self._lock:
             booth = self._get_or_create_booth(booth_id, language, channel_id)
             requester = booth.participants.get(requester_id)
@@ -346,8 +371,7 @@ class BoothRegistry:
                 raise ValueError("Only people who can go live can be set active.")
             requester_can_reassign = can_set_active(requester.role)
             requester_is_active = booth.active_interpreter_id == requester_id
-            requester_is_target = requester_id == target_id
-            if not requester_can_reassign and not requester_is_active and not requester_is_target:
+            if not requester_can_reassign and not requester_is_active:
                 raise PermissionError(
                     "Only room coordinators, event owners, Admins or the active interpreter can reassign another interpreter."
                 )
@@ -360,6 +384,7 @@ class BoothRegistry:
                 p.mic_active = p.participant_id == target_id and p.mic_active
                 p.updated_at = utc_now_iso()
             booth.refresh_ingest_status()
+            self.attendance.observe(booth)
             return booth.as_public_dict()
 
     async def initiate_handoff(
@@ -455,6 +480,7 @@ class BoothRegistry:
                 p.mic_active = p.participant_id == new_active and p.mic_active
                 p.updated_at = utc_now_iso()
             booth.refresh_ingest_status()
+            self.attendance.observe(booth)
             return booth.as_public_dict()
 
     async def cancel_handoff(
@@ -540,6 +566,7 @@ class BoothRegistry:
                 participant.connected = connected
             participant.updated_at = utc_now_iso()
             booth.refresh_ingest_status()
+            self.attendance.observe(booth)
             return booth.as_public_dict()
 
     async def check_publish_permission(
@@ -608,6 +635,7 @@ class BoothRegistry:
         booth_id = make_booth_id(event_slug, room_id, language_code)
         async with self._lock:
             self._booths.pop(booth_id, None)
+            self.attendance.forget_booth(booth_id)
 
     async def validate_booth_event(self, booth_id: str, expected_event: str) -> None:
         """Raise PermissionError if *booth_id* does not belong to *expected_event*.
