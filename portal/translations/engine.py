@@ -169,7 +169,7 @@ async def translate_each(
 
     A call that raises becomes ``None`` in its place, unless every call raised: then the
     first error is re-raised, as ``translate_batch`` promises. Every error is logged,
-    including the ones that are not re-raised.
+    including the ones that are not re-raised. A cancelled call is re-raised as it is.
 
     Every call starts at once: ``len(texts) * len(targets)`` of them, with no limit here.
     That is safe only while the caller bounds how much it sends, as the worker does today
@@ -185,7 +185,11 @@ async def translate_each(
         *(translate_one(text, target) for text in texts for target in targets),
         return_exceptions=True,
     )
-    errors = [(position, outcome) for position, outcome in enumerate(outcomes) if isinstance(outcome, BaseException)]
+    # A cancelled call (or any other non-Exception) is not a failed translation: pass it on.
+    for outcome in outcomes:
+        if isinstance(outcome, BaseException) and not isinstance(outcome, Exception):
+            raise outcome
+    errors = [(position, outcome) for position, outcome in enumerate(outcomes) if isinstance(outcome, Exception)]
     all_failed = len(errors) == len(outcomes)
     # When every call failed the first error is re-raised and logged by the caller.
     for position, error in errors[1:] if all_failed else errors:
@@ -201,6 +205,6 @@ async def translate_each(
         raise errors[0][1]
 
     return [
-        [None if isinstance(outcome, BaseException) else outcome for outcome in outcomes[start : start + width]]
+        [None if isinstance(outcome, Exception) else outcome for outcome in outcomes[start : start + width]]
         for start in range(0, len(outcomes), width)
     ]

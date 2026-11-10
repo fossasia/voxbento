@@ -2,6 +2,10 @@
 
 from __future__ import annotations
 
+import asyncio
+import copy
+import dataclasses
+import pickle
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
@@ -140,10 +144,6 @@ def test_a_context_cannot_be_changed_once_built():
 
 def test_a_context_can_be_pickled_copied_and_turned_into_a_dict():
     """A remote backend may serialise the context, so the read-only view must not block it."""
-    import copy
-    import dataclasses
-    import pickle
-
     entry = glossary_entry("booth", "fr", "cabine")
     context = TranslationContext(persona="Formal", style="Concise", vocabulary={"fr": [entry]})
 
@@ -214,6 +214,19 @@ async def test_translate_each_returns_none_without_raising_when_only_some_calls_
         return None
 
     assert await translate_each(translate_one, [FRENCH, GERMAN], ["Hello"]) == [[None, None]]
+
+
+async def test_translate_each_passes_a_cancellation_on_instead_of_reporting_a_failed_translation(caplog):
+    async def translate_one(text, target):
+        if target.code == "de":
+            raise asyncio.CancelledError
+        return f"{text}-{target.code}"
+
+    with caplog.at_level("ERROR", logger="portal.translations.engine"):
+        with pytest.raises(asyncio.CancelledError):
+            await translate_each(translate_one, [FRENCH, GERMAN], ["Hello"])
+
+    assert not caplog.records
 
 
 async def test_translate_each_without_targets_or_texts_calls_nothing():
