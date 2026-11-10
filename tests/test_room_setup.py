@@ -303,6 +303,15 @@ def test_unsupported_local_translation_is_explained():
     assert any("The built-in translator doesn't support Azerbaijani" in error for error in errors)
 
 
+def test_local_translation_support_is_checked_by_language_code():
+    """Greek was refused while support was looked up by English name, which two tables spelled differently."""
+    _, errors = _parse(spoken_language="el", languages=["fr", "zh"], delivery_fr=AI_TEXT, delivery_zh=AI_TEXT)
+    assert not errors
+
+    _, errors = _parse(spoken_language="az", languages=["fr", "no"], delivery_fr=AI_TEXT, delivery_no=AI_TEXT)
+    assert any("The built-in translator doesn't support Azerbaijani, Norwegian" in error for error in errors), errors
+
+
 def test_unsupported_ai_voice_is_explained_per_language():
     _, errors = _parse(languages=["th", "fr"], delivery_th=AI_VOICE, delivery_fr=AI_VOICE)
     assert errors == (
