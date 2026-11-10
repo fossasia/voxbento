@@ -85,6 +85,7 @@ VoxBento is a production-grade **browser-first interpretation booth console** fo
 | `portal/program_ingest.py` | Floor authorization and reconciliation for Program Stream Ingest |
 | `portal/program_relay.py` | YouTube RTMPS destination management and relay health convergence |
 | `portal/outage_log.py` | `OutageLog` — reconcile loops log a repeating failure once per outage, not per tick |
+| `portal/attendance.py` | `AttendanceTracker` — interpreter visits and interpreting time from booth state, batched writes to `interpreter_attendance` (#1215) |
 | `portal/user_admin.py` | Administrative access rules, user flags (`can_host`, `is_admin`, `is_active`, `email_verified`) |
 | `portal/templates/` | Jinja2 HTML — `base.html`, `interpreter_booth.html`, `listener-event.html`, `admin/` |
 | `portal/static/css/tokens.css` | Shared design tokens (`--vb-*` colours, radii, shadows, fonts), linked first on every page; new CSS uses these instead of new hex values |
@@ -191,7 +192,7 @@ Booth WHIP publishing is authenticated (#783): MediaMTX forwards the `Authorizat
 server-derived path) and re-checks that the holder is still the active interpreter and that Mission Control has
 broadcast unlocked. Anonymous publishes get 401. A `booth:join` naming another socket's `participant_id` gets a fresh ID.
 
-Caption feed: `/ws/captions/{booth_id}` receives `caption`, `translated_caption` and public `booth:state`. `ws_captions` validates query JWTs: listener tokens are event-scoped, participant tokens are booth-scoped, and user tokens require a currently active account. Without a query token, events with a listener join code require that code, an active user session, or a scoped invite. Code attempts share a bounded pre-verification budget across listener/overlay HTTP and caption WS paths (`portal/join_code_limit.py`); excess guesses close with 1008. Events without a join code retain public caption access with the anonymous connection cap. Rejections are accepted then closed with 4001 (missing/invalid credentials) or 4003 (scope mismatch), so browsers can distinguish them from transport failures. `booth:state` carries only `booth_id`, `event_slug`, `room_id`, `language_code`, `broadcast_unlocked` and `ingest_status`, never participants or booth chat. Overlay reconnects obtain a fresh listener token through `/overlay/.../session`, which rechecks the account/code and channel.
+Caption feed: `/ws/captions/{booth_id}` receives `caption`, `translated_caption` and public `booth:state`. `ws_captions` validates query JWTs: listener tokens are event-scoped, participant tokens are booth-scoped, and user tokens require a currently active account. Without a query token, events with a listener join code require that code, an active user session, or a scoped invite. Code attempts share a bounded pre-verification budget across listener/overlay HTTP, caption WS and TTS WS paths (`portal/join_code_limit.py`); excess caption guesses close with 1008, and excess TTS guesses are refused like any other TTS authorization failure. The audio-delay poll clears a listener code cookie that no longer matches, so tabs left open across a code regenerate do not spend the budget on every poll. Events without a join code retain public caption access with the anonymous connection cap. Rejections are accepted then closed with 4001 (missing/invalid credentials) or 4003 (scope mismatch), so browsers can distinguish them from transport failures. `booth:state` carries only `booth_id`, `event_slug`, `room_id`, `language_code`, `broadcast_unlocked` and `ingest_status`, never participants or booth chat. Overlay reconnects obtain a fresh listener token through `/overlay/.../session`, which rechecks the account/code and channel.
 
 Direct-push TTS feed: `/ws/tts/{room_id}/{language_code}/{booth_id}` — pre-authorized binary bundle stream (version byte, length-prefixed JSON header, optional 24 kHz PCM audio). Translation text is delivered concurrently over the captions feed and inside TTS bundle headers.
 
@@ -316,6 +317,12 @@ Update documentation in the same PR when the change affects what it describes:
 
 Do not add unrelated documentation edits just to satisfy a checklist, and do not
 append feature summaries to the README or agent guide for every PR.
+
+Password reset invalidates earlier account sessions using `users.sessions_valid_after`
+in the password/reset-token transaction. HTTP authorization and booth role resolution
+must enforce that cutoff against JWT issuance time; reconnecting never refreshes it.
+TTS checks current account authorization at connect and rechecks it at most every 5 seconds
+while bundles are sent, including revocation of existing subscriptions. Keep independent listener and invite access scoped.
 
 Password sign-in requires `User.email_verified`; everyone, admins included, signs in
 at `/login` (`login` rate-limit bucket, 10 attempts per normalized email per hour).

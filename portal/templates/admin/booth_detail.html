@@ -30,6 +30,9 @@
   </div>
 </div>
 
+{% if error_notice %}
+<div class="alert alert-danger" role="alert">{{ error_notice }}</div>
+{% endif %}
 {% if saved_notice %}
 <div class="alert alert-success" role="status">{{ saved_notice }}</div>
 {% endif %}
@@ -207,12 +210,15 @@
           <label for="transcription_provider">Service</label>
           <select id="transcription_provider" name="transcription_provider">
             {% if not catalog.find("speech", booth.transcription_provider) %}
-            <option value="{{ booth.transcription_provider }}" selected>{{ booth.transcription_provider | capitalize }} — add its API key to keep using it</option>
+            <option value="{{ booth.transcription_provider }}" selected>{{ brand_name(booth.transcription_provider) }} — {{ kept_speech_hint }}</option>
             {% endif %}
             {% for engine in catalog.speech %}
             <option value="{{ engine.provider }}" {% if booth.transcription_provider == engine.provider %}selected{% endif %}>{{ engine.label }} — {{ engine.note }}</option>
             {% endfor %}
           </select>
+          {% if catalog.unavailable_reasons.get(booth.transcription_provider) %}
+          <p class="hint">{{ catalog.unavailable_reasons[booth.transcription_provider] }}. Ask your server administrator, or pick another service.</p>
+          {% endif %}
         </div>
       </div>
       <details class="room-more">
@@ -262,8 +268,10 @@
         <div class="field">
           <label for="translation_provider">Service</label>
           <select id="translation_provider" name="translation_provider">
-            {% if booth.translation_provider and not catalog.find("translation", booth.translation_provider) %}
-            <option value="{{ booth.translation_provider }}" selected>{{ booth.translation_provider | capitalize }} — add its API key to keep using it</option>
+            {% if booth.translation_provider == 'self_hosted' and not catalog.find("translation", 'self_hosted') %}
+            <option value="self_hosted" selected>Self-hosted LLM — not set up on this server, choose another</option>
+            {% elif booth.translation_provider and not catalog.find("translation", booth.translation_provider) %}
+            <option value="{{ booth.translation_provider }}" selected>{{ brand_name(booth.translation_provider) }} — {% if catalog.unavailable_reasons.get(booth.translation_provider) %}not available on this server{% else %}add its API key to keep using it{% endif %}</option>
             {% endif %}
             {% for engine in catalog.translation %}
             <option value="{{ engine.provider }}" {% if booth.translation_provider == engine.provider %}selected{% endif %}>{{ engine.label }} — {{ engine.note }}</option>
@@ -278,7 +286,7 @@
           <select id="translation_model" name="translation_model">
             {% for provider, models in translation_models.items() %}
             {% for value, label in models %}
-            <option value="{{ value }}" data-provider="{{ provider }}" {% if booth.translation_model == value %}selected{% endif %}>{{ label }}</option>
+            <option value="{{ value }}" data-provider="{{ provider }}" {% if booth.translation_provider == provider and booth.translation_model == value %}selected{% endif %}>{{ label }}</option>
             {% endfor %}
             {% endfor %}
           </select>

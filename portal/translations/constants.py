@@ -12,6 +12,7 @@ class TranslationProviderEnum(str, Enum):
     GEMINI = "gemini"
     ANTHROPIC = "anthropic"
     GROQ = "groq"
+    SELF_HOSTED = "self_hosted"
 
 
 TRANSLATION_MODELS: Dict[str, List[str]] = {
