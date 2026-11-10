@@ -152,7 +152,7 @@ async def developer_dashboard(
     response = await render_dashboard(request, user, db, account, csrf_token)
     if should_set_cookie:
         response.set_cookie(
-            "dashboard_csrf", csrf_token, httponly=True, samesite="lax", secure=is_cookie_secure(request)
+            "dashboard_csrf", csrf_token, httponly=True, secure=is_cookie_secure(request), samesite="lax"
         )
     return response
 

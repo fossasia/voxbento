@@ -1,32 +1,53 @@
 from __future__ import annotations
 
-from starlette.datastructures import MutableHeaders
+from starlette.datastructures import Headers, MutableHeaders
 from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
 from portal.config import settings
-from portal.routers.listener import _build_embed_frame_policy
+
+# No includeSubDomains: that would force HTTPS on every sibling subdomain, including ones that only speak HTTP.
+_HSTS = "max-age=31536000"
+# The /embed/ route builds its own configurable frame-ancestors policy.
+_EMBED_PREFIX = "/embed/"
 
 
-def apply_security_headers(headers: MutableHeaders, path: str) -> None:
-    """Add baseline security headers without overriding ones a route set itself.
+def forwarded_https(headers: Headers) -> bool:
+    """Whether a proxy says the client used HTTPS.
 
-    /embed/ keeps its own frame and referrer policy on every response, including errors,
-    so third-party hosts still see the embed's error page and the token never leaks via Referer.
+    Reads the first (client-facing) value of ``X-Forwarded-Proto``, so ``HTTPS`` and a
+    ``https, http`` chain from several proxies are handled.
     """
-    if path.startswith("/embed/"):
+    return headers.get("x-forwarded-proto", "").split(",")[0].strip().lower() == "https"
+
+
+def apply_security_headers(headers: MutableHeaders, *, path: str, is_https: bool) -> None:
+    """Add the baseline security headers, leaving any header the route already set untouched.
+
+    HSTS is only sent when the request or the public URL is HTTPS outside debug mode.
+    """
+    if path.startswith(_EMBED_PREFIX):
+        from portal.routers.listener import _build_embed_frame_policy
+
         frame_ancestors = _build_embed_frame_policy()[0]
         referrer_policy = "no-referrer"
     else:
         frame_ancestors = "frame-ancestors 'self'"
         referrer_policy = "strict-origin-when-cross-origin"
-    headers.setdefault("X-Content-Type-Options", "nosniff")
-    headers.setdefault("Referrer-Policy", referrer_policy)
-    headers.setdefault("Content-Security-Policy", frame_ancestors)
-    if settings.is_https:
-        headers.setdefault("Strict-Transport-Security", "max-age=31536000; includeSubDomains")
+    _set_default(headers, "X-Content-Type-Options", "nosniff")
+    _set_default(headers, "Referrer-Policy", referrer_policy)
+    _set_default(headers, "Content-Security-Policy", frame_ancestors)
+    if (is_https or settings.public_base_url.lower().startswith("https://")) and not settings.debug:
+        _set_default(headers, "Strict-Transport-Security", _HSTS)
+
+
+def _set_default(headers: MutableHeaders, name: str, value: str) -> None:
+    if name not in headers:
+        headers[name] = value
 
 
 class SecurityHeadersMiddleware:
+    """Apply :func:`apply_security_headers` to every HTTP response."""
+
     def __init__(self, app: ASGIApp) -> None:
         self.app = app
 
@@ -35,9 +56,11 @@ class SecurityHeadersMiddleware:
             await self.app(scope, receive, send)
             return
 
+        is_https = scope.get("scheme", "http") == "https" or forwarded_https(Headers(scope=scope))
+
         async def send_with_headers(message: Message) -> None:
             if message["type"] == "http.response.start":
-                apply_security_headers(MutableHeaders(scope=message), scope["path"])
+                apply_security_headers(MutableHeaders(scope=message), path=scope["path"], is_https=is_https)
             await send(message)
 
         await self.app(scope, receive, send_with_headers)

@@ -25,6 +25,7 @@ from portal.rate_limit import auth_rate_limiter, login_limiter, token_rate_limit
 from portal.routers.admin import router as admin_router
 from portal.routers.api import router as api_router
 from portal.routers.api_v1 import router as api_v1_router
+from portal.routers.attendance import router as attendance_router
 from portal.routers.auth import router as auth_router
 from portal.routers.demo import router as demo_router
 from portal.routers.developer import router as developer_router
@@ -35,7 +36,7 @@ from portal.routers.oauth import router as oauth_router
 from portal.routers.program_ingest import router as program_ingest_router
 from portal.routers.public import router as public_router
 from portal.routers.webhooks import router as webhooks_router
-from portal.security_headers import SecurityHeadersMiddleware, apply_security_headers
+from portal.security_headers import SecurityHeadersMiddleware, apply_security_headers, forwarded_https
 from portal.websockets.handlers import router as ws_router
 from portal.workspace_routing import WorkspaceRoutingMiddleware
 
@@ -64,6 +65,7 @@ async def lifespan(app: FastAPI):
     import httpx
 
     import portal.globals as pg
+    from portal.globals import booths
     from portal.tts import demo_gen as dg
     from portal.tts.demo_gen import ensure_demo_generated
 
@@ -99,6 +101,7 @@ async def lifespan(app: FastAPI):
     rate_limit_cleanup_task = asyncio.create_task(_rate_limit_cleanup_loop())
     ingest_task = asyncio.create_task(program_ingest.reconcile_loop()) if settings.program_ingest_enabled else None
     meeting_task = asyncio.create_task(meeting_source.reconcile_loop())
+    attendance_task = asyncio.create_task(booths.attendance.run())
 
     dg.track_task(asyncio.create_task(_gen()))
 
@@ -106,7 +109,7 @@ async def lifespan(app: FastAPI):
     logging.getLogger("uvicorn.access").addFilter(_HealthCheckFilter())
     yield
 
-    tasks_to_cancel = [reaper_task, webhook_task, notification_task, rate_limit_cleanup_task, meeting_task]
+    tasks_to_cancel = [reaper_task, webhook_task, notification_task, rate_limit_cleanup_task, meeting_task, attendance_task]
     if ingest_task:
         tasks_to_cancel.append(ingest_task)
     for task in tasks_to_cancel:
@@ -310,8 +313,9 @@ async def general_exception_handler(request: Request, exc: Exception):
         )
     else:
         response = JSONResponse({"detail": "Internal Server Error"}, status_code=500)
-    # Starlette renders this outside user middleware, so SecurityHeadersMiddleware never sees it.
-    apply_security_headers(response.headers, request.url.path)
+    # Unhandled-error responses are built outside the middleware stack, so add the headers here.
+    is_https = request.url.scheme == "https" or forwarded_https(request.headers)
+    apply_security_headers(response.headers, path=request.url.path, is_https=is_https)
     return response
 
 
@@ -334,6 +338,7 @@ app.include_router(api_v1_router)
 app.include_router(admin_router)
 app.include_router(program_ingest_router)
 app.include_router(meeting_source_router)
+app.include_router(attendance_router)
 
 app.include_router(demo_router)
 

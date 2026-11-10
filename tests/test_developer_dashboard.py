@@ -441,3 +441,18 @@ async def test_developer_dashboard_apps_table_has_four_headers_and_cells(setup_d
     assert len(rows) == 1
     cells = re.findall(r'<td\b[^>]*>', rows[0])
     assert len(cells) == 4
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("forwarded_proto, secure", [("https", True), (None, False)])
+async def test_dashboard_csrf_cookie_secure_flag_follows_scheme(setup_db, monkeypatch, forwarded_proto, secure):
+    monkeypatch.setattr(settings, "public_base_url", "http://localhost:8000")
+    cookies = {"user_token": (await _developer_cookies())["user_token"]}
+    headers = {"x-forwarded-proto": forwarded_proto} if forwarded_proto else {}
+
+    async with _client() as c:
+        resp = await c.get("/developer", cookies=cookies, headers=headers)
+
+    cookie = next(v for k, v in resp.headers.multi_items() if k == "set-cookie" and v.startswith("dashboard_csrf="))
+    assert ("Secure" in cookie) is secure
+    assert "HttpOnly" in cookie
