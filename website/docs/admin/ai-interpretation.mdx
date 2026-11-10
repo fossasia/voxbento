@@ -78,7 +78,7 @@ This keeps real-time prompts compact, minimizing LLM inference latency.
 
 The glossary also helps the captions themselves. A product name or acronym that is transcribed wrongly can no longer be matched by the glossary, so the mistake would carry into the translation. When the room's **Use the glossary** switch is on, the built-in Whisper captions are given the source terms of the glossary (booth, room and event-wide entries, most important first, about 400 characters in total) to bias recognition towards their spelling.
 
-- The terms are read once when the caption worker starts, so a glossary change applies the next time the worker starts. Recognition never waits on the glossary: if it cannot be read, captions run without it.
+- The terms are read once when the caption worker starts, so a glossary change applies the next time the worker starts. The lookup has a two-second timeout. If it times out or hits a database error, captions run without glossary terms.
 - Only the built-in Whisper uses the terms so far; cloud transcription services will follow.
 - A short glossary of difficult names helps most. Whisper may still mishear a very quiet or heavily accented word.
 

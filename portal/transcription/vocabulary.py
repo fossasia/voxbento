@@ -17,7 +17,7 @@ import logging
 import re
 from collections.abc import Iterable
 
-from sqlalchemy import select
+from sqlalchemy import ColumnElement, case, false, select
 from sqlalchemy.exc import SQLAlchemyError
 
 from portal.database import get_event_by_slug, get_room_by_id, get_session
@@ -30,7 +30,7 @@ logger = logging.getLogger(__name__)
 MAX_TERMS_CHARS = 400
 # Terms are optional context: a slow lookup must not delay the caption worker for long.
 VOCABULARY_LOOKUP_TIMEOUT = 2.0
-# A bound on how many glossary rows one lookup reads, highest priority first.
+# A bound on how many glossary rows one lookup reads, most important first (same order as select_terms).
 MAX_ENTRIES_SCANNED = 1000
 
 _SEPARATOR = ", "
@@ -52,35 +52,59 @@ def select_terms(
 ) -> tuple[str, ...]:
     """The source terms to bias recognition with, most important first, within ``max_chars`` once joined.
 
-    Ordered like the translation glossary: high-priority entries first (they are documented as always
-    included), then booth entries over room entries over event-wide ones, then priority. A term
-    that appears twice (for example once per target language) is kept once, whatever its case.
+    Ordered like the translation glossary. A term that appears more than once (for example once per
+    target language, or at several scopes) is kept once, whatever its case, and the entry that wins
+    is the one the translation resolver would pick: booth over room over event-wide, then priority.
+    The survivors are then ordered with high-priority entries first (they are documented as always
+    included), then by scope and priority.
     """
-    ranked = sorted(
+    by_scope = sorted(
         entries,
-        key=lambda entry: (
-            entry.priority >= HIGH_PRIORITY_THRESHOLD,
-            vocabulary_scope_rank(entry, room_id, booth_id),
-            entry.priority,
-            entry.id,
-        ),
+        key=lambda entry: (vocabulary_scope_rank(entry, room_id, booth_id), entry.priority, entry.id),
         reverse=True,
     )
-    terms: list[str] = []
+    winners: list[tuple[str, AIVocabularyEntry]] = []
     seen: set[str] = set()
-    used = 0
-    for entry in ranked:
+    for entry in by_scope:
         term = clean_term(entry.source_term)
         key = term.casefold()
         if not term or key in seen:
             continue
+        seen.add(key)
+        winners.append((term, entry))
+    winners.sort(
+        key=lambda item: (
+            item[1].priority >= HIGH_PRIORITY_THRESHOLD,
+            vocabulary_scope_rank(item[1], room_id, booth_id),
+            item[1].priority,
+            item[1].id,
+        ),
+        reverse=True,
+    )
+    terms: list[str] = []
+    used = 0
+    for term, _entry in winners:
         cost = len(term) + (len(_SEPARATOR) if terms else 0)
         if used + cost > max_chars:
             break
-        seen.add(key)
         terms.append(term)
         used += cost
     return tuple(terms)
+
+
+def _scan_order(room_id: int, booth_id: int | None) -> tuple[ColumnElement, ...]:
+    """SQL ordering that mirrors ``select_terms``, so the scan limit drops the least important rows."""
+    scope = case(
+        (AIVocabularyEntry.booth_id == booth_id, 2) if booth_id is not None else (false(), 2),
+        (AIVocabularyEntry.booth_id.is_(None) & (AIVocabularyEntry.room_id == room_id), 1),
+        else_=0,
+    )
+    return (
+        case((AIVocabularyEntry.priority >= HIGH_PRIORITY_THRESHOLD, 1), else_=0).desc(),
+        scope.desc(),
+        AIVocabularyEntry.priority.desc(),
+        AIVocabularyEntry.id.desc(),
+    )
 
 
 async def _lookup_terms(event_slug: str, room_id: int, language_code: str) -> tuple[str, ...]:
@@ -96,7 +120,7 @@ async def _lookup_terms(event_slug: str, room_id: int, language_code: str) -> tu
         entries = await session.scalars(
             select(AIVocabularyEntry)
             .where(AIVocabularyEntry.event_id == event.id, vocabulary_scope_filter(room_id, booth_id))
-            .order_by(AIVocabularyEntry.priority.desc(), AIVocabularyEntry.id)
+            .order_by(*_scan_order(room_id, booth_id))
             .limit(MAX_ENTRIES_SCANNED)
         )
         return select_terms(entries.all(), room_id, booth_id)

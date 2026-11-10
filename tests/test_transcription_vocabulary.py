@@ -7,6 +7,7 @@ from types import SimpleNamespace
 
 import numpy as np
 import pytest
+from sqlalchemy import select
 from sqlalchemy.exc import OperationalError
 
 from portal.database import get_session
@@ -70,6 +71,15 @@ def test_select_terms_keeps_a_term_once_whatever_its_case_or_target_language():
     ]
 
     assert len(select_terms(entries, room_id=None, booth_id=None)) == 1
+
+
+def test_select_terms_booth_spelling_beats_a_high_priority_event_spelling():
+    entries = [
+        entry("Mediamtx", id=1, priority=95),
+        entry("MediaMTX", id=2, priority=5, room_id=7, booth_id=9),
+    ]
+
+    assert select_terms(entries, room_id=7, booth_id=9) == ("MediaMTX",)
 
 
 def test_select_terms_drops_terms_that_are_empty_after_cleaning():
@@ -136,6 +146,37 @@ async def test_a_booth_gets_event_room_and_its_own_terms_only(setup_db):
     assert set(terms) == {"Eventyay", "MediaMTX", "Cabine"}
     # Booth entries rank above room entries, and the priority-50 event entry ranks last or first by priority only.
     assert terms.index("Cabine") < terms.index("MediaMTX")
+
+
+@pytest.mark.anyio
+async def test_the_scan_limit_drops_event_rows_before_a_booth_row(setup_db, monkeypatch):
+    seeded = await seed_event_with_glossary()
+    async with get_session() as session:
+        booth_id = await session.scalar(
+            select(DBBooth.id).where(DBBooth.room_id == seeded.room.id, DBBooth.language_code == "fr")
+        )
+        session.add_all(
+            [
+                AIVocabularyEntry(event_id=seeded.event.id, source_term=f"Filler{i}", target_term="x", priority=50)
+                for i in range(5)
+            ]
+            + [
+                AIVocabularyEntry(
+                    event_id=seeded.event.id,
+                    room_id=seeded.room.id,
+                    booth_id=booth_id,
+                    source_term="BoothLow",
+                    target_term="x",
+                    priority=5,
+                )
+            ]
+        )
+    monkeypatch.setattr(vocabulary, "MAX_ENTRIES_SCANNED", 3)
+
+    terms = await load_vocabulary_terms("glossary-event", seeded.room.id, "fr")
+
+    assert "BoothLow" in terms
+    assert "Cabine" in terms
 
 
 @pytest.mark.anyio
