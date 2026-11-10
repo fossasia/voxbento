@@ -23,6 +23,7 @@ class CaptionState:
     current_utterance: str = ""
     utterance_start_time: float = 0.0
     current_word_count: int = 0
+    had_partial: bool = False
     segment_id: str = field(default_factory=lambda: str(uuid.uuid4()))
 
 
@@ -49,6 +50,7 @@ class CaptionAggregator:
             state.utterance_start_time = time.time()
 
         state.current_utterance = text
+        state.had_partial = True
         state.current_word_count = len(text.split())
 
         # Check forced finalization rules (15s or 50 words)
@@ -144,10 +146,11 @@ class CaptionAggregator:
         # translation LLM and TTS, so an invented phrase costs none of them.
         # Only the reason is logged: the text may be private speech, and the
         # classifier can be wrong about it.
-        reason = hallucination_reason(final_text, complete_turn=complete_turn)
+        reason = hallucination_reason(final_text, complete_turn=complete_turn, had_partial=state.had_partial)
         if reason is not None:
             logger.info("[%s] Discarded transcript (%s, %d chars)", booth_id, reason, len(final_text))
             state.current_utterance = ""
+            state.had_partial = False
             state.utterance_start_time = 0.0
             state.current_word_count = 0
             state.segment_id = str(uuid.uuid4())
@@ -173,6 +176,7 @@ class CaptionAggregator:
         finally:
             segment_timing.reset(context_token)
         state.current_utterance = ""
+        state.had_partial = False
         state.utterance_start_time = 0.0
         state.current_word_count = 0
         state.segment_id = str(uuid.uuid4())
