@@ -55,7 +55,7 @@ Pull Request,de,Pull Request,Developer term in German,false,phrase,80
 
 - **`target_language`**: Accepts `all` or a specific ISO 639-1 language code (e.g. `de`, `fr`, `es`).
 - **`case_sensitive`**: Boolean flag (`true`, `false`, `1`, `0`, `yes`, `no`).
-- **`match_type`**: `exact` (matches on word boundaries) or `phrase` (substring/phrase match).
+- **`match_type`**: `exact` (matches on word boundaries) or `phrase` (substring/phrase match). The built-in NLLB translator replaces whole words only, even for `phrase` entries.
 - **`priority`**: Integer priority. Entries with priority ≥ 90 are prioritized for prompt inclusion, up to a maximum of 80 matching high-priority entries within the translation prompt's character budget.
 
 Exporting downloads the normalized glossary in the identical CSV schema. Formula characters (`=`, `+`, `-`, `@`) at the start of text cells are neutralized during export to protect against spreadsheet injection.
@@ -78,7 +78,7 @@ This keeps real-time prompts compact, minimizing LLM inference latency.
 - **Anthropic**: Persona, style, and glossary terms supplied through the top-level `system` prompt parameter.
 - **Google Gemini**: Applied via `systemInstruction`.
 - **Self-hosted LLM**: Same messages as OpenAI, sent to the operator's own OpenAI-compatible server (see below).
-- **Local NLLB**: Deterministic sequence-to-sequence translation models do not support system prompts or glossaries. Persona, style, and vocabulary settings are safely stored but bypassed when running local NLLB.
+- **Local NLLB**: Sequence-to-sequence models take no system prompt, so persona and style are stored but not applied. Glossary terms are applied by term protection: each whole-word match, even for `phrase` entries, is swapped for a numbered placeholder before translation and replaced with its target term afterwards. In Chinese, Japanese, Thai and other scripts written without spaces, a term is replaced wherever it appears, even inside a longer word: `ブース` (booth) also matches the start of `ブースター` (booster), and the fallback cannot detect the wrong translation that results. Whole-word matching prevents this in other scripts (`AI` is never replaced inside `said`), so keep glossary terms for these scripts specific. If the model drops or mangles a placeholder, the segment is translated again without the glossary, so listeners never see a placeholder. Segments that already contain bracketed numbers, such as `[1]`, are translated without the glossary.
 
 ## Self-hosted Translation Server
 
