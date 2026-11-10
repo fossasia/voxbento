@@ -247,6 +247,11 @@ def _keeps_case(entry: VocabularyEntryInput | AIVocabularyEntry) -> bool:
     return entry.case_sensitive or entry.target_term.casefold() == entry.source_term.casefold()
 
 
+# Abbreviations that end in a full stop but rarely end a sentence: titles and "for example" forms.
+# Words such as "etc." that often close a sentence are left out.
+_ABBREVIATIONS = frozenset("dr mr mrs ms prof m mme mlle sr sra srta hr nr ex vs cf vgl bzw".split())
+
+
 def _opens_sentence(before: str) -> bool:
     """Whether a placeholder that follows ``before`` starts a sentence of the translation."""
     # Opening quotes and marks such as "«" or "¿" are not words.
@@ -259,9 +264,17 @@ def _opens_sentence(before: str) -> bool:
     if not last.endswith("."):
         return False
     stem = last[:-1]
-    # Initials and abbreviations such as "M.", "e.g.", "z. B." or "p. ex." do not end a sentence.
-    after_initial = len(words) > 1 and len(words[-2]) == 2 and words[-2][0].isalpha() and words[-2][1] == "."
-    return not ((len(stem) == 1 and stem.isalpha()) or "." in stem or (after_initial and stem.islower()))
+    # Dotted ("e.g.") and common title or "for example" abbreviations ("Dr.", "par ex.") do not end a sentence.
+    if "." in stem or stem.casefold() in _ABBREVIATIONS:
+        return False
+    previous = words[-2] if len(words) > 1 else ""
+    # The second part of a spaced abbreviation such as "z. B." or "p. ex.".
+    if len(previous) == 2 and previous[0].isalpha() and previous[1] == "." and (stem.islower() or len(stem) == 1):
+        return False
+    if len(stem) == 1 and stem.isalpha():
+        # An initial follows a capitalised name ("John F."); "plan B." ends its sentence.
+        return not previous[:1].isupper()
+    return True
 
 
 def find_term_spans(entry: VocabularyEntryInput | AIVocabularyEntry, text: str) -> list[tuple[int, int]]:

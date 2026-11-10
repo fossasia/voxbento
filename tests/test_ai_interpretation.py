@@ -392,6 +392,12 @@ def test_restored_terms_take_a_capital_only_when_they_open_a_sentence():
     assert restore_terms("See e.g. [1] or i.e. [2].", ordinary) == "See e.g. cabine or i.e. cabine."
     assert restore_terms("Siehe z. B. [1] und [2].", ordinary) == "Siehe z. B. cabine und cabine."
     assert restore_terms("Voir p. ex. [1]. [2] ouvre ensuite.", ordinary) == "Voir p. ex. cabine. Cabine ouvre ensuite."
+    assert restore_terms("Voir par ex. [1] ou le Dr. [2].", ordinary) == "Voir par ex. cabine ou le Dr. cabine."
+    assert restore_terms("Demandez à M. [1] et à John F. [2].", ordinary) == "Demandez à M. cabine et à John F. cabine."
+    # A single letter after a lowercase word is not an initial, and a name after an initial can end a sentence.
+    single = ProtectedSegment("", ("cabine",))
+    assert restore_terms("C'est le plan B. [1] ouvre.", single) == "C'est le plan B. Cabine ouvre."
+    assert restore_terms("Il a vu M. Dupont. [1] ouvre.", single) == "Il a vu M. Dupont. Cabine ouvre."
 
 
 @pytest.mark.parametrize(
