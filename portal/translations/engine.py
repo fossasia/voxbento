@@ -13,7 +13,15 @@ from abc import ABC, abstractmethod
 from collections.abc import Awaitable, Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import Any
+from types import MappingProxyType
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from portal.models import AIVocabularyEntry
+    from portal.translations.vocabulary import VocabularyEntryInput
+
+    #: A glossary line: a stored entry, or one not saved yet (same fields).
+    GlossaryEntry = AIVocabularyEntry | VocabularyEntryInput
 
 logger = logging.getLogger(__name__)
 
@@ -58,10 +66,15 @@ class TranslationContext:
     persona: str | None = None
     style: str | None = None
     #: Glossary entries by target language code. Entries carry the term in one target
-    #: language, so each target has its own list.
-    vocabulary: Mapping[str, Sequence[Any]] = field(default_factory=dict)
+    #: language, so each target has its own list. Read-only once the context is built.
+    vocabulary: Mapping[str, Sequence[GlossaryEntry]] = field(default_factory=dict)
 
-    def vocabulary_for(self, target: Language) -> Sequence[Any]:
+    def __post_init__(self) -> None:
+        # A copy behind a read-only view, so neither the engine nor the caller's own
+        # dict can change a context that is already on its way to a model.
+        object.__setattr__(self, "vocabulary", MappingProxyType(dict(self.vocabulary)))
+
+    def vocabulary_for(self, target: Language) -> Sequence[GlossaryEntry]:
         return self.vocabulary.get(target.code, ())
 
 
@@ -76,7 +89,10 @@ class TranslationEngine(ABC):
     the model and credentials arrive with each call.
     """
 
-    kind: EngineKind
+    @property
+    @abstractmethod
+    def kind(self) -> EngineKind:
+        """How this engine translates. A class attribute is enough: ``kind = EngineKind.MT_API``."""
 
     @abstractmethod
     async def translate_batch(
@@ -124,23 +140,36 @@ async def translate_each(
 ) -> TranslationRows:
     """Build ``translate_batch`` rows from a backend that translates one text into one language.
 
-    The calls run concurrently. A call that raises becomes ``None`` in its place, unless
-    every call raised: then the first error is re-raised, as ``translate_batch`` promises.
+    A call that raises becomes ``None`` in its place, unless every call raised: then the
+    first error is re-raised, as ``translate_batch`` promises.
+
+    Every call starts at once: ``len(texts) * len(targets)`` of them, with no limit here.
+    That is safe only while the caller bounds how much it sends, as the worker does today
+    with one text and one target per call. Bounding concurrency across rooms is the
+    scheduler's job (#1188), and a model that can translate several targets in one pass
+    should do that in its own ``translate_batch`` instead of using this helper (#1190).
     """
     if not targets or not texts:
         return [[] for _ in texts]
 
+    width = len(targets)
     outcomes = await asyncio.gather(
         *(translate_one(text, target) for text in texts for target in targets),
         return_exceptions=True,
     )
-    errors = [outcome for outcome in outcomes if isinstance(outcome, BaseException)]
+    errors = [(position, outcome) for position, outcome in enumerate(outcomes) if isinstance(outcome, BaseException)]
     if len(errors) == len(outcomes):
-        raise errors[0]
-    for error in errors:
-        logger.error("Translation call failed inside a batch: %r", error)
+        raise errors[0][1]
+    for position, error in errors:
+        # The text's index, never the text: transcripts stay out of the logs.
+        logger.error(
+            "Translation into %r failed for text %d of %d in a batch: %r",
+            targets[position % width].code,
+            position // width + 1,
+            len(texts),
+            error,
+        )
 
-    width = len(targets)
     return [
         [None if isinstance(outcome, BaseException) else outcome for outcome in outcomes[start : start + width]]
         for start in range(0, len(outcomes), width)

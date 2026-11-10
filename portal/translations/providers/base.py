@@ -55,7 +55,11 @@ class ProviderEngine(TranslationEngine):
     def __init__(self, provider_name: str, provider: TranslationProvider, kind: EngineKind) -> None:
         self.provider_name = provider_name
         self.provider = provider
-        self.kind = kind
+        self._kind = kind
+
+    @property
+    def kind(self) -> EngineKind:
+        return self._kind
 
     async def translate_batch(
         self,

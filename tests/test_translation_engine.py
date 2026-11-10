@@ -66,8 +66,17 @@ def test_an_engine_must_implement_translate_batch():
     class Incomplete(TranslationEngine):
         kind = EngineKind.MT_API
 
-    with pytest.raises(TypeError):
+    with pytest.raises(TypeError, match="translate_batch"):
         Incomplete()
+
+
+def test_an_engine_must_say_what_kind_it_is():
+    class Kindless(TranslationEngine):
+        async def translate_batch(self, source, targets, texts, context, *, model, api_key=None):
+            return []
+
+    with pytest.raises(TypeError, match="kind"):
+        Kindless()
 
 
 async def test_translate_batch_returns_a_row_per_text_and_a_column_per_target():
@@ -114,6 +123,19 @@ def test_context_gives_each_target_its_own_glossary():
     assert TranslationContext().vocabulary_for(FRENCH) == ()
 
 
+def test_a_context_cannot_be_changed_once_built():
+    french = [glossary_entry("booth", "fr", "cabine")]
+    given = {"fr": french}
+    context = TranslationContext(vocabulary=given)
+
+    with pytest.raises(TypeError):
+        context.vocabulary["de"] = []
+    given["de"] = []
+
+    assert dict(context.vocabulary) == {"fr": french}
+    assert context == TranslationContext(vocabulary={"fr": french})
+
+
 # --- translate_each ------------------------------------------------------------------------
 
 
@@ -126,6 +148,21 @@ async def test_translate_each_keeps_the_translations_that_worked():
     rows = await translate_each(translate_one, [FRENCH, GERMAN], ["Hello", "Bye"])
 
     assert rows == [["Hello→fr", None], ["Bye→fr", None]]
+
+
+async def test_translate_each_logs_which_language_and_text_failed_but_not_the_text(caplog):
+    async def translate_one(text, target):
+        if (text, target) == ("Bye", GERMAN):
+            raise RuntimeError("German is down")
+        return "ok"
+
+    with caplog.at_level("ERROR", logger="portal.translations.engine"):
+        await translate_each(translate_one, [FRENCH, GERMAN], ["Hello", "Bye"])
+
+    (record,) = caplog.records
+    assert "'de'" in record.getMessage() and "text 2 of 2" in record.getMessage()
+    assert "German is down" in record.getMessage()
+    assert "Bye" not in record.getMessage()
 
 
 async def test_translate_each_raises_when_nothing_was_translated():
