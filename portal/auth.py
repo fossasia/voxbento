@@ -893,6 +893,14 @@ async def resolve_ws_auth(websocket: WebSocket, booth_id: str) -> dict:
         payload = user_sess or {}
 
     if not settings.booth_access_token:
+        if payload:
+            await _validate_ws_payload_scope(
+                websocket,
+                booth_id,
+                payload,
+                credential="cookie",
+                allow_listener_path_id=False,
+            )
         return payload
 
     await _validate_ws_origin(websocket)
