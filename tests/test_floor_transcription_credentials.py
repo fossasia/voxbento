@@ -22,6 +22,9 @@ from portal.models import Event, Room, User
 from portal.transcription import worker
 from portal.transcription.providers.base import ProviderConfig
 
+# These tests are not about CSRF; their requests carry the token a real page would send.
+pytestmark = pytest.mark.usefixtures("auto_csrf")
+
 OLD_KEY = "old-dummy-provider-key"
 NEW_KEY = "replacement-dummy-provider-key"
 
