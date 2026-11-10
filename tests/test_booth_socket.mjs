@@ -167,6 +167,16 @@ for (let attempt = 0; attempt < 3; attempt++) {
   const idle = mic.sockets[0].sent.length
   track.deviceMute()
   assert.equal(mic.sockets[0].sent.length, idle, 'nothing is sent while the booth is not publishing')
+
+  // Handing over: the stream is still up while it stops, but the server would refuse
+  // mic_active from someone who is no longer the active interpreter.
+  track.deviceUnmute()
+  mic.state.ingestConnected = true
+  mic.state.activeInterpreterId = 'someone-else'
+  const handingOver = mic.sockets[0].sent.length
+  track.deviceMute()
+  track.deviceUnmute()
+  assert.equal(mic.sockets[0].sent.length, handingOver, 'nothing is sent after losing the active role')
 }
 
 console.log('Booth socket lifecycle checks passed')

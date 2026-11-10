@@ -943,7 +943,9 @@ function watchMicDevice(stream) {
     state.micDeviceMuted = deviceMuted
     renderMicControls()
     // Before the stream is published nobody sees a speaking state, so there is nothing to correct.
-    if (state.joined && state.participantId && state.ingestConnected) {
+    // After a handoff the server refuses mic_active from a participant who is no longer active.
+    const isActive = state.activeInterpreterId === state.participantId
+    if (state.joined && state.participantId && state.ingestConnected && isActive) {
       wsSend({ type: 'booth:update-state', mic_active: currentMicActive() })
     }
   })
