@@ -292,6 +292,8 @@ jobs:
         run: uv run pytest tests/ -v
 
       - name: Translation load test (small configuration)
+        # An explicit `shell: bash` runs with `-eo pipefail`, so a failing harness fails the
+        # step even though its output is piped through tee.
         shell: bash
         run: |
           uv run python tests/translation_load_harness.py \

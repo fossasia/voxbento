@@ -2,19 +2,83 @@
 
 from __future__ import annotations
 
+from collections import Counter
+from unittest.mock import patch
+
 import pytest
 from translation_load_harness import (
     DROPPED,
     FAILED,
     MISSING,
     TRANSLATED,
+    WORKER_STATE,
     LoadConfig,
+    LoadReport,
     main,
     percentile,
+    release_worker_state,
     render,
     run_load_test,
     summarise,
 )
+
+from portal import database, youtube_captions
+from portal.translations import worker as worker_module
+from portal.websockets import manager
+
+
+@pytest.mark.anyio
+async def test_run_leaves_the_process_as_it_found_it():
+    """The previous database engine and the real managers come back, and no worker state is left."""
+    engine, factory = object(), object()
+    real_tts, real_listeners = manager.tts_manager, manager.listener_manager
+
+    with (
+        patch.object(database, "_engine", engine),
+        patch.object(database, "_async_session_factory", factory),
+        patch.object(youtube_captions, "offer") as offer,
+    ):
+        report = await run_load_test(LoadConfig(rooms=1, languages=(2,), segments=2, interval=0.01, latency=0))
+
+        assert database._engine is engine
+        assert database._async_session_factory is factory
+
+    assert report.total(TRANSLATED) == 4
+    assert manager.tts_manager is real_tts
+    assert manager.listener_manager is real_listeners
+    offer.assert_not_called()  # fake translations never reach a YouTube caption track
+    for name in WORKER_STATE:
+        state = getattr(worker_module, name, {})
+        assert not [key for key in state if key.startswith("load-")]
+
+
+def test_release_worker_state_only_removes_this_runs_booths():
+    """Other booths' queues and semaphores are left alone."""
+    state = {"load-abc-1-floor:fr": 1, "load-abcd-1-floor:fr": 2, "pycon-1-floor:fr": 3}
+
+    with patch.object(worker_module, WORKER_STATE[0], state, create=True):
+        release_worker_state("load-abc")
+
+    assert state == {"load-abcd-1-floor:fr": 2, "pycon-1-floor:fr": 3}
+
+
+def test_report_has_a_column_for_translations_that_got_no_answer():
+    """Missing answers are counted on their own, not folded into failures."""
+    rooms = [(7, ["fr"])]
+    channels, reasons = summarise(
+        rooms,
+        3,
+        {(7, 1): "one", (7, 2): "two", (7, 3): "three"},
+        {(7, 1): 0.0, (7, 2): 0.0, (7, 3): 0.0},
+        {("one", "fr"): (0.1, 0.2), ("two", "fr"): (0.1, 0.2)},
+        {(7, "fr", 1): None, (7, "fr", 2): "pipeline_failed"},
+    )
+    report = LoadReport(LoadConfig(rooms=1), channels, 1.0, 1, reasons, 0)
+
+    markdown = render(report, markdown=True)
+
+    assert "| channel | sent | translated | dropped | failed | missing |" in markdown
+    assert "| room 1 fr | 3 | 1 | 0 | 1 | 1 |" in markdown
 
 
 @pytest.mark.anyio
@@ -111,6 +175,7 @@ async def test_report_renders_as_text_and_markdown():
 
 
 def test_command_line_prints_a_report(capsys):
+    """The command line runs a test and prints the Markdown table."""
     exit_code = main(
         ["--rooms", "1", "--languages", "1", "--segments", "2", "--interval", "0.01", "--latency", "0", "--markdown"]
     )
@@ -135,11 +200,13 @@ def test_command_line_prints_a_report(capsys):
     ],
 )
 def test_config_rejects_impossible_values(overrides):
+    """A run that could not make sense is refused before anything starts."""
     with pytest.raises(ValueError):
         LoadConfig(**overrides)
 
 
 def test_percentile_uses_nearest_rank():
+    """Percentiles pick a measured value (nearest rank), never an interpolated one."""
     assert percentile([], 0.5) is None
     assert percentile([3.0], 0.95) == 3.0
     assert percentile([4.0, 1.0, 3.0, 2.0], 0.5) == 2.0
