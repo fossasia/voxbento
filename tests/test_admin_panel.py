@@ -146,12 +146,303 @@ def resolve_relay_attr(html: str) -> str:
     return m.group(1)
 
 
-def _client():
+def _raw_client():
     from httpx import ASGITransport, AsyncClient
 
     from fastapi_app import app
 
-    return AsyncClient(transport=ASGITransport(app=app), base_url="http://test")
+    return AsyncClient(
+        transport=ASGITransport(app=app, raise_app_exceptions=False),
+        base_url="http://test",
+    )
+
+
+def _client():
+    from urllib.parse import urlsplit
+
+    class CSRFAsyncClient:
+        def __init__(self, client):
+            self._client = client
+
+        async def __aenter__(self):
+            await self._client.__aenter__()
+            return self
+
+        async def __aexit__(self, *args):
+            return await self._client.__aexit__(*args)
+
+        def __getattr__(self, name):
+            return getattr(self._client, name)
+
+        async def get(self, url, **kwargs):
+            return await self.request("GET", url, **kwargs)
+
+        async def post(self, url, **kwargs):
+            return await self.request("POST", url, **kwargs)
+
+        async def put(self, url, **kwargs):
+            return await self.request("PUT", url, **kwargs)
+
+        async def patch(self, url, **kwargs):
+            return await self.request("PATCH", url, **kwargs)
+
+        async def delete(self, url, **kwargs):
+            return await self.request("DELETE", url, **kwargs)
+
+        async def request(self, method, url, **kwargs):
+            path = urlsplit(str(url)).path
+            is_admin_path = (
+                path == "/admin"
+                or path.startswith("/admin/")
+                or path == "/api/admin"
+                or path.startswith("/api/admin/")
+                or path == "/workspace"
+                or path.startswith("/workspace/")
+                or path == "/api/workspace"
+                or path.startswith("/api/workspace/")
+                or path.startswith("/api/rooms/")
+            )
+            is_mutation = method.upper() in {"POST", "PUT", "PATCH", "DELETE"}
+
+            if is_admin_path and is_mutation:
+                original_cookies = kwargs.get("cookies")
+                bootstrap = await self._client.get(
+                    "/admin/events/",
+                    cookies=original_cookies,
+                )
+                csrf_token = bootstrap.cookies.get("admin_csrf") or self._client.cookies.get("admin_csrf")
+
+                if csrf_token:
+                    cookies = dict(self._client.cookies)
+                    if original_cookies:
+                        cookies.update(dict(original_cookies))
+                    cookies["admin_csrf"] = csrf_token
+                    kwargs["cookies"] = cookies
+
+                    headers = dict(kwargs.get("headers") or {})
+                    headers["X-CSRF-Token"] = csrf_token
+                    kwargs["headers"] = headers
+
+            return await self._client.request(method, url, **kwargs)
+
+    return CSRFAsyncClient(_raw_client())
+
+
+async def _admin_csrf(client, admin_cookie):
+    response = await client.get("/admin/events/", cookies=admin_cookie)
+    assert response.status_code == 200
+
+    csrf_token = response.cookies.get("admin_csrf")
+    assert csrf_token
+
+    cookies = {**admin_cookie, "admin_csrf": csrf_token}
+    return cookies, csrf_token
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize(
+    ("cookie_token", "submitted_token", "transport", "expected_status"),
+    [
+        (None, None, "form", 403),
+        ("cookie-token", None, "form", 403),
+        ("cookie-token", "wrong-token", "form", 403),
+        (None, "submitted-token", "header", 403),
+        ("valid-token", "valid-token", "form", 200),
+        ("valid-token", "valid-token", "header", 200),
+    ],
+)
+async def test_admin_csrf_validation(
+    admin_cookie,
+    seeded_admin,
+    cookie_token,
+    submitted_token,
+    transport,
+    expected_status,
+):
+    cookies = dict(admin_cookie)
+    if cookie_token == "valid-token":
+        from portal.auth import decode_token, generate_admin_csrf_token
+
+        payload = decode_token(cookies["user_token"])
+        session_id = str(payload.get("jti") or "anonymous")
+        cookie_token = generate_admin_csrf_token(session_id)
+        submitted_token = cookie_token
+    if cookie_token is not None:
+        cookies["admin_csrf"] = cookie_token
+
+    headers = {
+        "Origin": "http://test",
+        "Accept": "application/json",
+    }
+    data = {"field": "verified", "value": "true"}
+
+    if transport == "form" and submitted_token is not None:
+        data["csrf_token"] = submitted_token
+    elif transport == "header" and submitted_token is not None:
+        headers["X-CSRF-Token"] = submitted_token
+
+    async with _raw_client() as client:
+        response = await client.post(
+            f"/admin/users/{seeded_admin.id}/access",
+            cookies=cookies,
+            headers=headers,
+            data=data,
+            follow_redirects=False,
+        )
+
+    assert response.status_code == expected_status
+
+
+@pytest.mark.anyio
+async def test_admin_csrf_accepts_session_bound_json_header(seeded_admin):
+    from portal.auth import create_user_token, decode_token, generate_admin_csrf_token
+
+    user_token = create_user_token(
+        user_id=seeded_admin.id,
+        email=seeded_admin.email,
+        is_admin=True,
+    )
+    session_id = decode_token(user_token)["jti"]
+    csrf_token = generate_admin_csrf_token(session_id)
+
+    async with _raw_client() as client:
+        response = await client.post(
+            f"/admin/users/{seeded_admin.id}/access",
+            cookies={
+                "user_token": user_token,
+                "admin_csrf": csrf_token,
+            },
+            headers={
+                "Origin": "http://test",
+                "X-CSRF-Token": csrf_token,
+                "Accept": "application/json",
+            },
+            data={"field": "verified", "value": "true"},
+            follow_redirects=False,
+        )
+
+    assert response.status_code == 200, response.text
+
+
+@pytest.mark.anyio
+async def test_admin_csrf_token_cannot_be_reused_across_sessions(seeded_admin):
+    from portal.auth import (
+        create_user_token,
+        generate_admin_csrf_token,
+    )
+
+    session_a = create_user_token(
+        user_id=seeded_admin.id,
+        email=seeded_admin.email,
+        is_admin=True,
+    )
+    session_b = create_user_token(
+        user_id=seeded_admin.id,
+        email=seeded_admin.email,
+        is_admin=True,
+    )
+
+    csrf_token_a = generate_admin_csrf_token(decode_token(session_a)["jti"])
+
+    async with _raw_client() as client:
+        response = await client.post(
+            f"/admin/users/{seeded_admin.id}/access",
+            cookies={
+                "user_token": session_b,
+                "admin_csrf": csrf_token_a,
+            },
+            headers={
+                "Origin": "http://test",
+                "X-CSRF-Token": csrf_token_a,
+            },
+            data={"field": "verified", "value": "true"},
+            follow_redirects=False,
+        )
+
+    assert response.status_code == 403
+
+
+@pytest.mark.anyio
+async def test_admin_mutation_routes_require_csrf():
+    """Every state-changing management route carries the CSRF check, in whichever router it lives."""
+    import importlib
+    import pkgutil
+
+    from fastapi.routing import APIRoute
+
+    import portal.routers
+    from portal.auth import require_admin_csrf
+
+    management_prefixes = ("/admin/", "/api/admin/", "/api/rooms/", "/account/")
+    mutating_methods = {"POST", "PUT", "PATCH", "DELETE"}
+    checked = 0
+    missing = []
+
+    for module_info in pkgutil.iter_modules(portal.routers.__path__):
+        router = getattr(importlib.import_module(f"portal.routers.{module_info.name}"), "router", None)
+        for route in getattr(router, "routes", []):
+            if not isinstance(route, APIRoute) or not route.path.startswith(management_prefixes):
+                continue
+            if not (route.methods or set()).intersection(mutating_methods):
+                continue
+            checked += 1
+            if not any(dependency.call is require_admin_csrf for dependency in route.dependant.dependencies):
+                missing.append(f"{','.join(sorted(route.methods or set()))} {route.path}")
+
+    assert checked > 60, "The route inventory looks empty; the check would pass without checking anything."
+    assert not missing, "Mutation routes missing route-level CSRF dependency:\n" + "\n".join(missing)
+
+
+@pytest.mark.anyio
+async def test_management_post_forms_carry_the_csrf_field():
+    """A new admin form without the hidden field would only fail in the browser, so check the templates."""
+    import re
+    from pathlib import Path
+
+    templates = Path(__file__).resolve().parents[1] / "portal" / "templates"
+    pages = [*sorted((templates / "admin").rglob("*.html")), *sorted(templates.glob("account*.html"))]
+    forms = 0
+    missing = []
+    for page in pages:
+        text = page.read_text()
+        for match in re.finditer(r"<form\b[^>]*>", text, re.S | re.I):
+            if not re.search(r"method\s*=\s*[\"']?post", match.group(0), re.I):
+                continue
+            forms += 1
+            if 'name="csrf_token"' not in text[match.end() : text.find("</form>", match.end())]:
+                missing.append(f"{page.relative_to(templates)}:{text.count(chr(10), 0, match.start()) + 1}")
+
+    assert forms > 40, "No POST forms found; the check would pass without checking anything."
+    assert not missing, "POST forms without a csrf_token field:\n" + "\n".join(missing)
+
+
+@pytest.mark.anyio
+async def test_reviewer_post_routes_reject_missing_csrf(admin_cookie, seeded_admin):
+    cookies = dict(admin_cookie)
+    cookies.pop("admin_csrf", None)
+
+    paths = [
+        f"/admin/users/{seeded_admin.id}/access",
+        f"/admin/users/{seeded_admin.id}/delete",
+        "/admin/hosting-access/requests/1/grant",
+        "/admin/hosting-access/requests/1/decline",
+        "/account/profile",
+        "/account/hosting-request",
+    ]
+
+    for path in paths:
+        async with _raw_client() as client:
+            response = await client.post(
+                path,
+                cookies=cookies,
+                headers={"Origin": "http://test"},
+                data={},
+                follow_redirects=False,
+            )
+
+        assert response.status_code == 403, (
+            f"Expected 403 for POST {path} without a CSRF token, got {response.status_code}: {response.text}"
+        )
 
 
 class _InlineScripts(HTMLParser):
@@ -390,16 +681,54 @@ class TestAdminLogin:
         assert "user_token" in verbatim.headers.get("set-cookie", "")
 
     @pytest.mark.anyio
-    async def test_logout_clears_current_and_legacy_cookies(self):
-        """Logout must clear both the new user_token and the legacy admin_token."""
-        async with _client() as c:
-            resp = await c.get("/admin/logout", follow_redirects=False)
+    @pytest.mark.parametrize(
+        ("base_url", "headers", "expected_secure"),
+        [
+            ("http://test", {}, False),
+            ("https://test", {}, True),
+            ("http://test", {"x-forwarded-proto": "https"}, True),
+        ],
+    )
+    async def test_admin_csrf_cookie_secure_flag(self, base_url, headers, expected_secure, monkeypatch):
+        from httpx import ASGITransport, AsyncClient
 
-        assert resp.status_code == 303
-        cleared = {header.split("=", 1)[0].strip().lower() for header in resp.headers.get_list("set-cookie")}
-        assert "user_token" in cleared
-        assert "admin_token" in cleared
-        assert "session_token" in cleared
+        from fastapi_app import app
+        from portal.config import settings
+
+        # A plain-HTTP deployment: the flag then follows the request, as it does for user_token.
+        monkeypatch.setattr(settings, "public_base_url", "http://test")
+
+        async with AsyncClient(
+            transport=ASGITransport(app=app),
+            base_url=base_url,
+            headers=headers,
+        ) as client:
+            response = await client.get("/admin/login")
+
+        csrf_cookies = [
+            value for value in response.headers.get_list("set-cookie") if value.lower().startswith("admin_csrf=")
+        ]
+        assert csrf_cookies, "Expected middleware to set admin_csrf"
+        assert ("; secure" in csrf_cookies[0].lower()) is expected_secure
+
+    @pytest.mark.anyio
+    async def test_logout_clears_current_and_legacy_cookies(self):
+        async with _raw_client() as client:
+            response = await client.get("/logout", follow_redirects=False)
+
+        assert response.status_code == 303
+
+        set_cookie_headers = response.headers.get_list("set-cookie")
+        for cookie_name in ("user_token", "session_token", "admin_token", "admin_csrf"):
+            matching_headers = [
+                header
+                for header in set_cookie_headers
+                if header.split("=", 1)[0].strip().lower() == cookie_name.lower()
+            ]
+            assert matching_headers, f"Expected logout to clear {cookie_name}"
+            assert any("max-age=0" in header.lower() or "expires=" in header.lower() for header in matching_headers), (
+                f"Expected {cookie_name} to expire on logout"
+            )
 
     @pytest.mark.anyio
     async def test_logout_clears_cookie(self):
@@ -407,6 +736,50 @@ class TestAdminLogin:
             resp = await c.get("/admin/logout", follow_redirects=False)
         assert resp.status_code == 303
         assert resp.headers["location"] == "/login"
+
+    @pytest.mark.anyio
+    async def test_login_rotates_csrf_token_and_rejects_old_token(self):
+        from portal.database import create_user, get_session
+
+        async with get_session() as session:
+            user = await create_user(
+                session,
+                email="csrf-rotation@example.com",
+                display_name="CSRF Rotation Admin",
+                password_hash=hash_password("test-admin-pass"),
+                email_verified=True,
+                is_admin=True,
+            )
+
+        async with _raw_client() as client:
+            # Obtain the pre-login CSRF token.
+            await client.get("/admin/login", follow_redirects=False)
+            old_token = client.cookies.get("admin_csrf")
+            assert old_token
+
+            # Successful login must replace it.
+            response = await client.post(
+                "/login",
+                data={
+                    "email": "csrf-rotation@example.com",
+                    "password": "test-admin-pass",
+                    "next_url": "/admin/",
+                },
+                follow_redirects=False,
+            )
+            assert response.status_code == 303
+
+            new_token = client.cookies.get("admin_csrf")
+            assert new_token
+            assert new_token != old_token
+
+            # The new cookie must not validate the old submitted token.
+            response = await client.post(
+                f"/admin/users/{user.id}/access",
+                json={},
+                headers={"X-CSRF-Token": old_token},
+            )
+            assert response.status_code == 403
 
 
 class TestStaleAdminToken:
@@ -1341,6 +1714,64 @@ class TestRoomCRUD:
             assert updated.floor_ai_interpreter_persona == "Technical conference interpreter"
             assert updated.floor_ai_interpretation_style == "Formal and concise"
             assert updated.floor_ai_vocabulary_enabled is True
+
+    @pytest.mark.anyio
+    async def test_save_local_translation_settings_with_csrf(self, admin_cookie, seed_event):
+        event, room, _ = seed_event
+        from portal.database import get_room_by_id, get_session
+
+        async with _client() as c:
+            cookies, csrf_token = await _admin_csrf(c, admin_cookie)
+            headers = {"X-CSRF-Token": csrf_token}
+            response = await c.post(
+                f"/admin/events/{event.id}/rooms/{room.id}/edit",
+                data={
+                    "form_section": "translation",
+                    "floor_translation_enabled": "on",
+                    "floor_translation_provider": "local",
+                    "floor_translation_model": "nllb-200-distilled-600M",
+                },
+                cookies=cookies,
+                headers=headers,
+                follow_redirects=False,
+            )
+
+        assert response.status_code == 303
+
+        async with get_session() as session:
+            updated = await get_room_by_id(session, room.id)
+            assert updated.floor_translation_enabled is True
+            assert updated.floor_translation_provider == "local"
+            assert updated.floor_translation_model == "nllb-200-distilled-600M"
+
+    @pytest.mark.anyio
+    async def test_save_supertonic_settings_with_csrf(self, admin_cookie, seed_event):
+        event, room, _ = seed_event
+        from portal.database import get_room_by_id, get_session
+
+        async with _client() as c:
+            cookies, csrf_token = await _admin_csrf(c, admin_cookie)
+            headers = {"X-CSRF-Token": csrf_token}
+            response = await c.post(
+                f"/admin/events/{event.id}/rooms/{room.id}/edit",
+                data={
+                    "form_section": "tts",
+                    "floor_tts_enabled": "on",
+                    "floor_tts_provider": "supertonic",
+                    "floor_tts_voice": "F1",
+                },
+                cookies=cookies,
+                headers=headers,
+                follow_redirects=False,
+            )
+
+        assert response.status_code == 303
+
+        async with get_session() as session:
+            updated = await get_room_by_id(session, room.id)
+            assert updated.floor_tts_enabled is True
+            assert updated.floor_tts_provider == "supertonic"
+            assert updated.floor_tts_voice == "F1"
 
     @pytest.mark.anyio
     async def test_room_vocabulary_upload_preview_and_export(self, admin_cookie, seed_event):
@@ -2291,7 +2722,7 @@ class TestBoothCRUD:
         from types import SimpleNamespace
 
         from portal.routers import admin
-        from portal.transcription.worker import WorkerCapacityError
+        from portal.transcription.worker import State, WorkerCapacityError
 
         event, room, booth = seed_event
         url = f"/admin/events/{event.id}/rooms/{room.id}/booths/{booth.id}/"
@@ -2346,7 +2777,7 @@ class TestBoothCRUD:
                 lambda _bid: SimpleNamespace(active_interpreter_id="p1", ingest_status="connected", participants={}),
             )
             bid = admin.make_booth_id(event.slug, booth.room_id, booth.language_code)
-            monkeypatch.setattr(admin, "active_workers", {bid: object()})  # a worker is running
+            monkeypatch.setattr(admin, "active_workers", {bid: SimpleNamespace(state=State.RUNNING)})  # a worker is running
             location, page = await save(c, enabled=True)
             assert location == f"{url}?saved=captions&worker=kept#captions"
             assert "The caption worker was restarted" not in page
@@ -2356,7 +2787,7 @@ class TestBoothCRUD:
             await _update_row(type(booth), booth.id, transcription_model="base")
             location, page = await save(c, enabled=True)
             assert location == f"{url}?saved=captions&worker=restarted#captions"
-            assert "Caption settings saved. The caption worker was restarted with the new settings." in page
+            assert "Caption settings saved. The caption worker was restarted with the saved settings." in page
             assert calls == ["stop", "start"]
 
             location, page = await save(c, enabled=False)
@@ -2386,14 +2817,42 @@ class TestBoothCRUD:
             monkeypatch.setattr(admin, "start_transcription_worker", start)
             location, page = await save(c, enabled=True)
             assert location == f"{url}?saved=captions&worker=restarted#captions"
-            assert "The caption worker was restarted with the new settings." in page
+            assert "The caption worker was restarted with the saved settings." in page
             assert calls == ["stop", "start", "stop", "stop", "stop", "stop", "start"]
+
+            # A dead worker left in the registry is not "kept running": saving again with no changes restarts it.
+            monkeypatch.setattr(admin, "active_workers", {bid: SimpleNamespace(state=State.STOPPED)})
+            location, page = await save(c, enabled=True)
+            assert location == f"{url}?saved=captions&worker=restarted#captions"
+            assert calls[-2:] == ["stop", "start"]
+
+            # A worker that is shutting down is not "kept running" either: it is replaced.
+            monkeypatch.setattr(admin, "active_workers", {bid: SimpleNamespace(state=State.STOPPING)})
+            location, page = await save(c, enabled=True)
+            assert location == f"{url}?saved=captions&worker=restarted#captions"
+            assert calls[-2:] == ["stop", "start"]
+
+            # ffmpeg could not be launched after the start call returned: the page must not say "restarted".
+            async def start_then_fail(*_args, **_kwargs):
+                calls.append("start")
+
+            async def not_started(_bid):
+                return False
+
+            monkeypatch.setattr(admin, "start_transcription_worker", start_then_fail)
+            monkeypatch.setattr(admin, "wait_for_worker_start", not_started)
+            location, page = await save(c, enabled=True)
+            assert location == f"{url}?saved=captions&worker=failed#captions"
+            assert "The caption worker could not be started" in page
 
     @pytest.mark.anyio
     async def test_captions_can_be_turned_off_when_the_saved_service_lost_its_key(self, admin_cookie, seed_event):
         """Only turning captions on needs a working key; turning them off must never be blocked (#1081)."""
         event, room, booth = seed_event
         url = f"/admin/events/{event.id}/rooms/{room.id}/booths/{booth.id}/"
+        from portal.models import Event
+
+        await _update_row(Event, event.id, transcription_api_enabled=True)
         await _update_row(type(booth), booth.id, transcription_enabled=True, transcription_provider="deepgram", transcription_model="nova-2")
         data = {"transcription_provider": "deepgram", "transcription_model": "nova-2"}
         async with _client() as c:
@@ -2413,7 +2872,9 @@ class TestBoothCRUD:
                 cookies=admin_cookie,
                 follow_redirects=False,
             )
-        assert refused.status_code == 400
+        # No key: back on the Captions tab with a notice, nothing changed.
+        assert refused.status_code == 303
+        assert refused.headers["location"] == f"{url}?error=no_key#captions"
         assert off.status_code == 303
         assert bogus.status_code == 400
         from portal.database import get_session
@@ -2423,6 +2884,256 @@ class TestBoothCRUD:
         assert saved.transcription_enabled is False
         assert saved.transcription_provider == "deepgram"
         assert saved.transcription_model == "nova-2"
+
+    @pytest.mark.anyio
+    async def test_captions_on_with_the_event_switch_off_returns_a_notice(self, admin_cookie, seed_event):
+        from portal.crypto import encrypt_val
+        from portal.models import Event
+
+        event, room, booth = seed_event
+        url = f"/admin/events/{event.id}/rooms/{room.id}/booths/{booth.id}/"
+        await _update_row(Event, event.id, encrypted_openai_api_key=encrypt_val("k"), transcription_api_enabled=False)
+        async with _client() as c:
+            on = await c.post(
+                f"{url}transcription-settings",
+                data={"transcription_enabled": "true", "transcription_provider": "openai", "transcription_model": "whisper-1"},
+                cookies=admin_cookie,
+                follow_redirects=False,
+            )
+            page = (await c.get(on.headers["location"].split("#")[0], cookies=admin_cookie)).text
+        assert on.status_code == 303
+        assert on.headers["location"] == f"{url}?error=api_off#captions"
+        assert "External transcription is turned off for this event" in page
+
+    @pytest.mark.anyio
+    async def test_captions_on_with_the_switch_off_and_no_key_names_both_problems(self, admin_cookie, seed_event):
+        event, room, booth = seed_event
+        url = f"/admin/events/{event.id}/rooms/{room.id}/booths/{booth.id}/"
+        async with _client() as c:
+            on = await c.post(
+                f"{url}transcription-settings",
+                data={"transcription_enabled": "true", "transcription_provider": "openai", "transcription_model": "whisper-1"},
+                cookies=admin_cookie,
+                follow_redirects=False,
+            )
+            page = (await c.get(on.headers["location"].split("#")[0], cookies=admin_cookie)).text
+        assert on.headers["location"] == f"{url}?error=api_off_no_key#captions"
+        assert "turned off for this event and that service has no API key" in page
+
+    @pytest.mark.anyio
+    async def test_saved_model_is_only_selected_under_the_saved_service(self, admin_cookie, seed_event, monkeypatch):
+        from portal.models import DBBooth
+        from portal.routers import admin
+
+        # The same model name offered by two services: only the saved service's option may be selected.
+        monkeypatch.setattr(admin, "TRANSLATION_MODELS", {"openai": ["shared-model"], "groq": ["shared-model"]})
+        event, room, booth = seed_event
+        await _update_row(DBBooth, booth.id, translation_provider="groq", translation_model="shared-model")
+        async with _client() as c:
+            html = (
+                await c.get(f"/admin/events/{event.id}/rooms/{room.id}/booths/{booth.id}/", cookies=admin_cookie)
+            ).text
+        assert 'data-provider="groq" selected>' in html
+        assert 'data-provider="openai" selected>' not in html
+
+    @pytest.mark.anyio
+    async def test_kept_service_uses_the_proper_brand_name(self, admin_cookie, seed_event):
+        from portal.models import DBBooth
+
+        event, room, booth = seed_event
+        await _update_row(
+            DBBooth,
+            booth.id,
+            transcription_provider="openai",
+            translation_provider="openrouter",
+            translation_model="meta-llama/llama-3.3-70b-instruct",
+        )
+        async with _client() as c:
+            html = (
+                await c.get(f"/admin/events/{event.id}/rooms/{room.id}/booths/{booth.id}/", cookies=admin_cookie)
+            ).text
+        assert '<option value="openai" selected>OpenAI — add its API key to keep using it</option>' in html
+        assert '<option value="openrouter" selected>OpenRouter — add its API key to keep using it</option>' in html
+        assert "Openai" not in html
+
+    @pytest.mark.anyio
+    async def test_kept_service_the_server_cannot_run_names_the_server_reason(
+        self, admin_cookie, seed_event, monkeypatch
+    ):
+        from portal import room_setup
+        from portal.models import DBBooth
+
+        monkeypatch.setattr(room_setup, "find_spec", lambda name: None if name == "riva" else object())
+        event, room, booth = seed_event
+        await _update_row(DBBooth, booth.id, transcription_provider="nvidia", transcription_model="parakeet-rnnt")
+        async with _client() as c:
+            html = (
+                await c.get(f"/admin/events/{event.id}/rooms/{room.id}/booths/{booth.id}/", cookies=admin_cookie)
+            ).text
+        assert '<option value="nvidia" selected>NVIDIA — not available on this server</option>' in html
+        assert "NVIDIA needs the server" in html
+        assert "NVIDIA — add its API key to keep using it" not in html
+
+    @pytest.mark.anyio
+    async def test_a_worker_that_fails_to_start_shows_the_notice_not_a_500(self, admin_cookie, seed_event, monkeypatch):
+        from types import SimpleNamespace
+
+        from portal.routers import admin
+
+        event, room, booth = seed_event
+        url = f"/admin/events/{event.id}/rooms/{room.id}/booths/{booth.id}/"
+
+        async def noop(*_args, **_kwargs):
+            pass
+
+        from portal.transcription.worker import WorkerCapacityError
+
+        failure: list[Exception] = []
+
+        async def broken(*_args, **_kwargs):
+            raise failure[0]
+
+        monkeypatch.setattr(admin, "stop_transcription_worker", noop)
+        monkeypatch.setattr(admin, "broadcast_transcription", noop)
+        monkeypatch.setattr(admin, "start_transcription_worker", broken)
+        monkeypatch.setattr(
+            admin.booths,
+            "get_booth_sync",
+            lambda _bid: SimpleNamespace(active_interpreter_id="p1", ingest_status="connected", participants={}),
+        )
+        from portal.database import get_session
+
+        submitted = {"transcription_enabled": "true", "transcription_provider": "local", "transcription_model": "base"}
+        # Whatever makes the start fail (a full system, a missing library, anything else), the old worker is already
+        # stopped and the settings are saved, so the page shows the notice instead of a 500.
+        for error in (WorkerCapacityError("full"), ImportError("faster_whisper is missing"), RuntimeError("boom")):
+            failure[:] = [error]
+            await _update_row(
+                type(booth),
+                booth.id,
+                transcription_enabled=False,
+                transcription_provider="local",
+                transcription_model="tiny",
+            )
+            async with _client() as c:
+                resp = await c.post(
+                    f"{url}transcription-settings", data=submitted, cookies=admin_cookie, follow_redirects=False
+                )
+                assert resp.status_code == 303, type(error).__name__
+                assert resp.headers["location"] == f"{url}?saved=captions&worker=failed#captions"
+                page = (await c.get(f"{url}?saved=captions&worker=failed", cookies=admin_cookie)).text
+            assert "The caption worker could not be started" in page
+            # The notice says the settings were saved, so they must be.
+            async with get_session() as sess:
+                saved = await sess.get(type(booth), booth.id)
+            assert (saved.transcription_enabled, saved.transcription_provider, saved.transcription_model) == (
+                True,
+                "local",
+                "base",
+            ), type(error).__name__
+
+    @pytest.mark.anyio
+    async def test_an_unsupported_saved_model_does_not_block_captions(self, admin_cookie, seed_event):
+        from portal.database import get_session
+
+        event, room, booth = seed_event
+        url = f"/admin/events/{event.id}/rooms/{room.id}/booths/{booth.id}/"
+        # Captions start on, so the first save is a real on -> off change.
+        await _update_row(
+            type(booth),
+            booth.id,
+            transcription_enabled=True,
+            transcription_provider="local",
+            transcription_model="retired-model",
+        )
+        data = {"transcription_provider": "local", "transcription_model": "retired-model"}
+        async with _client() as c:
+            off = await c.post(f"{url}transcription-settings", data=data, cookies=admin_cookie, follow_redirects=False)
+            on = await c.post(
+                f"{url}transcription-settings",
+                data={**data, "transcription_enabled": "true"},
+                cookies=admin_cookie,
+                follow_redirects=False,
+            )
+            page = (await c.get(on.headers["location"].split("#")[0], cookies=admin_cookie)).text
+        assert off.status_code == 303
+        assert off.headers["location"] == f"{url}?saved=captions#captions"
+        assert on.status_code == 303
+        assert on.headers["location"] == f"{url}?error=model#captions"
+        assert "That caption model is no longer supported" in page
+        async with get_session() as sess:
+            saved = await sess.get(type(booth), booth.id)
+        assert saved.transcription_enabled is False
+        assert saved.transcription_model == "retired-model"
+
+    @pytest.mark.anyio
+    async def test_captions_cannot_be_turned_on_with_a_service_the_server_cannot_run(
+        self, admin_cookie, seed_event, monkeypatch
+    ):
+        from portal import room_setup
+        from portal.database import get_session
+
+        monkeypatch.setattr(room_setup, "find_spec", lambda name: None if name == "riva" else object())
+        event, room, booth = seed_event
+        url = f"/admin/events/{event.id}/rooms/{room.id}/booths/{booth.id}/"
+        await _update_row(
+            type(booth), booth.id, transcription_enabled=True, transcription_provider="nvidia", transcription_model="parakeet-rnnt"
+        )
+        data = {"transcription_provider": "nvidia", "transcription_model": "parakeet-rnnt"}
+        async with _client() as c:
+            on = await c.post(
+                f"{url}transcription-settings",
+                data={**data, "transcription_enabled": "true"},
+                cookies=admin_cookie,
+                follow_redirects=False,
+            )
+            page = (await c.get(on.headers["location"].split("#")[0], cookies=admin_cookie)).text
+            # Turning captions off is never blocked.
+            off = await c.post(f"{url}transcription-settings", data=data, cookies=admin_cookie, follow_redirects=False)
+        assert on.status_code == 303
+        assert on.headers["location"] == f"{url}?error=server#captions"
+        assert "That service is not available on this server" in page
+        assert off.status_code == 303
+        assert off.headers["location"] == f"{url}?saved=captions#captions"
+        async with get_session() as sess:
+            saved = await sess.get(type(booth), booth.id)
+        assert saved.transcription_enabled is False
+
+    @pytest.mark.anyio
+    async def test_kept_service_with_a_key_but_the_event_switch_off_says_to_turn_it_on(self, admin_cookie, seed_event):
+        from portal.crypto import encrypt_val
+        from portal.models import DBBooth, Event
+
+        event, room, booth = seed_event
+        url = f"/admin/events/{event.id}/rooms/{room.id}/booths/{booth.id}/"
+        await _update_row(DBBooth, booth.id, transcription_provider="openai", transcription_model="whisper-1")
+        await _update_row(Event, event.id, encrypted_openai_api_key=encrypt_val("k"), transcription_api_enabled=False)
+        async with _client() as c:
+            html = (await c.get(url, cookies=admin_cookie)).text
+        assert "OpenAI — turn on external transcription to keep using it" in html
+        assert "OpenAI — add its API key" not in html
+
+        # With the switch on and the key present the service is offered normally, so no "kept" option remains.
+        await _update_row(Event, event.id, transcription_api_enabled=True)
+        async with _client() as c:
+            html = (await c.get(url, cookies=admin_cookie)).text
+        assert "keep using it" not in html.split('id="transcription_provider"')[1].split("</select>")[0]
+
+    @pytest.mark.anyio
+    async def test_coordinator_view_skips_the_engine_catalog(self, room_scope_events, monkeypatch):
+        from portal.routers import admin
+
+        def boom(*_args, **_kwargs):
+            raise AssertionError("coordinators never see the engine catalog")
+
+        monkeypatch.setattr(admin, "engine_catalog", boom)
+        monkeypatch.setattr(admin, "booth_speech_models", boom)
+        scope = room_scope_events
+        url = f"/admin/events/{scope['event_a']}/rooms/{scope['room_a']}/booths/{scope['booth_a']}/"
+        async with _client() as c:
+            resp = await c.get(url, cookies=scope["coordinator_cookie"])
+        assert resp.status_code == 200
+        assert "Participant Roster" in resp.text
 
     @pytest.mark.anyio
     async def test_booth_detail_shows_next_steps_until_the_booth_is_configured(self, admin_cookie, seed_event):
@@ -2766,6 +3477,56 @@ class TestAPIKeyBOLA:
             # Try to delete key
             res_delete = await c.delete(f"/admin/api/events/{event_id}/api-keys/{key_id}")
             assert res_delete.status_code == 403
+
+
+@pytest.mark.anyio
+async def test_workspace_api_key_creation_requires_csrf(setup_db):
+    from portal.auth import create_user_token
+    from portal.database import create_event, create_user, get_session, set_event_membership
+
+    async with get_session() as session:
+        event = await create_event(session, slug="csrf-api", display_name="CSRF API")
+        user = await create_user(session, email="csrf-api@example.com", display_name="CSRF API User")
+        await set_event_membership(session, user_id=user.id, event_id=event.id, role="event_owner")
+        event_id = event.id
+        user_id = user.id
+        user_email = user.email
+
+    user_token = create_user_token(user_id=user_id, email=user_email)
+    url = f"/workspace/api/events/{event_id}/api-keys"
+
+    async with _raw_client() as client:
+        # Missing CSRF cookie and header.
+        response = await client.post(
+            url,
+            cookies={"user_token": user_token},
+            json={"name": "Missing Token"},
+        )
+        assert response.status_code == 403
+
+        # Mismatched cookie and header.
+        response = await client.post(
+            url,
+            cookies={"user_token": user_token, "admin_csrf": "cookie-token"},
+            headers={"X-CSRF-Token": "wrong-token"},
+            json={"name": "Wrong Token"},
+        )
+        assert response.status_code == 403
+
+        # Matching, session-bound CSRF cookie and header.
+        from portal.auth import generate_admin_csrf_token
+
+        session_id = decode_token(user_token)["jti"]
+        csrf_token = generate_admin_csrf_token(session_id)
+
+        response = await client.post(
+            url,
+            cookies={"user_token": user_token, "admin_csrf": csrf_token},
+            headers={"X-CSRF-Token": csrf_token},
+            json={"name": "Valid Token"},
+        )
+        assert response.status_code == 200
+        assert response.json()["name"] == "Valid Token"
 
 
 class TestAPIKeyCRUD:

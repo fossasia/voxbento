@@ -40,6 +40,9 @@ from portal.room_setup import (
 from portal.routers import admin
 from portal.transcription.constants import ALLOWED_MODELS, ProviderEnum
 
+# These tests are not about CSRF; their requests carry the token a real page would send.
+pytestmark = pytest.mark.usefixtures("auto_csrf")
+
 ORIGIN = {"origin": "http://test"}
 
 
