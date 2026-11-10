@@ -131,7 +131,7 @@ def has_repeated_single_character(text: str) -> bool:
     return len(chars) >= _REPEAT_LIMIT and len(set(chars)) == 1
 
 
-def hallucination_reason(text: str, *, complete_turn: bool = True) -> str | None:
+def hallucination_reason(text: str, *, complete_turn: bool = True, had_partial: bool = False) -> str | None:
     """Why a finalised transcript looks invented, or None if it looks spoken.
 
     The reason names a category only. It is safe to log, unlike the transcript,
@@ -168,7 +168,7 @@ def hallucination_reason(text: str, *, complete_turn: bool = True) -> str | None
     if not complete_turn:
         return None
 
-    if normalised in _HALLUCINATION_PHRASES:
+    if normalised in _HALLUCINATION_PHRASES and not had_partial:
         return "subtitle phrase"
     return None
 
