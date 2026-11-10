@@ -144,6 +144,7 @@ def voice_languages_for(provider: str) -> Iterable[str]:
 
 _KEY_ADDED = "uses your API key"
 _SELF_HOSTED = "free, downloads the first time it's used"
+_SERVER_MODEL = "runs on this server's own AI model"
 
 # (provider, default model, label, event key attribute). Cloud first: they are faster
 # and more accurate than the self-hosted fallback when the event has a key for them.
@@ -235,6 +236,13 @@ def engine_catalog(event: Event) -> EngineCatalog:
             locked.append(_BRANDS[provider])
             locked_translation.append(_BRANDS[provider])
     translation.append(Engine("local", "nllb-200-distilled-600M", "NLLB (built in)", _SELF_HOSTED))
+    # After NLLB so new rooms keep the built-in default; the operator's server may be slow or stopped.
+    if settings.self_hosted_llm_enabled:
+        translation.append(
+            Engine("self_hosted", settings.self_hosted_llm_model_list[0], "Self-hosted LLM", _SERVER_MODEL)
+        )
+    elif settings.self_hosted_llm_base_url:
+        unavailable.append("Self-hosted LLM needs SELF_HOSTED_LLM_MODELS")
 
     if event.encrypted_deepgram_api_key:
         voice.append(Engine("deepgram", "aura", "Deepgram Aura", _KEY_ADDED))
@@ -510,9 +518,15 @@ async def apply_plan(
     room.floor_translation_enabled = bool(ai_codes)
     if ai_codes:
         translation = catalog.find("translation", plan.translation_engine)
-        # Keep a model chosen on the Captions tab while the provider stays the same.
+        # Keep a model chosen on the Captions tab while the provider stays the same, unless the
+        # operator has since taken that model off the self-hosted allow list.
         if translation and (
-            translation.provider != room.floor_translation_provider or not room.floor_translation_model
+            translation.provider != room.floor_translation_provider
+            or not room.floor_translation_model
+            or (
+                translation.provider == "self_hosted"
+                and not settings.self_hosted_llm_allows(room.floor_translation_model)
+            )
         ):
             room.floor_translation_provider = translation.provider
             room.floor_translation_model = translation.model
