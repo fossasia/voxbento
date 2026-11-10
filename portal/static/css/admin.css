@@ -962,7 +962,7 @@ code { font-family: var(--font-mono); font-size: 0.85em; background: var(--color
   box-shadow: var(--shadow-sm); transition: box-shadow 0.15s, border-color 0.15s, transform 0.1s;
 }
 .tile:hover { box-shadow: var(--shadow-md); border-color: var(--color-primary-border); transform: translateY(-2px); text-decoration: none; }
-.tile-icon { width: 42px; height: 42px; border-radius: 12px; background: var(--color-primary-subtle); color: var(--color-primary-active); display: inline-flex; align-items: center; justify-content: center; font-size: 1.25rem; margin-bottom: 0; flex-shrink: 0; }
+.tile-icon { width: 42px; height: 42px; border-radius: 12px; background: var(--color-primary-subtle); color: var(--color-primary-active); display: inline-flex; align-items: center; justify-content: center; font-size: 1.25rem; margin-bottom: 0; }
 .tile-title { font-weight: 700; font-size: 1rem; }
 .tile-desc { grid-column: 1 / -1; align-self: start; color: var(--color-text-secondary); font-size: 0.85rem; }
 
