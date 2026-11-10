@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
+import math
 import os
 import re
 import subprocess  # nosec B404
@@ -35,6 +36,30 @@ class EmptyRoomTracker:
             self.empty_since = now
 
         return now - self.empty_since >= self.grace_seconds
+
+
+DEFAULT_EMPTY_ROOM_GRACE_SECONDS = 90.0
+
+
+def empty_room_grace_seconds(raw: str | None) -> float:
+    """Parse BOT_EMPTY_ROOM_GRACE_SECONDS, falling back to the default for anything unusable.
+
+    float() accepts "nan" and "inf": NaN would make the bot leave at once and
+    infinity would keep it in an empty room forever, so both use the default.
+    """
+    if raw is None or not raw.strip():
+        return DEFAULT_EMPTY_ROOM_GRACE_SECONDS
+    try:
+        value = float(raw)
+    except ValueError:
+        value = math.nan
+    if not math.isfinite(value):
+        print(
+            f"Invalid BOT_EMPTY_ROOM_GRACE_SECONDS; using {DEFAULT_EMPTY_ROOM_GRACE_SECONDS:g} seconds.",
+            flush=True,
+        )
+        return DEFAULT_EMPTY_ROOM_GRACE_SECONDS
+    return max(0.0, value)
 
 
 class SubprocessManager:
@@ -72,7 +97,7 @@ import signal
 import subprocess
 import time
 from playwright.async_api import async_playwright
-from bot import EmptyRoomTracker
+from bot import EmptyRoomTracker, empty_room_grace_seconds
 
 class AgentFailure(Exception):
     pass
@@ -238,17 +263,7 @@ async def run_capture():
 
         print("BOT_STAGE:in_meeting", flush=True)
 
-        try:
-            grace_seconds = max(
-                0.0,
-                float(os.environ.get("BOT_EMPTY_ROOM_GRACE_SECONDS", "90")),
-            )
-        except (TypeError, ValueError):
-            print(
-                "Invalid BOT_EMPTY_ROOM_GRACE_SECONDS; using 90 seconds.",
-                flush=True,
-            )
-            grace_seconds = 90.0
+        grace_seconds = empty_room_grace_seconds(os.environ.get("BOT_EMPTY_ROOM_GRACE_SECONDS"))
         tracker = EmptyRoomTracker(grace_seconds)
         previous_join_count = 0
 

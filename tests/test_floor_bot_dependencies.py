@@ -16,7 +16,7 @@ from floor_bot_container_smoke import assert_fixture_tone
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "floor-bot"))
 
-from bot import EmptyRoomTracker  # noqa: E402
+from bot import EmptyRoomTracker, empty_room_grace_seconds  # noqa: E402
 
 
 def assert_playwright_versions_match(dockerfile: str) -> None:
@@ -226,3 +226,15 @@ def test_empty_room_tracker_does_not_leave_without_confirmed_empty_room(
 
     assert tracker.update(1, now=100.0) is False
     assert tracker.update(participant_count, now=105.0) is False
+
+
+@pytest.mark.parametrize("raw", ["nan", "inf", "-inf", "Infinity", "soon", ""])
+def test_empty_room_grace_falls_back_for_unusable_values(raw: str) -> None:
+    assert empty_room_grace_seconds(raw) == 90.0
+
+
+def test_empty_room_grace_accepts_finite_values_and_clamps_negatives() -> None:
+    assert empty_room_grace_seconds(None) == 90.0
+    assert empty_room_grace_seconds("30") == 30.0
+    assert empty_room_grace_seconds("0") == 0.0
+    assert empty_room_grace_seconds("-5") == 0.0
