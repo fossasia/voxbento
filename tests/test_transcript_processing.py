@@ -362,13 +362,25 @@ async def test_a_forced_finalization_is_not_judged_as_a_whole_turn():
 
 
 @pytest.mark.anyio
-async def test_a_deliberate_end_of_turn_is_still_filtered():
-    """The counterpart: the same text really ending a turn is still dropped."""
+async def test_a_deliberate_end_of_turn_is_kept_when_the_recogniser_heard_audio():
+    """A partial is audio evidence: "thank you" ending a turn is real speech."""
     broadcast = AsyncMock()
     agg = _aggregator(broadcast)
 
     await agg.handle_partial("ev-1-en", "thank you")
     await agg.handle_clear("ev-1-en")
+
+    statuses = [c.args[1]["status"] for c in broadcast.await_args_list]
+    assert "final" in statuses
+
+
+@pytest.mark.anyio
+async def test_a_subtitle_phrase_with_no_partial_is_still_filtered():
+    """The counterpart: the same text arriving with no partial first is dropped."""
+    broadcast = AsyncMock()
+    agg = _aggregator(broadcast)
+
+    await agg.handle_final("ev-1-en", "thank you")
 
     statuses = [c.args[1]["status"] for c in broadcast.await_args_list]
     assert "final" not in statuses
@@ -429,8 +441,8 @@ async def test_discarded_transcript_text_is_not_logged(caplog):
 
 
 @pytest.mark.anyio
-async def test_handle_clear_does_not_publish_a_hallucinated_pending_partial():
-    """Silence finalises whatever is pending; an invented pending phrase is dropped."""
+async def test_handle_clear_publishes_a_pending_partial_the_recogniser_heard():
+    """Silence finalises whatever is pending; a partial-backed phrase is real speech."""
     broadcast = AsyncMock()
     agg = _aggregator(broadcast)
 
@@ -439,4 +451,4 @@ async def test_handle_clear_does_not_publish_a_hallucinated_pending_partial():
     await agg.handle_clear("ev-1-en")
 
     statuses = [c.args[1]["status"] for c in broadcast.await_args_list]
-    assert "final" not in statuses
+    assert "final" in statuses
