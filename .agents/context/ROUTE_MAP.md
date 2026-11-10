@@ -55,7 +55,7 @@ credential remains usable alongside a revoked account cookie.
 |---|---|---|---|---|
 | GET | `/interpreter/{event_slug}/{language_code}` | session or user | `interpreter_booth.html` | **Preferred URL**; resolves Jitsi URL, relay WHEP, mediamtx path |
 | GET | `/interpreter/{booth_id}` | session or user | `interpreter_booth.html` | Legacy free-form booth ID; no event scope |
-| GET | `/listener/{event_slug}` | current user session or valid listener join code | `listener-event.html` | Lists rooms/booths for event with WHEP URLs; revoked user cookies fall back to the join form |
+| GET | `/listener/{event_slug}` | current user session or valid listener join code | `listener-event.html` | Lists rooms/booths for event with WHEP URLs; optional `room` and `lang` query params preselect a room and language (kept through the join form); revoked user cookies fall back to the join form |
 | GET | `/overlay/{event_slug}/{room_id}/{language_code}` | join code or current user session | `overlay.html` | Transparent OBS/vMix subtitle layer; booths, floor, and translation-only channels |
 | GET | `/overlay/{event_slug}/{room_id}/{language_code}/session` | join code or current user session | JSON | Revalidates access/channel and issues a fresh caption token; no-store |
 
@@ -130,6 +130,8 @@ with `?error=invalid_role&role=…` and the page explains why.
 | POST | `/admin/events/` | — | Creates event (slug + display_name) |
 | GET | `/admin/events/{event_id}/` | `admin/event_detail.html` | Event + rooms + booths |
 | GET | `/admin/events/{event_id}/caption-overlays/` | `admin/caption_overlays.html` | Owner-only caption preview, appearance and OBS/vMix URLs; canonical `/workspace` mapping; no-store; linked from event quick actions |
+| GET | `/admin/events/{event_id}/attendance/` | `admin/attendance.html` | Owner-only interpreter attendance (#1215): join/leave, time in booth, interpreting time; `day`/`booth` filters, days in the `vb_tz` cookie's time zone; canonical `/workspace` mapping; no-store |
+| GET | `/admin/events/{event_id}/attendance/export` | CSV | Owner-only per-visit CSV (UTC) honouring the same filters; formula cells neutralized |
 | GET | `/admin/events/{event_id}/api-settings/` | `admin/api_settings.html` | View encrypted API keys |
 | POST | `/admin/events/{event_id}/api-settings` | — | Update transcription API keys (Fernet-encrypted) |
 | POST | `/admin/events/{event_id}/delete` | — | Cascade-deletes event |
