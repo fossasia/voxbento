@@ -17,7 +17,7 @@ from fastapi.responses import JSONResponse, RedirectResponse, Response
 from pydantic import BaseModel, Field
 
 from portal import youtube_account as yt
-from portal.auth import get_current_user, require_event_owner, resolve_principal
+from portal.auth import get_current_user, require_admin_csrf, require_event_owner, resolve_principal
 from portal.config import settings
 from portal.crypto import decrypt_val, encrypt_val
 from portal.database import get_event_by_id, get_room_by_id, get_session
@@ -242,7 +242,7 @@ async def youtube_broadcasts(event_id: int) -> JSONResponse:
     return JSONResponse({"broadcasts": [b.summary() for b in broadcasts]}, headers=NO_STORE)
 
 
-@router.put(BROADCAST_PATH, dependencies=[Depends(require_event_owner)])
+@router.put(BROADCAST_PATH, dependencies=[Depends(require_event_owner), Depends(require_admin_csrf)])
 async def youtube_broadcast_set(request: Request, event_id: int, room_id: int, choice: BroadcastChoice) -> JSONResponse:
     """Link the room to a broadcast; in relay mode this also fills in the relay destination."""
     _check_origin(request)
@@ -283,7 +283,7 @@ async def youtube_broadcast_set(request: Request, event_id: int, room_id: int, c
     return JSONResponse(body, headers=NO_STORE)
 
 
-@router.delete(BROADCAST_PATH, dependencies=[Depends(require_event_owner)])
+@router.delete(BROADCAST_PATH, dependencies=[Depends(require_event_owner), Depends(require_admin_csrf)])
 async def youtube_broadcast_clear(request: Request, event_id: int, room_id: int) -> JSONResponse:
     """Unlink the broadcast. The relay destination stays until the owner removes it."""
     _check_origin(request)
@@ -300,7 +300,7 @@ async def youtube_broadcast_clear(request: Request, event_id: int, room_id: int)
     return JSONResponse({"broadcast_id": None}, headers=NO_STORE)
 
 
-@router.delete(EVENT_PATH, dependencies=[Depends(require_event_owner)])
+@router.delete(EVENT_PATH, dependencies=[Depends(require_event_owner), Depends(require_admin_csrf)])
 async def youtube_disconnect(request: Request, event_id: int) -> JSONResponse:
     """Revoke VoxBento's access at Google and forget the channel for this event."""
     _check_origin(request)

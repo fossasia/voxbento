@@ -411,6 +411,8 @@ function startTtsWs(roomId, langCode, boothId, audioDelayMs) {
           caption: frame.header.caption || "",
           translation: frame.header.translation || "",
           error: frame.header.error || (frame.header.audio_pending === false && !frame.audioBytes.byteLength ? 'no_audio' : null),
+          // The translator ran and had nothing to say: the segment is finished, with nothing to show.
+          empty: !frame.header.translation && !frame.header.error && frame.header.audio_pending === false,
           audioBuffer: null,
           receivedAt: segmentStore[seq]?.receivedAt || Date.now(),
         };
@@ -696,7 +698,7 @@ function pumpSegmentQueue() {
       tText = "(Translation failed)";
     } else if (!tText && nextSeg.error === "model_downloading") {
       tText = "(Downloading translation model...)";
-    } else if (!tText) {
+    } else if (!tText && !nextSeg.empty) {
       tText = "(Translation pending...)";
     }
     if (tText) {
@@ -776,8 +778,8 @@ function finishSegmentWithDelay(seg, seqId) {
   var isTranslationActive =
     Boolean(translationLangSelect.value) && mode !== "original";
 
-  if (!isTranslationActive) {
-    // No translation, no TTS: advance immediately (it shouldn't be here in Original mode, but just in case)
+  if (!isTranslationActive || seg.empty) {
+    // Nothing to read or hear (no translation wanted, or an empty one): advance immediately.
     isSegmentPlaying = false;
     delete segmentStore[seqId];
     expectedSeq++;

@@ -31,6 +31,9 @@ from portal.models import Event, Room, YouTubeConnection
 from portal.roles import EVENT_OWNER
 from portal.workspace_routing import workspace_to_admin_path
 
+# Owner PUT/DELETE requests carry the CSRF token a real page sends; rejection is tested below.
+pytestmark = pytest.mark.usefixtures("auto_csrf")
+
 CLIENT_ID = "test-client.apps.googleusercontent.com"
 CLIENT_SECRET = "test-client-secret"
 REFRESH_TOKEN = "1//refresh-token-SECRET-value"
@@ -576,6 +579,25 @@ async def test_owner_routes_need_ownership_and_the_feature(yt_env, monkeypatch):
         )
         assert response.status_code == 404, (method, path, response.status_code)
     assert (await client.get("/youtube/oauth/callback", params={"state": "x", "code": "y"})).status_code == 404
+
+
+@pytest.mark.anyio
+async def test_owner_changes_need_a_csrf_token(yt_env):
+    client, room = yt_env["client"], yt_env["rooms"][0]
+    await connect(yt_env)
+    await link_relay_room(yt_env)
+    forged = {"X-CSRF-Token": "forged.token"}
+    changes = [
+        ("PUT", broadcast_url(yt_env, room), {"broadcast": UPCOMING_ID}),
+        ("DELETE", broadcast_url(yt_env, room), None),
+        ("DELETE", event_url(yt_env), None),
+    ]
+    for method, path, body in changes:
+        response = await client.request(method, path, json=body, headers=forged)
+        assert response.status_code == 403, (method, path, response.status_code)
+    assert await stored_connection(yt_env) is not None
+    assert (await stored_room(room.id)).youtube_broadcast_id == LIVE_ID
+    assert yt_env["google"]["revoked"] == []
 
 
 @pytest.mark.anyio

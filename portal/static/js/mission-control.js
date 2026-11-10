@@ -145,7 +145,10 @@ function renderFloorCaptions(room) {
     start.disabled = true;
     stop.disabled = true;
     try {
-      const res = await fetch(`/api/rooms/${room.id}/floor-transcription/${action}`, { method: 'POST' });
+      const res = await fetch(`/api/rooms/${room.id}/floor-transcription/${action}`, {
+        method: 'POST',
+        headers: { 'X-CSRF-Token': document.querySelector('meta[name="csrf-token"]')?.content || '' },
+      });
       if (!res.ok) {
         const body = await res.json().catch(() => ({}));
         showToast(body.detail || `Couldn't ${action} the floor captions.`, 'error');

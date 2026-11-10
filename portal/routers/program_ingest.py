@@ -13,7 +13,7 @@ from fastapi.responses import JSONResponse, Response
 from pydantic import BaseModel, Field, ValidationError
 
 from portal import program_relay, youtube_account
-from portal.auth import require_event_owner
+from portal.auth import require_admin_csrf, require_event_owner
 from portal.booth_identity import make_mediamtx_path
 from portal.config import settings
 from portal.database import get_event_by_id, get_room_by_id, get_session
@@ -177,7 +177,10 @@ async def ingest_status(event_id: int, room_id: int) -> JSONResponse:
         )
 
 
-@router.post("/admin/events/{event_id}/rooms/{room_id}/program-ingest", dependencies=[Depends(require_event_owner)])
+@router.post(
+    "/admin/events/{event_id}/rooms/{room_id}/program-ingest",
+    dependencies=[Depends(require_event_owner), Depends(require_admin_csrf)],
+)
 async def ingest_change(request: Request, event_id: int, room_id: int, change: IngestChange) -> JSONResponse:
     _check_origin(request)
     if change.action in {"enable", "rotate"} and not settings.program_ingest_enabled:
@@ -250,7 +253,10 @@ async def ingest_change(request: Request, event_id: int, room_id: int, change: I
 SENDER_PATH = "/admin/events/{event_id}/rooms/{room_id}/program-sender"
 
 
-@router.post(SENDER_PATH, dependencies=[Depends(require_event_owner)])
+@router.post(
+    SENDER_PATH,
+    dependencies=[Depends(require_event_owner), Depends(require_admin_csrf)],
+)
 async def sender_session_start(
     request: Request, event_id: int, room_id: int, body: SenderSessionRequest
 ) -> JSONResponse:
@@ -277,7 +283,7 @@ async def sender_session_start(
     )
 
 
-@router.delete(SENDER_PATH, dependencies=[Depends(require_event_owner)])
+@router.delete(SENDER_PATH, dependencies=[Depends(require_event_owner), Depends(require_admin_csrf)])
 async def sender_session_stop(
     request: Request,
     event_id: int,
@@ -301,7 +307,7 @@ async def sender_session_stop(
 RELAY_PATH = "/admin/events/{event_id}/rooms/{room_id}/program-relay"
 
 
-@router.put(RELAY_PATH, dependencies=[Depends(require_event_owner)])
+@router.put(RELAY_PATH, dependencies=[Depends(require_event_owner), Depends(require_admin_csrf)])
 async def relay_destination_set(
     request: Request, event_id: int, room_id: int, destination: RelayDestination
 ) -> JSONResponse:
@@ -326,7 +332,7 @@ async def relay_destination_set(
     return JSONResponse({"configured": True, "server_url": server_url}, headers={"Cache-Control": "no-store"})
 
 
-@router.delete(RELAY_PATH, dependencies=[Depends(require_event_owner)])
+@router.delete(RELAY_PATH, dependencies=[Depends(require_event_owner), Depends(require_admin_csrf)])
 async def relay_destination_clear(request: Request, event_id: int, room_id: int) -> JSONResponse:
     """Revoke the stored YouTube destination and stop the room's relay."""
     _check_origin(request)
