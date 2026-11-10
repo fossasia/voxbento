@@ -200,9 +200,10 @@ def test_booth_speech_models_are_all_accepted_by_a_booth():
         accepted = ALLOWED_MODELS[ProviderEnum(provider)]
         assert options, provider
         assert all(value in accepted for value, _ in options), provider
-    # The larger built-in sizes come after the room's two; the room's own list is left alone.
-    assert [value for value, _ in models["local"]] == ["tiny", "base", "small", "medium", "large-v2", "large-v3"]
-    assert [value for value, _ in room_setup.SPEECH_MODELS["local"]] == ["tiny", "base"]
+    # Rooms and booths both offer every built-in Whisper size.
+    sizes = ["tiny", "base", "small", "medium", "large-v2", "large-v3"]
+    assert [value for value, _ in models["local"]] == sizes
+    assert [value for value, _ in room_setup.SPEECH_MODELS["local"]] == sizes
 
 
 # ── Reading the form ───────────────────────────────────────────────────────
@@ -881,6 +882,27 @@ async def test_ai_settings_never_switch_languages_or_captions(admin_cookie, even
     assert room.floor_ai_interpretation_style is None
     assert room.floor_ai_vocabulary_enabled is False
     assert room.floor_tts_voice == "F2"
+
+
+@pytest.mark.anyio
+async def test_ai_settings_save_larger_built_in_whisper_sizes(admin_cookie, event_room):
+    event, _ = event_room
+    room_id = await _create_ai_room(admin_cookie, event)
+    async with _client() as c:
+        resp = await c.post(
+            f"/admin/events/{event.id}/rooms/{room_id}/edit",
+            data={
+                "form_section": "ai",
+                "floor_transcription_provider": "local",
+                "floor_transcription_model": "large-v3",
+            },
+            headers=ORIGIN,
+            cookies=admin_cookie,
+            follow_redirects=False,
+        )
+    assert resp.status_code == 303
+    room = await _room(room_id)
+    assert room.floor_transcription_provider == "local" and room.floor_transcription_model == "large-v3"
 
 
 @pytest.mark.anyio

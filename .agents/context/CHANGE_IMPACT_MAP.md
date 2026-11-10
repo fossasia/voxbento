@@ -173,7 +173,7 @@ Session secrets from the browser sender never authorize RTMPS. Tests: `tests/tes
 **Files to change:**
 1. `portal/models.py` — `Room` (persona, style, vocab enabled) & `AIVocabularyEntry` models (migration 031)
 2. `portal/translations/prompts.py` — system prompt templates and contextual prompt building
-3. `portal/translations/vocabulary.py` — glossary lookup, overlap resolution, priority ordering, and CSV import/export
+3. `portal/translations/vocabulary.py` — glossary lookup, overlap resolution, priority ordering, CSV import/export, and NLLB term protection (`protect_terms` / `restore_terms`, used by `providers/local.py`)
 4. `portal/translations/worker.py` — translation dispatch and glossary resolution before taking worker slots
 5. `portal/routers/admin.py` — room AI interpretation settings & vocabulary CSV routes (`.../ai-vocabulary/upload`, `.../export`, `.../delete`)
 6. `portal/templates/admin/room_detail.html` — AI interpretation persona, style, and glossary management UI

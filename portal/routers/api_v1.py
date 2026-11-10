@@ -11,6 +11,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from portal.auth import coordinates_room, load_membership_scope, require_oauth_scope
 from portal.booth_identity import make_booth_id, make_mediamtx_path, validate_language_code
+from portal.config import settings
+from portal.database import delete_room as delete_db_room
 from portal.database import get_db_session
 from portal.globals import booths
 from portal.models import (
@@ -24,11 +26,13 @@ from portal.models import (
     RoomTranslationLanguage,
     TranscriptSegment,
     TranscriptTranslation,
+    User,
 )
 from portal.rate_limit import auth_rate_limiter
 from portal.roles import EVENT_OWNER
 from portal.transcription.constants import ProviderEnum
 from portal.transcription.worker import active_workers, start_transcription_worker, stop_transcription_worker
+from portal.translations.constants import TranslationProviderEnum
 from portal.websockets.revocation import revoke_booths_for_deleted_entity
 
 logger = logging.getLogger(__name__)
@@ -410,29 +414,20 @@ async def create_event(
         if existing_event.deleted_at is not None:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Event not found")
 
-        # Verify caller is authorized to modify memberships on this existing event
-        is_authorized = False
         if token.event_id == existing_event.id:
-            is_authorized = True
-        elif token.user_id:
-            user_mem = (
-                (
-                    await db.execute(
-                        select(EventMembership).where(
-                            EventMembership.user_id == token.user_id,
-                            EventMembership.event_id == existing_event.id,
-                            EventMembership.role == EVENT_OWNER,
-                        )
-                    )
+            await _verify_token_rbac(db, token, existing_event, manage=True)
+        else:
+            # Outside the token's scope only a current owner passes, e.g. retrying a creation.
+            user = await db.get(User, token.user_id)
+            owner_membership = await db.scalar(
+                select(EventMembership.id).where(
+                    EventMembership.user_id == token.user_id,
+                    EventMembership.event_id == existing_event.id,
+                    EventMembership.role == EVENT_OWNER,
                 )
-                .scalars()
-                .first()
             )
-            if user_mem:
-                is_authorized = True
-
-        if not is_authorized:
-            raise HTTPException(status_code=403, detail="Not authorized to manage memberships for this event.")
+            if user is None or not user.is_active or owner_membership is None:
+                raise HTTPException(status_code=403, detail="Not authorized to manage memberships for this event.")
 
         # Update the display name if the event already exists (e.g. from OAuth auto-provisioning)
         if existing_event.display_name != payload.name:
@@ -442,6 +437,12 @@ async def create_event(
         await _ensure_event_memberships(db, existing_event.id, token.user_id, payload.organizer_emails)
         return {"id": existing_event.id, "slug": existing_event.slug, "name": existing_event.display_name}
     else:
+        # A retained token must not bootstrap new ownership after its grant loses access.
+        authorizing_event = await db.get(Event, token.event_id)
+        if authorizing_event is None:
+            raise HTTPException(status_code=404, detail="Event not found")
+        await _verify_token_rbac(db, token, authorizing_event, manage=True, lock_event=True, write_lock=True)
+
         event = Event(slug=slug, display_name=payload.name)
         db.add(event)
         await db.flush()
@@ -564,6 +565,32 @@ def _apply_floor_settings(room, payload_dict: dict):
         room.floor_translation_model = payload_dict["translation_model"]
 
 
+def _check_self_hosted_translation(payload_dict: dict, room: Room | None) -> None:
+    """Reject self-hosted translation this server can't run, before anything is written.
+
+    An explicit model must be on the allow list; when the model is left out, the room keeps an
+    allowed model it already has or gets the default one. An update that turns translation off is
+    never rejected, so it still works after the server or a model is removed.
+    """
+    if not {"translation_provider", "translation_model", "enable_translation"} & payload_dict.keys():
+        return
+    if payload_dict.get("enable_translation") is False:
+        return
+    current_provider = room.floor_translation_provider if room else None
+    if payload_dict.get("translation_provider", current_provider) != TranslationProviderEnum.SELF_HOSTED.value:
+        return
+    if not settings.self_hosted_llm_enabled:
+        raise HTTPException(status_code=422, detail="Self-hosted translation is not configured on this server")
+    model = payload_dict.get("translation_model")
+    if model is not None:
+        if not settings.self_hosted_llm_allows(model):
+            raise HTTPException(status_code=422, detail="translation_model is not allowed for self-hosted translation")
+        return
+    payload_dict["translation_model"] = settings.self_hosted_llm_model_or_default(
+        room.floor_translation_model if room else None
+    )
+
+
 @router.put("/events/{event_slug}/rooms/{eventyay_room_id}")
 async def upsert_room(
     event_slug: str,
@@ -587,6 +614,7 @@ async def upsert_room(
     room = room_res.scalars().first()
 
     payload_dict = payload.model_dump(exclude_unset=True)
+    _check_self_hosted_translation(payload_dict, room)
 
     if room:
         _apply_floor_settings(room, payload_dict)
@@ -752,7 +780,7 @@ async def delete_room(
         await booths.remove_booth(event_slug, b["room_id"], b["language_code"])
 
     await revoke_booths_for_deleted_entity(db, level="room", target_id=room.id)
-    await db.delete(room)
+    await delete_db_room(db, room.id)
 
     audit = OAuthAuditLog(
         token_id=token.id,

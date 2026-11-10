@@ -128,6 +128,8 @@ class EngineCatalog:
     # The part of `locked` that is a speech or a translation service, for the pages that show only one kind.
     locked_speech: tuple[str, ...] = ()
     locked_translation: tuple[str, ...] = ()
+    # Why a provider the server can't run is missing, by provider, so a saved booth can say so.
+    unavailable_reasons: dict[str, str] = field(default_factory=dict)
 
     @property
     def voice_support(self) -> dict[str, list[str]]:
@@ -144,6 +146,7 @@ def voice_languages_for(provider: str) -> Iterable[str]:
 
 _KEY_ADDED = "uses your API key"
 _SELF_HOSTED = "free, downloads the first time it's used"
+_SERVER_MODEL = "runs on this server's own AI model"
 
 # (provider, default model, label, event key attribute). Cloud first: they are faster
 # and more accurate than the self-hosted fallback when the event has a key for them.
@@ -175,26 +178,22 @@ SPEECH_MODELS: dict[str, tuple[tuple[str, str], ...]] = {
     ),
     "atlascloud": (("bytedance/seed-asr-2.0", "Seed ASR 2.0"),),
     "nvidia": (("parakeet-rnnt", "Parakeet RNNT"), ("parakeet-ctc", "Parakeet CTC")),
-    "local": (("tiny", "Tiny, fastest"), ("base", "Base, more accurate but slower")),
+    "local": (
+        ("tiny", "Tiny, fastest"),
+        ("base", "Base, more accurate but slower"),
+        ("small", "Small, more accurate again"),
+        ("medium", "Medium, needs a strong server"),
+        ("large-v2", "Large v2, very accurate but slow"),
+        ("large-v3", "Large v3, the most accurate and the slowest"),
+    ),
 }
 
-# The larger built-in Whisper sizes a booth can use on top of the room's two.
-_LARGER_LOCAL_MODELS = (
-    ("small", "Small, more accurate again"),
-    ("medium", "Medium, needs a strong server"),
-    ("large-v2", "Large v2, very accurate but slow"),
-    ("large-v3", "Large v3, the most accurate and the slowest"),
-)
-
-
 def booth_speech_models() -> dict[str, tuple[tuple[str, str], ...]]:
-    """The caption models a booth can save: the room's list limited to what a booth accepts, plus the larger built-in sizes."""
-    models = {
+    """The caption models a booth can save: the room's list limited to what a booth accepts."""
+    return {
         provider: tuple((value, label) for value, label in options if value in ALLOWED_MODELS[ProviderEnum(provider)])
         for provider, options in SPEECH_MODELS.items()
     }
-    models["local"] += _LARGER_LOCAL_MODELS
-    return models
 
 
 _BRANDS = {
@@ -210,6 +209,18 @@ _BRANDS = {
 }
 
 
+def brand_name(provider: str) -> str:
+    """The proper name of a provider ("OpenAI", "ElevenLabs"), for a provider that is no longer offered."""
+    return _BRANDS.get(provider, provider.capitalize())
+
+
+def server_unavailable_reason(provider: str) -> str | None:
+    """Why this server cannot run a speech service whatever the event's keys are, or None when it can."""
+    if provider == "nvidia" and (find_spec("riva") is None or not settings.nvidia_function_id):
+        return "NVIDIA needs the server's nvidia extra and NVIDIA_FUNCTION_ID"
+    return None
+
+
 def engine_catalog(event: Event) -> EngineCatalog:
     """List the engines this event can use, so the setup only offers choices that will work."""
     speech: list[Engine] = []
@@ -219,10 +230,13 @@ def engine_catalog(event: Event) -> EngineCatalog:
     locked_speech: list[str] = []
     locked_translation: list[str] = []
     unavailable: list[str] = []
+    unavailable_reasons: dict[str, str] = {}
 
     for provider, model, label, key_attr in _SPEECH_ENGINES:
-        if provider == "nvidia" and (find_spec("riva") is None or not settings.nvidia_function_id):
-            unavailable.append("NVIDIA needs the server's nvidia extra and NVIDIA_FUNCTION_ID")
+        reason = server_unavailable_reason(provider)
+        if reason:
+            unavailable.append(reason)
+            unavailable_reasons[provider] = reason
             continue
         # Cloud speech recognition also needs the event's switch (see program_ingest.pipeline_problem).
         if getattr(event, key_attr) and event.transcription_api_enabled:
@@ -239,6 +253,13 @@ def engine_catalog(event: Event) -> EngineCatalog:
             locked.append(_BRANDS[provider])
             locked_translation.append(_BRANDS[provider])
     translation.append(Engine("local", "nllb-200-distilled-600M", "NLLB (built in)", _SELF_HOSTED))
+    # After NLLB so new rooms keep the built-in default; the operator's server may be slow or stopped.
+    if settings.self_hosted_llm_enabled:
+        translation.append(
+            Engine("self_hosted", settings.self_hosted_llm_model_list[0], "Self-hosted LLM", _SERVER_MODEL)
+        )
+    elif settings.self_hosted_llm_base_url:
+        unavailable.append("Self-hosted LLM needs SELF_HOSTED_LLM_MODELS")
 
     if event.encrypted_deepgram_api_key:
         voice.append(Engine("deepgram", "aura", "Deepgram Aura", _KEY_ADDED))
@@ -257,6 +278,7 @@ def engine_catalog(event: Event) -> EngineCatalog:
         tuple(unavailable),
         tuple(locked_speech),
         tuple(locked_translation),
+        unavailable_reasons,
     )
 
 
@@ -514,9 +536,15 @@ async def apply_plan(
     room.floor_translation_enabled = bool(ai_codes)
     if ai_codes:
         translation = catalog.find("translation", plan.translation_engine)
-        # Keep a model chosen on the Captions tab while the provider stays the same.
+        # Keep a model chosen on the Captions tab while the provider stays the same, unless the
+        # operator has since taken that model off the self-hosted allow list.
         if translation and (
-            translation.provider != room.floor_translation_provider or not room.floor_translation_model
+            translation.provider != room.floor_translation_provider
+            or not room.floor_translation_model
+            or (
+                translation.provider == "self_hosted"
+                and not settings.self_hosted_llm_allows(room.floor_translation_model)
+            )
         ):
             room.floor_translation_provider = translation.provider
             room.floor_translation_model = translation.model
