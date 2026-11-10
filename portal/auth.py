@@ -15,6 +15,7 @@ from portal.config import settings
 from portal.database import get_db_session
 from portal.models import User
 from portal.roles import ADMIN, EVENT_OWNER, INTERPRETER, ROLE_RANK, ROOM_COORDINATOR, highest_role, is_at_least
+from portal.security_headers import forwarded_https
 
 logger = logging.getLogger(__name__)
 
@@ -580,6 +581,17 @@ async def get_access_flags(request: Request, event_id: int | None = None, room_i
             if event_id in coord_events:
                 flags["is_room_coordinator"] = True
     return flags
+
+
+def is_cookie_secure(request: Request) -> bool:
+    """Whether cookies set on this response should carry the ``Secure`` flag.
+
+    True for direct or proxied HTTPS requests; otherwise only when the configured public URL
+    is HTTPS outside debug mode, so plain-HTTP local development keeps working.
+    """
+    if request.url.scheme == "https" or forwarded_https(request.headers):
+        return True
+    return bool(settings.public_base_url.lower().startswith("https://") and not settings.debug)
 
 
 def create_user_token(

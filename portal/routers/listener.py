@@ -9,9 +9,15 @@ from typing import Any, TypedDict
 import jwt
 from fastapi import APIRouter, HTTPException, Query, Request, status
 from fastapi.templating import Jinja2Templates
-from starlette.responses import JSONResponse
+from starlette.responses import JSONResponse, Response
 
-from portal.auth import create_listener_token, decode_token, get_current_user, is_listener_token
+from portal.auth import (
+    create_listener_token,
+    decode_token,
+    get_current_user,
+    is_cookie_secure,
+    is_listener_token,
+)
 from portal.booth_identity import make_booth_id
 from portal.config import settings
 from portal.database import (
@@ -46,6 +52,17 @@ def _client_ip(request: Request) -> str:
 def _submitted_code(request: Request, event_slug: str, code: str | None) -> str | None:
     """The join code this request submits, from the query parameter or the stored cookie."""
     return code or request.cookies.get(f"listener_code_{event_slug}")
+
+
+def _set_listener_code_cookie(request: Request, response: Response, event_slug: str, code: str) -> None:
+    response.set_cookie(
+        f"listener_code_{event_slug}",
+        code,
+        httponly=True,
+        secure=is_cookie_secure(request),
+        samesite="lax",
+        max_age=31536000,
+    )
 
 
 async def has_listener_access(
@@ -159,7 +176,7 @@ async def listen_event_page(request: Request, event_slug: str, code: str | None 
         },
     )
     if code and code == ev.listener_join_code:
-        response.set_cookie(f"listener_code_{event_slug}", code, httponly=True, max_age=31536000)
+        _set_listener_code_cookie(request, response, event_slug, code)
     return response
 
 
@@ -229,7 +246,7 @@ async def subtitle_overlay(
         },
     )
     if code and code == ev.listener_join_code:
-        response.set_cookie(f"listener_code_{event_slug}", code, httponly=True, max_age=31536000)
+        _set_listener_code_cookie(request, response, event_slug, code)
     return response
 
 

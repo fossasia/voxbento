@@ -134,6 +134,27 @@ class TestListenerRoutes:
         assert "listener_code_testcon" in resp.headers["set-cookie"]
 
     @pytest.mark.anyio
+    @pytest.mark.parametrize("forwarded_proto, secure", [("https", True), (None, False)])
+    async def test_join_code_cookie_secure_flag_follows_scheme(self, seed_event, monkeypatch, forwarded_proto, secure):
+        from portal.config import settings
+        from portal.database import get_session
+
+        monkeypatch.setattr(settings, "public_base_url", "http://localhost:8000")
+        event, _, _ = seed_event
+        async with get_session() as s:
+            db_event = await s.get(type(event), event.id)
+            db_event.listener_join_code = "ROOM42"
+
+        headers = {"x-forwarded-proto": forwarded_proto} if forwarded_proto else {}
+        async with _client() as c:
+            resp = await c.get(f"/listener/{event.slug}?code=ROOM42", headers=headers)
+
+        cookie = resp.headers["set-cookie"]
+        assert ("Secure" in cookie) is secure
+        assert "HttpOnly" in cookie
+        assert "samesite=lax" in cookie.lower()
+
+    @pytest.mark.anyio
     async def test_listener_status_is_announced(self, seed_event):
         """Screen reader users must hear when the stream goes live or drops."""
         event, _, _ = seed_event
