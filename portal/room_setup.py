@@ -235,13 +235,14 @@ def engine_catalog(event: Event) -> EngineCatalog:
         else:
             locked.append(_BRANDS[provider])
             locked_translation.append(_BRANDS[provider])
+    translation.append(Engine("local", "nllb-200-distilled-600M", "NLLB (built in)", _SELF_HOSTED))
+    # After NLLB so new rooms keep the built-in default; the operator's server may be slow or stopped.
     if settings.self_hosted_llm_enabled:
         translation.append(
             Engine("self_hosted", settings.self_hosted_llm_model_list[0], "Self-hosted LLM", _SERVER_MODEL)
         )
     elif settings.self_hosted_llm_base_url:
         unavailable.append("Self-hosted LLM needs SELF_HOSTED_LLM_MODELS")
-    translation.append(Engine("local", "nllb-200-distilled-600M", "NLLB (built in)", _SELF_HOSTED))
 
     if event.encrypted_deepgram_api_key:
         voice.append(Engine("deepgram", "aura", "Deepgram Aura", _KEY_ADDED))

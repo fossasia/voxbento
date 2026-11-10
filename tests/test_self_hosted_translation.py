@@ -39,7 +39,7 @@ from portal.models import (
     User,
 )
 from portal.roles import EVENT_OWNER
-from portal.room_setup import engine_catalog
+from portal.room_setup import blank_plan, engine_catalog
 from portal.routers.oauth import hash_token
 from portal.translations.keys import get_translation_api_key
 from portal.translations.providers.openai import SELF_HOSTED_MAX_TOKENS, OpenAIProvider, strip_reasoning
@@ -281,10 +281,11 @@ def test_not_offered_when_unset(unset):
     assert not any("Self-hosted" in reason for reason in catalog.unavailable)
 
 
-def test_offered_before_nllb_with_the_first_model(self_hosted):
+def test_offered_after_nllb_with_the_first_model(self_hosted):
     catalog = engine_catalog(_event())
-    assert [e.provider for e in catalog.translation] == ["self_hosted", "local"]
+    assert [e.provider for e in catalog.translation] == ["local", "self_hosted"]
     assert catalog.find("translation", "self_hosted").model == "llama3.2"
+    assert blank_plan(catalog).translation_engine == "local"
 
 
 def test_url_without_models_is_explained(monkeypatch, self_hosted):
