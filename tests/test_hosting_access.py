@@ -172,6 +172,16 @@ async def test_invite_acceptance_flow_and_primitive_copying():
         assert resp_get.status_code == 200
         assert "Create Account & Go to Workspace" in resp_get.text
 
+        # A password longer than 72 bytes is rejected without using the token
+        resp_long = await http.post(
+            f"/invite/accept/{raw_token}",
+            data={"display_name": "Invited Organizer", "password": "a" * 80, "password_confirm": "a" * 80},
+            headers={"Origin": "http://test"},
+            follow_redirects=False,
+        )
+        assert resp_long.status_code == 400
+        assert "Password must be at most 72 bytes." in resp_long.text
+
         # POST accept
         resp_post = await http.post(
             f"/invite/accept/{raw_token}",
@@ -1068,6 +1078,7 @@ async def test_verified_user_with_password_requires_authentication_or_password()
             assert updated.can_host is True
             assert updated.email_verified is True
             assert verify_password(correct_pw, updated.password_hash) is True
+            assert updated.last_sign_in_at is not None
 
     # When already authenticated, accepts directly without password
     async with get_session() as session:
@@ -1102,6 +1113,7 @@ async def test_verified_user_with_password_requires_authentication_or_password()
         async with get_session() as session:
             updated2 = await get_user_by_id(session, user2_id)
             assert updated2.can_host is True
+            assert updated2.last_sign_in_at is None
 
 
 @pytest.mark.anyio
@@ -1734,3 +1746,116 @@ async def test_get_access_flags_host_without_context():
         "is_event_owner": True,
         "is_room_coordinator": True,
     }
+
+
+@pytest.mark.anyio
+async def test_invite_acceptance_user_cookie_is_secure_over_forwarded_https():
+    async with get_session() as session:
+        user = await create_user(
+            session,
+            email="secure-cookie@example.com",
+            display_name="Cookie Stub",
+            password_hash=None,
+            email_verified=False,
+            can_host=False,
+        )
+        raw_token, _ = await create_hosting_invite(session, user.id, 3600)
+
+    async with client() as http:
+        resp = await http.post(
+            f"/invite/accept/{raw_token}",
+            data={
+                "display_name": "Cookie Organizer",
+                "password": "ValidPassword123!",
+                "password_confirm": "ValidPassword123!",
+            },
+            headers={"Origin": "http://test", "x-forwarded-proto": "https"},
+            follow_redirects=False,
+        )
+
+    assert resp.status_code == 303
+    cookie = next(v for k, v in resp.headers.multi_items() if k == "set-cookie" and v.startswith("user_token="))
+    assert "Secure" in cookie
+    assert "HttpOnly" in cookie
+
+
+@pytest.mark.anyio
+async def test_get_access_flags_admin_keeps_flags_for_unknown_or_mismatched_room():
+    """An Admin's navigation must not disappear because the page names a room that is not there."""
+    async with get_session() as session:
+        admin = await create_user(
+            session,
+            email="flags_admin_bad_room@example.com",
+            display_name="Admin",
+            password_hash=hash_password("pw123"),
+            is_admin=True,
+        )
+        event_a = await create_event(session, slug="flags-admin-bad-room-a", display_name="Event A")
+        event_b = await create_event(session, slug="flags-admin-bad-room-b", display_name="Event B")
+        room_b = await create_room(session, event_id=event_b.id, display_name="Room B")
+
+    token = create_user_token(user_id=admin.id, email=admin.email, is_admin=True)
+    all_flags = {"is_admin": True, "is_event_owner": True, "is_room_coordinator": True}
+
+    missing = await get_access_flags(create_mock_request(cookies={"user_token": token}), room_id=999_999)
+    mismatched = await get_access_flags(
+        create_mock_request(cookies={"user_token": token}), event_id=event_a.id, room_id=room_b.id
+    )
+
+    assert missing == all_flags
+    assert mismatched == all_flags
+
+
+@pytest.mark.anyio
+async def test_get_access_flags_whole_event_coordinator_covers_each_room():
+    """A coordinator given for the whole event coordinates its rooms, with or without event_id in the call."""
+    async with get_session() as session:
+        user = await create_user(
+            session,
+            email="flags_event_coordinator@example.com",
+            display_name="Event Coordinator",
+            password_hash=hash_password("pw123"),
+        )
+        event = await create_event(session, slug="flags-event-coordinator", display_name="Event")
+        other_event = await create_event(session, slug="flags-event-coordinator-other", display_name="Other")
+        room = await create_room(session, event_id=event.id, display_name="Room")
+        other_room = await create_room(session, event_id=other_event.id, display_name="Other Room")
+        await set_event_membership(session, user_id=user.id, event_id=event.id, role="room_coordinator")
+
+    token = create_user_token(user_id=user.id, email=user.email)
+    coordinator_only = {"is_admin": False, "is_event_owner": False, "is_room_coordinator": True}
+    none = {"is_admin": False, "is_event_owner": False, "is_room_coordinator": False}
+
+    def req():
+        return create_mock_request(cookies={"user_token": token})
+
+    assert await get_access_flags(req(), room_id=room.id) == coordinator_only
+    assert await get_access_flags(req(), event_id=event.id, room_id=room.id) == coordinator_only
+    assert await get_access_flags(req(), event_id=event.id) == coordinator_only
+    assert await get_access_flags(req()) == coordinator_only
+    assert await get_access_flags(req(), room_id=other_room.id) == none
+    assert await get_access_flags(req(), event_id=other_event.id) == none
+
+
+@pytest.mark.anyio
+async def test_get_access_flags_room_coordinator_on_event_page():
+    """A coordinator of one room keeps the coordinator flag on that event's pages, and only that event's."""
+    async with get_session() as session:
+        user = await create_user(
+            session,
+            email="flags_room_coordinator_event@example.com",
+            display_name="Room Coordinator",
+            password_hash=hash_password("pw123"),
+        )
+        event = await create_event(session, slug="flags-room-coordinator-event", display_name="Event")
+        other_event = await create_event(session, slug="flags-room-coordinator-other", display_name="Other")
+        room = await create_room(session, event_id=event.id, display_name="Room")
+        await set_room_membership(session, user_id=user.id, room_id=room.id, role="room_coordinator")
+
+    token = create_user_token(user_id=user.id, email=user.email)
+
+    own = await get_access_flags(create_mock_request(cookies={"user_token": token}), event_id=event.id)
+    other = await get_access_flags(create_mock_request(cookies={"user_token": token}), event_id=other_event.id)
+
+    assert own == {"is_admin": False, "is_event_owner": False, "is_room_coordinator": True}
+    assert other == {"is_admin": False, "is_event_owner": False, "is_room_coordinator": False}
