@@ -88,7 +88,9 @@ Jitsi Meet Floor Conference
 | `portal/transcription/providers/deepgram.py` | `DeepgramProvider` — nova-2 WebSocket streaming |
 | `portal/transcription/providers/nvidia.py` | `NVIDIAProvider` — Parakeet-RNNT/CTC via Riva gRPC |
 | `portal/transcription/providers/elevenlabs.py` | `ElevenLabsProvider` — scribe_v2 |
-| `portal/translations/worker.py` | `start_translation_worker()`, LLM translation loop, multithreaded translation dispatch |
+| `portal/translations/worker.py` | `TranslationWorker`: per-language translation dispatch, timeouts and delivery; `ENGINES` maps each provider to its `TranslationEngine` |
+| `portal/translations/engine.py` | `TranslationEngine` interface (`translate_batch`, `translate_text`), `Language`, `TranslationContext`, `EngineKind`; the worker calls engines only through it |
+| `portal/translations/providers/` | Backends: `LocalProvider` (NLLB, an engine itself) and the prompt-based cloud providers, wrapped by `ProviderEngine` in `base.py` |
 | `portal/translations/constants.py` | Translation models enum mapped to Anthropic, OpenAI, Groq, Gemini, etc. |
 | `portal/translations/prompts.py` | Contextual prompt construction incorporating room AI persona and style instructions |
 | `portal/translations/vocabulary.py` | AI interpretation vocabulary & glossary resolution, CSV import/export, and matching |

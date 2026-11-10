@@ -24,12 +24,15 @@ from portal.database import (
     create_event,
     create_room,
     create_user,
+    delete_user,
     dispose,
     get_session,
     get_user_by_id,
     init_db,
     set_event_membership,
     set_room_membership,
+    update_user,
+    update_user_active,
 )
 from portal.models import AuthToken, User, utc_now
 from portal.workspace_routing import management_template_context
@@ -262,7 +265,9 @@ async def test_revoked_user_accepts_invite_restores_access():
             assert updated.hosting_requested_at is None
 
         # User can now access their event without being redirected with hosting_revoked
-        ev_resp = await http.get(f"/workspace/events/{event_id}/", cookies={"user_token": cookie}, follow_redirects=False)
+        ev_resp = await http.get(
+            f"/workspace/events/{event_id}/", cookies={"user_token": cookie}, follow_redirects=False
+        )
         assert ev_resp.status_code == 200
 
 
@@ -314,9 +319,7 @@ async def test_inactive_user_cannot_be_invited_or_redeem():
 
         # Revoking hosting from inactive user who has can_host is permitted -> 303
         async with get_session() as session:
-            await session.execute(
-                User.__table__.update().where(User.id == inactive.id).values(can_host=True)
-            )
+            await session.execute(User.__table__.update().where(User.id == inactive.id).values(can_host=True))
         res_revoke = await http.post(
             f"/admin/users/{inactive.id}/hosting",
             data={"action": "revoke"},
@@ -835,7 +838,9 @@ async def test_new_event_button_visibility():
         assert 'href="/account/hosting-request"' in res_rev_account.text
 
         # 3. Can access their already created event (NOT blocked)
-        res_ev = await http.get(f"/workspace/events/{event_id}/", cookies={"user_token": token_revoked}, follow_redirects=False)
+        res_ev = await http.get(
+            f"/workspace/events/{event_id}/", cookies={"user_token": token_revoked}, follow_redirects=False
+        )
         assert res_ev.status_code == 200
 
         # 4. API request to event returns 200
@@ -865,7 +870,6 @@ async def test_new_event_button_visibility():
         )
         assert res_create_api.status_code == 403
         assert res_create_api.json()["detail"] == "Hosting access revoked."
-
 
 
 @pytest.mark.anyio
@@ -1320,7 +1324,9 @@ async def test_alembic_028_migration_with_pre_existing_memberships():
         cur.execute("INSERT INTO users (id, email) VALUES (1, 'owner@example.com')")
         cur.execute("INSERT INTO users (id, email) VALUES (2, 'interpreter@example.com')")
         cur.execute("INSERT INTO users (id, email) VALUES (3, 'regular@example.com')")
-        cur.execute("INSERT INTO events (id, name, display_name, slug) VALUES (1, 'Test Event', 'Test Event', 'test-event')")
+        cur.execute(
+            "INSERT INTO events (id, name, display_name, slug) VALUES (1, 'Test Event', 'Test Event', 'test-event')"
+        )
         cur.execute("INSERT INTO event_memberships (user_id, event_id, role) VALUES (1, 1, 'event_owner')")
         cur.execute("INSERT INTO event_memberships (user_id, event_id, role) VALUES (2, 1, 'interpreter')")
         conn.commit()
@@ -1389,7 +1395,10 @@ async def test_transient_db_lock_during_redemption_returns_503():
         raw_token, tok = await create_hosting_invite(session, user.id, 3600)
         tok_id = tok.id
 
-    with patch("sqlalchemy.ext.asyncio.AsyncSession.flush", side_effect=OperationalError("database is locked", None, Exception("database is locked"))):
+    with patch(
+        "sqlalchemy.ext.asyncio.AsyncSession.flush",
+        side_effect=OperationalError("database is locked", None, Exception("database is locked")),
+    ):
         async with client() as http:
             resp = await http.post(
                 f"/invite/accept/{raw_token}",
@@ -1416,7 +1425,327 @@ async def test_transient_db_lock_during_redemption_returns_503():
         assert retry_resp.headers["location"] == "/workspace/"
 
 
+@pytest.mark.anyio
+async def test_get_access_flags_admin_has_all_flags():
+    async with get_session() as session:
+        admin = await create_user(
+            session,
+            email="flags_admin@example.com",
+            display_name="Admin",
+            password_hash=hash_password("pw123"),
+            is_admin=True,
+        )
+        event = await create_event(session, slug="flags-admin-event", display_name="Admin Event")
+        room = await create_room(session, event_id=event.id, display_name="Admin Room")
 
+    token = create_user_token(user_id=admin.id, email=admin.email, is_admin=True)
+    req = create_mock_request(cookies={"user_token": token})
+
+    flags = await get_access_flags(req, event_id=event.id, room_id=room.id)
+
+    assert set(flags) == {
+        "is_admin",
+        "is_event_owner",
+        "is_room_coordinator",
+    }
+    assert flags == {
+        "is_admin": True,
+        "is_event_owner": True,
+        "is_room_coordinator": True,
+    }
+
+
+@pytest.mark.anyio
+async def test_get_access_flags_event_owner_for_owned_event():
+    async with get_session() as session:
+        owner = await create_user(
+            session,
+            email="flags_owner@example.com",
+            display_name="Owner",
+            password_hash=hash_password("pw123"),
+        )
+        event = await create_event(session, slug="flags-owned-event", display_name="Owned Event")
+        await set_event_membership(session, user_id=owner.id, event_id=event.id, role="event_owner")
+
+    token = create_user_token(user_id=owner.id, email=owner.email)
+    req = create_mock_request(cookies={"user_token": token})
+
+    flags = await get_access_flags(req, event_id=event.id)
+
+    assert flags == {
+        "is_admin": False,
+        "is_event_owner": True,
+        "is_room_coordinator": True,
+    }
+
+
+@pytest.mark.anyio
+async def test_get_access_flags_non_owner_cannot_access_unowned_event():
+    async with get_session() as session:
+        user = await create_user(
+            session,
+            email="flags_nonowner@example.com",
+            display_name="Non-owner",
+            password_hash=hash_password("pw123"),
+        )
+        event = await create_event(session, slug="flags-unowned-event", display_name="Unowned Event")
+
+    token = create_user_token(user_id=user.id, email=user.email)
+    req = create_mock_request(cookies={"user_token": token})
+
+    flags = await get_access_flags(req, event_id=event.id)
+
+    assert flags == {
+        "is_admin": False,
+        "is_event_owner": False,
+        "is_room_coordinator": False,
+    }
+
+
+@pytest.mark.anyio
+async def test_get_access_flags_coordinator_only_has_access_to_assigned_room():
+    async with get_session() as session:
+        user = await create_user(
+            session,
+            email="flags_coordinator@example.com",
+            display_name="Coordinator",
+            password_hash=hash_password("pw123"),
+        )
+        event = await create_event(session, slug="flags-coordinator-event", display_name="Coordinator Event")
+        assigned_room = await create_room(session, event_id=event.id, display_name="Assigned Room")
+        other_room = await create_room(session, event_id=event.id, display_name="Other Room")
+        await set_room_membership(
+            session,
+            user_id=user.id,
+            room_id=assigned_room.id,
+            role="room_coordinator",
+        )
+
+    token = create_user_token(user_id=user.id, email=user.email)
+
+    assigned_flags = await get_access_flags(
+        create_mock_request(cookies={"user_token": token}),
+        event_id=event.id,
+        room_id=assigned_room.id,
+    )
+    other_flags = await get_access_flags(
+        create_mock_request(cookies={"user_token": token}),
+        event_id=event.id,
+        room_id=other_room.id,
+    )
+
+    assert assigned_flags["is_room_coordinator"] is True
+    assert assigned_flags["is_event_owner"] is False
+    assert other_flags == {
+        "is_admin": False,
+        "is_event_owner": False,
+        "is_room_coordinator": False,
+    }
+
+
+@pytest.mark.anyio
+async def test_get_access_flags_rejects_room_from_different_event():
+    """A coordinator must not gain access by combining mismatched event and room IDs."""
+    async with get_session() as session:
+        user = await create_user(
+            session,
+            email="flags_cross_event@example.com",
+            display_name="Cross-event Coordinator",
+            password_hash=hash_password("pw123"),
+        )
+        event_a = await create_event(session, slug="flags-event-a", display_name="Event A")
+        event_b = await create_event(session, slug="flags-event-b", display_name="Event B")
+        room_b = await create_room(session, event_id=event_b.id, display_name="Room B")
+        await set_room_membership(
+            session,
+            user_id=user.id,
+            room_id=room_b.id,
+            role="room_coordinator",
+        )
+
+    token = create_user_token(user_id=user.id, email=user.email)
+    req = create_mock_request(cookies={"user_token": token})
+
+    flags = await get_access_flags(req, event_id=event_a.id, room_id=room_b.id)
+
+    assert flags == {
+        "is_admin": False,
+        "is_event_owner": False,
+        "is_room_coordinator": False,
+    }
+
+
+@pytest.mark.anyio
+async def test_get_access_flags_event_owner_without_room_membership():
+    """Ownership comes from the room's parent event, not room membership."""
+    async with get_session() as session:
+        owner = await create_user(
+            session,
+            email="flags_owner_no_room_membership@example.com",
+            display_name="Owner Without Room Membership",
+            password_hash=hash_password("pw123"),
+        )
+        event = await create_event(session, slug="flags-owner-parent-event", display_name="Parent Event")
+        room = await create_room(session, event_id=event.id, display_name="Owner's Room")
+        await set_event_membership(session, user_id=owner.id, event_id=event.id, role="event_owner")
+
+    token = create_user_token(user_id=owner.id, email=owner.email)
+    req = create_mock_request(cookies={"user_token": token})
+
+    flags = await get_access_flags(req, room_id=room.id)
+
+    assert flags == {
+        "is_admin": False,
+        "is_event_owner": True,
+        "is_room_coordinator": True,
+    }
+
+
+@pytest.mark.anyio
+async def test_get_access_flags_unauthenticated_user_has_no_flags():
+    req = create_mock_request()
+
+    flags = await get_access_flags(req)
+
+    assert flags == {
+        "is_admin": False,
+        "is_event_owner": False,
+        "is_room_coordinator": False,
+    }
+
+
+@pytest.mark.anyio
+async def test_get_access_flags_demoted_admin_stale_token():
+    async with get_session() as session:
+        user = await create_user(
+            session,
+            email="demoted@example.com",
+            display_name="Demoted",
+            is_admin=True,
+        )
+        user_id, email = user.id, user.email
+
+    token = create_user_token(user_id=user_id, email=email, is_admin=True)
+    async with get_session() as session:
+        await update_user(session, user_id, is_admin=False)
+
+    flags = await get_access_flags(create_mock_request(cookies={"user_token": token}))
+    assert flags == {
+        "is_admin": False,
+        "is_event_owner": False,
+        "is_room_coordinator": False,
+    }
+
+
+@pytest.mark.anyio
+async def test_get_access_flags_deactivated_user_stale_token():
+    async with get_session() as session:
+        user = await create_user(
+            session,
+            email="inactive@example.com",
+            display_name="Inactive",
+        )
+        user_id, email = user.id, user.email
+
+    token = create_user_token(user_id=user_id, email=email)
+    async with get_session() as session:
+        await update_user_active(session, user_id, is_active=False)
+
+    flags = await get_access_flags(create_mock_request(cookies={"user_token": token}))
+    assert flags == {
+        "is_admin": False,
+        "is_event_owner": False,
+        "is_room_coordinator": False,
+    }
+
+
+@pytest.mark.anyio
+async def test_get_access_flags_deleted_user_stale_token():
+    async with get_session() as session:
+        user = await create_user(
+            session,
+            email="deleted@example.com",
+            display_name="Deleted",
+            is_admin=True,
+        )
+        user_id, email = user.id, user.email
+
+    token = create_user_token(user_id=user_id, email=email, is_admin=True)
+    async with get_session() as session:
+        assert await delete_user(session, user_id) is True
+
+    flags = await get_access_flags(create_mock_request(cookies={"user_token": token}))
+    assert flags == {
+        "is_admin": False,
+        "is_event_owner": False,
+        "is_room_coordinator": False,
+    }
+
+
+@pytest.mark.anyio
+async def test_get_access_flags_legacy_admin_token_alone_grants_no_flags():
+    async with get_session() as session:
+        user = await create_user(
+            session,
+            email="legacy-admin@example.com",
+            display_name="Legacy Admin",
+            is_admin=True,
+        )
+
+    token = create_user_token(
+        user_id=user.id,
+        email=user.email,
+        is_admin=True,
+    )
+    flags = await get_access_flags(create_mock_request(cookies={"admin_token": token}))
+    assert flags == {
+        "is_admin": False,
+        "is_event_owner": False,
+        "is_room_coordinator": False,
+    }
+
+
+@pytest.mark.anyio
+async def test_get_access_flags_event_owner_without_context():
+    async with get_session() as session:
+        user = await create_user(
+            session,
+            email="flags_owner_no_context@example.com",
+            display_name="Event Owner",
+            password_hash=hash_password("pw123"),
+        )
+        event = await create_event(session, slug="flags-owner-no-context", display_name="Owned Event")
+        await set_event_membership(session, user_id=user.id, event_id=event.id, role="event_owner")
+
+    token = create_user_token(user_id=user.id, email=user.email)
+    flags = await get_access_flags(create_mock_request(cookies={"user_token": token}))
+
+    assert flags == {
+        "is_admin": False,
+        "is_event_owner": True,
+        "is_room_coordinator": True,
+    }
+
+
+@pytest.mark.anyio
+async def test_get_access_flags_host_without_context():
+    async with get_session() as session:
+        user = await create_user(
+            session,
+            email="flags_host_no_context@example.com",
+            display_name="Host",
+            password_hash=hash_password("pw123"),
+            can_host=True,
+        )
+
+    token = create_user_token(user_id=user.id, email=user.email)
+    flags = await get_access_flags(create_mock_request(cookies={"user_token": token}))
+
+    assert flags == {
+        "is_admin": False,
+        "is_event_owner": True,
+        "is_room_coordinator": True,
+    }
 
 
 @pytest.mark.anyio
@@ -1448,3 +1777,85 @@ async def test_invite_acceptance_user_cookie_is_secure_over_forwarded_https():
     cookie = next(v for k, v in resp.headers.multi_items() if k == "set-cookie" and v.startswith("user_token="))
     assert "Secure" in cookie
     assert "HttpOnly" in cookie
+
+
+@pytest.mark.anyio
+async def test_get_access_flags_admin_keeps_flags_for_unknown_or_mismatched_room():
+    """An Admin's navigation must not disappear because the page names a room that is not there."""
+    async with get_session() as session:
+        admin = await create_user(
+            session,
+            email="flags_admin_bad_room@example.com",
+            display_name="Admin",
+            password_hash=hash_password("pw123"),
+            is_admin=True,
+        )
+        event_a = await create_event(session, slug="flags-admin-bad-room-a", display_name="Event A")
+        event_b = await create_event(session, slug="flags-admin-bad-room-b", display_name="Event B")
+        room_b = await create_room(session, event_id=event_b.id, display_name="Room B")
+
+    token = create_user_token(user_id=admin.id, email=admin.email, is_admin=True)
+    all_flags = {"is_admin": True, "is_event_owner": True, "is_room_coordinator": True}
+
+    missing = await get_access_flags(create_mock_request(cookies={"user_token": token}), room_id=999_999)
+    mismatched = await get_access_flags(
+        create_mock_request(cookies={"user_token": token}), event_id=event_a.id, room_id=room_b.id
+    )
+
+    assert missing == all_flags
+    assert mismatched == all_flags
+
+
+@pytest.mark.anyio
+async def test_get_access_flags_whole_event_coordinator_covers_each_room():
+    """A coordinator given for the whole event coordinates its rooms, with or without event_id in the call."""
+    async with get_session() as session:
+        user = await create_user(
+            session,
+            email="flags_event_coordinator@example.com",
+            display_name="Event Coordinator",
+            password_hash=hash_password("pw123"),
+        )
+        event = await create_event(session, slug="flags-event-coordinator", display_name="Event")
+        other_event = await create_event(session, slug="flags-event-coordinator-other", display_name="Other")
+        room = await create_room(session, event_id=event.id, display_name="Room")
+        other_room = await create_room(session, event_id=other_event.id, display_name="Other Room")
+        await set_event_membership(session, user_id=user.id, event_id=event.id, role="room_coordinator")
+
+    token = create_user_token(user_id=user.id, email=user.email)
+    coordinator_only = {"is_admin": False, "is_event_owner": False, "is_room_coordinator": True}
+    none = {"is_admin": False, "is_event_owner": False, "is_room_coordinator": False}
+
+    def req():
+        return create_mock_request(cookies={"user_token": token})
+
+    assert await get_access_flags(req(), room_id=room.id) == coordinator_only
+    assert await get_access_flags(req(), event_id=event.id, room_id=room.id) == coordinator_only
+    assert await get_access_flags(req(), event_id=event.id) == coordinator_only
+    assert await get_access_flags(req()) == coordinator_only
+    assert await get_access_flags(req(), room_id=other_room.id) == none
+    assert await get_access_flags(req(), event_id=other_event.id) == none
+
+
+@pytest.mark.anyio
+async def test_get_access_flags_room_coordinator_on_event_page():
+    """A coordinator of one room keeps the coordinator flag on that event's pages, and only that event's."""
+    async with get_session() as session:
+        user = await create_user(
+            session,
+            email="flags_room_coordinator_event@example.com",
+            display_name="Room Coordinator",
+            password_hash=hash_password("pw123"),
+        )
+        event = await create_event(session, slug="flags-room-coordinator-event", display_name="Event")
+        other_event = await create_event(session, slug="flags-room-coordinator-other", display_name="Other")
+        room = await create_room(session, event_id=event.id, display_name="Room")
+        await set_room_membership(session, user_id=user.id, room_id=room.id, role="room_coordinator")
+
+    token = create_user_token(user_id=user.id, email=user.email)
+
+    own = await get_access_flags(create_mock_request(cookies={"user_token": token}), event_id=event.id)
+    other = await get_access_flags(create_mock_request(cookies={"user_token": token}), event_id=other_event.id)
+
+    assert own == {"is_admin": False, "is_event_owner": False, "is_room_coordinator": True}
+    assert other == {"is_admin": False, "is_event_owner": False, "is_room_coordinator": False}

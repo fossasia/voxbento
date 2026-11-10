@@ -13,7 +13,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from portal.config import settings
 from portal.database import get_db_session
-from portal.models import User
+from portal.models import Room, User
 from portal.roles import ADMIN, EVENT_OWNER, INTERPRETER, ROLE_RANK, ROOM_COORDINATOR, highest_role, is_at_least
 from portal.security_headers import forwarded_https
 
@@ -533,54 +533,56 @@ async def require_hosting_access(request: Request) -> dict:
         raise RedirectRequired("/account?error=hosting_access_required")
 
 
+# Each template flag is "holds at least this role here", so the role order in
+# portal/roles.py decides which flags a role implies.
+_ACCESS_FLAG_ROLES = {
+    "is_admin": ADMIN,
+    "is_event_owner": EVENT_OWNER,
+    "is_room_coordinator": ROOM_COORDINATOR,
+}
+
+
+def _role_in_scope(principal: dict, event_id: int | None, room: Room | None) -> str | None:
+    """Highest management role the signed-in person holds for the page being rendered."""
+    if principal["is_admin"]:
+        return ADMIN
+    owned = principal["owned_event_ids"]
+    if room is not None:
+        if room.event_id in owned:
+            return EVENT_OWNER
+        return ROOM_COORDINATOR if coordinates_room(principal, room.id, room.event_id) else None
+    if event_id is not None:
+        if event_id in owned:
+            return EVENT_OWNER
+        return ROOM_COORDINATOR if event_id in principal["coordinated_event_ids"] else None
+    # No event or room in view (dashboard, account pages): any management access counts.
+    if principal.get("can_host") or owned:
+        return EVENT_OWNER
+    return ROOM_COORDINATOR if principal["coordinated_event_ids"] else None
+
+
 async def get_access_flags(request: Request, event_id: int | None = None, room_id: int | None = None) -> dict[str, bool]:
     """Which roles the signed-in person holds here, for templates (is_admin, is_event_owner, is_room_coordinator).
 
     Flags are derived from the user's current database state, so a demoted or
     deactivated administrator does not keep admin flags from a stale token.
+    A room that does not exist, or does not belong to ``event_id``, gives no
+    flags to anyone but an Admin.
     """
-    flags = {"is_admin": False, "is_event_owner": False, "is_room_coordinator": False}
-    from portal.database import get_session
+    from portal.database import get_room_by_id, get_session
 
+    role: str | None = None
     async with get_session() as db_session:
         principal = await resolve_request_principal(request, db_session)
-        if principal["user"] is None:
-            return flags
-
-        if principal["is_admin"]:
-            flags["is_admin"] = True
-            flags["is_event_owner"] = True
-            flags["is_room_coordinator"] = True
-            return flags
-
-        owned_events = principal["owned_event_ids"]
-        coord_events = principal["coordinated_event_ids"]
-        coord_rooms = principal["coordinated_room_ids"]
-
-        if event_id is None and room_id is None:
-            if principal.get("can_host") or bool(owned_events):
-                flags["is_event_owner"] = True
-                flags["is_room_coordinator"] = True
-            if bool(coord_rooms):
-                flags["is_room_coordinator"] = True
-        if event_id is not None:
-            if event_id in owned_events:
-                flags["is_event_owner"] = True
-                flags["is_room_coordinator"] = True
-        if room_id is not None:
-            if coordinates_room(principal, room_id, event_id):
-                flags["is_room_coordinator"] = True
-            if not flags["is_event_owner"] and event_id is None:
-                from portal.database import get_room_by_id
-
+        if principal["user"] is not None:
+            room = None
+            scope_is_valid = True
+            if room_id is not None and not principal["is_admin"]:
                 room = await get_room_by_id(db_session, room_id)
-                if room is not None and room.event_id in owned_events:
-                    flags["is_event_owner"] = True
-                    flags["is_room_coordinator"] = True
-        if not flags["is_event_owner"] and event_id is not None:
-            if event_id in coord_events:
-                flags["is_room_coordinator"] = True
-    return flags
+                scope_is_valid = room is not None and (event_id is None or room.event_id == event_id)
+            if scope_is_valid:
+                role = _role_in_scope(principal, event_id, room)
+    return {flag: is_at_least(role, required) for flag, required in _ACCESS_FLAG_ROLES.items()}
 
 
 def is_cookie_secure(request: Request) -> bool:

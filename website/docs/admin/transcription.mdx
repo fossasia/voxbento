@@ -227,4 +227,6 @@ Each frame is emitted by `TTSConnectionManager.broadcast_bundle` with a structur
 - **JSON header** (`L` bytes UTF-8 JSON containing metadata such as `sentence_id`, `text`, `channel_id`, and `sample_rate`)
 - **Optional PCM payload** (remainder bytes, 24 kHz 16-bit mono PCM). Notice that some messages (such as text demarcation or status updates) contain no audio payload.
 
+When the translator returns no text for a segment (for example for a filler sound), the frame carries an empty translation, no error and `audio_pending: false`. The listener page shows nothing for that segment and moves on; a translation that failed carries the `pipeline_failed` error and is shown as failed.
+
 Subscriptions are authorized before acceptance and scheduled through `audio-scheduler.js` in the browser for continuous, seamless playback.
