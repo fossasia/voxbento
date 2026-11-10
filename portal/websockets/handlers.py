@@ -2,20 +2,24 @@ from __future__ import annotations
 
 import json
 import logging
-from datetime import timezone
+import secrets
+from datetime import datetime, timezone
 
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 from jwt import InvalidTokenError
+from sqlalchemy.exc import SQLAlchemyError
 
 from portal.auth import (
     WSAuthError,
-    _current_user,
     booth_session_key,
     decode_token,
     is_invite_token_revoked,
     is_listener_token,
     resolve_booth_role,
+    resolve_session_user,
     resolve_ws_auth,
+    token_issued_at,
+    user_session_is_valid,
 )
 from portal.database import get_booth_language_name, get_session, get_user_by_id
 from portal.globals import booths
@@ -102,14 +106,10 @@ async def ws_booth(websocket: WebSocket, booth_id: str) -> None:
 
     language_name = await get_booth_language_name(booth_id)
 
-    connect_time = utc_now()
-    if user_id is not None and user is not None and user.sessions_valid_after is not None:
-        valid_after = user.sessions_valid_after
-        if valid_after.tzinfo is None:
-            valid_after = valid_after.replace(tzinfo=timezone.utc)
-        if connect_time <= valid_after:
-            await websocket.close(code=WS_CLOSE_REVOKED, reason=REASON_SESSION_EXPIRED)
-            return
+    issued_at = token_issued_at(payload)
+    if user_id is not None and not user_session_is_valid(user, payload):
+        await websocket.close(code=WS_CLOSE_REVOKED, reason=REASON_SESSION_EXPIRED)
+        return
 
     session = Session(
         booth_id=booth_id,
@@ -120,7 +120,7 @@ async def ws_booth(websocket: WebSocket, booth_id: str) -> None:
         user_id=user_id,
         invite_token_id=token_id,
         session_key=booth_session_key(payload),
-        issued_at=connect_time,
+        issued_at=issued_at or (datetime.min.replace(tzinfo=timezone.utc) if user_id is not None else utc_now()),
     )
     if user_id is not None and manager.revocation_epoch(user_id, booth_id) != revocation_epoch:
         # Authorization changed after the check above; the revocation sweep ran
@@ -228,13 +228,18 @@ async def ws_captions(websocket: WebSocket, booth_id: str) -> None:
         try:
             payload = decode_token(token)
             if payload.get("user"):
-                if not await _current_user(payload):
+                if await resolve_session_user(payload) is None:
                     reject_code = 4001
             elif is_listener_token(payload):
                 if not payload.get("event_slug") or booth_event != payload["event_slug"]:
                     reject_code = 4003
             elif not payload.get("event_slug") or not await resolve_booth_role(payload, booth_id):
                 reject_code = 4003
+        except SQLAlchemyError:
+            # A database outage is transient: 1011 lets the client retry instead of
+            # treating the token as permanently rejected.
+            _log.exception("Caption session lookup failed")
+            reject_code = 1011
         except InvalidTokenError:
             reject_code = 4001
         if reject_code is not None:
@@ -258,7 +263,9 @@ async def ws_captions(websocket: WebSocket, booth_id: str) -> None:
                 sessions = get_booth_sessions(websocket)
                 user_sess = sessions.get("user_token")
                 invite_sess = sessions.get("session_token")
-                is_authorized = bool(user_sess and user_sess.get("user") and await _current_user(user_sess))
+                is_authorized = bool(
+                    user_sess and user_sess.get("user") and await resolve_session_user(user_sess) is not None
+                )
                 if not is_authorized and invite_sess:
                     is_authorized = bool(await resolve_booth_role(invite_sess, booth_id))
                 reject_code = 4001
@@ -307,7 +314,9 @@ async def ws_captions(websocket: WebSocket, booth_id: str) -> None:
         listener_manager.remove(websocket, booth_id)
 
 
-async def _authorize_tts(websocket: WebSocket, room_id: int, language_code: str, booth_id: str) -> None:
+async def _authorize_tts(
+    websocket: WebSocket, room_id: int, language_code: str, booth_id: str, *, recheck: bool = False
+) -> None:
     """Authorize a TTS WebSocket subscription before accept.
 
     The subscription key is (room_id, target language, source booth_id).
@@ -319,7 +328,7 @@ async def _authorize_tts(websocket: WebSocket, room_id: int, language_code: str,
 
     import jwt
 
-    from portal.auth import WSAuthError, decode_token, get_booth_session, resolve_booth_role
+    from portal.auth import WSAuthError, decode_token, get_booth_sessions, resolve_booth_role
     from portal.booth_identity import parse_booth_id, validate_language_code
     from portal.config import settings
     from portal.database import get_event_by_slug, get_session
@@ -346,8 +355,12 @@ async def _authorize_tts(websocket: WebSocket, room_id: int, language_code: str,
         except jwt.InvalidTokenError:
             raise WSAuthError("Invalid token.")
 
-        if payload.get("is_admin") or payload.get("admin"):
-            return
+        if payload.get("user"):
+            user = await resolve_session_user(payload)
+            if user is None:
+                raise WSAuthError("User session has been revoked.")
+            if user.is_admin:
+                return
 
         token_event = payload.get("event_slug", "")
         if is_listener_token(payload):
@@ -358,7 +371,7 @@ async def _authorize_tts(websocket: WebSocket, room_id: int, language_code: str,
         token_lang = payload.get("language_code", "")
         token_room = payload.get("room_id")
         if token_event and token_lang:
-            if payload.get("token_id") is not None and await is_invite_token_revoked(str(payload["token_id"])):
+            if payload.get("token_id") is not None and await is_invite_token_revoked(str(payload["token_id"]), ttl=0):
                 raise WSAuthError("Invitation revoked.")
             if (
                 token_event != event_slug
@@ -390,10 +403,17 @@ async def _authorize_tts(websocket: WebSocket, room_id: int, language_code: str,
             raise WSAuthError("Origin mismatch.")
 
     # 2. JWT in cookie
-    payload = get_booth_session(websocket)
-    if payload:
-        if payload.get("is_admin") or payload.get("admin"):
-            return
+    sessions = get_booth_sessions(websocket)
+    for payload in sessions.values():
+        if payload.get("user"):
+            user_payload = {k: v for k, v in payload.items() if k != "role"}
+            user_role = await resolve_booth_role(user_payload, booth_id)
+            if not user_role and target_lang != actual_lang:
+                target_booth_id = f"{event_slug}-{actual_room}-{target_lang}"
+                user_role = await resolve_booth_role(user_payload, target_booth_id)
+            if user_role:
+                return
+            continue
 
         token_event = payload.get("event_slug", "")
         if is_listener_token(payload):
@@ -404,7 +424,7 @@ async def _authorize_tts(websocket: WebSocket, room_id: int, language_code: str,
         token_lang = payload.get("language_code", "")
         token_room = payload.get("room_id")
         if token_event and token_lang:
-            if payload.get("token_id") is not None and await is_invite_token_revoked(str(payload["token_id"])):
+            if payload.get("token_id") is not None and await is_invite_token_revoked(str(payload["token_id"]), ttl=0):
                 raise WSAuthError("Invitation revoked.")
             if (
                 token_event != event_slug
@@ -414,18 +434,7 @@ async def _authorize_tts(websocket: WebSocket, room_id: int, language_code: str,
                 raise WSAuthError("Participant token scope does not match.")
             return
 
-        if payload.get("user"):
-            user_payload = {k: v for k, v in payload.items() if k != "role"}
-            user_role = await resolve_booth_role(user_payload, booth_id)
-            if not user_role and target_lang != actual_lang:
-                target_booth_id = f"{event_slug}-{actual_room}-{target_lang}"
-                user_role = await resolve_booth_role(user_payload, target_booth_id)
-            if user_role:
-                return
-            if not websocket.cookies.get(f"listener_code_{event_slug}"):
-                raise WSAuthError("Token scope is required.")
-        else:
-            raise WSAuthError("Token scope is required.")
+        raise WSAuthError("Token scope is required.")
 
     # 3. Listener code cookie
     cookie_code = websocket.cookies.get(f"listener_code_{event_slug}")
@@ -434,6 +443,12 @@ async def _authorize_tts(websocket: WebSocket, room_id: int, language_code: str,
             ev = await get_event_by_slug(db_session, event_slug)
             if not ev or not ev.listener_join_code:
                 raise WSAuthError("Invalid listener join code.")
+        if recheck:
+            # The connection was accepted with this code, so a recheck only confirms it is still the
+            # event's code. It is not a guess: other clients' bad guesses from the same IP must not close it.
+            if not secrets.compare_digest(cookie_code.encode(), ev.listener_join_code.encode()):
+                raise WSAuthError("Invalid listener join code.")
+            return
         try:
             is_valid = verify_join_code(
                 websocket.client.host if websocket.client else "unknown", cookie_code, ev.listener_join_code
@@ -456,8 +471,11 @@ async def ws_tts(websocket: WebSocket, room_id: int, language_code: str, booth_i
         await websocket.close(code=4003)
         return
 
+    async def authorize() -> None:
+        await _authorize_tts(websocket, room_id, language_code, booth_id, recheck=True)
+
     await websocket.accept()
-    tts_manager.add(websocket, room_id, language_code, booth_id)
+    tts_manager.add(websocket, room_id, language_code, booth_id, authorize=authorize)
     try:
         while True:
             await websocket.receive_text()
