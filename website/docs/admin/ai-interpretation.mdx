@@ -132,3 +132,7 @@ Measured on an Apple M5 with Ollama 0.40.15, through VoxBento's own request path
 | `qwen3:0.6b` (reasoning), CPU only | 4.3 s | 3.3 s | 10 s, 3 of 6 timed out |
 
 A single request on CPU can look fast; it is several rooms and languages at once that push CPU-only setups past the limit.
+
+### Recommended Translation Models
+
+For translation-specialised models that work well with VoxBento's glossary and style prompts, see [Self-Hosted Translation LLMs](/configuration/self-hosted-translation-llms). That guide covers deploying **Hy-MT2** (1.8B on CPU, 7B on GPU) and **EuroLLM** with step-by-step setup, expected latency and glossary verification.

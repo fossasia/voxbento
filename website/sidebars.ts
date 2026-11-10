@@ -52,6 +52,7 @@ const sidebars: SidebarsConfig = {
           label: 'Configuration',
           items: [
             'configuration/environment-variables',
+            'configuration/self-hosted-translation-llms',
             'configuration/deployment',
             'configuration/security',
           ],

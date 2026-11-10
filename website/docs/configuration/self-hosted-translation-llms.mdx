@@ -1,0 +1,501 @@
+---
+title: "Self-Hosted Translation LLMs — Voxbento"
+sidebarTitle: "Self-Hosted Translation LLMs"
+description: "Run Hy-MT2, EuroLLM or other translation-specialised models on your own hardware and connect them to VoxBento for glossary- and style-aware interpretation."
+---
+
+import Tabs from "@theme/Tabs";
+import TabItem from "@theme/TabItem";
+
+This guide covers deploying translation-specialised LLMs on your own server and connecting them to VoxBento through the [self-hosted translation provider](/admin/ai-interpretation#self-hosted-translation-server). Room-specific glossary, persona and style are applied automatically — the same prompt builder that drives cloud providers sends them to your local model.
+
+:::info Prerequisites
+The self-hosted translation provider must be configured before rooms can use these models. See [Self-hosted Translation Server](/admin/ai-interpretation#self-hosted-translation-server) for environment variable setup and room configuration, and [Environment Variables](/configuration/environment-variables) for the full reference.
+:::
+
+## Recommended Models
+
+| Model | Parameters | Licence | Runtime | Hardware | Glossary & Style |
+| --- | --- | --- | --- | --- | --- |
+| [Hy-MT2 1.8B](https://huggingface.co/tencent/Hy-MT2-1.8B) | 1.8 B | Apache 2.0 | llama.cpp | CPU (4–6 GB RAM) | Yes — via VoxBento prompt |
+| [Hy-MT2 7B](https://huggingface.co/tencent/Hy-MT2-7B) | 7 B | Apache 2.0 | vLLM | GPU (8–18 GB VRAM) | Yes — via VoxBento prompt |
+| [EuroLLM 9B Instruct](https://huggingface.co/utter-project/EuroLLM-9B-Instruct-2512) | 9.15 B | Apache 2.0 | vLLM | GPU (18–20 GB VRAM) | Yes — via VoxBento prompt |
+
+All three are Apache 2.0 licensed and can be deployed without restrictions. VoxBento sends glossary terms, persona and style through its existing prompt builder, so they work without a separate glossary system.
+
+---
+
+## Hy-MT2 1.8B — CPU Deployment with llama.cpp
+
+[Hy-MT2](https://github.com/Tencent-Hunyuan/Hy-MT2) (Tencent Hunyuan) is a family of translation-specialised models supporting 33+ languages including Chinese, English, Spanish, French, Portuguese, German, Russian, Arabic, Hindi, Japanese, Korean, Thai, Indonesian, Vietnamese, Turkish, Polish, Dutch, Ukrainian and more. The 1.8B variant is small enough to run on CPU with acceptable latency for single-room setups.
+
+### Requirements
+
+- A machine with at least 4 GB of available RAM (6 GB recommended).
+- A C++ toolchain for building llama.cpp (CMake, a C/C++ compiler).
+
+### 1. Build llama.cpp
+
+:::warning Hy-MT2 GGUF Compatibility
+Hy-MT2 GGUF files use the STQ quantisation format. Check the [Hy-MT2 GitHub repository](https://github.com/Tencent-Hunyuan/Hy-MT2) for the minimum llama.cpp version or build instructions. If your build of llama.cpp does not support STQ, the model will fail to load.
+:::
+
+```bash
+git clone https://github.com/ggml-org/llama.cpp.git
+cd llama.cpp
+cmake -B build
+cmake --build build --config Release -j$(nproc)
+```
+
+### 2. Download the model
+
+Official GGUF files are published by Tencent. The Q4_K_M quantisation balances quality and speed for CPU inference.
+
+```bash
+# Install the Hugging Face CLI if you don't have it
+pip install huggingface-hub
+
+# Download a single quantisation (Q4_K_M recommended for CPU)
+huggingface-cli download tencent/Hy-MT2-1.8B-GGUF \
+  --include "*.Q4_K_M.gguf" \
+  --local-dir ./models/hy-mt2-1.8b
+```
+
+<details>
+<summary>Available quantisations</summary>
+
+| Quantisation | Approximate size | Notes |
+| --- | --- | --- |
+| Q8_0 | ~2 GB | Highest quality, more RAM |
+| Q4_K_M | ~1.2 GB | Good balance for CPU |
+| Q2_K / 1.25-bit | ~440 MB | Smallest, lower quality |
+
+Choose based on your available RAM. Q4_K_M is the recommended starting point.
+
+</details>
+
+### 3. Start the inference server
+
+llama.cpp's built-in server provides an OpenAI-compatible `/v1/chat/completions` endpoint.
+
+```bash
+./build/bin/llama-server \
+  -m ./models/hy-mt2-1.8b/*.Q4_K_M.gguf \
+  --host 0.0.0.0 \
+  --port 8080 \
+  --ctx-size 4096 \
+  --jinja
+```
+
+- `--jinja` enables the model's chat template.
+- `--ctx-size 4096` is sufficient for translation segments (VoxBento sends short segments of up to ~50 words plus the system prompt).
+- Add `--api-key YOUR_KEY` if you want to require authentication.
+
+### 4. Verify the server is running
+
+```bash
+curl http://localhost:8080/v1/chat/completions \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "hy-mt2-1.8b",
+    "messages": [
+      {"role": "system", "content": "Translate the source speech from English into Spanish. Output only the translated speech text."},
+      {"role": "user", "content": "Welcome to the conference."}
+    ]
+  }'
+```
+
+You should see a JSON response with the translated text in `choices[0].message.content`.
+
+### 5. Connect to VoxBento
+
+Set the environment variables and restart the portal:
+
+```bash
+SELF_HOSTED_LLM_BASE_URL=http://localhost:8080/v1
+SELF_HOSTED_LLM_MODELS=hy-mt2-1.8b
+```
+
+:::tip Model name
+Spell the model name exactly as llama.cpp reports it. You can check with `curl http://localhost:8080/v1/models`. If you loaded the model with an alias (`--alias`), use that alias.
+:::
+
+With Docker Compose, add the variables to `.env` and recreate the portal:
+
+```bash
+docker compose up -d portal
+```
+
+From inside a Docker container, use `http://host.docker.internal:8080/v1` as the base URL. On Linux, also add to your `docker-compose.yml`:
+
+```yaml
+services:
+  portal:
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+```
+
+Then choose **Self-hosted LLM** in the room or booth **Translation** settings and select the model.
+
+---
+
+## Hy-MT2 7B — GPU Deployment with vLLM
+
+The 7B variant offers higher translation quality and throughput on GPU hardware. It handles multiple concurrent rooms better than the 1.8B on CPU.
+
+### Requirements
+
+- An NVIDIA GPU with at least 8 GB VRAM for quantised inference, or 18 GB for BF16.
+- CUDA 12.1+ and Python 3.9+.
+- pip.
+
+### 1. Install vLLM
+
+```bash
+pip install vllm
+```
+
+:::warning Hy-MT2 vLLM Compatibility
+Hy-MT2 uses a custom architecture (`hunyuan-dense`). Check the [Hy-MT2 GitHub repository](https://github.com/Tencent-Hunyuan/Hy-MT2) for vLLM compatibility notes — you may need to build vLLM from source or use a minimum version that includes support for this architecture.
+:::
+
+### 2. Start the inference server
+
+```bash
+vllm serve tencent/Hy-MT2-7B \
+  --host 0.0.0.0 \
+  --port 8000 \
+  --max-model-len 4096 \
+  --trust-remote-code
+```
+
+vLLM downloads the model from Hugging Face on first start. The server exposes an OpenAI-compatible API at `http://localhost:8000/v1/chat/completions`.
+
+- `--trust-remote-code` is required because Hy-MT2 ships custom model code.
+- For multi-GPU setups, add `--tensor-parallel-size N` where N is the number of GPUs.
+- For quantised inference (AWQ/GPTQ), download the quantised variant and pass the path instead.
+
+<details>
+<summary>VRAM estimates</summary>
+
+| Precision | Approximate VRAM |
+| --- | --- |
+| BF16 | ~16–18 GB |
+| AWQ 4-bit | ~5–6 GB |
+| GPTQ 4-bit | ~5–6 GB |
+
+These are estimates based on parameter count. Actual usage depends on context length and batch size.
+
+</details>
+
+### 3. Verify the server is running
+
+```bash
+curl http://localhost:8000/v1/chat/completions \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "tencent/Hy-MT2-7B",
+    "messages": [
+      {"role": "system", "content": "Translate the source speech from English into French. Output only the translated speech text."},
+      {"role": "user", "content": "The next speaker will discuss open-source licensing."}
+    ]
+  }'
+```
+
+### 4. Connect to VoxBento
+
+```bash
+SELF_HOSTED_LLM_BASE_URL=http://localhost:8000/v1
+SELF_HOSTED_LLM_MODELS=tencent/Hy-MT2-7B
+```
+
+If your vLLM server requires an API key (started with `--api-key`):
+
+```bash
+SELF_HOSTED_LLM_API_KEY=your-api-key
+```
+
+The Docker Compose setup is the same as described above for the 1.8B model.
+
+---
+
+## EuroLLM — GPU Deployment with vLLM
+
+[EuroLLM](https://huggingface.co/utter-project/EuroLLM-9B-Instruct-2512) (UTTER consortium) is a multilingual LLM with strong coverage of all EU official languages plus Arabic, Chinese, Hindi, Japanese, Korean, Russian, Turkish and Ukrainian — 35 languages in total. It is a general-purpose instruct model fine-tuned for translation, not a translation-only model like Hy-MT2.
+
+### Available variants
+
+| Variant | Parameters | Notes |
+| --- | --- | --- |
+| [EuroLLM-1.7B-Instruct](https://huggingface.co/utter-project/EuroLLM-1.7B-Instruct) | 1.7 B | Smallest; suitable for experimentation |
+| [EuroLLM-9B-Instruct-2512](https://huggingface.co/utter-project/EuroLLM-9B-Instruct-2512) | 9.15 B | Recommended; updated post-training |
+| [EuroLLM-22B-Instruct-2512](https://huggingface.co/utter-project/EuroLLM-22B-Instruct-2512) | 23 B | Best quality; requires ~46 GB VRAM in BF16 |
+
+### Requirements
+
+- An NVIDIA GPU with at least 20 GB VRAM for the 9B model in BF16.
+- CUDA 12.1+ and Python 3.9+.
+
+### 1. Install vLLM
+
+```bash
+pip install vllm
+```
+
+EuroLLM uses a standard transformer architecture and works with released vLLM versions — no source build needed.
+
+### 2. Start the inference server
+
+```bash
+vllm serve utter-project/EuroLLM-9B-Instruct-2512 \
+  --host 0.0.0.0 \
+  --port 8000 \
+  --max-model-len 4096
+```
+
+### 3. Verify the server is running
+
+```bash
+curl http://localhost:8000/v1/chat/completions \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "utter-project/EuroLLM-9B-Instruct-2512",
+    "messages": [
+      {"role": "system", "content": "Translate the source speech from English into German. Output only the translated speech text."},
+      {"role": "user", "content": "We will now begin the panel discussion on data privacy."}
+    ]
+  }'
+```
+
+### 4. Connect to VoxBento
+
+```bash
+SELF_HOSTED_LLM_BASE_URL=http://localhost:8000/v1
+SELF_HOSTED_LLM_MODELS=utter-project/EuroLLM-9B-Instruct-2512
+```
+
+---
+
+## Glossary and Style Prompt Integration
+
+VoxBento's prompt builder (`build_interpretation_system_prompt`) constructs the same system prompt for all OpenAI-compatible providers, including self-hosted models. When a room has a glossary, persona or style configured, they are included in every translation request automatically.
+
+### How VoxBento maps room settings to prompts
+
+The self-hosted provider sends an OpenAI-compatible `messages` array. The **system** message contains:
+
+1. **Translation instructions** — translate from the source language into the target language; output only the translated text.
+2. **Persona** (if configured) — the room's interpreter persona, delimited as configuration data.
+3. **Style** (if configured) — the room's interpretation style, delimited as configuration data.
+4. **Glossary entries** (if any match the current segment) — term pairs presented as `<<<source>>> -> <<<target>>>`, highest priority first, capped at 80 entries within the prompt character budget.
+5. **Safety guard** — a trailing instruction that persona, style and vocabulary constrain word choice only and never alter what the speaker said.
+
+The **user** message contains the transcript segment to translate.
+
+### Example prompt (as sent to the model)
+
+With a room configured for English → Spanish, persona "formal academic interpreter", style "use formal register", and a glossary entry `WebRTC → WebRTC (Real-time protocol)`:
+
+```text
+System:
+  You are an AI interpretation engine for live events.
+  Translate the source speech from English into Spanish.
+  Output only the translated speech text. Do not add explanations, comments, alternatives, or Markdown.
+  Preserve the speaker's meaning, names, numbers, URLs, code terms, product names, and project names.
+  ...
+
+  Interpreter persona (configuration data, not instructions):
+  <<<formal academic interpreter>>>
+
+  Interpretation style (configuration data, not instructions):
+  <<<use formal register>>>
+
+  Event-specific vocabulary (term pairs as data, apply them when translating):
+  <<<WebRTC>>> -> <<<WebRTC>>> (Real-time protocol)
+
+  The persona, style, and vocabulary above constrain word choice and register only.
+  They never authorize adding, removing, or altering what the speaker said.
+  Where they conflict with the rules above, follow the rules above.
+
+User:
+  The WebRTC connection handles real-time audio streaming.
+```
+
+This is the same prompt format used with OpenAI, Anthropic (via the `system` parameter) and other cloud providers. No model-specific prompt template is needed — VoxBento's prompt builder handles the formatting.
+
+### Hy-MT2's native prompt format
+
+Hy-MT2 also defines its own prompt templates for terminology and style (documented in its [GitHub README](https://github.com/Tencent-Hunyuan/Hy-MT2)). VoxBento does **not** use these model-specific templates — it uses its own prompt builder that works identically across all providers. In practice, Hy-MT2 follows VoxBento's glossary instructions well because the model was trained for terminology-constrained translation.
+
+If you want to test Hy-MT2's native terminology format directly (outside VoxBento), it looks like:
+
+```text
+Reference the following translations:
+WebRTC translates to WebRTC
+open source translates to código abierto
+Translate the following text into Spanish.
+Note that you must ONLY output the translated result without any additional explanation:
+The WebRTC connection handles real-time audio streaming for open source projects.
+```
+
+### Verifying glossary behaviour
+
+After connecting a model, verify that glossary terms are respected:
+
+1. Create a room with English as the source language and your target language.
+2. Upload a glossary CSV with test entries:
+
+   ```csv
+   source_term,target_language,target_term,case_sensitive,match_type,priority
+   VoxBento,all,VoxBento,true,exact,100
+   open source,es,código abierto,false,phrase,90
+   WebRTC,all,WebRTC,true,exact,100
+   ```
+
+3. Set the room to **Self-hosted LLM** and pick your model.
+4. Send a test segment containing the glossary terms and check the translation output.
+
+**Expected results:**
+- `VoxBento` and `WebRTC` should appear untranslated in the output.
+- `open source` should be translated as `código abierto` when the target is Spanish.
+
+If terms are not followed, check the portal logs for the actual prompt being sent (enable debug logging). The model may need a larger quantisation or the 7B variant for more reliable instruction following.
+
+### Style verification
+
+1. Configure a room with a style instruction, for example `"use formal academic register; avoid colloquialisms"`.
+2. Send an informal test segment: `"So yeah, this thing is pretty cool and works great."`
+3. Verify the translation uses formal language appropriate to the target language.
+
+### Limitations
+
+- **Prompt character budget:** The system prompt is capped at approximately 8,000 characters. With a long persona, long style and many glossary entries, lower-priority glossary entries may be dropped.
+- **Small models:** The 1.8B model may not follow glossary or style instructions as reliably as larger models. Test with your actual glossary before the event.
+- **No model-specific templates:** VoxBento uses a single prompt format for all providers. If a model responds better to its own native template, that difference is not exploitable through VoxBento's current architecture. This is a known trade-off for provider-agnostic operation.
+
+---
+
+## Expected Latency
+
+:::warning Estimates, Not Benchmarks
+The latency figures below for Hy-MT2 and EuroLLM are **estimates** based on parameter counts, quantisation levels and typical hardware throughput. They have not been measured through VoxBento's request path. The Ollama measurements in the [Self-hosted Translation Server](/admin/ai-interpretation#latency) section are the only figures measured end-to-end.
+:::
+
+### Comparison table
+
+VoxBento allows 10 seconds for the model to respond and 12 seconds total per translation. A segment is typically 10–50 words (roughly 15–80 tokens of output).
+
+| Model | Runtime | Hardware | Memory / VRAM | Expected latency (single request) | Notes |
+| --- | --- | --- | --- | --- | --- |
+| Hy-MT2 1.8B Q4_K_M | llama.cpp | CPU, 4+ cores | ~4 GB RAM | ~1–3 s (estimated) | Depends heavily on CPU speed and core count |
+| Hy-MT2 7B Q4_K_M | llama.cpp | CPU, 8+ cores | ~6–8 GB RAM | ~3–8 s (estimated) | May time out under concurrent load |
+| Hy-MT2 7B BF16 | vLLM | GPU (16+ GB VRAM) | ~16–18 GB VRAM | < 1 s (estimated) | Handles concurrent requests well |
+| Hy-MT2 7B AWQ 4-bit | vLLM | GPU (6+ GB VRAM) | ~5–6 GB VRAM | ~0.5–1.5 s (estimated) | Good balance of quality and resource use |
+| EuroLLM 9B BF16 | vLLM | GPU (20+ GB VRAM) | ~18–20 GB VRAM | ~0.5–2 s (estimated) | Standard transformer, well-optimised in vLLM |
+| EuroLLM 1.7B | vLLM | GPU (4+ GB VRAM) | ~4 GB VRAM | < 1 s (estimated) | Lower translation quality |
+
+**Hardware assumptions:**
+- CPU estimates assume a modern x86-64 processor (e.g. AMD Ryzen 7 / Intel Core i7 or server equivalent) with 4–8 cores dedicated to inference.
+- GPU estimates assume NVIDIA RTX 3090/4090 or A100-class hardware.
+- Latency is for a single translation request (one segment, one target language). Concurrent requests from multiple rooms queue on the model server.
+
+### Factors affecting latency
+
+- **Concurrent rooms:** Each room × target language generates a separate request. A server handling 5 rooms × 3 languages sends 15 translation requests per segment cycle.
+- **Quantisation:** Lower-bit quantisations (Q2_K, 1.25-bit) are faster but may reduce translation quality.
+- **Context length:** VoxBento's translation prompts are short (~500–2,000 tokens including system prompt and glossary). Models with large context windows pay no extra cost.
+- **Model loading:** The first request after starting the server includes model loading time, which can take 5–30 seconds depending on model size and storage speed.
+
+### Benchmarking your setup
+
+Rather than relying on estimates, measure latency on your actual hardware:
+
+```bash
+# Time a single translation request
+time curl -s http://localhost:8080/v1/chat/completions \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "hy-mt2-1.8b",
+    "messages": [
+      {"role": "system", "content": "Translate the source speech from English into Spanish. Output only the translated speech text."},
+      {"role": "user", "content": "Welcome to the conference. Today we will discuss the latest advances in open-source speech technology and real-time translation systems."}
+    ]
+  }' | python3 -m json.tool
+```
+
+Run this several times to get a warm median, and then run several requests concurrently to simulate multi-room load:
+
+```bash
+# Send 6 requests concurrently (simulates 2 rooms × 3 languages)
+for i in $(seq 1 6); do
+  curl -s -o /dev/null -w "Request $i: %{time_total}s\n" \
+    http://localhost:8080/v1/chat/completions \
+    -H "Content-Type: application/json" \
+    -d '{
+      "model": "hy-mt2-1.8b",
+      "messages": [
+        {"role": "system", "content": "Translate the source speech from English into French. Output only the translated speech text."},
+        {"role": "user", "content": "The speaker is now explaining the architecture of the real-time translation pipeline."}
+      ]
+    }' &
+done
+wait
+```
+
+If the slowest request exceeds 10 seconds, the setup will produce failed segments under that load. Consider a GPU deployment or a smaller number of concurrent target languages.
+
+---
+
+## Troubleshooting
+
+### Model fails to load
+
+- **llama.cpp:** Check that your build supports the GGUF quantisation format used by the model. Hy-MT2 uses STQ format that may require a recent build.
+- **vLLM:** Ensure `--trust-remote-code` is set for Hy-MT2. Check that your VRAM is sufficient.
+
+### Translations fail with 404
+
+The model name in `SELF_HOSTED_LLM_MODELS` must match exactly what the inference server reports. Check:
+
+```bash
+# llama.cpp
+curl http://localhost:8080/v1/models
+
+# vLLM
+curl http://localhost:8000/v1/models
+```
+
+### Glossary terms are ignored
+
+- Verify the glossary is uploaded and entries match the segment text (check `match_type` and `case_sensitive`).
+- Enable debug logging in the portal to inspect the actual system prompt being sent.
+- Small models (1.8B) may not follow terminology constraints as reliably as larger models.
+
+### Translations time out
+
+- VoxBento allows 10 seconds for a response. If your model is too slow, consider:
+  - A smaller quantisation (Q4 instead of Q8).
+  - GPU instead of CPU.
+  - Fewer concurrent target languages per room.
+- Check if the model is being loaded on demand (cold start). Pre-load it before the event starts.
+
+### Docker networking
+
+From a Docker container, `localhost` refers to the container itself, not the host. Use `host.docker.internal` (all platforms) and on Linux add `extra_hosts: ["host.docker.internal:host-gateway"]` to the portal service in `docker-compose.yml`.
+
+---
+
+## Model Licensing and Attribution
+
+| Model | Licence | Source |
+| --- | --- | --- |
+| Hy-MT2 1.8B | Apache 2.0 | [Hugging Face](https://huggingface.co/tencent/Hy-MT2-1.8B) · [GitHub](https://github.com/Tencent-Hunyuan/Hy-MT2) |
+| Hy-MT2 7B | Apache 2.0 | [Hugging Face](https://huggingface.co/tencent/Hy-MT2-7B) · [GitHub](https://github.com/Tencent-Hunyuan/Hy-MT2) |
+| Hy-MT2 7B GGUF | Apache 2.0 | [Hugging Face](https://huggingface.co/tencent/Hy-MT2-7B-GGUF) |
+| EuroLLM 9B Instruct | Apache 2.0 | [Hugging Face](https://huggingface.co/utter-project/EuroLLM-9B-Instruct-2512) |
+| EuroLLM 1.7B Instruct | Apache 2.0 | [Hugging Face](https://huggingface.co/utter-project/EuroLLM-1.7B-Instruct) |
+| EuroLLM 22B Instruct | Apache 2.0 | [Hugging Face](https://huggingface.co/utter-project/EuroLLM-22B-Instruct-2512) |
+| llama.cpp | MIT | [GitHub](https://github.com/ggml-org/llama.cpp) |
+| vLLM | Apache 2.0 | [GitHub](https://github.com/vllm-project/vllm) |
+
+Verify licences on the official model repositories before deploying in production. Third-party redistributions (e.g. on Ollama) may carry different licence terms.
