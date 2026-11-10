@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+from unittest.mock import AsyncMock, patch
 
 # Force auth off for all tests — setdefault would not override an already-set env var,
 # so use an unconditional assignment to guarantee a deterministic baseline.
@@ -374,8 +375,6 @@ def test_ws_join_without_language_and_unconfigured_booth_returns_error():
 def test_ws_join_uses_db_booth_language_when_unspecified():
     """If the client does not specify language in join, it should inherit the resolved booth language."""
     booth_id = _ws_booth("japan", "ja", "Japanese")
-    from unittest.mock import AsyncMock, patch
-
     with patch("portal.websockets.handlers.get_booth_language_name", new=AsyncMock(return_value="Japanese")):
         with client.websocket_connect(f"/ws/booth/{booth_id}", cookies=_ws_auth()) as ws:
             ws.send_text(
@@ -425,21 +424,10 @@ def test_ws_join_rejected_without_session():
 
 
 @pytest.mark.parametrize(
-    ("booth_id", "room_id", "error"),
-    [
-        ("roomcheck-1-fr", 2, "room_id does not match this booth."),
-        ("roomcheck-0-fr", 1, "room_id does not match this booth."),
-        ("roomcheck-1-de", "2", "room_id does not match this booth."),
-        # int() would turn each of these into 1 (or raise on Infinity / too many digits).
-        ("roomcheck-1-es", float("inf"), "room_id must be an integer."),
-        ("roomcheck-1-pt", True, "room_id must be an integer."),
-        ("roomcheck-1-nl", 1.5, "room_id must be an integer."),
-        ("roomcheck-1-sv", 1.0, "room_id must be an integer."),
-        ("roomcheck-1-pl", " 1", "room_id must be an integer."),
-        ("roomcheck-1-cs", "9" * 5000, "room_id must be an integer."),
-    ],
+    ("booth_id", "room_id"),
+    [("roomcheck-1-fr", 2), ("roomcheck-0-fr", 1)],
 )
-def test_ws_join_rejects_room_id_not_matching_booth(booth_id, room_id, error):
+def test_ws_join_rejects_room_id_not_matching_booth(booth_id, room_id):
     """A room_id that disagrees with the booth ID must not create the booth in another room (#975)."""
     from portal.globals import booths
 
@@ -449,29 +437,8 @@ def test_ws_join_rejects_room_id_not_matching_booth(booth_id, room_id, error):
         )
         msg = json.loads(ws.receive_text())
 
-    assert msg == {"type": "booth:error", "message": error}
+    assert msg == {"type": "booth:error", "message": "room_id does not match this booth."}
     assert booths.get_booth_sync(booth_id) is None
-
-
-def test_ws_join_after_invalid_room_id_keeps_socket_open():
-    """An Infinity room_id gets booth:error, and the same socket can still join."""
-    import anyio
-
-    from portal.globals import booths
-
-    with client.websocket_connect("/ws/booth/roomcheck-1-ko", cookies=_ws_auth()) as ws:
-        ws.send_text(
-            json.dumps({"type": "booth:join", "display_name": "Ana", "language": "Korean", "room_id": float("inf")})
-        )
-        error = json.loads(ws.receive_text())
-        ws.send_text(json.dumps({"type": "booth:join", "display_name": "Ana", "language": "Korean", "room_id": 1}))
-        joined = json.loads(ws.receive_text())
-
-    try:
-        assert error == {"type": "booth:error", "message": "room_id must be an integer."}
-        assert joined["type"] == "booth:joined"
-    finally:
-        anyio.run(booths.remove_booth, "roomcheck", 1, "ko")
 
 
 @pytest.mark.parametrize(
@@ -494,17 +461,87 @@ def test_ws_join_rejects_malformed_booth_id(booth_id, extra):
     assert booths.get_booth_sync(booth_id) is None
 
 
-@pytest.mark.parametrize(("code", "room_id"), [("it", 1), ("ja", "1")])
-def test_ws_join_accepts_room_id_matching_booth(code, room_id):
-    with client.websocket_connect(f"/ws/booth/roomcheck-1-{code}", cookies=_ws_auth()) as ws:
-        ws.send_text(
-            json.dumps({"type": "booth:join", "display_name": "Ana", "language": "Italian", "room_id": room_id})
-        )
+def test_ws_join_accepts_room_id_matching_booth():
+    with client.websocket_connect("/ws/booth/roomcheck-1-it", cookies=_ws_auth()) as ws:
+        ws.send_text(json.dumps({"type": "booth:join", "display_name": "Ana", "language": "Italian", "room_id": 1}))
         msg = json.loads(ws.receive_text())
 
     assert msg["type"] == "booth:joined"
     assert msg["state"]["room_id"] == 1
-    assert msg["state"]["mediamtx_path"] == f"roomcheck/1/{code}"
+    assert msg["state"]["mediamtx_path"] == "roomcheck/1/it"
+
+
+@pytest.mark.parametrize(
+    ("field", "value", "error"),
+    [
+        ("display_name", 123, "display_name must be a string."),
+        ("display_name", "A" * 201, "display_name must not exceed 200 characters."),
+        ("language", 5, "language must be a string."),
+        ("language", None, "language must be a string."),
+        ("language", False, "language must be a string."),
+        ("language", "L" * 101, "language must not exceed 100 characters."),
+        ("channel_id", ["x"], "channel_id must be a string."),
+        ("channel_id", "c" * 201, "channel_id must not exceed 200 characters."),
+        ("role", ["interpreter"], "role must be a string."),
+        ("participant_id", ["x"], "participant_id must be a string."),
+        ("participant_id", "p" * 65, "participant_id must not exceed 64 characters."),
+        ("room_id", float("inf"), "room_id must be an integer."),
+        ("room_id", 1.5, "room_id must be an integer."),
+        ("room_id", True, "room_id must be an integer."),
+        ("room_id", "1", "room_id must be an integer."),
+    ],
+    ids=[
+        "display_name-not-string",
+        "display_name-too-long",
+        "language-not-string",
+        "language-null",
+        "language-false",
+        "language-too-long",
+        "channel_id-not-string",
+        "channel_id-too-long",
+        "role-not-string",
+        "participant_id-not-string",
+        "participant_id-too-long",
+        "room_id-infinity",
+        "room_id-float",
+        "room_id-bool",
+        "room_id-string",
+    ],
+)
+def test_ws_join_rejects_invalid_fields(field, value, error):
+    """An invalid booth:join field gets a booth:error, and the socket can still join afterwards."""
+    booth_id = _ws_booth("joinvalidation")
+    join = {
+        "type": "booth:join",
+        "display_name": "Grace",
+        "role": "interpreter",
+        "language": "French",
+        "channel_id": "join-validation-audio",
+    }
+    # A configured booth language, so a falsy language can't fail on the missing-language check instead.
+    with patch("portal.websockets.handlers.get_booth_language_name", new=AsyncMock(return_value="French")):
+        with client.websocket_connect(f"/ws/booth/{booth_id}", cookies=_ws_auth()) as ws:
+            ws.send_text(json.dumps({**join, field: value}))
+            msg = json.loads(ws.receive_text())
+            assert msg == {"type": "booth:error", "message": error}
+
+            # The socket stays usable after the rejected join.
+            ws.send_text(json.dumps(join))
+            types = {json.loads(ws.receive_text())["type"], json.loads(ws.receive_text())["type"]}
+            assert types == {"booth:joined", "booth:state"}
+
+
+def test_ws_join_without_language_uses_booth_language():
+    """An empty language still falls back to the booth's configured language."""
+    booth_id = _ws_booth("joinfallback")
+    with patch("portal.websockets.handlers.get_booth_language_name", new=AsyncMock(return_value="French")):
+        with client.websocket_connect(f"/ws/booth/{booth_id}", cookies=_ws_auth()) as ws:
+            ws.send_text(json.dumps({"type": "booth:join", "display_name": "Grace", "language": ""}))
+            msg1 = json.loads(ws.receive_text())
+            msg2 = json.loads(ws.receive_text())
+    joined = msg1 if msg1["type"] == "booth:joined" else msg2
+    assert joined["type"] == "booth:joined"
+    assert joined["state"]["language"] == "French"
 
 
 def test_ws_join_then_leave_broadcasts_state():
@@ -745,6 +782,59 @@ def test_ws_standby_cannot_set_mic_active():
         err_msg = json.loads(ws_b.receive_text())
 
     assert err_msg["type"] == "booth:error"
+
+
+def test_ws_standby_cannot_set_themselves_active():
+    """Standby interpreter gets booth:error when naming themselves in booth:set-active."""
+    from portal.globals import booths
+
+    booth_id = _ws_booth("standbyself")
+    with (
+        client.websocket_connect(f"/ws/booth/{booth_id}", cookies=_ws_auth()) as ws_a,
+        client.websocket_connect(f"/ws/booth/{booth_id}", cookies=_ws_auth()) as ws_b,
+    ):
+        _ws_ready(ws_a, ws_b)
+        ws_a.send_text(
+            json.dumps(
+                {
+                    "type": "booth:join",
+                    "display_name": "A",
+                    "role": "interpreter",
+                    "language": "French",
+                    "channel_id": "standby-self-active-audio",
+                }
+            )
+        )
+        joined_a = json.loads(ws_a.receive_text())
+        if joined_a["type"] != "booth:joined":
+            joined_a = json.loads(ws_a.receive_text())
+        ws_a.receive_text()  # drain booth:state broadcast on ws_a
+        ws_b.receive_text()  # drain booth:state broadcast from IntA joining
+
+        ws_b.send_text(
+            json.dumps(
+                {
+                    "type": "booth:join",
+                    "display_name": "B",
+                    "role": "interpreter",
+                    "language": "French",
+                    "channel_id": "standby-self-active-audio",
+                }
+            )
+        )
+        joined_b = json.loads(ws_b.receive_text())
+        if joined_b["type"] != "booth:joined":
+            joined_b = json.loads(ws_b.receive_text())
+        ws_b.receive_text()  # drain booth:state on ws_b
+        ws_a.receive_text()  # drain broadcast to ws_a when ws_b joined
+
+        ws_b.send_text(json.dumps({"type": "booth:set-active", "target_id": joined_b["participant_id"]}))
+        err_msg = json.loads(ws_b.receive_text())
+        # Read the live booth while both sockets are still joined.
+        active_after = booths.get_booth_sync(booth_id).active_interpreter_id
+
+    assert err_msg["type"] == "booth:error"
+    assert active_after == joined_a["participant_id"]
 
 
 def test_ws_three_way_coordinator_flow():
@@ -2756,6 +2846,84 @@ def test_ws_tts_rejects_mismatched_room():
     assert exc_info.value.code == 4003
 
 
+def test_ws_tts_throttles_wrong_listener_cookies():
+    """Cookie guesses on /ws/tts spend the same join-code budget as /ws/captions."""
+    import anyio
+    from fastapi.websockets import WebSocketDisconnect
+
+    from portal import join_code_limit
+    from portal.database import Event, Room, get_session
+
+    async def setup():
+        async with get_session() as session:
+            ev = Event(slug="ttstest-throttle", display_name="TTS Throttle", listener_join_code="secret123")
+            session.add(ev)
+            await session.flush()
+            room = Room(display_name="r", event_id=ev.id, audio_delay_ms=0)
+            session.add(room)
+            await session.flush()
+            return room.id
+
+    room_id = anyio.run(setup)
+    url = f"/ws/tts/{room_id}/en/ttstest-throttle-{room_id}-en"
+    headers = {"Origin": "http://testserver"}
+
+    join_code_limit._join_code_attempts.clear()
+    try:
+        for i in range(join_code_limit.JOIN_CODE_RATE_LIMIT):
+            with pytest.raises(WebSocketDisconnect) as exc_info:
+                with client.websocket_connect(
+                    url, cookies={"listener_code_ttstest-throttle": f"wrong{i}"}, headers=headers
+                ):
+                    pass
+            assert exc_info.value.code == 4003
+
+        # The budget is spent, so even the right code is refused until the window ends.
+        with pytest.raises(WebSocketDisconnect) as exc_info:
+            with client.websocket_connect(
+                url, cookies={"listener_code_ttstest-throttle": "secret123"}, headers=headers
+            ):
+                pass
+        assert exc_info.value.code == 4003
+    finally:
+        join_code_limit._join_code_attempts.clear()
+
+
+def test_ws_tts_listener_cookie_for_event_without_code_is_not_an_attempt():
+    """An event with no join code has nothing to guess, so the cookie is refused without spending the budget."""
+    import anyio
+    from fastapi.websockets import WebSocketDisconnect
+
+    from portal import join_code_limit
+    from portal.database import Event, Room, get_session
+
+    async def setup():
+        async with get_session() as session:
+            ev = Event(slug="ttstest-nocode", display_name="TTS No Code")
+            session.add(ev)
+            await session.flush()
+            room = Room(display_name="r", event_id=ev.id, audio_delay_ms=0)
+            session.add(room)
+            await session.flush()
+            return room.id
+
+    room_id = anyio.run(setup)
+
+    join_code_limit._join_code_attempts.clear()
+    try:
+        with pytest.raises(WebSocketDisconnect) as exc_info:
+            with client.websocket_connect(
+                f"/ws/tts/{room_id}/en/ttstest-nocode-{room_id}-en",
+                cookies={"listener_code_ttstest-nocode": "anything"},
+                headers={"Origin": "http://testserver"},
+            ):
+                pass
+        assert exc_info.value.code == 4003
+        assert not join_code_limit._join_code_attempts
+    finally:
+        join_code_limit._join_code_attempts.clear()
+
+
 def test_ws_tts_cleanup_on_disconnect():
     import anyio
 
@@ -3205,3 +3373,18 @@ def test_embed_rendered_html_uses_sanitized_theme_values():
     assert '"audio_delay_ms"' in res.text
     # CSP header is still emitted with the sanitized policy.
     assert "frame-ancestors" in res.headers.get("content-security-policy", "")
+
+
+def test_unhandled_exception_response_has_security_headers():
+    @app.get("/__boom", include_in_schema=False)
+    async def boom():
+        raise RuntimeError("boom")
+
+    try:
+        res = TestClient(app, raise_server_exceptions=False).get("/__boom")
+    finally:
+        app.router.routes = [r for r in app.router.routes if getattr(r, "path", "") != "/__boom"]
+
+    assert res.status_code == 500
+    assert res.headers["x-content-type-options"] == "nosniff"
+    assert res.headers["content-security-policy"] == "frame-ancestors 'self'"

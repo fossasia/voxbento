@@ -169,6 +169,16 @@ async def test_invite_acceptance_flow_and_primitive_copying():
         assert resp_get.status_code == 200
         assert "Create Account & Go to Workspace" in resp_get.text
 
+        # A password longer than 72 bytes is rejected without using the token
+        resp_long = await http.post(
+            f"/invite/accept/{raw_token}",
+            data={"display_name": "Invited Organizer", "password": "a" * 80, "password_confirm": "a" * 80},
+            headers={"Origin": "http://test"},
+            follow_redirects=False,
+        )
+        assert resp_long.status_code == 400
+        assert "Password must be at most 72 bytes." in resp_long.text
+
         # POST accept
         resp_post = await http.post(
             f"/invite/accept/{raw_token}",
@@ -1064,6 +1074,7 @@ async def test_verified_user_with_password_requires_authentication_or_password()
             assert updated.can_host is True
             assert updated.email_verified is True
             assert verify_password(correct_pw, updated.password_hash) is True
+            assert updated.last_sign_in_at is not None
 
     # When already authenticated, accepts directly without password
     async with get_session() as session:
@@ -1098,6 +1109,7 @@ async def test_verified_user_with_password_requires_authentication_or_password()
         async with get_session() as session:
             updated2 = await get_user_by_id(session, user2_id)
             assert updated2.can_host is True
+            assert updated2.last_sign_in_at is None
 
 
 @pytest.mark.anyio
@@ -1405,3 +1417,34 @@ async def test_transient_db_lock_during_redemption_returns_503():
 
 
 
+
+
+@pytest.mark.anyio
+async def test_invite_acceptance_user_cookie_is_secure_over_forwarded_https():
+    async with get_session() as session:
+        user = await create_user(
+            session,
+            email="secure-cookie@example.com",
+            display_name="Cookie Stub",
+            password_hash=None,
+            email_verified=False,
+            can_host=False,
+        )
+        raw_token, _ = await create_hosting_invite(session, user.id, 3600)
+
+    async with client() as http:
+        resp = await http.post(
+            f"/invite/accept/{raw_token}",
+            data={
+                "display_name": "Cookie Organizer",
+                "password": "ValidPassword123!",
+                "password_confirm": "ValidPassword123!",
+            },
+            headers={"Origin": "http://test", "x-forwarded-proto": "https"},
+            follow_redirects=False,
+        )
+
+    assert resp.status_code == 303
+    cookie = next(v for k, v in resp.headers.multi_items() if k == "set-cookie" and v.startswith("user_token="))
+    assert "Secure" in cookie
+    assert "HttpOnly" in cookie

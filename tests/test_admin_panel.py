@@ -180,6 +180,16 @@ def _booth_detail_config(html: str) -> dict:
     return json.loads(match.group(1))
 
 
+async def _update_row(model, row_id: int, **fields) -> None:
+    from portal.database import get_session
+
+    async with get_session() as s:
+        row = await s.get(model, row_id)
+        assert row is not None
+        for name, value in fields.items():
+            setattr(row, name, value)
+
+
 # ---------------------------------------------------------------------------
 # Login / Logout tests
 # ---------------------------------------------------------------------------
@@ -2157,6 +2167,588 @@ class TestBoothCRUD:
             assert _inline_scripts(blocked), blocked
         assert _inline_scripts('<script src="/static/js/a.js"></script>') == []
         assert _inline_scripts('<script type="application/json" id="x">{}</script>') == []
+
+    @pytest.mark.anyio
+    async def test_booth_detail_owner_gets_one_tab_per_job(self, admin_cookie, seed_event):
+        event, room, booth = seed_event
+        url = f"/admin/events/{event.id}/rooms/{room.id}/booths/{booth.id}/"
+        async with _client() as c:
+            html = (await c.get(url, cookies=admin_cookie)).text
+        for tab in ("overview", "captions", "translations", "settings"):
+            assert f'data-booth-tab="{tab}"' in html
+            assert f'data-booth-panel="{tab}"' in html
+        # Each tab saves on its own, so the three old stacked "Save Settings" buttons are gone.
+        assert "Save Settings" not in html
+        for action, label in (
+            ("transcription-settings", "Save caption settings"),
+            ("translation-settings", "Save translation settings"),
+            ("edit", "Save booth details"),
+        ):
+            assert html.count(f'action="{url}{action}"') == 1
+            assert label in html
+        # The overlay link row from #1084 stays on the Overview tab.
+        assert "Subtitles Overlay (OBS / vMix)" in html
+
+    @pytest.mark.anyio
+    async def test_booth_detail_coordinator_sees_the_overview_only(self, room_scope_events):
+        scope = room_scope_events
+        url = f"/admin/events/{scope['event_a']}/rooms/{scope['room_a']}/booths/{scope['booth_a']}/"
+        async with _client() as c:
+            resp = await c.get(url, cookies=scope["coordinator_cookie"])
+        assert resp.status_code == 200
+        assert "Participant Roster" in resp.text
+        for owner_only in ("data-booth-tabs", "booth-detail.js", "Delete Booth", "transcription-settings"):
+            assert owner_only not in resp.text
+
+    @pytest.mark.anyio
+    async def test_booth_detail_engines_come_from_the_room_catalog(self, admin_cookie, seed_event):
+        from portal.crypto import encrypt_val
+        from portal.models import Event
+
+        event, room, booth = seed_event
+        url = f"/admin/events/{event.id}/rooms/{room.id}/booths/{booth.id}/"
+        async with _client() as c:
+            html = (await c.get(url, cookies=admin_cookie)).text
+        assert "Whisper (built in) — free, downloads the first time" in html
+        assert "NLLB (built in)" in html
+        assert "Deepgram Nova" not in html
+        # Services without a key are named once, in a hint for each kind.
+        assert html.count("appear here once you add their API key") == 2
+        # Cloud captions also need the event's switch, so the captions hint says so.
+        assert html.count("Enable External Transcription APIs") == 1
+
+        await _update_row(Event, event.id, encrypted_deepgram_api_key=encrypt_val("k"), transcription_api_enabled=True)
+        async with _client() as c:
+            html = (await c.get(url, cookies=admin_cookie)).text
+        assert "Deepgram Nova — uses your API key" in html
+
+    @pytest.mark.anyio
+    async def test_booth_detail_keeps_a_saved_model_that_is_no_longer_offered(self, admin_cookie, seed_event):
+        from portal.models import DBBooth
+
+        event, room, booth = seed_event
+        await _update_row(
+            DBBooth,
+            booth.id,
+            transcription_provider="elevenlabs",
+            transcription_model="scribe_v2",
+            translation_provider="anthropic",
+            translation_model="claude-3-haiku-20240307",
+        )
+        async with _client() as c:
+            html = (
+                await c.get(f"/admin/events/{event.id}/rooms/{room.id}/booths/{booth.id}/", cookies=admin_cookie)
+            ).text
+        # The old ElevenLabs name maps onto the current streaming model, selected once.
+        assert 'value="scribe_v2_realtime" data-provider="elevenlabs" selected' in html
+        assert 'value="scribe_v2"' not in html
+        # A saved model that is not offered stays selectable, so saving never swaps it silently.
+        assert (
+            'value="claude-3-haiku-20240307" data-provider="anthropic" selected>claude-3-haiku-20240307 (current)'
+            in html
+        )
+        # Its service has no key now: still selected, told how to keep it.
+        assert '<option value="anthropic" selected>Anthropic — add its API key to keep using it</option>' in html
+
+    @pytest.mark.anyio
+    async def test_saving_a_tab_returns_to_it_with_a_notice(self, admin_cookie, seed_event):
+        event, room, booth = seed_event
+        url = f"/admin/events/{event.id}/rooms/{room.id}/booths/{booth.id}/"
+        async with _client() as c:
+            translation = await c.post(
+                f"{url}translation-settings",
+                data={"translation_provider": "local", "translation_model": "nllb-200-distilled-600M"},
+                cookies=admin_cookie,
+                follow_redirects=False,
+            )
+            details = await c.post(
+                f"{url}edit",
+                data={"language_name": "English", "language_code": "en"},
+                cookies=admin_cookie,
+                follow_redirects=False,
+            )
+            pages = {
+                saved: (await c.get(f"{url}?saved={saved}", cookies=admin_cookie)).text
+                for saved in ("translations", "settings")
+            }
+        assert translation.headers["location"] == f"{url}?saved=translations#translations"
+        assert details.headers["location"] == f"{url}?saved=settings#settings"
+        assert "Translation settings saved." in pages["translations"]
+        assert "Booth details saved." in pages["settings"]
+
+    @pytest.mark.anyio
+    async def test_booth_detail_ignores_unknown_notice_keys(self, admin_cookie, seed_event):
+        event, room, booth = seed_event
+        url = f"/admin/events/{event.id}/rooms/{room.id}/booths/{booth.id}/"
+        async with _client() as c:
+            html = (await c.get(f"{url}?saved=<b>hi</b>&worker=restarted", cookies=admin_cookie)).text
+        assert "alert-success" not in html
+        assert "<b>hi</b>" not in html
+
+    @pytest.mark.anyio
+    async def test_saving_captions_says_what_happened_to_the_worker(self, admin_cookie, seed_event, monkeypatch):
+        from types import SimpleNamespace
+
+        from portal.routers import admin
+        from portal.transcription.worker import State, WorkerCapacityError
+
+        event, room, booth = seed_event
+        url = f"/admin/events/{event.id}/rooms/{room.id}/booths/{booth.id}/"
+        calls: list[str] = []
+
+        async def stop(*_args, **_kwargs):
+            calls.append("stop")
+
+        async def start(*_args, **_kwargs):
+            calls.append("start")
+
+        async def broadcast(*_args, **_kwargs):
+            pass
+
+        monkeypatch.setattr(admin, "stop_transcription_worker", stop)
+        monkeypatch.setattr(admin, "start_transcription_worker", start)
+        monkeypatch.setattr(admin, "broadcast_transcription", broadcast)
+
+        async def save(c, enabled: bool):
+            data = {"transcription_provider": "local", "transcription_model": "tiny"}
+            if enabled:
+                data["transcription_enabled"] = "true"
+            resp = await c.post(f"{url}transcription-settings", data=data, cookies=admin_cookie, follow_redirects=False)
+            assert resp.status_code == 303
+            location = resp.headers["location"]
+            page = await c.get(location.split("#")[0], cookies=admin_cookie)
+            return location, page.text
+
+        async with _client() as c:
+            # Nobody is live: nothing to restart, the settings wait for the next session.
+            location, page = await save(c, enabled=True)
+            assert location == f"{url}?saved=captions#captions"
+            assert "Caption settings saved. These settings are used the next time an interpreter goes live." in page
+            assert calls == []
+
+            # An interpreter is in the booth but not broadcasting: no stream to read, so no worker is started.
+            monkeypatch.setattr(
+                admin.booths,
+                "get_booth_sync",
+                lambda _bid: SimpleNamespace(active_interpreter_id="p1", ingest_status="disconnected", participants={}),
+            )
+            monkeypatch.setattr(admin, "active_workers", {})
+            location, page = await save(c, enabled=True)
+            assert location == f"{url}?saved=captions#captions"
+            assert "Caption settings saved. These settings are used the next time an interpreter goes live." in page
+            assert "The caption worker was restarted" not in page
+            assert calls == []
+
+            monkeypatch.setattr(
+                admin.booths,
+                "get_booth_sync",
+                lambda _bid: SimpleNamespace(active_interpreter_id="p1", ingest_status="connected", participants={}),
+            )
+            bid = admin.make_booth_id(event.slug, booth.room_id, booth.language_code)
+            monkeypatch.setattr(admin, "active_workers", {bid: SimpleNamespace(state=State.RUNNING)})  # a worker is running
+            location, page = await save(c, enabled=True)
+            assert location == f"{url}?saved=captions&worker=kept#captions"
+            assert "The caption worker was restarted" not in page
+            assert "Nothing changed, so the caption worker kept running." in page
+            assert calls == []
+
+            await _update_row(type(booth), booth.id, transcription_model="base")
+            location, page = await save(c, enabled=True)
+            assert location == f"{url}?saved=captions&worker=restarted#captions"
+            assert "Caption settings saved. The caption worker was restarted with the saved settings." in page
+            assert calls == ["stop", "start"]
+
+            location, page = await save(c, enabled=False)
+            assert location == f"{url}?saved=captions&worker=stopped#captions"
+            assert "The caption worker was stopped." in page
+            assert calls == ["stop", "start", "stop"]
+
+            # Captions were already off and stay off: say so instead of "next time an interpreter goes live".
+            location, page = await save(c, enabled=False)
+            assert location == f"{url}?saved=captions&worker=off#captions"
+            assert "Caption settings saved. Captions stay off." in page
+            assert "next time an interpreter" not in page
+            assert calls == ["stop", "start", "stop", "stop"]
+
+            # The worker cannot start (system at capacity): the save is kept and the page says so.
+            async def full(*_args, **_kwargs):
+                raise WorkerCapacityError("System at maximum capacity (10 concurrent transcription booths).")
+
+            monkeypatch.setattr(admin, "start_transcription_worker", full)
+            monkeypatch.setattr(admin, "active_workers", {})
+            location, page = await save(c, enabled=True)
+            assert location == f"{url}?saved=captions&worker=failed#captions"
+            assert "The caption worker could not be started" in page
+            assert calls == ["stop", "start", "stop", "stop", "stop"]
+
+            # The settings were saved but nothing is running, so saving again with no changes retries the start.
+            monkeypatch.setattr(admin, "start_transcription_worker", start)
+            location, page = await save(c, enabled=True)
+            assert location == f"{url}?saved=captions&worker=restarted#captions"
+            assert "The caption worker was restarted with the saved settings." in page
+            assert calls == ["stop", "start", "stop", "stop", "stop", "stop", "start"]
+
+            # A dead worker left in the registry is not "kept running": saving again with no changes restarts it.
+            monkeypatch.setattr(admin, "active_workers", {bid: SimpleNamespace(state=State.STOPPED)})
+            location, page = await save(c, enabled=True)
+            assert location == f"{url}?saved=captions&worker=restarted#captions"
+            assert calls[-2:] == ["stop", "start"]
+
+            # A worker that is shutting down is not "kept running" either: it is replaced.
+            monkeypatch.setattr(admin, "active_workers", {bid: SimpleNamespace(state=State.STOPPING)})
+            location, page = await save(c, enabled=True)
+            assert location == f"{url}?saved=captions&worker=restarted#captions"
+            assert calls[-2:] == ["stop", "start"]
+
+            # ffmpeg could not be launched after the start call returned: the page must not say "restarted".
+            async def start_then_fail(*_args, **_kwargs):
+                calls.append("start")
+
+            async def not_started(_bid):
+                return False
+
+            monkeypatch.setattr(admin, "start_transcription_worker", start_then_fail)
+            monkeypatch.setattr(admin, "wait_for_worker_start", not_started)
+            location, page = await save(c, enabled=True)
+            assert location == f"{url}?saved=captions&worker=failed#captions"
+            assert "The caption worker could not be started" in page
+
+    @pytest.mark.anyio
+    async def test_captions_can_be_turned_off_when_the_saved_service_lost_its_key(self, admin_cookie, seed_event):
+        """Only turning captions on needs a working key; turning them off must never be blocked (#1081)."""
+        event, room, booth = seed_event
+        url = f"/admin/events/{event.id}/rooms/{room.id}/booths/{booth.id}/"
+        from portal.models import Event
+
+        await _update_row(Event, event.id, transcription_api_enabled=True)
+        await _update_row(type(booth), booth.id, transcription_enabled=True, transcription_provider="deepgram", transcription_model="nova-2")
+        data = {"transcription_provider": "deepgram", "transcription_model": "nova-2"}
+        async with _client() as c:
+            # On with no key for the service: refused.
+            refused = await c.post(
+                f"{url}transcription-settings",
+                data={**data, "transcription_enabled": "true"},
+                cookies=admin_cookie,
+                follow_redirects=False,
+            )
+            # Off with the same service: saved, still the same service and model.
+            off = await c.post(f"{url}transcription-settings", data=data, cookies=admin_cookie, follow_redirects=False)
+            # A service or model name that does not exist is still rejected.
+            bogus = await c.post(
+                f"{url}transcription-settings",
+                data={"transcription_provider": "deepgram", "transcription_model": "nope"},
+                cookies=admin_cookie,
+                follow_redirects=False,
+            )
+        # No key: back on the Captions tab with a notice, nothing changed.
+        assert refused.status_code == 303
+        assert refused.headers["location"] == f"{url}?error=no_key#captions"
+        assert off.status_code == 303
+        assert bogus.status_code == 400
+        from portal.database import get_session
+
+        async with get_session() as sess:
+            saved = await sess.get(type(booth), booth.id)
+        assert saved.transcription_enabled is False
+        assert saved.transcription_provider == "deepgram"
+        assert saved.transcription_model == "nova-2"
+
+    @pytest.mark.anyio
+    async def test_captions_on_with_the_event_switch_off_returns_a_notice(self, admin_cookie, seed_event):
+        from portal.crypto import encrypt_val
+        from portal.models import Event
+
+        event, room, booth = seed_event
+        url = f"/admin/events/{event.id}/rooms/{room.id}/booths/{booth.id}/"
+        await _update_row(Event, event.id, encrypted_openai_api_key=encrypt_val("k"), transcription_api_enabled=False)
+        async with _client() as c:
+            on = await c.post(
+                f"{url}transcription-settings",
+                data={"transcription_enabled": "true", "transcription_provider": "openai", "transcription_model": "whisper-1"},
+                cookies=admin_cookie,
+                follow_redirects=False,
+            )
+            page = (await c.get(on.headers["location"].split("#")[0], cookies=admin_cookie)).text
+        assert on.status_code == 303
+        assert on.headers["location"] == f"{url}?error=api_off#captions"
+        assert "External transcription is turned off for this event" in page
+
+    @pytest.mark.anyio
+    async def test_captions_on_with_the_switch_off_and_no_key_names_both_problems(self, admin_cookie, seed_event):
+        event, room, booth = seed_event
+        url = f"/admin/events/{event.id}/rooms/{room.id}/booths/{booth.id}/"
+        async with _client() as c:
+            on = await c.post(
+                f"{url}transcription-settings",
+                data={"transcription_enabled": "true", "transcription_provider": "openai", "transcription_model": "whisper-1"},
+                cookies=admin_cookie,
+                follow_redirects=False,
+            )
+            page = (await c.get(on.headers["location"].split("#")[0], cookies=admin_cookie)).text
+        assert on.headers["location"] == f"{url}?error=api_off_no_key#captions"
+        assert "turned off for this event and that service has no API key" in page
+
+    @pytest.mark.anyio
+    async def test_saved_model_is_only_selected_under_the_saved_service(self, admin_cookie, seed_event, monkeypatch):
+        from portal.models import DBBooth
+        from portal.routers import admin
+
+        # The same model name offered by two services: only the saved service's option may be selected.
+        monkeypatch.setattr(admin, "TRANSLATION_MODELS", {"openai": ["shared-model"], "groq": ["shared-model"]})
+        event, room, booth = seed_event
+        await _update_row(DBBooth, booth.id, translation_provider="groq", translation_model="shared-model")
+        async with _client() as c:
+            html = (
+                await c.get(f"/admin/events/{event.id}/rooms/{room.id}/booths/{booth.id}/", cookies=admin_cookie)
+            ).text
+        assert 'data-provider="groq" selected>' in html
+        assert 'data-provider="openai" selected>' not in html
+
+    @pytest.mark.anyio
+    async def test_kept_service_uses_the_proper_brand_name(self, admin_cookie, seed_event):
+        from portal.models import DBBooth
+
+        event, room, booth = seed_event
+        await _update_row(
+            DBBooth,
+            booth.id,
+            transcription_provider="openai",
+            translation_provider="openrouter",
+            translation_model="meta-llama/llama-3.3-70b-instruct",
+        )
+        async with _client() as c:
+            html = (
+                await c.get(f"/admin/events/{event.id}/rooms/{room.id}/booths/{booth.id}/", cookies=admin_cookie)
+            ).text
+        assert '<option value="openai" selected>OpenAI — add its API key to keep using it</option>' in html
+        assert '<option value="openrouter" selected>OpenRouter — add its API key to keep using it</option>' in html
+        assert "Openai" not in html
+
+    @pytest.mark.anyio
+    async def test_kept_service_the_server_cannot_run_names_the_server_reason(
+        self, admin_cookie, seed_event, monkeypatch
+    ):
+        from portal import room_setup
+        from portal.models import DBBooth
+
+        monkeypatch.setattr(room_setup, "find_spec", lambda name: None if name == "riva" else object())
+        event, room, booth = seed_event
+        await _update_row(DBBooth, booth.id, transcription_provider="nvidia", transcription_model="parakeet-rnnt")
+        async with _client() as c:
+            html = (
+                await c.get(f"/admin/events/{event.id}/rooms/{room.id}/booths/{booth.id}/", cookies=admin_cookie)
+            ).text
+        assert '<option value="nvidia" selected>NVIDIA — not available on this server</option>' in html
+        assert "NVIDIA needs the server" in html
+        assert "NVIDIA — add its API key to keep using it" not in html
+
+    @pytest.mark.anyio
+    async def test_a_worker_that_fails_to_start_shows_the_notice_not_a_500(self, admin_cookie, seed_event, monkeypatch):
+        from types import SimpleNamespace
+
+        from portal.routers import admin
+
+        event, room, booth = seed_event
+        url = f"/admin/events/{event.id}/rooms/{room.id}/booths/{booth.id}/"
+
+        async def noop(*_args, **_kwargs):
+            pass
+
+        from portal.transcription.worker import WorkerCapacityError
+
+        failure: list[Exception] = []
+
+        async def broken(*_args, **_kwargs):
+            raise failure[0]
+
+        monkeypatch.setattr(admin, "stop_transcription_worker", noop)
+        monkeypatch.setattr(admin, "broadcast_transcription", noop)
+        monkeypatch.setattr(admin, "start_transcription_worker", broken)
+        monkeypatch.setattr(
+            admin.booths,
+            "get_booth_sync",
+            lambda _bid: SimpleNamespace(active_interpreter_id="p1", ingest_status="connected", participants={}),
+        )
+        from portal.database import get_session
+
+        submitted = {"transcription_enabled": "true", "transcription_provider": "local", "transcription_model": "base"}
+        # Whatever makes the start fail (a full system, a missing library, anything else), the old worker is already
+        # stopped and the settings are saved, so the page shows the notice instead of a 500.
+        for error in (WorkerCapacityError("full"), ImportError("faster_whisper is missing"), RuntimeError("boom")):
+            failure[:] = [error]
+            await _update_row(
+                type(booth),
+                booth.id,
+                transcription_enabled=False,
+                transcription_provider="local",
+                transcription_model="tiny",
+            )
+            async with _client() as c:
+                resp = await c.post(
+                    f"{url}transcription-settings", data=submitted, cookies=admin_cookie, follow_redirects=False
+                )
+                assert resp.status_code == 303, type(error).__name__
+                assert resp.headers["location"] == f"{url}?saved=captions&worker=failed#captions"
+                page = (await c.get(f"{url}?saved=captions&worker=failed", cookies=admin_cookie)).text
+            assert "The caption worker could not be started" in page
+            # The notice says the settings were saved, so they must be.
+            async with get_session() as sess:
+                saved = await sess.get(type(booth), booth.id)
+            assert (saved.transcription_enabled, saved.transcription_provider, saved.transcription_model) == (
+                True,
+                "local",
+                "base",
+            ), type(error).__name__
+
+    @pytest.mark.anyio
+    async def test_an_unsupported_saved_model_does_not_block_captions(self, admin_cookie, seed_event):
+        from portal.database import get_session
+
+        event, room, booth = seed_event
+        url = f"/admin/events/{event.id}/rooms/{room.id}/booths/{booth.id}/"
+        # Captions start on, so the first save is a real on -> off change.
+        await _update_row(
+            type(booth),
+            booth.id,
+            transcription_enabled=True,
+            transcription_provider="local",
+            transcription_model="retired-model",
+        )
+        data = {"transcription_provider": "local", "transcription_model": "retired-model"}
+        async with _client() as c:
+            off = await c.post(f"{url}transcription-settings", data=data, cookies=admin_cookie, follow_redirects=False)
+            on = await c.post(
+                f"{url}transcription-settings",
+                data={**data, "transcription_enabled": "true"},
+                cookies=admin_cookie,
+                follow_redirects=False,
+            )
+            page = (await c.get(on.headers["location"].split("#")[0], cookies=admin_cookie)).text
+        assert off.status_code == 303
+        assert off.headers["location"] == f"{url}?saved=captions#captions"
+        assert on.status_code == 303
+        assert on.headers["location"] == f"{url}?error=model#captions"
+        assert "That caption model is no longer supported" in page
+        async with get_session() as sess:
+            saved = await sess.get(type(booth), booth.id)
+        assert saved.transcription_enabled is False
+        assert saved.transcription_model == "retired-model"
+
+    @pytest.mark.anyio
+    async def test_captions_cannot_be_turned_on_with_a_service_the_server_cannot_run(
+        self, admin_cookie, seed_event, monkeypatch
+    ):
+        from portal import room_setup
+        from portal.database import get_session
+
+        monkeypatch.setattr(room_setup, "find_spec", lambda name: None if name == "riva" else object())
+        event, room, booth = seed_event
+        url = f"/admin/events/{event.id}/rooms/{room.id}/booths/{booth.id}/"
+        await _update_row(
+            type(booth), booth.id, transcription_enabled=True, transcription_provider="nvidia", transcription_model="parakeet-rnnt"
+        )
+        data = {"transcription_provider": "nvidia", "transcription_model": "parakeet-rnnt"}
+        async with _client() as c:
+            on = await c.post(
+                f"{url}transcription-settings",
+                data={**data, "transcription_enabled": "true"},
+                cookies=admin_cookie,
+                follow_redirects=False,
+            )
+            page = (await c.get(on.headers["location"].split("#")[0], cookies=admin_cookie)).text
+            # Turning captions off is never blocked.
+            off = await c.post(f"{url}transcription-settings", data=data, cookies=admin_cookie, follow_redirects=False)
+        assert on.status_code == 303
+        assert on.headers["location"] == f"{url}?error=server#captions"
+        assert "That service is not available on this server" in page
+        assert off.status_code == 303
+        assert off.headers["location"] == f"{url}?saved=captions#captions"
+        async with get_session() as sess:
+            saved = await sess.get(type(booth), booth.id)
+        assert saved.transcription_enabled is False
+
+    @pytest.mark.anyio
+    async def test_kept_service_with_a_key_but_the_event_switch_off_says_to_turn_it_on(self, admin_cookie, seed_event):
+        from portal.crypto import encrypt_val
+        from portal.models import DBBooth, Event
+
+        event, room, booth = seed_event
+        url = f"/admin/events/{event.id}/rooms/{room.id}/booths/{booth.id}/"
+        await _update_row(DBBooth, booth.id, transcription_provider="openai", transcription_model="whisper-1")
+        await _update_row(Event, event.id, encrypted_openai_api_key=encrypt_val("k"), transcription_api_enabled=False)
+        async with _client() as c:
+            html = (await c.get(url, cookies=admin_cookie)).text
+        assert "OpenAI — turn on external transcription to keep using it" in html
+        assert "OpenAI — add its API key" not in html
+
+        # With the switch on and the key present the service is offered normally, so no "kept" option remains.
+        await _update_row(Event, event.id, transcription_api_enabled=True)
+        async with _client() as c:
+            html = (await c.get(url, cookies=admin_cookie)).text
+        assert "keep using it" not in html.split('id="transcription_provider"')[1].split("</select>")[0]
+
+    @pytest.mark.anyio
+    async def test_coordinator_view_skips_the_engine_catalog(self, room_scope_events, monkeypatch):
+        from portal.routers import admin
+
+        def boom(*_args, **_kwargs):
+            raise AssertionError("coordinators never see the engine catalog")
+
+        monkeypatch.setattr(admin, "engine_catalog", boom)
+        monkeypatch.setattr(admin, "booth_speech_models", boom)
+        scope = room_scope_events
+        url = f"/admin/events/{scope['event_a']}/rooms/{scope['room_a']}/booths/{scope['booth_a']}/"
+        async with _client() as c:
+            resp = await c.get(url, cookies=scope["coordinator_cookie"])
+        assert resp.status_code == 200
+        assert "Participant Roster" in resp.text
+
+    @pytest.mark.anyio
+    async def test_booth_detail_shows_next_steps_until_the_booth_is_configured(self, admin_cookie, seed_event):
+        from portal.database import create_invite_token, get_session
+
+        event, room, booth = seed_event
+        url = f"/admin/events/{event.id}/rooms/{room.id}/booths/{booth.id}/"
+        async with _client() as c:
+            fresh = (await c.get(url, cookies=admin_cookie)).text
+            # Inviting an interpreter does not configure captions or translations, so the list stays.
+            async with get_session() as s:
+                await create_invite_token(s, booth_id=booth.id, role="interpreter")
+            invited = (await c.get(url, cookies=admin_cookie)).text
+            await c.post(
+                f"{url}transcription-settings",
+                data={
+                    "transcription_enabled": "true",
+                    "transcription_provider": "local",
+                    "transcription_model": "tiny",
+                },
+                cookies=admin_cookie,
+            )
+            configured = (await c.get(url, cookies=admin_cookie)).text
+        assert "Here's what's next" in fresh
+        assert 'data-booth-tab-link="captions"' in fresh
+        assert 'data-booth-tab-link="translations"' in fresh
+        assert "Here's what's next" in invited
+        assert "Here's what's next" not in configured
+
+    @pytest.mark.anyio
+    async def test_a_new_booth_offers_a_real_translation_service(self, admin_cookie, seed_event):
+        """A new booth has no translation service saved; the form must not post the text "None" (#1081)."""
+        event, room, booth = seed_event
+        url = f"/admin/events/{event.id}/rooms/{room.id}/booths/{booth.id}/"
+        async with _client() as c:
+            html = (await c.get(url, cookies=admin_cookie)).text
+            # Saving the tab with the first service it offers must work.
+            saved = await c.post(
+                f"{url}translation-settings",
+                data={"translation_provider": "local", "translation_model": "nllb-200-distilled-600M"},
+                cookies=admin_cookie,
+                follow_redirects=False,
+            )
+        assert 'value="None"' not in html
+        assert "None — add its API key" not in html
+        assert 'data-provider="None"' not in html
+        assert saved.status_code == 303
 
     @pytest.mark.anyio
     async def test_booth_detail_shows_whep_url(self, admin_cookie, seed_event):

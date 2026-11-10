@@ -38,6 +38,7 @@ from portal.room_setup import (
     parse_plan,
 )
 from portal.routers import admin
+from portal.transcription.constants import ALLOWED_MODELS, ProviderEnum
 
 ORIGIN = {"origin": "http://test"}
 
@@ -179,6 +180,30 @@ def test_nvidia_requires_its_function_id(monkeypatch):
     event = _event(encrypted_nvidia_api_key=encrypt_val("k"))
     event.transcription_api_enabled = True
     assert "nvidia" not in {engine.provider for engine in engine_catalog(event).speech}
+
+
+def test_locked_services_are_listed_for_each_kind():
+    event = _event(encrypted_deepgram_api_key=encrypt_val("k"))
+    event.transcription_api_enabled = True
+    catalog = engine_catalog(event)
+    assert "Deepgram" not in catalog.locked_speech
+    assert "ElevenLabs" in catalog.locked_speech
+    assert "Anthropic" in catalog.locked_translation
+    assert "Anthropic" not in catalog.locked_speech
+    assert "ElevenLabs" not in catalog.locked_translation
+    assert set(catalog.locked_speech + catalog.locked_translation) <= set(catalog.locked)
+
+
+def test_booth_speech_models_are_all_accepted_by_a_booth():
+    models = room_setup.booth_speech_models()
+    for provider, options in models.items():
+        accepted = ALLOWED_MODELS[ProviderEnum(provider)]
+        assert options, provider
+        assert all(value in accepted for value, _ in options), provider
+    # Rooms and booths both offer every built-in Whisper size.
+    sizes = ["tiny", "base", "small", "medium", "large-v2", "large-v3"]
+    assert [value for value, _ in models["local"]] == sizes
+    assert [value for value, _ in room_setup.SPEECH_MODELS["local"]] == sizes
 
 
 # ── Reading the form ───────────────────────────────────────────────────────
@@ -857,6 +882,27 @@ async def test_ai_settings_never_switch_languages_or_captions(admin_cookie, even
     assert room.floor_ai_interpretation_style is None
     assert room.floor_ai_vocabulary_enabled is False
     assert room.floor_tts_voice == "F2"
+
+
+@pytest.mark.anyio
+async def test_ai_settings_save_larger_built_in_whisper_sizes(admin_cookie, event_room):
+    event, _ = event_room
+    room_id = await _create_ai_room(admin_cookie, event)
+    async with _client() as c:
+        resp = await c.post(
+            f"/admin/events/{event.id}/rooms/{room_id}/edit",
+            data={
+                "form_section": "ai",
+                "floor_transcription_provider": "local",
+                "floor_transcription_model": "large-v3",
+            },
+            headers=ORIGIN,
+            cookies=admin_cookie,
+            follow_redirects=False,
+        )
+    assert resp.status_code == 303
+    room = await _room(room_id)
+    assert room.floor_transcription_provider == "local" and room.floor_transcription_model == "large-v3"
 
 
 @pytest.mark.anyio

@@ -41,7 +41,7 @@ You send JSON objects with a `type` field. The table below lists every supported
 
 | `type` | Description | Who can send |
 | --- | --- | --- |
-| `booth:join` | Join the booth. The first interpreter to join is automatically assigned as the active interpreter. | Anyone with a valid token |
+| `booth:join` | Join the booth. The first interpreter to join is automatically assigned as the active interpreter. `role`, `display_name`, `language`, `channel_id` and the optional `participant_id` must be strings, with `display_name` and `channel_id` up to 200 characters, `language` up to 100 and `participant_id` up to 64. An optional `room_id` must be an integer. | Anyone with a valid token |
 | `booth:leave` | Leave the booth. If the active interpreter leaves, an automatic handoff is triggered. | Anyone |
 | `booth:chat` | Send a text message to all booth participants. | `interpreter`, `room_coordinator`, `event_owner` |
 | `booth:set-active` | Promote a specific interpreter to the active role. | `room_coordinator`, `event_owner`, or the currently active interpreter |
@@ -175,7 +175,7 @@ The examples below show the exact JSON structure for the most common messages.
   
 
   
-    Optional `room_id`. It must be the room in the booth ID (`1` for `pycon2026-1-en`), sent as a JSON integer (`1`) or a string of digits (`"1"`); `null` counts as omitted. Booleans, decimals such as `1.0` and any other room are rejected with `booth:error`, and so is a join on a booth ID that doesn't follow `{event_slug}-{room_id}-{language_code}`.
+    Optional `room_id`. It must be the room in the booth ID (`1` for `pycon2026-1-en`), sent as a JSON integer; `null` counts as omitted. Strings such as `"1"`, booleans, decimals such as `1.0` and any other room are rejected with `booth:error`, and so is a join on a booth ID that doesn't follow `{event_slug}-{room_id}-{language_code}`.
   
 
 </details>

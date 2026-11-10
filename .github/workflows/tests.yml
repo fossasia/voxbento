@@ -256,28 +256,37 @@ jobs:
         run: |
           node --check portal/static/js/interpreter-booth.js
           node --check portal/static/js/booth-reconnect.js
+          node --check portal/static/js/mic-activity.js
           node --check portal/static/js/whep-listener.js
           node --check portal/static/js/admin.js
+          node --check portal/static/js/attendance.js
           node --check portal/static/js/booth-detail.js
+          node --check portal/static/js/tabs.js
           node --check portal/static/js/overlay-builder.js
           node --check portal/static/js/subtitle-overlay.js
           node --check portal/static/js/program-sender.js
           node --check portal/static/js/program-sender-source.js
           node --check .github/scripts/jules-review.mjs
+          node --check .github/scripts/agent-attribution-lib.mjs
       - name: run node tests
         run: |
           node tests/test_audio_scheduler.js
           node tests/test_tts_parser.js
           node tests/test_listener_event.js
           node tests/test_whep_listener.js
+          node --test tests/test_whep_lifecycle.js
           node tests/test_subtitle_overlay.js
           node --test tests/test_overlay_connection.js
           node tests/test_jules_review.mjs
           node tests/test_booth_reconnect.mjs
+          node tests/test_attendance.mjs
+          node tests/test_mic_activity.mjs
           node tests/test_booth_socket.mjs
           node tests/test_room_ai.mjs
           node tests/test_lang_picker.mjs
+          node tests/test_tabs.mjs
           node tests/test_program_sender_source.mjs
+          node --test tests/test_agent_attribution.mjs
 
       - name: Run unit tests
         run: uv run pytest tests/ -v
@@ -414,6 +423,19 @@ jobs:
           resp=$(curl -sf "http://${CI_HOST}:${PORTAL_PORT}/healthz")
           echo "$resp"
           echo "$resp" | python3 -c "import sys,json; d=json.load(sys.stdin); assert d['ok'], 'healthz not ok'"
+
+      - name: Portal venv uses the image's Python (#1131)
+        run: |
+          docker compose exec -T portal sh -c '
+            set -e
+            test "$UV_PYTHON_DOWNLOADS" = never
+            base=$(python -c "import sys; print(sys.version_info[:2])")
+            venv=$(.venv/bin/python -c "import sys; print(sys.version_info[:2])")
+            prefix=$(.venv/bin/python -c "import sys; print(sys.base_prefix)")
+            echo "base $base, venv $venv, venv base_prefix $prefix"
+            test "$base" = "$venv"
+            test "$prefix" = /usr/local
+          '
 
       - name: Portal page endpoints
         run: |
