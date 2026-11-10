@@ -10,7 +10,7 @@ import pycountry
 import pytest
 
 from portal.translations.constants import TRANSLATION_MODELS, TranslationProviderEnum
-from portal.translations.engine import EngineKind
+from portal.translations.engine import EngineKind, Language, TranslationContext
 from portal.translations.providers.local import LocalProvider, _engine_code, _hf_source, trigger_download
 from portal.translations.registry import (
     LOCAL_TRANSLATION_MODELS,
@@ -163,6 +163,8 @@ def test_a_download_asks_for_the_registry_entrys_repository_and_revision():
         ("", "English", "eng_Latn"),
         ("", "fr", "fra_Latn"),
         ("", "Chinese", "zho_Hans"),
+        ("", "Greek, Modern (1453-)", "ell_Grek"),
+        ("", "Greek", "ell_Grek"),
         ("xx", "UnknownLanguage", None),
         ("", "", None),
         ("az", "Azerbaijani", None),
@@ -178,9 +180,7 @@ def test_a_model_loaded_from_a_path_uses_the_nllb_language_codes():
 
 def test_a_models_own_language_map_is_used_for_it(monkeypatch):
     other = dataclasses.replace(NLLB_200_DISTILLED_600M, id="other", languages={"en": "__en__", "fr": "__fr__"})
-    monkeypatch.setattr(
-        "portal.translations.providers.local.get_translation_model", {"other": other}.get
-    )
+    monkeypatch.setattr("portal.translations.providers.local.get_translation_model", {"other": other}.get)
 
     assert _engine_code("other", "fr", "French") == "__fr__"
     assert _engine_code("other", "de", "German") is None
@@ -208,4 +208,51 @@ async def test_nllb_translates_from_a_source_given_by_code(monkeypatch):
     )
 
     assert result == "Hallo"
+    assert calls == [("fra_Latn", "deu_Latn")]
+
+
+@pytest.mark.anyio
+async def test_nllb_translates_from_legacy_greek_name_only(monkeypatch):
+    """Callers passing the legacy pycountry English name without a language code resolve to ell_Grek."""
+    calls = []
+
+    def fake_inference(self, text, source_token, target_token, model_size):
+        calls.append((source_token, target_token))
+        return "Bonjour"
+
+    monkeypatch.setattr(LocalProvider, "_run_inference", fake_inference)
+
+    result = await LocalProvider().translate(
+        provider_name="local",
+        text="Γεια σας",
+        target_lang_name="French",
+        target_lang_code="",
+        source_lang_name="Greek, Modern (1453-)",
+        source_lang_code="",
+        model=NLLB,
+        api_key=None,
+    )
+
+    assert result == "Bonjour"
+    assert calls == [("ell_Grek", "fra_Latn")]
+
+
+@pytest.mark.anyio
+async def test_local_provider_translate_batch_forwards_source_code(monkeypatch):
+    """The batch path forwards source.code so _run_inference receives the token even if source.name is unresolvable."""
+    calls = []
+
+    def fake_inference(self, text, source_token, target_token, model_size):
+        calls.append((source_token, target_token))
+        return "Hallo"
+
+    monkeypatch.setattr(LocalProvider, "_run_inference", fake_inference)
+
+    source = Language(code="fr", name="CustomFrenchName")
+    targets = [Language(code="de", name="German")]
+    context = TranslationContext()
+
+    rows = await LocalProvider().translate_batch(source, targets, ["Bonjour"], context, model=NLLB)
+
+    assert rows == [["Hallo"]]
     assert calls == [("fra_Latn", "deu_Latn")]

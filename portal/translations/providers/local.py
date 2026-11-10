@@ -6,8 +6,9 @@ import logging
 import os
 import threading
 import time
-from collections.abc import Awaitable, Sequence
+from collections.abc import Awaitable, Mapping, Sequence
 from dataclasses import dataclass
+from types import MappingProxyType
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
@@ -39,6 +40,7 @@ _progress_lock = threading.Lock()
 
 class ModelDownloadTqdm(tqdm):
     def update(self, n=1):
+        """Update download progress percentage for tqdm callbacks."""
         super().update(n)
         if hasattr(self, "total") and self.total is not None and self.total > 10 * 1024 * 1024:
             model_size = getattr(self, "_custom_model_id", "nllb-200-distilled-600M")
@@ -65,6 +67,15 @@ def _hf_source(model_size: str) -> tuple[str, str]:
     return model_size, "main"
 
 
+#: Names historically accepted for languages whose official or pycountry name differs.
+_LEGACY_LANGUAGE_NAMES: Mapping[str, str] = MappingProxyType(
+    {
+        "Greek, Modern (1453-)": "el",
+        "Greek": "el",
+    }
+)
+
+
 def _engine_code(model_size: str, language_code: str, language_name: str) -> str | None:
     """The code ``model_size`` uses for a language, looked up by ISO 639-1 code.
 
@@ -77,11 +88,15 @@ def _engine_code(model_size: str, language_code: str, language_name: str) -> str
         engine_code = entry.engine_code(code) if code else None
         if engine_code:
             return engine_code
-    iso_code = getattr(pycountry.languages.get(name=language_name), "alpha_2", None)
+    iso_code = _LEGACY_LANGUAGE_NAMES.get(language_name)
+    if not iso_code and language_name:
+        record = pycountry.languages.get(name=language_name)
+        iso_code = getattr(record, "alpha_2", None)
     return entry.engine_code(iso_code) if iso_code else None
 
 
 def trigger_download(model_size: str):
+    """Trigger manual download of a translation model repository in the background."""
     logger.info(f"Triggering manual download for {model_size}")
 
     class ScopedTqdm(ModelDownloadTqdm):
@@ -156,6 +171,7 @@ def decrement_model_ref(model_size: str):
 
 
 def get_model_and_tokenizer(model_size: str):
+    """Load or retrieve the cached CTranslate2 generator and tokenizer for a local model."""
     with _model_lock:
         if model_size in _loaded_models:
             _loaded_models[model_size].last_used = time.time()
@@ -275,6 +291,7 @@ class LocalProvider(TranslationProvider, TranslationEngine):
         """
 
         def translate_one(text: str, target: Language) -> Awaitable[str | None]:
+            """Translate one text into one target language using the local engine."""
             return self.translate(
                 provider_name=TranslationProviderEnum.LOCAL.value,
                 text=text,
@@ -305,6 +322,7 @@ class LocalProvider(TranslationProvider, TranslationEngine):
         vocabulary_entries: Sequence[Any] = (),
         source_lang_code: str = "",
     ) -> str | None:
+        """Translate a single text using a local sequence-to-sequence model."""
         logger.debug(
             f"[NLLB] translate called: source='{source_lang_name}' -> target='{target_lang_name}' "
             f"model='{model}' text_len={len(text)}"
@@ -324,9 +342,7 @@ class LocalProvider(TranslationProvider, TranslationEngine):
         target_lang_token = _engine_code(model, target_lang_code, target_lang_name)
         source_lang_token = _engine_code(model, source_lang_code, source_lang_name)
         if not target_lang_token:
-            logger.error(
-                "[NLLB] Model %r does not translate into %r (%s)", model, target_lang_code, target_lang_name
-            )
+            logger.error("[NLLB] Model %r does not translate into %r (%s)", model, target_lang_code, target_lang_name)
             return None
         if not source_lang_token:
             logger.error("[NLLB] Model %r does not translate from %r (%s)", model, source_lang_code, source_lang_name)
@@ -380,6 +396,7 @@ class LocalProvider(TranslationProvider, TranslationEngine):
 
         except Exception as e:
             import traceback
+
             logger.error(
                 f"[NLLB] _run_inference failed: {e}\n"
                 f"source_token={source_lang_token}, target_token={target_lang_token}, model={model_size}\n"
