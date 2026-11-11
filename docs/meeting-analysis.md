@@ -119,7 +119,7 @@ Reports are never shown on listener, embed or overlay pages.
 
 ## Data
 
-Migration `041_meeting_analysis.py` adds `events.meeting_analysis_enabled`,
+Migration `042_meeting_analysis.py` adds `events.meeting_analysis_enabled`,
 `events.meeting_analysis_provider` and `events.meeting_analysis_model`, and the
 `meeting_reports` table. Reports are deleted with their room or event.
 

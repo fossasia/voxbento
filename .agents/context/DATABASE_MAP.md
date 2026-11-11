@@ -376,7 +376,7 @@ No links or email content are shown in the administration history.
 `show_logo` (default true) and an optional https `logo_url` (empty means the
 VoxBento logo served by the site). No row means the defaults.
 
-## Migration 041 — meeting reports (#1080)
+## Migration 042 — meeting reports (#1080)
 
 Adds `events.meeting_analysis_enabled` (default false),
 `events.meeting_analysis_provider` (default `local`) and

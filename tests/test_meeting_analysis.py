@@ -40,6 +40,8 @@ from portal.models import Event, MeetingReport, Room, TranscriptSegment, utc_now
 from portal.roles import ROOM_COORDINATOR
 from portal.routers import meeting_analysis as analysis_router
 
+pytestmark = pytest.mark.usefixtures("auto_csrf")
+
 ORIGIN = {"origin": "http://test"}
 
 REPORT = {

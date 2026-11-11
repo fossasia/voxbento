@@ -8,7 +8,7 @@ from fastapi.responses import JSONResponse, Response
 from sqlalchemy import func, select
 from sqlalchemy.exc import IntegrityError
 
-from portal.auth import get_access_flags, require_event_owner, require_owner_or_coordinator
+from portal.auth import get_access_flags, require_admin_csrf, require_event_owner, require_owner_or_coordinator
 from portal.database import (
     create_meeting_report,
     get_event_by_id,
@@ -138,7 +138,10 @@ async def room_analysis_page(request: Request, event_id: int, room_id: int):
     )
 
 
-@router.post("/admin/events/{event_id}/rooms/{room_id}/analysis/", dependencies=[Depends(require_event_owner)])
+@router.post(
+    "/admin/events/{event_id}/rooms/{room_id}/analysis/",
+    dependencies=[Depends(require_event_owner), Depends(require_admin_csrf)],
+)
 async def room_analysis_generate(
     request: Request, event_id: int, room_id: int, channel: str = Form(""), stretch: str = Form("", alias="session")
 ):
