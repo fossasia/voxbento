@@ -99,6 +99,15 @@ def test_the_catalog_tells_the_setup_form_which_services_have_a_fixed_list():
     assert catalog.translation_support == {"local": sorted(NLLB_200_DISTILLED_600M.languages)}
     assert catalog.translation_unfit(["en", "fr"]) == set()
     assert catalog.translation_unfit(["en", None, "az"]) == {"local"}
+    assert catalog.translation_hidden(["en", "az"]) == {"local"}
+
+
+def test_no_service_is_hidden_when_none_translates_the_languages():
+    """With nothing that fits, every service stays on offer so the picker is never empty."""
+    catalog = engine_catalog(Event(slug="demo", display_name="Demo"))
+
+    assert catalog.translation_unfit(["en", "az"]) == {engine.provider for engine in catalog.translation}
+    assert catalog.translation_hidden(["en", "az"]) == set()
 
 
 # --- Fixtures ------------------------------------------------------------------------------
@@ -490,6 +499,32 @@ async def test_booth_page_offers_only_services_that_translate_its_languages(admi
 
     assert 'value="openai"' in service_picker
     assert 'value="local"' not in service_picker
+
+
+@pytest.mark.anyio
+async def test_booth_and_room_service_pickers_are_never_empty(admin_booth):
+    """No service translates the language and none is saved: the pickers still offer the services."""
+    cookie, event_id, room_id, booth_id = admin_booth
+    await _set_room(room_id, provider="local", targets=["az"])
+    async with get_session() as s:
+        event = await s.get(Event, event_id)
+        for attribute in Event.__mapper__.column_attrs.keys():
+            if attribute.endswith("_api_key"):
+                setattr(event, attribute, None)
+        booth = await s.get(DBBooth, booth_id)
+        booth.language_code = "az"
+        booth.translation_provider = None
+        room = await s.get(Room, room_id)
+        room.floor_language_code = "az"
+        room.floor_translation_provider = None
+        await s.commit()
+
+    async with _client(cookie) as client:
+        booth_page = (await client.get(f"/admin/events/{event_id}/rooms/{room_id}/booths/{booth_id}/")).text
+        room_page = (await client.get(f"/admin/events/{event_id}/rooms/{room_id}/")).text
+
+    assert 'value="local"' in booth_page.split('id="translation_provider"')[1].split("</select>")[0]
+    assert 'value="local"' in room_page.split('id="floor_translation_provider"')[1].split("</select>")[0]
 
 
 @pytest.mark.anyio

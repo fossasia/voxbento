@@ -1509,7 +1509,7 @@ async def admin_room_detail(request: Request, event_id: int, room_id: int):
             "fallback_jitsi_url": fallback_jitsi_url,
             "catalog": catalog,
             # Services that cannot translate this room's languages are not offered.
-            "translation_unfit": catalog.translation_unfit((room.floor_language_code, *snapshot.plan.ai_languages)),
+            "translation_unfit": catalog.translation_hidden((room.floor_language_code, *snapshot.plan.ai_languages)),
             "audio_choice": room_audio_choice(room),
             "speech_models": ROOM_SPEECH_MODELS,
             "voice_presets": ROOM_VOICE_PRESETS,
@@ -2286,7 +2286,7 @@ async def admin_booth_detail(request: Request, event_id: int, room_id: int, boot
             "booth": db_booth,
             "catalog": catalog,
             "translation_unfit": (
-                catalog.translation_unfit((db_booth.language_code, *enabled_translation_language_codes))
+                catalog.translation_hidden((db_booth.language_code, *enabled_translation_language_codes))
                 if catalog
                 else set()
             ),

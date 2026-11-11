@@ -155,6 +155,15 @@ class EngineCatalog:
             if unsupported_languages(engine.provider, engine.model, codes)
         }
 
+    def translation_hidden(self, language_codes: Iterable[str | None]) -> set[str]:
+        """The unfit services a settings page leaves out of its service picker.
+
+        None when no service fits: hiding them all would leave the picker empty, and saving
+        one still explains which language it cannot translate.
+        """
+        unfit = self.translation_unfit(language_codes)
+        return unfit if len(unfit) < len(self.translation) else set()
+
     def find(self, kind: str, provider: str) -> Engine | None:
         return next((e for e in getattr(self, kind) if e.provider == provider), None)
 
