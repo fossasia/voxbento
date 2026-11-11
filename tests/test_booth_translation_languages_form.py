@@ -171,3 +171,16 @@ async def test_when_both_spellings_are_saved_the_lowercase_row_is_kept(admin_boo
 
     assert res.status_code == 303
     assert await _languages(booth_id) == [("ES", "ES", False), ("es", "es", True)]
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize(("saved", "sent"), [(" pt-BR ", " pt-BR "), (" pt-BR ", "pt-BR"), (" es ", "es")])
+async def test_a_saved_code_with_spaces_is_matched_by_its_trimmed_value(admin_booth, saved, sent):
+    cookie, event_id, room_id, booth_id = admin_booth
+    await _add_saved(booth_id, saved)
+
+    on = await _save(cookie, event_id, room_id, booth_id, [sent])
+    off = await _save(cookie, event_id, room_id, booth_id, [sent], enabled=False)
+
+    assert (on.status_code, off.status_code) == (303, 303)
+    assert await _languages(booth_id) == [(saved, saved, True)]

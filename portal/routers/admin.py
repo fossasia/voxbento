@@ -2539,7 +2539,7 @@ def _clean_booth_target_languages(codes: list[str], saved: set[str]) -> list[str
     of the booth, while a new row for "es" next to a saved "ES" would translate twice.
     """
     # Sorted so that when both "ES" and "es" are saved, the lowercase row is the one kept.
-    saved_spelling = {code.lower(): code for code in sorted(saved)}
+    saved_spelling = {code.strip().lower(): code for code in sorted(saved)}
     cleaned: list[str] = []
     for raw in codes:
         key = raw.strip().lower()
