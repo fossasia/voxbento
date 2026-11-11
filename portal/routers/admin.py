@@ -1274,6 +1274,7 @@ async def admin_event_api_settings_post(
     clear_groq_api_key: bool | None = Form(False),
     clear_google_translate_api_key: bool | None = Form(False),
 ):
+    """Save the event's provider keys: a filled field replaces its key, a ticked Clear removes it, a blank field keeps it."""
     async with get_session() as session:
         event = await get_event_by_id(session, event_id)
         if event is None:

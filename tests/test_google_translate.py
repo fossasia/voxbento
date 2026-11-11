@@ -147,6 +147,7 @@ def test_is_registered_as_a_machine_translation_engine():
 
 
 async def test_a_room_can_use_it_with_the_event_key(http):
+    """The issue's acceptance path: an encrypted event key unlocks the service and reaches the request header."""
     portal.crypto._fernet = None
     try:
         with patch("portal.config.settings.api_key_encryption_key", "unit-test-encryption-key-at-least-32-chars"):
