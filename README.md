@@ -43,6 +43,7 @@ Interpreters monitor the floor session and broadcast high-fidelity translation d
 - **🗣️ Direct-Push Text-to-Speech (TTS):** Synthesize live translated speech on the fly (Deepgram Aura or self-hosted Supertonic ONNX), streamed directly to attendees over binary WebSocket frames.
 - **📡 Program Stream Ingest & YouTube Relay:** Send conference floor audio from an encoder or browser, with optional RTMPS forwarding to YouTube.
 - **🎛️ Mission Control & Coordination:** Real-time booth status monitoring, live audio meters, in-booth team chat, and coordinator controls via FastAPI WebSockets.
+- **🔑 Developer API:** Approved developers can manage OAuth apps and copy credentials with visible success or failure feedback.
 - **💻 VoxBento Local:** Sovereign, 100% offline desktop application for private AI meeting intelligence and minutes on macOS, Windows, and Linux.
 
 ---
@@ -104,6 +105,9 @@ uv sync --all-groups
 For **NEW local setups only**, copy the example configuration and generate separate strong secrets. Do not overwrite an existing `.env` or rotate existing keys with this command; it refuses to replace an existing file. The generated file is owner-readable only.
 
 The encryption key protects stored provider keys and queued email.
+
+The welcome email is queued for delivery 15 minutes after verification or magic-link sign-in changes an unverified account to verified.
+Already-verified accounts do not gain a welcome email or change an existing welcome delivery time by redeeming an old verification link.
 
 ```bash
 uv run python -c "

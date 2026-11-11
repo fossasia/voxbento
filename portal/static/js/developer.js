@@ -3,6 +3,10 @@
  * Loaded as an ES module — no jQuery, no inline scripts.
  */
 
+const CLIPBOARD_TIMEOUT_MS = 2000;
+const COPY_FEEDBACK_MS = 2000;
+const copyFeedbackByElement = new WeakMap();
+
 async function copyText(text) {
   // Try synchronous fallback first (must be within user gesture)
   if (typeof document.execCommand === 'function') {
@@ -28,11 +32,33 @@ async function copyText(text) {
 
   // Fallback failed or unavailable, try async Clipboard API
   if (navigator.clipboard?.writeText) {
+    let timeoutId;
+    let timedOut = false;
     try {
-      await navigator.clipboard.writeText(text);
-      return true;
+      const copied = await Promise.race([
+        navigator.clipboard.writeText(text).then(
+          () => true,
+          (error) => {
+            console.error('Clipboard API failed:', error);
+            return false;
+          },
+        ),
+        new Promise((resolve) => {
+          timeoutId = setTimeout(() => {
+            timedOut = true;
+            resolve(false);
+          }, CLIPBOARD_TIMEOUT_MS);
+        }),
+      ]);
+      if (timedOut) {
+        console.error('Clipboard API timed out');
+      }
+      return copied;
     } catch (error) {
       console.error('Clipboard API failed:', error);
+      return false;
+    } finally {
+      clearTimeout(timeoutId);
     }
   }
 
@@ -44,10 +70,22 @@ async function copyText(text) {
  * Feedback resets after 2 seconds.
  */
 async function copyToClipboard(element, text) {
+  const previousState = copyFeedbackByElement.get(element);
+  if (previousState?.timerId) {
+    clearTimeout(previousState.timerId);
+  }
+
+  const state = { timerId: null };
+  copyFeedbackByElement.set(element, state);
+  element.classList.remove('copied', 'copy-failed');
+
   const copied = await copyText(text);
+  if (copyFeedbackByElement.get(element) !== state) {
+    return;
+  }
+
   const tooltip = element.querySelector('.copy-tooltip');
 
-  element.classList.remove('copied', 'copy-failed');
   element.classList.add(copied ? 'copied' : 'copy-failed');
 
   if (tooltip) {
@@ -63,14 +101,19 @@ async function copyToClipboard(element, text) {
     console.error('Failed to copy text using available clipboard methods');
   }
 
-  setTimeout(() => {
+  state.timerId = setTimeout(() => {
+    if (copyFeedbackByElement.get(element) !== state) {
+      return;
+    }
+
     element.classList.remove('copied', 'copy-failed');
 
     if (tooltip) {
       tooltip.textContent = 'Copy to clipboard';
       tooltip.classList.remove('copied-tooltip');
     }
-  }, 2000);
+    copyFeedbackByElement.delete(element);
+  }, COPY_FEEDBACK_MS);
 }
 
 /**
@@ -82,7 +125,7 @@ function initCopyToClipboard() {
     const wrapper = e.target.closest('.copy-wrapper[data-copy-text]');
     if (wrapper) {
       const text = wrapper.dataset.copyText;
-      copyToClipboard(wrapper, text);
+      return copyToClipboard(wrapper, text);
     }
   });
 }

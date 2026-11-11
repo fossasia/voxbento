@@ -290,20 +290,20 @@
 }
 
 .copy-wrapper.copy-failed {
-  border-color: #ef4444;
-  background: #fef2f2;
-  color: #991b1b;
+  border-color: var(--vb-color-danger);
+  background: color-mix(in srgb, var(--vb-color-danger) 6%, var(--vb-color-surface));
+  color: var(--vb-color-danger-text);
 }
 
 .copy-wrapper.copy-failed .copy-tooltip {
   opacity: 1;
   visibility: visible;
   transform: translateX(-50%) translateY(0) scale(1);
-  background: #dc2626;
+  background: var(--vb-color-danger);
 }
 
 .copy-wrapper.copy-failed .copy-tooltip::after {
-  border-color: #dc2626 transparent transparent transparent;
+  border-color: var(--vb-color-danger) transparent transparent transparent;
 }
 
 /* Specific styling for the modal secrets */

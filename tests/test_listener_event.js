@@ -228,6 +228,7 @@ function make(tagName, id) {
   'tts-sync-group',
   'tts-sync-toggle',
   'captions-container',
+  'tap-to-listen-btn',
 ].forEach((id) => make('div', id));
 ['room-select', 'language-select', 'caption-mode-select', 'translation-lang-select'].forEach((id) =>
   make('select', id),
@@ -274,9 +275,13 @@ listenerData.textContent = JSON.stringify({
 // ── Stubbed browser APIs ─────────────────────────────────────────────────
 
 let whepOpts = null;
+let resumeCalls = 0;
 const WhepListener = {
   start(opts) {
     whepOpts = opts;
+  },
+  resume() {
+    resumeCalls++;
   },
   stop() {
     if (whepOpts) whepOpts.onState({ peerConnection: 'closed', ice: 'closed', audioActive: false });
@@ -313,12 +318,33 @@ Object.assign(globalThis, {
   WebSocket: FakeWebSocket,
   fetch,
   window: {
-    location: { protocol: 'http:', host: 'portal.test' },
+    location: { protocol: 'http:', host: 'portal.test', href: 'http://portal.test/listener/demo', search: '' },
+    history: {
+      replaceState(_state, _title, url) {
+        globalThis.window.location.href = String(url);
+      },
+    },
     setTimeout,
     setInterval: () => 0,
     addEventListener: () => {},
+    AudioContext: class {
+      constructor() {
+        this.state = 'running';
+      }
+    },
+    AudioScheduler: { create: () => ({ reset() {} }) },
   },
 });
+
+// A translation bundle as the server frames it: version byte, header length, JSON header, no audio.
+function bundleFrame(header) {
+  const json = new TextEncoder().encode(JSON.stringify(header));
+  const frame = new Uint8Array(5 + json.length);
+  new DataView(frame.buffer).setUint8(0, 1);
+  new DataView(frame.buffer).setUint32(1, json.length, false);
+  frame.set(json, 5);
+  return frame.buffer;
+}
 
 // ── Helpers ──────────────────────────────────────────────────────────────
 
@@ -340,6 +366,10 @@ function flush() {
 async function run() {
   await import(pathToFileURL(path.join(__dirname, '..', 'portal', 'static', 'js', 'listener-event.js')).href);
   choose(roomSelect, '1');
+
+  console.log('\n── Shareable listener link ──');
+  assert(new URL(window.location.href).searchParams.get('room') === '1', 'choosing a room puts it in the address bar');
+  assert(!new URL(window.location.href).searchParams.has('code'), 'the address bar never carries a join code');
 
   console.log('\n── Status badge (#985) ──');
 
@@ -363,6 +393,26 @@ async function run() {
     whepOpts.onState({ peerConnection: state, ice: state, audioActive: false });
     assert(statusText() === 'Reconnecting...', state + ' connections show Reconnecting...');
   }
+
+  console.log('\n── Tap to listen when autoplay is blocked ──');
+  const tapButton = document.getElementById('tap-to-listen-btn');
+  whepOpts.onState({ peerConnection: 'connected', ice: 'connected', audioActive: false, playbackBlocked: true });
+  assert(tapButton.hidden === false, 'blocked playback shows the Tap to listen button');
+  assert(statusText() === 'Ready — tap to listen', 'blocked playback says to tap, got "' + statusText() + '"');
+
+  whepOpts.onState({ peerConnection: 'connected', ice: 'connected', audioActive: true, playbackBlocked: true });
+  assert(statusText() !== 'Live (WebRTC)', 'a suspended delayed stream is not shown as Live');
+
+  tapButton.dispatchEvent(new Event('click'));
+  assert(resumeCalls === 1, 'tapping the button asks the player to start playback');
+
+  whepOpts.onState({ peerConnection: 'connected', ice: 'connected', audioActive: true, playbackBlocked: false });
+  assert(tapButton.hidden === true, 'the button hides once audio plays');
+  assert(statusText() === 'Live (WebRTC)', 'playback after the tap shows Live');
+
+  whepOpts.onState({ peerConnection: 'connected', ice: 'connected', audioActive: false, playbackBlocked: true });
+  choose(languageSelect, '');
+  assert(tapButton.hidden === true, 'stopping the stream hides the button');
 
   choose(languageSelect, 'http://mtx/es/whep');
   assert(statusText() !== 'Live (WebRTC)', 'switching to a booth does not show Live before its state is known');
@@ -455,6 +505,32 @@ async function run() {
   captionsSocket().onmessage({ data: JSON.stringify({ type: 'caption', status: 'final', seq: 1, text: 'Floor' }) });
   choose(roomSelect, '');
   assert(!waitingText.classList.contains('listener-hidden'), 'the placeholder comes back after clearing the room');
+
+  console.log('\n── Empty translations (#1184) ──');
+
+  await import(pathToFileURL(path.join(__dirname, '..', 'portal', 'static', 'js', 'tts-parser.js')).href);
+  choose(roomSelect, '1');
+  choose(languageSelect, 'http://mtx/floor/whep');
+  translationSelect.innerHTML = '<option value="fr">French</option>';
+  choose(translationSelect, 'fr');
+  const bundles = sockets.filter((s) => s.url.includes('/ws/tts/')).pop();
+  assert(Boolean(bundles), 'choosing a translation language opens the bundle feed');
+
+  // The translator ran and had nothing to say: no text, no error, no audio to wait for.
+  bundles.onmessage({
+    data: bundleFrame({ segment_id: 'a', seq: 1, caption: 'Um.', translation: '', error: null, audio_pending: false }),
+  });
+  assert(historyBox.textContent.includes('Um.'), 'the original caption of an empty translation still shows');
+  assert(
+    !historyBox.textContent.includes('(Translation'),
+    'an empty translation shows no message, got "' + historyBox.textContent + '"',
+  );
+
+  // The queue must already be past the empty segment, or this one would wait behind it.
+  bundles.onmessage({
+    data: bundleFrame({ segment_id: 'b', seq: 2, caption: 'Hello', translation: '', error: 'pipeline_failed' }),
+  });
+  assert(historyBox.textContent.includes('(Translation failed)'), 'a failed translation still says so, right after an empty one');
 
   console.log('\n' + passed + ' passed, ' + failed + ' failed');
   process.exit(failed > 0 ? 1 : 0);
