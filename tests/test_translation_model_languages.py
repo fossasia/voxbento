@@ -727,3 +727,23 @@ async def test_browser_translation_errors_return_the_settings_form(admin_booth, 
         booth = await session.get(DBBooth, booth_id)
         assert (booth.language_code, booth.language_name) == ("fr", "French")
         assert booth.translation_enabled == (save_path == "booth_source")
+
+
+@pytest.mark.anyio
+async def test_api_resending_an_older_rooms_unchanged_setup_still_saves(api_event):
+    """A sync that re-sends a room saved before the rule keeps working until the setup changes."""
+    hosted = {**LOCAL_ROOM, "translation_provider": "openai", "translation_model": "gpt-4o-mini"}
+    assert (await _put_room({**hosted, "target_languages": ["az"]})).status_code == 200
+    async with get_session() as s:
+        room = await s.scalar(select(Room).where(Room.eventyay_room_id == "hall-1"))
+        room.floor_translation_provider, room.floor_translation_model = "local", NLLB
+    unchanged = {**LOCAL_ROOM, "target_languages": ["az"]}
+
+    resent = await _put_room({**unchanged, "name": "Renamed"})
+    changed = await _put_room({**unchanged, "target_languages": ["az", "fr"]})
+
+    assert resent.status_code == 200
+    assert changed.status_code == 422
+    room = await _api_room()
+    assert room.display_name == "Renamed"
+    assert await _room_targets(room.id) == ["az"]

@@ -604,36 +604,45 @@ _TRANSLATION_SETUP_FIELDS = {
 async def _check_translation_languages(db: AsyncSession, payload_dict: dict, room: Room | None) -> None:
     """Reject a translation model that cannot handle the room's languages, before anything is written.
 
-    Looks at the room as it will be once the update is applied. Only an update that touches
-    the translation setup is checked, and never one that leaves translation off.
+    Looks at the room as it will be once the update is applied. Only an update that changes
+    the translation setup is checked, and never one that leaves translation off, so a sync
+    that re-sends a room saved before this rule keeps working until its setup changes.
     """
     if not _TRANSLATION_SETUP_FIELDS & payload_dict.keys():
         return
-    enabled = payload_dict.get("enable_translation")
-    if enabled is None:
-        enabled = bool(room and room.floor_translation_enabled)
-    if not enabled:
-        return
 
-    def after(field: str, current: str | None) -> str | None:
-        """The proposed value from payload_dict, or current value when omitted."""
-        return payload_dict[field] if field in payload_dict else current
+    saved_targets: list[str] = []
+    if room is not None:
+        rows = await db.scalars(
+            select(RoomTranslationLanguage.language_code).where(
+                RoomTranslationLanguage.room_id == room.id, RoomTranslationLanguage.enabled.is_(True)
+            )
+        )
+        saved_targets = list(rows)
+    before = (
+        bool(room and room.floor_translation_enabled),
+        room.floor_translation_provider if room else None,
+        room.floor_translation_model if room else None,
+        room.floor_language_code if room else None,
+        sorted(saved_targets),
+    )
+
+    def after(field: str, current):
+        """The proposed value from payload_dict, or the current value when omitted or null."""
+        value = payload_dict.get(field)
+        return current if value is None else value
 
     targets = payload_dict.get("target_languages")
-    if targets is None:
-        targets = []
-        if room is not None:
-            rows = await db.scalars(
-                select(RoomTranslationLanguage.language_code).where(
-                    RoomTranslationLanguage.room_id == room.id, RoomTranslationLanguage.enabled.is_(True)
-                )
-            )
-            targets = list(rows)
-    error = language_support_error(
-        after("translation_provider", room.floor_translation_provider if room else None),
-        after("translation_model", room.floor_translation_model if room else None),
-        (after("source_language", room.floor_language_code if room else None), *targets),
+    proposed = (
+        after("enable_translation", before[0]),
+        payload_dict["translation_provider"] if "translation_provider" in payload_dict else before[1],
+        payload_dict["translation_model"] if "translation_model" in payload_dict else before[2],
+        payload_dict["source_language"] if "source_language" in payload_dict else before[3],
+        before[4] if targets is None else sorted(set(targets)),
     )
+    if not proposed[0] or (room is not None and proposed == before):
+        return
+    error = language_support_error(proposed[1], proposed[2], (proposed[3], *proposed[4]))
     if error:
         raise HTTPException(status_code=422, detail=error)
 
