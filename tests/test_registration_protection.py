@@ -248,3 +248,29 @@ async def test_rate_limit_precedes_provider_requests(client, turnstile, monkeypa
     assert (await client.post("/register", data=form)).status_code == 429
     assert turnstile[1] == []
     await assert_no_signup_rows()
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("name", ["x" * 201, "bell\x07name", "esc\x1b[31mname", "nul\x00name"])
+async def test_registration_rejects_invalid_display_name(client, name):
+    form = {"email": "person@example.com", "display_name": name, "password": "a secure password"}
+    response = await client.post("/register", data={**form, "password_confirm": form["password"]})
+    assert response.status_code == 422
+    assert auth_routes.INVALID_DISPLAY_NAME in response.text
+    async with get_session() as session:
+        assert await session.scalar(select(func.count()).select_from(User)) == 0
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize(("name", "saved"), [("  Priya   Sharma ", "Priya Sharma"), ("x" * 200, "x" * 200)])
+async def test_registration_saves_cleaned_display_name(client, name, saved):
+    form = {"email": "person@example.com", "display_name": name, "password": "a secure password"}
+    response = await client.post("/register", data={**form, "password_confirm": form["password"]})
+    assert response.status_code == 200
+    async with get_session() as session:
+        assert (await session.scalar(select(User))).display_name == saved
+
+
+@pytest.mark.anyio
+async def test_register_form_limits_display_name_length(client):
+    assert 'maxlength="200"' in (await client.get("/register")).text
