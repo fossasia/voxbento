@@ -43,6 +43,9 @@ from portal.translations.model_languages import (
 )
 from portal.translations.registry import NLLB_200_DISTILLED_600M
 
+# These tests are not about CSRF; their requests carry the token a real page would send.
+pytestmark = pytest.mark.usefixtures("auto_csrf")
+
 NLLB = "nllb-200-distilled-600M"
 ORIGIN = {"origin": "http://test"}
 ACCESS_TOKEN = "model-languages-access-token"
