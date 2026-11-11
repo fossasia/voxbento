@@ -186,7 +186,10 @@ def make_room_for(model_size: str) -> None:
     """Evict idle models until ``model_size`` fits in the memory budget, or refuse to load it.
 
     The least recently used model that is not translating goes first. A model in use is never
-    evicted. Nothing is evicted when the model cannot fit anyway. Called with the load lock held.
+    evicted. Nothing is evicted when the model cannot fit anyway. The budget counts each model's
+    estimated size from the registry; it does not measure RAM or GPU memory.
+
+    Called with ``_load_lock`` held, but not ``_model_lock``, which this takes itself.
     """
     budget = settings.local_translation_memory_mb
     needed = model_memory_mb(model_size)
@@ -273,16 +276,23 @@ def get_model_and_tokenizer(model_size: str):
         tokenizer = transformers.AutoTokenizer.from_pretrained(local_model_path, src_lang="eng_Latn", revision="main")  # nosec
         cpu_count = os.cpu_count() or 4
         intra_threads = min(cpu_count, 2)
-        device = "cuda" if ctranslate2.get_cuda_device_count() > 0 else "cpu"
+        devices = ["cuda", "cpu"] if ctranslate2.get_cuda_device_count() > 0 else ["cpu"]
+        for device in devices:
+            try:
+                model = ctranslate2.Translator(
+                    local_model_path,
+                    device=device,
+                    # "int8" on the CPU as before; on a GPU let CTranslate2 pick the fastest type it supports.
+                    compute_type="int8" if device == "cpu" else "auto",
+                    inter_threads=1,
+                    intra_threads=intra_threads,
+                )
+                break
+            except RuntimeError as e:
+                if device == "cpu":
+                    raise
+                logger.warning("Could not load %s on the GPU, using the CPU instead: %s", model_size, e)
         logger.info("Running %s on the %s", model_size, device)
-        model = ctranslate2.Translator(
-            local_model_path,
-            device=device,
-            # "int8" on the CPU as before; on a GPU let CTranslate2 pick the fastest type it supports.
-            compute_type="int8" if device == "cpu" else "auto",
-            inter_threads=1,
-            intra_threads=intra_threads,
-        )
 
         with _model_lock:
             _loaded_models[model_size] = ModelEntry(model=model, tokenizer=tokenizer, last_used=time.time())
@@ -422,6 +432,7 @@ class LocalProvider(TranslationProvider, TranslationEngine):
         return await asyncio.to_thread(self._run_inference, text, source_lang_token, target_lang_token, model)
 
     def _run_inference(self, text: str, source_lang_token: str, target_lang_token: str, model_size: str) -> str | None:
+        """Translate ``text`` with a local model; None when the model cannot be loaded or the run fails."""
         if not text or not text.strip():
             return ""
         increment_model_ref(model_size)

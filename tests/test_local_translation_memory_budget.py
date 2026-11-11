@@ -128,6 +128,26 @@ def test_the_model_is_loaded_on_the_gpu_when_there_is_one(tmp_path, gpus, device
     assert created["compute_type"] == compute_type
 
 
+def test_the_model_falls_back_to_the_cpu_when_the_gpu_cannot_load_it(tmp_path):
+    """A GPU that is present but cannot load the model (for example out of memory) does not drop translations."""
+    devices_tried = []
+
+    class FakeTranslator:
+        def __init__(self, path, **kwargs):
+            devices_tried.append(kwargs["device"])
+            if kwargs["device"] == "cuda":
+                raise RuntimeError("CUDA out of memory")
+
+    fake_ctranslate2 = SimpleNamespace(get_cuda_device_count=lambda: 1, Translator=FakeTranslator)
+    fake_transformers = SimpleNamespace(AutoTokenizer=SimpleNamespace(from_pretrained=lambda *args, **kwargs: object()))
+
+    with patch.dict(sys.modules, {"ctranslate2": fake_ctranslate2, "transformers": fake_transformers}):
+        local.get_model_and_tokenizer(str(tmp_path))
+
+    assert devices_tried == ["cuda", "cpu"]
+    assert str(tmp_path) in local._loaded_models
+
+
 def test_a_refused_load_is_reported_clearly_and_the_reference_is_released(caplog):
     provider = LocalProvider()
     local._active_translations_per_model["model-a"] = 0

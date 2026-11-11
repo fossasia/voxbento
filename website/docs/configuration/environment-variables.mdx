@@ -119,7 +119,7 @@ These variables control external encoder ingest and YouTube RTMPS forwarding.
 | `SELF_HOSTED_LLM_BASE_URL` | _(empty)_ | Base URL of your own OpenAI-compatible server, for example `http://localhost:11434/v1`, without `/chat/completions`. Must be `http` or `https` with a valid port and no credentials, query string or fragment. Only the server sets it; rooms can't. |
 | `SELF_HOSTED_LLM_MODELS` | _(empty)_ | Comma-separated models rooms and booths may use, spelled exactly as the server names them (for Ollama, as `ollama list` shows them). The first one is the default. Each name can be at most 100 characters. Self-hosted translation is offered only when this and the URL are both set. |
 | `SELF_HOSTED_LLM_API_KEY` | _(empty)_ | Optional bearer token, for servers started with an API key (for example vLLM `--api-key`). |
-| `LOCAL_TRANSLATION_MEMORY_MB` | `0` (no limit) | Memory the local translation models may use together, in MB. Loading a model that would go over this evicts the least recently used model that is not translating, or is refused with an error in the log. A model in use is never evicted. Models without a registry entry are not counted. |
+| `LOCAL_TRANSLATION_MEMORY_MB` | `0` (no limit) | Memory the local translation models may use together, in MB, counted from each model's estimated size (not measured, and not split into RAM and GPU memory). Loading a model that would go over this evicts the least recently used model that is not translating, or is refused with an error in the log. A model in use is never evicted. Models without a registry entry are not counted. |
 
 ## Email and Notification Variables
 
