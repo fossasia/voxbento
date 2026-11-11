@@ -12,7 +12,7 @@ from sqlalchemy.exc import OperationalError
 from portal import booth_store
 from portal.booth_identity import make_booth_id
 from portal.booth_state import BoothRegistry
-from portal.database import get_session
+from portal.database import configure, dispose, get_session, init_db
 from portal.models import DBBooth, Event, Room, utc_now
 
 BOOTH = "hall-1-fr"
@@ -305,8 +305,6 @@ async def test_removing_a_booth_drops_its_persist_lock():
 
 @pytest.fixture
 async def booth_in_db():
-    from portal.database import configure, dispose, init_db
-
     configure("sqlite+aiosqlite://")
     await init_db()
     async with get_session() as session:
