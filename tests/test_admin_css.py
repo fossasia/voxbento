@@ -26,3 +26,11 @@ def test_scrolling_data_table_contains_its_visually_hidden_headers():
     assert scrolling, ".data-table scroll rule not found in admin.css"
     for declarations in scrolling:
         assert declarations.get("position") == "relative"
+
+
+def test_modal_overlay_stacks_above_scrolling_tables():
+    # Scrolling tables are positioned on phones, so an overlay that relied on page order would
+    # be drawn under a table that comes after it in the page.
+    overlay = [_declarations(body) for selector, body in _rules() if selector == ".custom-modal-overlay"]
+    assert overlay, ".custom-modal-overlay rule not found in admin.css"
+    assert int(overlay[0].get("z-index", "0")) > 0
