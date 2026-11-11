@@ -162,6 +162,7 @@ from portal.room_setup import COMMON_LANGUAGES as ROOM_COMMON_LANGUAGES
 from portal.room_setup import DELIVERY_EXPLANATIONS as ROOM_DELIVERY_EXPLANATIONS
 from portal.room_setup import DELIVERY_HINTS as ROOM_DELIVERY_HINTS
 from portal.room_setup import DELIVERY_LABELS as ROOM_DELIVERY_LABELS
+from portal.room_setup import LANGUAGE_NAMES as ROOM_LANGUAGE_NAMES
 from portal.room_setup import SPEECH_MODELS as ROOM_SPEECH_MODELS
 from portal.room_setup import VOICE_PRESETS as ROOM_VOICE_PRESETS
 from portal.room_setup import language_name as room_language_name
@@ -2528,6 +2529,25 @@ async def admin_delete_booth(request: Request, event_id: int, room_id: int, boot
     )
 
 
+def _clean_booth_target_languages(codes: list[str]) -> list[str]:
+    """The submitted target languages as the lowercase codes room setup offers, each once.
+
+    Each code gets one row per booth, so a repeat or a second spelling ("ES" next to "es")
+    would break the save or translate every segment twice. Empty values are skipped.
+    """
+    cleaned: list[str] = []
+    for raw in codes:
+        code = raw.strip().lower()
+        if not code or code in cleaned:
+            continue
+        if code not in ROOM_LANGUAGE_NAMES:
+            raise TranslationLanguageError(
+                status_code=400, detail="One of the chosen translation languages isn't recognised."
+            )
+        cleaned.append(code)
+    return cleaned
+
+
 @router.post(
     "/admin/events/{event_id}/rooms/{room_id}/booths/{booth_id}/translation-settings",
     dependencies=[Depends(require_event_owner), Depends(require_admin_csrf)],
@@ -2544,6 +2564,7 @@ async def admin_booth_translation_settings(
 ):
     """Save supported translation settings or return the validation error to the form."""
     try:
+        translation_languages = _clean_booth_target_languages(translation_languages)
         async with get_session() as session:
             db_booth = await booth_in_room(session, event_id, room_id, booth_id)
             event = await get_event_by_id(session, event_id)
