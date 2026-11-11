@@ -2694,6 +2694,31 @@ class TestBoothCRUD:
         assert '<option value="anthropic" selected>Anthropic — add its API key to keep using it</option>' in html
 
     @pytest.mark.anyio
+    async def test_retired_translation_models_are_not_offered_and_cannot_be_saved(self, admin_cookie, seed_event):
+        from portal.models import DBBooth
+        from portal.translations.constants import RETIRED_TRANSLATION_MODELS, TRANSLATION_MODELS
+
+        event, room, booth = seed_event
+        url = f"/admin/events/{event.id}/rooms/{room.id}/booths/{booth.id}/"
+        assert not RETIRED_TRANSLATION_MODELS & set(TRANSLATION_MODELS["openai"])
+        async with _client() as c:
+            fresh = (await c.get(url, cookies=admin_cookie)).text
+            await _update_row(DBBooth, booth.id, translation_provider="openai", translation_model="gpt-4-turbo")
+            saved = (await c.get(url, cookies=admin_cookie)).text
+            refused = await c.post(
+                f"{url}translation-settings",
+                data={"translation_enabled": "on", "translation_provider": "openai", "translation_model": "gpt-4-turbo"},
+                headers={"accept": "text/html"},
+                cookies=admin_cookie,
+                follow_redirects=False,
+            )
+        assert 'value="gpt-4-turbo"' not in fresh and "has been retired" not in fresh
+        assert 'data-provider="openai" selected>gpt-4-turbo (retired)' in saved
+        assert "The saved translation model <code>gpt-4-turbo</code> has been retired" in saved
+        assert refused.status_code == 400
+        assert "gpt-4-turbo has been retired and no longer translates" in refused.text
+
+    @pytest.mark.anyio
     async def test_saving_a_tab_returns_to_it_with_a_notice(self, admin_cookie, seed_event):
         event, room, booth = seed_event
         url = f"/admin/events/{event.id}/rooms/{room.id}/booths/{booth.id}/"
