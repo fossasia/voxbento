@@ -13,6 +13,7 @@ from __future__ import annotations
 import json
 import os
 import re
+from pathlib import Path
 
 os.environ["BOOTH_ACCESS_TOKEN"] = ""
 
@@ -37,6 +38,16 @@ async def setup_db():
     await init_db()
     yield
     await dispose()
+
+
+@pytest.fixture
+async def concurrent_db(setup_db, tmp_path: Path):
+    """Give overlapping requests separate connections and real transaction isolation."""
+    from portal.database import configure, dispose, init_db
+
+    await dispose()
+    configure(f"sqlite+aiosqlite:///{tmp_path / 'concurrent.db'}")
+    await init_db()
 
 
 @pytest.fixture
@@ -3602,7 +3613,7 @@ class TestAPIKeyCRUD:
             assert res_remake.json()["name"] == "Integration Key"
 
     @pytest.mark.anyio
-    async def test_concurrent_api_key_revocation(self, setup_db):
+    async def test_concurrent_api_key_revocation(self, concurrent_db):
         import asyncio
 
         from portal.auth import create_user_token
