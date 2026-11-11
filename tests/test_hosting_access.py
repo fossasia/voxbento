@@ -1407,8 +1407,19 @@ async def test_demo_modal_privacy_checkbox_starts_unchecked_and_is_required():
     async with client() as http:
         resp_home = await http.get("/")
         assert resp_home.status_code == 200
-        assert 'css/demo-modal.css' in resp_home.text
-        assert 'js/demo-modal.js' in resp_home.text
+
+        stylesheet_match = re.search(
+            r'<link\b(?=[^>]*\srel=["\']stylesheet["\'])(?=[^>]*\shref=["\'][^"\']*css/demo-modal\.css(?:\?[^"\']*)?["\'])[^>]*>',
+            resp_home.text,
+        )
+        assert stylesheet_match is not None, "demo-modal.css stylesheet link not found"
+
+        script_match = re.search(
+            r'<script\b(?=[^>]*\stype=["\']module["\'])(?=[^>]*\ssrc=["\'][^"\']*js/demo-modal\.js(?:\?[^"\']*)?["\'])[^>]*>',
+            resp_home.text,
+        )
+        assert script_match is not None, "demo-modal.js module script not found"
+
         home_match = re.search(r"<input[^>]*id=[\"']demo-privacy[\"'][^>]*>", resp_home.text)
         assert home_match is not None, "demo-privacy checkbox not found on home page"
         tag = home_match.group(0)

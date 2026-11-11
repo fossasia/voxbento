@@ -10,13 +10,18 @@ const errorAlert = document.getElementById("demo-error");
 
 let demoStep = 1;
 
+const stepTwoFields = ["demo-firstname", "demo-lastname", "demo-phone", "demo-company", "demo-country", "demo-language"];
+
 function fieldValue(id) {
   return document.getElementById(id)?.value ?? "";
 }
 
-function setStepTwoRequirements() {
-  ["demo-firstname", "demo-lastname", "demo-phone", "demo-company", "demo-country", "demo-language"].forEach((id) => {
-    document.getElementById(id).required = true;
+function setStepTwoRequirements(required) {
+  stepTwoFields.forEach((id) => {
+    const element = document.getElementById(id);
+    if (element) {
+      element.required = required;
+    }
   });
 }
 
@@ -27,6 +32,7 @@ function openDemoModal() {
   modal.setAttribute("aria-hidden", "false");
   document.body.classList.add("demo-modal-no-scroll");
   demoStep = 1;
+  setStepTwoRequirements(false);
   step1?.classList.remove("is-hidden");
   step2?.classList.add("is-hidden");
   successAlert?.classList.remove("is-visible");
@@ -47,9 +53,11 @@ function showStepTwo() {
   demoStep = 2;
   step1?.classList.add("is-hidden");
   step2?.classList.remove("is-hidden");
-  setStepTwoRequirements();
+  setStepTwoRequirements(true);
   if (submitLabel) submitLabel.textContent = "Submit Request";
 }
+
+const DEMO_REQUEST_TIMEOUT_MS = 15000;
 
 async function submitDemoRequest() {
   if (!submitButton) return;
@@ -70,11 +78,15 @@ async function submitDemoRequest() {
     languageSupport: fieldValue("demo-language"),
   };
 
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), DEMO_REQUEST_TIMEOUT_MS);
+
   try {
     const response = await fetch("/api/request-demo", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(data),
+      signal: controller.signal,
     });
     const result = await response.json();
 
@@ -94,10 +106,14 @@ async function submitDemoRequest() {
   } catch (error) {
     console.error("[demo-modal] Demo request failed:", error);
     if (errorAlert) {
-      errorAlert.textContent = "Oops! Something went wrong. Please try again.";
+      const message = error instanceof DOMException && error.name === "AbortError"
+        ? "The request timed out. Please try again."
+        : "Oops! Something went wrong. Please try again.";
+      errorAlert.textContent = message;
       errorAlert.classList.add("is-visible");
     }
   } finally {
+    clearTimeout(timeoutId);
     submitButton.disabled = false;
     spinner?.classList.remove("is-active");
   }
