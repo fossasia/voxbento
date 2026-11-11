@@ -32,6 +32,7 @@ from portal.globals import asset_version_context
 from portal.rate_limit import auth_rate_limiter, login_limiter, token_rate_limiter
 from portal.routers.admin import router as admin_router
 from portal.routers.api import router as api_router
+from portal.routers.api_v1 import EventAPIKeysUpdate
 from portal.routers.api_v1 import router as api_v1_router
 from portal.routers.attendance import router as attendance_router
 from portal.routers.auth import router as auth_router
@@ -227,8 +228,8 @@ async def redirect_required_handler(request: Request, exc: RedirectRequired):
     return RedirectResponse(exc.url, status_code=exc.status_code)
 
 
-# Write-only secrets (e.g. the YouTube relay key) must never be echoed back by a 422.
-_REDACTED_INPUT_FIELDS = frozenset({"stream_key"})
+# Write-only secrets (the YouTube relay key, the event's provider keys) must never be echoed back by a 422.
+_REDACTED_INPUT_FIELDS = frozenset({"stream_key", *EventAPIKeysUpdate.model_fields})
 
 
 def _contains_secret_field(value: object) -> bool:

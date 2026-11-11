@@ -25,6 +25,8 @@ GOOGLE_TRANSLATE_ENDPOINT = "https://translation.googleapis.com/language/transla
 
 
 class GoogleTranslateEngine(TranslationEngine):
+    """Translates through the Cloud Translation Basic (v2) API with the event's API key."""
+
     kind = EngineKind.MT_API
 
     async def translate_batch(
@@ -37,6 +39,7 @@ class GoogleTranslateEngine(TranslationEngine):
         model: str,
         api_key: str | None = None,
     ) -> TranslationRows:
+        """One request per text and target; without a key every translation is ``None`` and nothing is sent."""
         if not api_key:
             return [[None] * len(targets) for _ in texts]
 
@@ -46,6 +49,7 @@ class GoogleTranslateEngine(TranslationEngine):
         return await translate_each(translate_one, targets, texts)
 
     async def _translate(self, source: Language, target: Language, text: str, model: str, api_key: str) -> str | None:
+        """Translate one text into one language, or return ``None`` (logged without the key) when it fails."""
         payload = {"q": [text], "target": target.code, "format": "text", "model": model}
         if source.code:  # Without a source language Google detects it from the text.
             payload["source"] = source.code

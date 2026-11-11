@@ -142,6 +142,22 @@ async def test_update_event_api_keys_stores_google_translate_key_without_returni
 
 
 @pytest.mark.anyio
+@pytest.mark.parametrize("field", ["google_translate_api_key", "gemini_api_key"])
+async def test_a_rejected_api_key_is_not_echoed_in_the_validation_error(event_api_access, field):
+    access_token, _ = event_api_access
+
+    async with _client() as client:
+        response = await client.patch(
+            "/api/v1/events/api-key-test/api_keys",
+            json={field: ["pasted-secret-key"]},
+            headers={"Authorization": f"Bearer {access_token}"},
+        )
+    assert response.status_code == 422
+    assert field in response.text
+    assert "pasted-secret-key" not in response.text
+
+
+@pytest.mark.anyio
 async def test_update_event_api_keys_only_changes_fields_sent_in_payload(event_api_access):
     """Updating OpenAI leaves other encrypted provider keys byte-for-byte unchanged."""
     access_token, event_id = event_api_access
