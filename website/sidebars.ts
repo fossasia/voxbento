@@ -27,6 +27,7 @@ const sidebars: SidebarsConfig = {
             'admin/members-and-roles',
             'admin/hosting-access',
             'admin/invite-tokens',
+            'admin/attendance',
             'admin/transcription',
             'admin/ai-interpretation',
             'admin/program-ingest',

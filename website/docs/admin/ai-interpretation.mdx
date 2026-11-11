@@ -55,7 +55,7 @@ Pull Request,de,Pull Request,Developer term in German,false,phrase,80
 
 - **`target_language`**: Accepts `all` or a specific ISO 639-1 language code (e.g. `de`, `fr`, `es`).
 - **`case_sensitive`**: Boolean flag (`true`, `false`, `1`, `0`, `yes`, `no`).
-- **`match_type`**: `exact` (matches on word boundaries) or `phrase` (substring/phrase match).
+- **`match_type`**: `exact` (matches on word boundaries) or `phrase` (substring/phrase match). The built-in NLLB translator replaces whole words only, even for `phrase` entries.
 - **`priority`**: Integer priority. Entries with priority ≥ 90 are prioritized for prompt inclusion, up to a maximum of 80 matching high-priority entries within the translation prompt's character budget.
 
 Exporting downloads the normalized glossary in the identical CSV schema. Formula characters (`=`, `+`, `-`, `@`) at the start of text cells are neutralized during export to protect against spreadsheet injection.
@@ -77,4 +77,58 @@ This keeps real-time prompts compact, minimizing LLM inference latency.
 - **OpenAI / OpenRouter / Groq**: Shared system and user messages with contextual instructions.
 - **Anthropic**: Persona, style, and glossary terms supplied through the top-level `system` prompt parameter.
 - **Google Gemini**: Applied via `systemInstruction`.
-- **Local NLLB**: Deterministic sequence-to-sequence translation models do not support system prompts or glossaries. Persona, style, and vocabulary settings are safely stored but bypassed when running local NLLB.
+- **Self-hosted LLM**: Same messages as OpenAI, sent to the operator's own OpenAI-compatible server (see below).
+- **Local NLLB**: Sequence-to-sequence models take no system prompt, so persona and style are stored but not applied. Glossary terms are applied by term protection: each whole-word match, even for `phrase` entries, is swapped for a numbered placeholder before translation and replaced with its target term afterwards. In Chinese, Japanese, Thai and other scripts written without spaces, a term is replaced wherever it appears, even inside a longer word: `ブース` (booth) also matches the start of `ブースター` (booster), and the fallback cannot detect the wrong translation that results. Whole-word matching prevents this in other scripts (`AI` is never replaced inside `said`), so keep glossary terms for these scripts specific. If the model drops or mangles a placeholder, the segment is translated again without the glossary, so listeners never see a placeholder. Segments that already contain bracketed numbers, such as `[1]`, are translated without the glossary.
+
+## Self-hosted Translation Server
+
+Operators can point VoxBento at their own OpenAI-compatible `/v1/chat/completions` server (Ollama, llama.cpp `llama-server`, vLLM, LM Studio). Rooms and booths then get persona, style and glossary support without a cloud API key.
+
+The server address is set only in the server environment. Event owners can pick the service and one of the allowed models, but they can never enter a URL, and no request is ever sent for a model that isn't on the list. Translation can only be turned on with a listed model: the room forms fall back to the first listed model, and the booth form and the API v1 room update reject any other. Turning translation off always works.
+
+1. Start a model, for example with Ollama:
+
+   ```bash
+   ollama pull llama3.2
+   ollama serve
+   ```
+
+2. Set the server variables and restart the portal:
+
+   ```bash
+   SELF_HOSTED_LLM_BASE_URL=http://localhost:11434/v1
+   SELF_HOSTED_LLM_MODELS=llama3.2
+   ```
+
+   Leave out `/chat/completions`, and spell each model exactly as the server names it (`ollama list`). A model the server doesn't have fails every segment with a `404` in the portal log. Set `SELF_HOSTED_LLM_API_KEY` only if your server requires a key.
+
+   With Docker Compose, put them in `.env` and run `docker compose up -d portal`. That recreates the container with the new values; `docker compose restart` keeps the old ones.
+
+   From the Docker portal container, use `http://host.docker.internal:11434/v1`. Docker Desktop resolves that name itself. On Linux, also add `extra_hosts: ["host.docker.internal:host-gateway"]` to the portal service, and make Ollama listen on an address the container can reach (`OLLAMA_HOST`; it binds to `127.0.0.1` by default). Ollama has no authentication, so don't expose it beyond your own machine or network.
+
+3. Choose **Self-hosted LLM** as the service in the **Translation** card of the room's **AI settings** tab, or on the booth's **Translations** tab. If only the URL is set, the room setup page says `SELF_HOSTED_LLM_MODELS` is missing.
+
+If you later remove the server, rooms and booths that used it show it as not available and translate nothing until you pick another service. If you remove only a model, they translate nothing until they are saved again, which moves them to an allowed model. Either way they can still turn translation off.
+
+### Reasoning models
+
+Reasoning models (for example `qwen3`, `deepseek-r1`, `gpt-oss`) think before they answer. VoxBento never shows that thinking to listeners: when a server returns it inside the answer as `<think>...</think>`, it is removed, and an answer that stops while still thinking counts as a failed segment. Replies are capped at 1024 tokens, and a reply cut off at that limit also counts as a failed segment. The thinking takes time, so a reasoning model is usually slower than a plain instruct model of the same size.
+
+### Latency
+
+The server has 10 seconds to send its answer once the request is sent, and each translation gets 12 seconds in total. A slower answer fails that segment for that language, the listener sees it marked as failed, and the next segment carries on. The portal stays responsive and rooms on other services are unaffected, but every room and language that uses the self-hosted server shares it, so requests queue on a busy server.
+
+- Pick the smallest instruct model that translates your languages well enough, and test it with real talks before the event, with as many rooms and languages running at once as you expect.
+- On CPU only, loading the model takes longer and requests that arrive together queue up, so more of them miss the limit.
+- Ollama unloads a model after 5 minutes idle, and the next request waits for it to load again. Set `OLLAMA_KEEP_ALIVE=-1` to keep it loaded during the event.
+
+Measured on an Apple M5 with Ollama 0.40.15, through VoxBento's own request path with a persona, style and glossary entry:
+
+| Model | First request (model loading) | Warm request (median) | Six requests at once (slowest) |
+| --- | --- | --- | --- |
+| `llama3.2:3b`, GPU | 3.2 s | 0.67 s | 3.4 s, all finished |
+| `llama3.2:3b`, CPU only | 6.1 s | 0.85 s | 10 s, 2 of 6 timed out |
+| `qwen3:0.6b` (reasoning), GPU | 2.1 s | 1.9 s | 8.5 s, all finished |
+| `qwen3:0.6b` (reasoning), CPU only | 4.3 s | 3.3 s | 10 s, 3 of 6 timed out |
+
+A single request on CPU can look fast; it is several rooms and languages at once that push CPU-only setups past the limit.
