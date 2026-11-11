@@ -87,11 +87,13 @@
       {% endif %}
       <div class="ha-request-actions">
         <form method="post" action="/admin/hosting-access/requests/{{ hr.id }}/grant">
+          <input type="hidden" name="csrf_token" value="{{ request.state.admin_csrf_token }}" />
           <button type="submit" class="btn btn-primary ha-btn">Grant access</button>
         </form>
         <button type="button" class="btn btn-outline ha-btn" data-reveal-target="decline-{{ hr.id }}" aria-expanded="false" aria-controls="decline-{{ hr.id }}">Decline</button>
       </div>
       <form method="post" action="/admin/hosting-access/requests/{{ hr.id }}/decline" class="ha-decline" id="decline-{{ hr.id }}" hidden>
+        <input type="hidden" name="csrf_token" value="{{ request.state.admin_csrf_token }}" />
         <label for="decline-{{ hr.id }}-reason">Reason for declining</label>
         <p class="ha-decline-hint" id="decline-{{ hr.id }}-hint">This is sent to {{ hr.user.display_name }} by email.</p>
         <textarea id="decline-{{ hr.id }}-reason" name="reason" rows="3" maxlength="{{ decline_reason_max }}" required aria-describedby="decline-{{ hr.id }}-hint"></textarea>
@@ -115,6 +117,7 @@
     <div class="create-body">
       <p class="text-secondary create-hint">Enter an email address. An existing user gets hosting access when they accept the invitation; an address without an account is asked to create one.</p>
       <form method="post" action="/admin/users/invite" class="inline-form">
+        <input type="hidden" name="csrf_token" value="{{ request.state.admin_csrf_token }}" />
         <label class="visually-hidden" for="grant-email">Email address</label>
         <input type="email" id="grant-email" name="email" placeholder="organizer@example.com" required />
         <button type="submit" class="btn btn-primary">Send invitation</button>
@@ -150,10 +153,12 @@
           <td class="actions-cell">
             {% if entry.pending_invite %}
             <form method="post" action="/admin/users/invite/{{ entry.pending_invite.id }}/cancel" class="inline-form">
+              <input type="hidden" name="csrf_token" value="{{ request.state.admin_csrf_token }}" />
               <button type="submit" class="btn btn-sm btn-outline">Cancel invitation</button>
             </form>
             {% else %}
             <form method="post" action="/admin/users/{{ entry.user.id }}/hosting" class="inline-form" data-confirm="Remove hosting access for {{ entry.user.display_name }}? Their existing events are kept.">
+              <input type="hidden" name="csrf_token" value="{{ request.state.admin_csrf_token }}" />
               <input type="hidden" name="action" value="revoke" />
               <button type="submit" class="btn btn-sm btn-outline">Remove access</button>
             </form>
