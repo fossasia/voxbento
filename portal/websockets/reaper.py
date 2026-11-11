@@ -196,16 +196,27 @@ async def reap_stale_sessions() -> int:
     return len(stale)
 
 
+async def _expire_booth_reservations() -> None:
+    """A restored active slot nobody came back for goes to the first interpreter who joined meanwhile (#1165)."""
+    try:
+        for state in await booths.expire_reservations():
+            await broadcast_booth_state(state["booth_id"], state)
+    except Exception:
+        logger.exception("Unexpected error while expiring booth reservations; continuing")
+
+
 async def session_reaper_loop(interval_seconds: float = 3.0) -> None:
     """Lightweight periodic reaper task that closes stale sessions across commits."""
     logger.info("Starting WebSocket session reaper loop (interval=%ss)", interval_seconds)
     while True:
         try:
             await asyncio.sleep(interval_seconds)
-            await reap_stale_sessions()
-            # A restored active slot nobody came back for goes to the first interpreter who joined meanwhile (#1165).
-            for state in await booths.expire_reservations():
-                await broadcast_booth_state(state["booth_id"], state)
+            try:
+                await reap_stale_sessions()
+            except Exception:
+                # Expiring booth reservations must still run when reaping sessions fails.
+                logger.exception("Unexpected error while reaping stale sessions; continuing")
+            await _expire_booth_reservations()
         except asyncio.CancelledError:
             break
         except Exception:

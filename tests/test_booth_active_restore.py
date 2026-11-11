@@ -489,6 +489,35 @@ async def test_the_reaper_announces_a_booth_that_got_its_active_interpreter(monk
 
 
 @pytest.mark.anyio
+async def test_the_reaper_still_expires_reservations_when_reaping_sessions_fails(monkeypatch):
+    from portal.websockets import reaper
+
+    state = {"booth_id": BOOTH, "active_interpreter_id": "p1"}
+    sent: list[tuple[str, dict]] = []
+    answers = [[state], []]
+
+    async def failing_reap():
+        raise RuntimeError("database is locked")
+
+    async def expire():
+        return answers.pop(0) if answers else []
+
+    async def broadcast(booth_id, payload):
+        sent.append((booth_id, payload))
+
+    monkeypatch.setattr(reaper, "reap_stale_sessions", failing_reap)
+    monkeypatch.setattr(reaper.booths, "expire_reservations", expire)
+    monkeypatch.setattr(reaper, "broadcast_booth_state", broadcast)
+
+    task = asyncio.create_task(reaper.session_reaper_loop(0.01))
+    await asyncio.sleep(0.1)
+    task.cancel()
+    await asyncio.gather(task, return_exceptions=True)
+
+    assert sent == [(BOOTH, state)]
+
+
+@pytest.mark.anyio
 async def test_enabling_persistence_stores_changes_and_reserves_the_last_active_slot(monkeypatch):
     fresh = BoothRegistry()
 
