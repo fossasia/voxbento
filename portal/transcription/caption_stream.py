@@ -76,11 +76,13 @@ class CaptionStream:
     def __init__(
         self,
         *,
-        clock: Callable[[], float] = time.time,
+        clock: Callable[[], float] | None = None,
         new_segment_id: Callable[[], str] = lambda: str(uuid.uuid4()),
     ) -> None:
         self.states: dict[str, CaptionState] = {}
-        self._clock = clock
+        # Looked up at call time: a default of time.time would bind the real
+        # function here and ignore a later patch of time.time.
+        self._clock = clock if clock is not None else lambda: time.time()
         self._new_segment_id = new_segment_id
         self._seq_counter = 0
 
