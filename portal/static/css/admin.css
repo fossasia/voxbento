@@ -528,6 +528,7 @@ code { font-family: var(--font-mono); font-size: 0.85em; background: var(--color
   
   /* Make tables horizontally scrollable to prevent squishing */
   .data-table { 
+    position: relative; /* keeps visually hidden header text inside the table's own scroll box */
     display: block; 
     width: 100%; 
     max-width: 100%;
