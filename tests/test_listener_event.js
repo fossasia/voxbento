@@ -327,8 +327,24 @@ Object.assign(globalThis, {
     setTimeout,
     setInterval: () => 0,
     addEventListener: () => {},
+    AudioContext: class {
+      constructor() {
+        this.state = 'running';
+      }
+    },
+    AudioScheduler: { create: () => ({ reset() {} }) },
   },
 });
+
+// A translation bundle as the server frames it: version byte, header length, JSON header, no audio.
+function bundleFrame(header) {
+  const json = new TextEncoder().encode(JSON.stringify(header));
+  const frame = new Uint8Array(5 + json.length);
+  new DataView(frame.buffer).setUint8(0, 1);
+  new DataView(frame.buffer).setUint32(1, json.length, false);
+  frame.set(json, 5);
+  return frame.buffer;
+}
 
 // ── Helpers ──────────────────────────────────────────────────────────────
 
@@ -489,6 +505,32 @@ async function run() {
   captionsSocket().onmessage({ data: JSON.stringify({ type: 'caption', status: 'final', seq: 1, text: 'Floor' }) });
   choose(roomSelect, '');
   assert(!waitingText.classList.contains('listener-hidden'), 'the placeholder comes back after clearing the room');
+
+  console.log('\n── Empty translations (#1184) ──');
+
+  await import(pathToFileURL(path.join(__dirname, '..', 'portal', 'static', 'js', 'tts-parser.js')).href);
+  choose(roomSelect, '1');
+  choose(languageSelect, 'http://mtx/floor/whep');
+  translationSelect.innerHTML = '<option value="fr">French</option>';
+  choose(translationSelect, 'fr');
+  const bundles = sockets.filter((s) => s.url.includes('/ws/tts/')).pop();
+  assert(Boolean(bundles), 'choosing a translation language opens the bundle feed');
+
+  // The translator ran and had nothing to say: no text, no error, no audio to wait for.
+  bundles.onmessage({
+    data: bundleFrame({ segment_id: 'a', seq: 1, caption: 'Um.', translation: '', error: null, audio_pending: false }),
+  });
+  assert(historyBox.textContent.includes('Um.'), 'the original caption of an empty translation still shows');
+  assert(
+    !historyBox.textContent.includes('(Translation'),
+    'an empty translation shows no message, got "' + historyBox.textContent + '"',
+  );
+
+  // The queue must already be past the empty segment, or this one would wait behind it.
+  bundles.onmessage({
+    data: bundleFrame({ segment_id: 'b', seq: 2, caption: 'Hello', translation: '', error: 'pipeline_failed' }),
+  });
+  assert(historyBox.textContent.includes('(Translation failed)'), 'a failed translation still says so, right after an empty one');
 
   console.log('\n' + passed + ' passed, ' + failed + ' failed');
   process.exit(failed > 0 ? 1 : 0);

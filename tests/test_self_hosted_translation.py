@@ -45,6 +45,9 @@ from portal.translations.keys import get_translation_api_key
 from portal.translations.providers.openai import SELF_HOSTED_MAX_TOKENS, OpenAIProvider, strip_reasoning
 from portal.translations.worker import TranslationWorker
 
+# These tests are not about CSRF; their requests carry the token a real page would send.
+pytestmark = pytest.mark.usefixtures("auto_csrf")
+
 ORIGIN = {"origin": "http://test"}
 BASE_URL = "http://llm.internal:11434/v1"
 MODELS = "llama3.2,qwen2.5:7b"

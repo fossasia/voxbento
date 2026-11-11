@@ -353,6 +353,103 @@ def test_ws_join_receives_joined_and_state():
     assert "participant_id" in joined
     assert "state" in joined
 
+def test_ws_role_recheck_is_throttled():
+    from unittest.mock import AsyncMock, patch
+
+    from portal.roles import EVENT_OWNER
+
+    with (
+        patch(
+            "portal.websockets.handlers.resolve_booth_role",
+            new=AsyncMock(return_value=EVENT_OWNER),
+        ) as resolve_role,
+        patch("portal.websockets.handlers._monotonic", return_value=0.0),
+    ):
+        with client.websocket_connect(
+            "/ws/booth/throttle-test-booth",
+            cookies=_ws_auth(),
+        ) as ws:
+            ws.send_text(json.dumps({"type": "unknown"}))
+            assert json.loads(ws.receive_text())["type"] == "booth:error"
+
+            ws.send_text(json.dumps({"type": "unknown"}))
+            assert json.loads(ws.receive_text())["type"] == "booth:error"
+
+    # One initial resolution; neither message triggers a recheck.
+    assert resolve_role.await_count == 1
+
+
+def test_ws_role_change_closes_connection():
+    from unittest.mock import AsyncMock, patch
+
+    from fastapi import WebSocketDisconnect
+
+    from portal.roles import EVENT_OWNER, INTERPRETER
+
+    clock = iter([0.0, 6.0])
+
+    def fake_monotonic():
+        return next(clock, 6.0)
+
+    with (
+        patch(
+            "portal.websockets.handlers.resolve_booth_role",
+            new=AsyncMock(side_effect=[EVENT_OWNER, INTERPRETER]),
+        ) as resolve_role,
+        patch(
+            "portal.websockets.handlers._monotonic",
+            side_effect=fake_monotonic,
+        ),
+    ):
+        with client.websocket_connect(
+            "/ws/booth/role-change-test-booth",
+            cookies=_ws_auth(),
+        ) as ws:
+            ws.send_text(json.dumps({"type": "unknown"}))
+            with pytest.raises(WebSocketDisconnect) as exc_info:
+                ws.receive_text()
+            assert exc_info.value.code == 4003
+
+    assert resolve_role.await_count == 2
+
+
+def test_ws_role_recheck_database_error_keeps_connection_open():
+    from unittest.mock import AsyncMock, patch
+
+    from portal.roles import EVENT_OWNER
+
+    clock = iter([0.0, 6.0, 12.0])
+
+    def fake_monotonic():
+        return next(clock, 12.0)
+
+    with (
+        patch(
+            "portal.websockets.handlers.resolve_booth_role",
+            new=AsyncMock(
+                side_effect=[
+                    EVENT_OWNER,
+                    RuntimeError("temporary database failure"),
+                    EVENT_OWNER,
+                ]
+            ),
+        ) as resolve_role,
+        patch(
+            "portal.websockets.handlers._monotonic",
+            side_effect=fake_monotonic,
+        ),
+    ):
+        with client.websocket_connect(
+            "/ws/booth/role-db-error-test-booth",
+            cookies=_ws_auth(),
+        ) as ws:
+            ws.send_text(json.dumps({"type": "unknown"}))
+            assert json.loads(ws.receive_text())["type"] == "booth:error"
+
+            ws.send_text(json.dumps({"type": "unknown"}))
+            assert json.loads(ws.receive_text())["type"] == "booth:error"
+
+    assert resolve_role.await_count == 3
 
 def test_ws_join_without_language_and_unconfigured_booth_returns_error():
     """If neither the client specifies a language nor the booth exists in DB, join must error."""
@@ -2060,13 +2157,22 @@ def test_event_booth_state_does_not_load_booth_whose_room_belongs_to_another_eve
     from portal.database import create_booth, create_event, create_room, get_session
 
     async def seed() -> int:
+        from portal.models import DBBooth
+
         async with get_session() as session:
             owner = await create_event(session, slug="roomowner", display_name="Room Owner")
             borrower = await create_event(session, slug="roomborrower", display_name="Room Borrower")
             room = await create_room(session, event_id=owner.id, display_name="Main")
-            await create_booth(
-                session, event_id=borrower.id, room_id=room.id, language_code="fr", language_name="French"
+
+            session.add(
+                DBBooth(
+                    event_id=borrower.id,
+                    room_id=room.id,
+                    language_code="fr",
+                    language_name="French",
+                )
             )
+            await session.flush()
             return room.id
 
     room_id = anyio.run(seed)
@@ -2307,6 +2413,7 @@ def test_strong_secret_passes_production():
 
 
 def test_missing_media_auth_hook_secret_raises_in_production():
+    """Verify that production rejects missing MEDIAMTX_AUTH_HOOK_SECRET."""
     from portal.config import Settings
 
     s = Settings(
@@ -2317,6 +2424,79 @@ def test_missing_media_auth_hook_secret_raises_in_production():
     )
     with pytest.raises(RuntimeError, match="MEDIAMTX_AUTH_HOOK_SECRET"):
         s.validate_production_secrets()
+
+
+def test_common_password_secret_raises_in_production():
+    """Verify that common passwords in the weak defaults list are rejected in production."""
+    from portal.config import Settings
+
+    s = Settings(debug=False, secret_key="admin", jwt_secret="")
+    with pytest.raises(RuntimeError, match="known-weak default value"):
+        s.validate_production_secrets()
+
+
+def test_none_secret_raises_in_production():
+    """Verify that a None effective secret raises RuntimeError instead of TypeError."""
+    from portal.config import Settings
+
+    class NoneSecretSettings(Settings):
+        @property
+        def effective_jwt_secret(self) -> str:
+            return None  # type: ignore[return-value]
+
+    s = NoneSecretSettings(debug=False)
+    with pytest.raises(RuntimeError, match="known-weak default value"):
+        s.validate_production_secrets()
+
+
+def test_short_secret_raises_in_production():
+    """Verify that production rejects secrets shorter than 32 characters."""
+    from portal.config import Settings
+
+    s = Settings(
+        debug=False,
+        secret_key="short-key-not-in-weak-defaults",
+        jwt_secret="",
+        mediamtx_auth_hook_secret="media-hook-secret",
+    )
+    with pytest.raises(RuntimeError, match="too short"):
+        s.validate_production_secrets()
+
+
+def test_low_diversity_secret_raises_in_production():
+    """Verify that secrets with low character diversity (e.g. repeated characters) are rejected."""
+    from portal.config import Settings
+
+    s = Settings(
+        debug=False,
+        secret_key="a" * 32,
+        jwt_secret="",
+        mediamtx_auth_hook_secret="media-hook-secret",
+    )
+    with pytest.raises(RuntimeError, match="character diversity"):
+        s.validate_production_secrets()
+
+
+def test_short_secret_allowed_in_debug_mode():
+    """Verify that short secrets remain permitted when debug mode is enabled."""
+    from portal.config import Settings
+
+    s = Settings(debug=True, secret_key="tooshort", jwt_secret="")
+    s.validate_production_secrets()  # must not raise
+
+
+def test_exactly_32_char_secret_passes_production():
+    """Verify that a compliant 32-character secret passes validation in production."""
+    from portal.config import Settings
+
+    s = Settings(
+        debug=False,
+        secret_key="0123456789abcdef0123456789abcdef",
+        jwt_secret="",
+        mediamtx_auth_hook_secret="media-hook-secret",
+        booth_access_token="0123456789abcdef0123456789abcdef",
+    )
+    s.validate_production_secrets()  # must not raise
 
 
 # ── Unified error pages (PR #263) ──────────────────────────────────────
