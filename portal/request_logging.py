@@ -5,7 +5,7 @@ import re
 import time
 from collections.abc import Awaitable, Callable
 
-from starlette.datastructures import MutableHeaders
+from starlette.datastructures import Headers, MutableHeaders
 from starlette.types import Message, Receive, Scope, Send
 
 from portal.logging_config import new_request_id, reset_request_id, set_request_id
@@ -111,10 +111,20 @@ class RequestLoggingMiddleware:
                 ),
             )
             if scope["type"] == "http":
+                from portal.security_headers import apply_security_headers
+
                 body = b'{"detail":"Internal Server Error","request_id":"' + request_id.encode() + b'"}'
-                await send_wrapper({"type": "http.response.start", "status": 500, "headers": [
+                error_msg: dict = {"type": "http.response.start", "status": 500, "headers": [
                     [b"content-type", b"application/json"],
-                ]})
+                ]}
+                path = scope.get("path", "/")
+                req_headers = Headers(scope=scope)
+                is_https = (
+                    scope.get("scheme") == "https"
+                    or req_headers.get("x-forwarded-proto", "").split(",")[0].strip().lower() == "https"
+                )
+                apply_security_headers(MutableHeaders(scope=error_msg), path=path, is_https=is_https)
+                await send_wrapper(error_msg)
                 await send_wrapper({"type": "http.response.body", "body": body})
                 return
             raise
