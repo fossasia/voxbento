@@ -21,16 +21,22 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from unilimit.integrations.fastapi import RateLimit
 
 from portal.auth import (
+    ADMIN_CSRF_COOKIE,
     PASSWORD_TOO_LONG_MESSAGE,
     create_participant_token,
     create_token,
     create_user_token,
     decode_token,
+    generate_admin_csrf_token,
     get_current_user,
     hash_password,
+    is_cookie_secure,
     password_too_long,
+    require_admin_csrf,
     require_user,
     resolve_request_principal,
+    user_session_is_valid,
+    user_session_version,
     verify_password,
 )
 from portal.config import settings
@@ -47,6 +53,7 @@ from portal.database import (
     get_user_by_id,
     redeem_auth_token,
     redeem_invite_token,
+    revoke_auth_tokens,
     update_user,
 )
 from portal.globals import _JS_CACHE_BUST, asset_version_context
@@ -58,6 +65,7 @@ from portal.registration_protection import limit_registration, verify_registrati
 from portal.schemas.auth import TokenRequest, TokenResponse
 from portal.user_menu import resolve_user_menu, user_menu_context
 from portal.utils import safe_redirect, verify_same_origin
+from portal.websockets.manager import REASON_SESSION_EXPIRED, manager
 
 _BASE_DIR = Path(__file__).resolve().parent.parent
 templates = Jinja2Templates(
@@ -121,20 +129,31 @@ def _registration_success(request: Request, email: str) -> object:
     )
 
 
-def _is_cookie_secure(request: Request) -> bool:
-    if request.url.scheme == "https" or request.headers.get("x-forwarded-proto") == "https":
-        return True
-    return bool(settings.public_base_url.startswith("https://") and not settings.debug)
-
-
-def set_auth_cookie(response: Response, token: str) -> None:
+def set_auth_cookie(request: Request, response: Response, token: str) -> None:
     """Set the user authentication cookie with standard settings."""
     response.set_cookie(
         key="user_token",
         value=token,
         httponly=True,
+        secure=is_cookie_secure(request),
         samesite="lax",
         max_age=settings.jwt_expiry_seconds,
+    )
+
+
+def set_admin_csrf_cookie(response: Response, request: Request, session_token: str) -> None:
+    """Set a CSRF cookie bound to the newly created session."""
+    payload = decode_token(session_token)
+    session_id = payload.get("jti")
+    if not session_id:
+        raise ValueError("Session token is missing its jti claim.")
+
+    response.set_cookie(
+        key=ADMIN_CSRF_COOKIE,
+        value=generate_admin_csrf_token(str(session_id)),
+        httponly=True,
+        secure=is_cookie_secure(request),
+        samesite="lax",
     )
 
 
@@ -174,10 +193,11 @@ async def join_via_invite(request: Request, token: str) -> RedirectResponse:
         key="session_token",
         value=jwt_token,
         httponly=True,
-        secure=_is_cookie_secure(request),
+        secure=is_cookie_secure(request),
         samesite="lax",
         max_age=settings.jwt_expiry_seconds,
     )
+    set_admin_csrf_cookie(response, request, jwt_token)
     return response
 
 
@@ -325,15 +345,18 @@ async def verify_email_route(request: Request, token: str):
             user = await get_user_by_id(session, auth_token.user_id)
             if user is None or not user.is_active:
                 raise ValueError("Invalid verification link.")
-            user = await update_user(session, auth_token.user_id, email_verified=True, last_sign_in_at=utc_now())
-            await queue_notification(
-                session,
-                "onboarding",
-                user.email,
-                {"display_name": user.display_name},
-                scheduled_at=utc_now() + timedelta(minutes=15),
-                idempotency_key=f"onboarding:{user.id}",
-            )
+            if not user.email_verified:
+                user = await update_user(session, auth_token.user_id, email_verified=True, last_sign_in_at=utc_now())
+                await queue_notification(
+                    session,
+                    "onboarding",
+                    user.email,
+                    {"display_name": user.display_name},
+                    scheduled_at=utc_now() + timedelta(minutes=15),
+                    idempotency_key=f"onboarding:{user.id}",
+                )
+            else:
+                user = await update_user(session, user.id, last_sign_in_at=utc_now())
 
             jwt_token = create_user_token(
                 user_id=user.id, email=user.email, display_name=user.display_name, is_admin=user.is_admin
@@ -343,10 +366,11 @@ async def verify_email_route(request: Request, token: str):
                 key="user_token",
                 value=jwt_token,
                 httponly=True,
-                secure=_is_cookie_secure(request),
+                secure=is_cookie_secure(request),
                 samesite="lax",
                 max_age=settings.jwt_expiry_seconds,
             )
+            set_admin_csrf_cookie(response, request, jwt_token)
             return response
         except ValueError as e:
             raise HTTPException(status_code=400, detail=str(e))
@@ -396,6 +420,8 @@ async def user_login_submit(request: Request):
     password = form.get("password", "")
     next_url = form.get("next_url", "")
 
+    # Bind this session to the credential snapshot, before any database await.
+    authenticated_at = utc_now()
     async with get_session() as session:
         user = await get_user_by_email(session, email)
 
@@ -410,7 +436,12 @@ async def user_login_submit(request: Request):
         )
 
     jwt_token = create_user_token(
-        user_id=user.id, email=user.email, display_name=user.display_name, is_admin=user.is_admin
+        user_id=user.id,
+        email=user.email,
+        display_name=user.display_name,
+        is_admin=user.is_admin,
+        issued_at=authenticated_at,
+        session_version=user_session_version(user),
     )
     for attempt in range(3):
         try:
@@ -427,10 +458,11 @@ async def user_login_submit(request: Request):
         key="user_token",
         value=jwt_token,
         httponly=True,
-        secure=_is_cookie_secure(request),
+        secure=is_cookie_secure(request),
         samesite="lax",
         max_age=settings.jwt_expiry_seconds,
     )
+    set_admin_csrf_cookie(response, request, jwt_token)
     return response
 
 
@@ -481,6 +513,7 @@ async def request_magic_link(request: Request):
 
 @router.get("/auth/magic/{token}")
 async def redeem_magic_link(request: Request, token: str, next: str | None = None):
+    authenticated_at = utc_now()
     async with get_session() as session:
         try:
             auth_token = await redeem_auth_token(session, token, "magic_link")
@@ -503,7 +536,12 @@ async def redeem_magic_link(request: Request, token: str, next: str | None = Non
                 await update_user(session, user.id, last_sign_in_at=utc_now())
 
             jwt_token = create_user_token(
-                user_id=user.id, email=user.email, display_name=user.display_name, is_admin=user.is_admin
+                user_id=user.id,
+                email=user.email,
+                display_name=user.display_name,
+                is_admin=user.is_admin,
+                issued_at=authenticated_at,
+                session_version=user_session_version(user),
             )
 
             def _is_local_oauth_path(u: str | None) -> bool:
@@ -537,16 +575,17 @@ async def redeem_magic_link(request: Request, token: str, next: str | None = Non
                 key="user_token",
                 value=jwt_token,
                 httponly=True,
-                secure=_is_cookie_secure(request),
+                secure=is_cookie_secure(request),
                 samesite="lax",
                 max_age=settings.jwt_expiry_seconds,
             )
+            set_admin_csrf_cookie(response, request, jwt_token)
             response.set_cookie(
                 key="auth_sync",
                 value="1",
                 max_age=15,
                 httponly=False,
-                secure=_is_cookie_secure(request),
+                secure=is_cookie_secure(request),
                 samesite="lax",
             )
             return response
@@ -649,6 +688,8 @@ async def reset_password_submit(request: Request, token: str):
             user = await update_user(session, auth_token.user_id, password_hash=pw_hash)
             if user is None:
                 raise ValueError("User not found.")
+            user.sessions_valid_after = utc_now()
+            await revoke_auth_tokens(session, user_id=user.id, token_type="magic_link")  # nosec B106
             await update_user(session, user.id, last_sign_in_at=utc_now())
             await _queue_password_notice(session, user.email, user.id, "Your VoxBento password was reset.")
             jwt_token = create_user_token(
@@ -668,15 +709,18 @@ async def reset_password_submit(request: Request, token: str):
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
         )
 
+    await asyncio.shield(manager.close_user_sessions(user.id, reason=REASON_SESSION_EXPIRED))
+
     response = safe_redirect(url="/account", status_code=status.HTTP_303_SEE_OTHER)
     response.set_cookie(
         key="user_token",
         value=jwt_token,
         httponly=True,
-        secure=_is_cookie_secure(request),
+        secure=is_cookie_secure(request),
         samesite="lax",
         max_age=settings.jwt_expiry_seconds,
     )
+    set_admin_csrf_cookie(response, request, jwt_token)
     return response
 
 
@@ -687,6 +731,7 @@ async def user_logout(request: Request, next: str = "/"):
     response.delete_cookie("user_token")
     response.delete_cookie("session_token")
     response.delete_cookie("admin_token")
+    response.delete_cookie(ADMIN_CSRF_COOKIE)
     return response
 
 
@@ -724,6 +769,7 @@ async def account_page(request: Request):
         name="account.html",
         context={
             "user": user,
+            "csrf_token": request.state.admin_csrf_token,
             "is_hosting_revoked": user.hosting_revoked_at is not None,
             "open_hosting_request": open_hosting_request,
             "developer_account": developer_account,
@@ -735,7 +781,7 @@ async def account_page(request: Request):
     )
 
 
-@router.post("/account/profile")
+@router.post("/account/profile", dependencies=[Depends(require_admin_csrf)])
 async def update_profile(request: Request):
     """Change the signed-in person's display name."""
     if not verify_same_origin(request):
@@ -799,7 +845,7 @@ async def hosting_request_page(request: Request):
     return render_hosting_request_form(request, user)
 
 
-@router.post(HOSTING_REQUEST_PATH)
+@router.post(HOSTING_REQUEST_PATH, dependencies=[Depends(require_admin_csrf)])
 async def submit_hosting_request(request: Request):
     """Save a hosting access request for the signed-in user and notify the team."""
     if not verify_same_origin(request):
@@ -909,14 +955,16 @@ async def remove_password_api(request: Request):
     return {"status": "ok"}
 
 
-def _extract_cookie_user_id(request: Request) -> str | None:
+def _extract_cookie_user_id(request: Request, user: User) -> str | None:
     cookie = request.cookies.get("user_token")
     if not cookie:
         return None
     try:
         payload = decode_token(cookie)
         sub = payload.get("sub")
-        return str(sub) if sub is not None else None
+        if payload.get("user") and str(sub) == str(user.id) and user_session_is_valid(user, payload):
+            return str(sub)
+        return None
     except jwt.PyJWTError:
         return None
     except Exception as exc:
@@ -954,7 +1002,7 @@ async def invite_accept_page(request: Request, token: str):
                 },
             )
 
-        is_signed_in_as_user = _extract_cookie_user_id(request) == str(user.id)
+        is_signed_in_as_user = _extract_cookie_user_id(request, user) == str(user.id)
         has_password = bool(user.password_hash)
 
         return templates.TemplateResponse(
@@ -981,6 +1029,9 @@ async def invite_accept_submit(request: Request, token: str):
     form = await request.form()
     submitted_password = form.get("password", "")
 
+    # Bind the new session to the credentials checked below, as /login does, so a reset
+    # that commits while this request runs still signs it out.
+    authenticated_at = utc_now()
     try:
         async with get_session() as session:
             tok_stmt = (
@@ -1001,8 +1052,9 @@ async def invite_accept_submit(request: Request, token: str):
             if user is None or not user.is_active:
                 raise HTTPException(status_code=403, detail="Account is deactivated.")
 
-            is_signed_in_as_user = _extract_cookie_user_id(request) == str(user.id)
+            is_signed_in_as_user = _extract_cookie_user_id(request, user) == str(user.id)
             has_existing_password = bool(user.password_hash)
+            session_version = user_session_version(user)
 
             if has_existing_password and not user.email_verified:
                 raise HTTPException(
@@ -1110,7 +1162,10 @@ async def invite_accept_submit(request: Request, token: str):
         email=email,
         display_name=display_name,
         is_admin=is_admin,
+        issued_at=authenticated_at,
+        session_version=session_version,
     )
     response = safe_redirect("/workspace/")
-    set_auth_cookie(response, jwt_token)
+    set_auth_cookie(request, response, jwt_token)
+    set_admin_csrf_cookie(response, request, jwt_token)
     return response

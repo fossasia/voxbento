@@ -68,24 +68,33 @@ function initAiSettings() {
     const savedModel = root.dataset.initialTranslationModel || '';
     const localNote = document.querySelector('[data-local-translation-note]');
     let catalog = null;
+    let loads = 0;
 
     async function loadModels() {
+      const load = ++loads;
       const provider = transProvider.value;
       if (localNote) localNote.hidden = provider !== 'local';
       transModel.replaceChildren(new Option('Recommended for this service', ''));
       if (!provider) return;
       try {
+        // Only a list that loaded is kept, so a failed load tries again on the next change.
         if (!catalog) {
           const res = await fetch('/api/admin/providers/translation/models');
-          catalog = res.ok ? await res.json() : {};
+          if (res.ok) catalog = await res.json();
+          else console.error('Could not load translation models', res.status);
         }
       } catch (err) {
         console.error('Could not load translation models', err);
-        catalog = {};
       }
-      const models = [...(catalog[provider] || [])];
+      // The service may have changed while the list was loading; only the latest call fills the list.
+      if (load !== loads) return;
+      const listed = catalog?.[provider];
+      const models = [...(listed || [])];
       const keep = provider === savedProvider ? savedModel : '';
-      if (keep && !models.includes(keep)) models.unshift(keep);
+      // Cloud services accept any model name, but a self-hosted model must be on the server's list.
+      // If the list didn't load, keep the saved model and let the server check it on save.
+      const mustBeListed = provider === 'self_hosted' && Boolean(listed);
+      if (keep && !models.includes(keep) && !mustBeListed) models.unshift(keep);
       models.forEach((model) => transModel.append(new Option(model, model, false, model === keep)));
     }
 

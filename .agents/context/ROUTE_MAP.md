@@ -18,6 +18,7 @@
 | GET | `/login` | open | `login.html` | Redirects to `/account` or `?next=` if logged in |
 | POST | `/login` | open | `login.html` | Verifies bcrypt, sets `user_token` cookie |
 | GET | `/logout` | open | — | Deletes `user_token` cookie → `/` |
+| POST | `/auth/reset/{token}` | password-reset token | `reset_password.html` on error | Redeems token, changes password and advances the account session cutoff atomically; closes previous booth sockets after commit and sets a fresh `user_token` |
 | GET | `/account` | user | `account.html` | Account (#767): Profile (display name), Hosting events (Request access / Request sent / has access), Developer API (apply / pending / approved / rejected / suspended), Sign-in (change, set or remove password). Roles live on My events (`/workspace/`) |
 | POST | `/account/profile` | user + same-origin | — | Changes `display_name` (whitespace collapsed, 1–200 chars, no control characters) → `/account?success=profile_saved`, or `?error=display_name` |
 | POST | `/api/auth/set-password` | user | — | JSON `{password, current_password}`; `current_password` is required when the user already has a password (403 otherwise); min 8 chars |
@@ -36,15 +37,27 @@ account/email side effects (403 if rejected, 503 if unavailable). The optional
 widget and errors render in `register.html`; see `portal/registration_protection.py`
 and `docs/registration-protection.md`. Other routes are unaffected.
 
+User-token authentication checks the current active account and rejects JWTs
+issued at or before `users.sessions_valid_after`. Password reset advances that
+cutoff in the same transaction as the password change and token redemption.
+It also invalidates outstanding magic sign-in links. Password and magic-link
+sign-ins timestamp the credential read and bind the cutoff version, so an
+in-flight sign-in cannot outlive a concurrent recovery. The interpreter lobby
+and account-authenticated caption subscriptions enforce the same cutoff.
+Booth connections retain JWT issuance time for the session reaper, not their
+connection time. Hosting-invite password bypasses require a current user session;
+matching the JWT subject alone is insufficient. A valid invitation or listener-code
+credential remains usable alongside a revoked account cookie.
+
 ## Booth & Listener Pages
 
 | Method | Path | Auth | Template | Notes |
 |---|---|---|---|---|
 | GET | `/interpreter/{event_slug}/{language_code}` | session or user | `interpreter_booth.html` | **Preferred URL**; resolves Jitsi URL, relay WHEP, mediamtx path |
 | GET | `/interpreter/{booth_id}` | session or user | `interpreter_booth.html` | Legacy free-form booth ID; no event scope |
-| GET | `/listener/{event_slug}` | session or user | `listener-event.html` | Lists rooms/booths for event with WHEP URLs |
-| GET | `/overlay/{event_slug}/{room_id}/{language_code}` | join code or active user | `overlay.html` | Transparent OBS/vMix subtitle layer; booths, floor, and translation-only channels |
-| GET | `/overlay/{event_slug}/{room_id}/{language_code}/session` | join code or active user | JSON | Revalidates access/channel and issues a fresh caption token; no-store |
+| GET | `/listener/{event_slug}` | current user session or valid listener join code | `listener-event.html` | Lists rooms/booths for event with WHEP URLs; optional `room` and `lang` query params preselect a room and language (kept through the join form); revoked user cookies fall back to the join form |
+| GET | `/overlay/{event_slug}/{room_id}/{language_code}` | join code or current user session | `overlay.html` | Transparent OBS/vMix subtitle layer; booths, floor, and translation-only channels |
+| GET | `/overlay/{event_slug}/{room_id}/{language_code}/session` | join code or current user session | JSON | Revalidates access/channel and issues a fresh caption token; no-store |
 
 ---
 
@@ -64,13 +77,29 @@ and `docs/registration-protection.md`. Other routes are unaffected.
 
 ---
 
+## OAuth API v1 event provisioning
+
+`POST /api/v1/events/` requires `events:write` and current management access.
+An existing slug outside the token's event scope returns 403 unless the active
+user currently owns that event, so a client can retry an event it created.
+Removed or demoted public-client owners and inactive accounts get 403 before any
+event or membership changes. New-event creation checks and locks
+the grant's original event; a deleted authorizing event returns 404. Active Admins
+and trusted confidential clients retain their management access.
+
+`DELETE /api/v1/events/{event_slug}/rooms/{eventyay_room_id}` requires
+`rooms:write` and current event-management access. It uses the shared
+room-deletion helper to clear self-relay and incoming relay references and delete
+dependent data. Publishing booths return 409; missing or foreign events/rooms
+return 404; successful deletion returns 204.
+
 ## WebSocket Endpoints
 
 | Path | Auth | Protocol |
 |---|---|---|
 | `/ws/booth/{booth_id}` | optional JWT via `?token=` + cookies (`session_token` or `user_token`) | See WebSocket Protocol in `REPOSITORY_CONTEXT.md` |
-| `/ws/captions/{booth_id}` | optional JWT via `?token=` (always validated); listener token, join code (cookie or `?code=`), or user session required when event has `listener_join_code`; events without a join code retain public caption access with an anonymous connection cap | Receives `booth:state` (listener-safe live/lock status, sent on connect and on change), `caption`, and `translated_caption` messages; listener captions feed. Supports `{event_slug}-{room_id}-{language_code}` (`floor-{room_id}` allowed only in unauthenticated dev) |
-| `/ws/tts/{room_id}/{language_code}/{booth_id}` | pre-authorized (JWT query param, session token, or listener join code cookie; cookie codes spend the shared join-code budget) | Receives framed binary bundle messages (1-byte version `0x01`, 4-byte big-endian header length `L`, `L`-byte UTF-8 JSON header, optional 24 kHz 16-bit mono PCM payload) |
+| `/ws/captions/{booth_id}` | optional JWT via `?token=` (always validated; user tokens must belong to an active account issued after its session cutoff); listener token, join code (cookie or `?code=`), or current user session required when event has `listener_join_code`; events without a join code retain public caption access with an anonymous connection cap | Receives `booth:state` (listener-safe live/lock status, sent on connect and on change), `caption`, and `translated_caption` messages; listener captions feed. Supports `{event_slug}-{room_id}-{language_code}` (`floor-{room_id}` allowed only in unauthenticated dev). Closes 1011 when the session lookup fails so clients can retry |
+| `/ws/tts/{room_id}/{language_code}/{booth_id}` | JWT query param, session/user token, or listener join code cookie (a cookie code spends the shared join-code budget when connecting); current account state and session cutoff checked for user tokens, credentials rechecked at most every 5 s while bundles are sent (a listener-code recheck only compares the code and spends no budget); a failed DB check withholds the bundle | Receives framed binary bundle messages (1-byte version `0x01`, 4-byte big-endian header length `L`, `L`-byte UTF-8 JSON header, optional 24 kHz 16-bit mono PCM payload) |
 
 ---
 
@@ -101,6 +130,8 @@ with `?error=invalid_role&role=…` and the page explains why.
 | POST | `/admin/events/` | — | Creates event (slug + display_name) |
 | GET | `/admin/events/{event_id}/` | `admin/event_detail.html` | Event + rooms + booths |
 | GET | `/admin/events/{event_id}/caption-overlays/` | `admin/caption_overlays.html` | Owner-only caption preview, appearance and OBS/vMix URLs; canonical `/workspace` mapping; no-store; linked from event quick actions |
+| GET | `/admin/events/{event_id}/attendance/` | `admin/attendance.html` | Owner-only interpreter attendance (#1215): join/leave, time in booth, interpreting time; `day`/`booth` filters, days in the `vb_tz` cookie's time zone; canonical `/workspace` mapping; no-store |
+| GET | `/admin/events/{event_id}/attendance/export` | CSV | Owner-only per-visit CSV (UTC) honouring the same filters; formula cells neutralized |
 | GET | `/admin/events/{event_id}/api-settings/` | `admin/api_settings.html` | View encrypted API keys |
 | POST | `/admin/events/{event_id}/api-settings` | — | Update transcription API keys (Fernet-encrypted) |
 | POST | `/admin/events/{event_id}/delete` | — | Cascade-deletes event |
