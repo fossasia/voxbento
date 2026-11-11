@@ -10,23 +10,31 @@ function loadCopyHandler({ clipboard, execCommand }) {
   let nextTimerId = 0;
   const activeTimers = new Map();
   const appendedElements = [];
-  const wrapperClasses = new Set();
-  const tooltipClasses = new Set();
-  const tooltip = {
-    textContent: "Copy to clipboard",
-    classList: {
-      add: (name) => tooltipClasses.add(name),
-      remove: (name) => tooltipClasses.delete(name),
-    },
-  };
-  const wrapper = {
-    dataset: { copyText: "secret-value" },
-    classList: {
-      add: (name) => wrapperClasses.add(name),
-      remove: (name) => wrapperClasses.delete(name),
-    },
-    querySelector: () => tooltip,
-  };
+  const wrappers = [];
+  function createWrapper(copyText) {
+    const wrapperClasses = new Set();
+    const tooltipClasses = new Set();
+    const tooltip = {
+      textContent: "Copy to clipboard",
+      classList: {
+        add: (name) => tooltipClasses.add(name),
+        remove: (name) => tooltipClasses.delete(name),
+      },
+    };
+    const wrapper = {
+      dataset: { copyText },
+      classList: {
+        add: (name) => wrapperClasses.add(name),
+        remove: (name) => wrapperClasses.delete(name),
+      },
+      querySelector: () => tooltip,
+      wrapperClasses,
+      tooltip,
+    };
+    wrappers.push(wrapper);
+    return wrapper;
+  }
+  const wrapper = createWrapper("secret-value");
   let clickHandler;
   const document = {
     addEventListener(type, handler) {
@@ -56,7 +64,12 @@ function loadCopyHandler({ clipboard, execCommand }) {
   const context = {
     document,
     navigator: clipboard === undefined ? {} : { clipboard },
-    console: { error() {} },
+    console: {
+      errors: [],
+      error(...args) {
+        this.errors.push(args);
+      },
+    },
     setTimeout(callback, delay) {
       const timer = { id: ++nextTimerId, callback, delay, cleared: false };
       timers.push(timer);
@@ -78,13 +91,24 @@ function loadCopyHandler({ clipboard, execCommand }) {
   vm.runInNewContext(source, context);
 
   return {
-    click() {
-      return clickHandler({ target: { closest: () => wrapper } });
+    click(target = wrapper) {
+      return clickHandler({
+        target: {
+          closest(selector) {
+            return selector === ".copy-wrapper[data-copy-text]" &&
+              wrappers.includes(target)
+              ? target
+              : null;
+          },
+        },
+      });
     },
-    wrapperClasses,
-    tooltip,
+    createWrapper,
+    wrapperClasses: wrapper.wrapperClasses,
+    tooltip: wrapper.tooltip,
     timers,
     appendedElements,
+    errors: context.console.errors,
     runTimer(timer) {
       timer.callback();
     },
@@ -145,53 +169,91 @@ async function main() {
     clipboard: undefined,
     execCommand: () => false,
   });
+  assert.equal(failedCopy.click({}), undefined);
   await failedCopy.click();
   assert.ok(failedCopy.wrapperClasses.has("copy-failed"));
   assert.equal(failedCopy.tooltip.textContent, "Copy failed");
 
-  let resolveTimedOutWrite;
-  const timedOutCopy = loadCopyHandler({
+  const unexpectedClipboardError = loadCopyHandler({
     clipboard: {
-      writeText: () =>
-        new Promise((resolve) => {
-          resolveTimedOutWrite = resolve;
-        }),
+      get writeText() {
+        throw new Error("clipboard access failed unexpectedly");
+      },
     },
     execCommand: () => false,
   });
-  const timedOutAttempt = timedOutCopy.click();
-  const clipboardTimer = timedOutCopy.timers.find(
-    (timer) => timer.delay === 2000,
+  await unexpectedClipboardError.click();
+  assert.ok(unexpectedClipboardError.wrapperClasses.has("copy-failed"));
+  assert.equal(
+    unexpectedClipboardError.tooltip.textContent,
+    "Copy failed",
   );
-  assert.ok(clipboardTimer);
-  timedOutCopy.runTimer(clipboardTimer);
-  await timedOutAttempt;
-  assert.ok(timedOutCopy.wrapperClasses.has("copy-failed"));
-  resolveTimedOutWrite();
-  await Promise.resolve();
-  assert.ok(timedOutCopy.wrapperClasses.has("copy-failed"));
+  assert.ok(
+    unexpectedClipboardError.errors.some((args) =>
+      args[0].includes("Unexpected error while copying developer credential"),
+    ),
+  );
 
-  let resolveOlderWrite;
-  let execCommandCalls = 0;
-  const latestAttemptWins = loadCopyHandler({
+  let resolveFirstWrite;
+  const clipboardWrites = [];
+  let clipboardValue = "";
+  const serializedCopy = loadCopyHandler({
     clipboard: {
-      writeText: () =>
-        new Promise((resolve) => {
-          resolveOlderWrite = resolve;
-        }),
+      writeText(text) {
+        clipboardWrites.push(text);
+        if (text === "secret-value") {
+          return new Promise((resolve) => {
+            resolveFirstWrite = () => {
+              clipboardValue = text;
+              resolve();
+            };
+          });
+        }
+        clipboardValue = text;
+        return Promise.resolve();
+      },
     },
-    execCommand: () => {
-      execCommandCalls += 1;
-      return execCommandCalls > 1;
-    },
+    execCommand: () => false,
   });
-  const olderAttempt = latestAttemptWins.click();
-  await Promise.resolve();
-  await latestAttemptWins.click();
-  assert.ok(latestAttemptWins.wrapperClasses.has("copied"));
-  resolveOlderWrite();
-  await olderAttempt;
-  assert.ok(latestAttemptWins.wrapperClasses.has("copied"));
+  const firstWrapper = serializedCopy.createWrapper("secret-value");
+  const secondWrapper = serializedCopy.createWrapper("new-secret");
+  const firstWrite = serializedCopy.click(firstWrapper);
+  const secondWrite = serializedCopy.click(secondWrapper);
+  assert.deepEqual(clipboardWrites, ["secret-value"]);
+  assert.equal(secondWrapper.tooltip.textContent, "Copying…");
+  assert.equal(secondWrapper.wrapperClasses.has("copy-failed"), false);
+  resolveFirstWrite();
+  await firstWrite;
+  await secondWrite;
+  assert.deepEqual(clipboardWrites, ["secret-value", "new-secret"]);
+  assert.equal(clipboardValue, "new-secret");
+  assert.ok(firstWrapper.wrapperClasses.has("copied"));
+  assert.ok(secondWrapper.wrapperClasses.has("copied"));
+
+  let resolveRetry;
+  let retryWriteCount = 0;
+  const retryCopy = loadCopyHandler({
+    clipboard: {
+      writeText() {
+        retryWriteCount += 1;
+        if (retryWriteCount === 1) {
+          return Promise.resolve();
+        }
+        return new Promise((resolve) => {
+          resolveRetry = resolve;
+        });
+      },
+    },
+    execCommand: () => false,
+  });
+  await retryCopy.click();
+  assert.equal(retryCopy.tooltip.textContent, "Copied!");
+  const retry = retryCopy.click();
+  assert.equal(retryCopy.tooltip.textContent, "Copying…");
+  assert.equal(retryCopy.wrapperClasses.has("copied"), false);
+  resolveRetry();
+  await retry;
+  assert.equal(retryCopy.tooltip.textContent, "Copied!");
 
   const repeatedCopy = loadCopyHandler({ execCommand: () => true });
   await repeatedCopy.click();

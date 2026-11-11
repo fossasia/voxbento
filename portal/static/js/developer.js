@@ -3,13 +3,12 @@
  * Loaded as an ES module — no jQuery, no inline scripts.
  */
 
-const CLIPBOARD_TIMEOUT_MS = 2000;
 const COPY_FEEDBACK_MS = 2000;
 const copyFeedbackByElement = new WeakMap();
+let clipboardWriteQueue = null;
 
-async function copyText(text) {
-  // Try synchronous fallback first (must be within user gesture)
-  if (typeof document.execCommand === 'function') {
+async function copyTextNow(text, allowSynchronousFallback) {
+  if (allowSynchronousFallback && typeof document.execCommand === 'function') {
     let textarea;
     try {
       textarea = document.createElement('textarea');
@@ -32,37 +31,37 @@ async function copyText(text) {
 
   // Fallback failed or unavailable, try async Clipboard API
   if (navigator.clipboard?.writeText) {
-    let timeoutId;
-    let timedOut = false;
     try {
-      const copied = await Promise.race([
-        navigator.clipboard.writeText(text).then(
-          () => true,
-          (error) => {
-            console.error('Clipboard API failed:', error);
-            return false;
-          },
-        ),
-        new Promise((resolve) => {
-          timeoutId = setTimeout(() => {
-            timedOut = true;
-            resolve(false);
-          }, CLIPBOARD_TIMEOUT_MS);
-        }),
-      ]);
-      if (timedOut) {
-        console.error('Clipboard API timed out');
-      }
-      return copied;
+      await navigator.clipboard.writeText(text);
+      return true;
     } catch (error) {
       console.error('Clipboard API failed:', error);
       return false;
-    } finally {
-      clearTimeout(timeoutId);
     }
   }
 
   return false;
+}
+
+function copyText(text) {
+  // Only an operation started immediately can use execCommand in the click gesture.
+  const allowSynchronousFallback = clipboardWriteQueue === null;
+  const operation = clipboardWriteQueue
+    ? clipboardWriteQueue.then(
+        () => copyTextNow(text, allowSynchronousFallback),
+        () => copyTextNow(text, allowSynchronousFallback),
+      )
+    : copyTextNow(text, allowSynchronousFallback);
+  clipboardWriteQueue = operation;
+
+  const clearQueue = () => {
+    if (clipboardWriteQueue === operation) {
+      clipboardWriteQueue = null;
+    }
+  };
+  operation.then(clearQueue, clearQueue);
+
+  return operation;
 }
 
 /**
@@ -70,50 +69,73 @@ async function copyText(text) {
  * Feedback resets after 2 seconds.
  */
 async function copyToClipboard(element, text) {
-  const previousState = copyFeedbackByElement.get(element);
-  if (previousState?.timerId) {
-    clearTimeout(previousState.timerId);
-  }
+  let state;
+  let tooltip;
+  try {
+    const previousState = copyFeedbackByElement.get(element);
+    if (previousState?.timerId) {
+      clearTimeout(previousState.timerId);
+    }
 
-  const state = { timerId: null };
-  copyFeedbackByElement.set(element, state);
-  element.classList.remove('copied', 'copy-failed');
-
-  const copied = await copyText(text);
-  if (copyFeedbackByElement.get(element) !== state) {
-    return;
-  }
-
-  const tooltip = element.querySelector('.copy-tooltip');
-
-  element.classList.add(copied ? 'copied' : 'copy-failed');
-
-  if (tooltip) {
-    tooltip.textContent = copied ? 'Copied!' : 'Copy failed';
-    if (copied) {
-      tooltip.classList.add('copied-tooltip');
-    } else {
+    state = { timerId: null };
+    copyFeedbackByElement.set(element, state);
+    element.classList.remove('copied', 'copy-failed');
+    tooltip = element.querySelector('.copy-tooltip');
+    if (tooltip) {
+      tooltip.textContent = 'Copying…';
       tooltip.classList.remove('copied-tooltip');
     }
-  }
 
-  if (!copied) {
-    console.error('Failed to copy text using available clipboard methods');
-  }
-
-  state.timerId = setTimeout(() => {
+    const copied = await copyText(text);
     if (copyFeedbackByElement.get(element) !== state) {
       return;
     }
 
-    element.classList.remove('copied', 'copy-failed');
+    element.classList.add(copied ? 'copied' : 'copy-failed');
 
     if (tooltip) {
-      tooltip.textContent = 'Copy to clipboard';
-      tooltip.classList.remove('copied-tooltip');
+      tooltip.textContent = copied ? 'Copied!' : 'Copy failed';
+      if (copied) {
+        tooltip.classList.add('copied-tooltip');
+      } else {
+        tooltip.classList.remove('copied-tooltip');
+      }
     }
-    copyFeedbackByElement.delete(element);
-  }, COPY_FEEDBACK_MS);
+
+    if (!copied) {
+      console.error('Failed to copy text using available clipboard methods');
+    }
+
+    state.timerId = setTimeout(() => {
+      if (copyFeedbackByElement.get(element) !== state) {
+        return;
+      }
+
+      element.classList.remove('copied', 'copy-failed');
+
+      if (tooltip) {
+        tooltip.textContent = 'Copy to clipboard';
+        tooltip.classList.remove('copied-tooltip');
+      }
+      copyFeedbackByElement.delete(element);
+    }, COPY_FEEDBACK_MS);
+  } catch (error) {
+    console.error('Unexpected error while copying developer credential:', error);
+    if (state && copyFeedbackByElement.get(element) !== state) {
+      return;
+    }
+
+    try {
+      element.classList.remove('copied');
+      element.classList.add('copy-failed');
+      if (tooltip) {
+        tooltip.textContent = 'Copy failed';
+        tooltip.classList.remove('copied-tooltip');
+      }
+    } catch (feedbackError) {
+      console.error('Could not display clipboard failure feedback:', feedbackError);
+    }
+  }
 }
 
 /**
