@@ -1,9 +1,19 @@
 from __future__ import annotations
 
+import ipaddress
+import re
 from urllib.parse import urlparse
 
 from pydantic import Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+
+def _is_ip(host: str) -> bool:
+    try:
+        ipaddress.ip_address(host)
+    except ValueError:
+        return False
+    return True
 
 
 class Settings(BaseSettings):
@@ -42,11 +52,18 @@ class Settings(BaseSettings):
     program_sender_session_ttl_secs: int = 150  # Browser sender publish window; long enough to negotiate, short enough to expire.
     # RTMPS ingest with YouTube relay (#749). Off unless the operator deploys docker-compose.relay.yml.
     program_relay_enabled: bool = False
+    # RTMPS contribution ingest without relaying (VoxBento as an extra destination).
+    # Relay deployments imply it; see rtmps_ingest_enabled.
+    program_rtmps_enabled: bool = False
     program_rtmps_public_base: str = ""  # e.g. rtmps://voxbento.com:1936 (MediaMTX RTMPS listener)
     program_relay_base: str = "http://program-relay:8090"
     program_relay_control_secret: str = ""
     program_relay_max: int = 4
     program_relay_allowed_hosts: str = "a.rtmps.youtube.com,b.rtmps.youtube.com"
+
+    @property
+    def rtmps_ingest_enabled(self) -> bool:
+        return self.program_ingest_enabled and (self.program_rtmps_enabled or self.program_relay_enabled)
 
     @property
     def effective_jitsi_base_url(self) -> str:
@@ -132,6 +149,13 @@ class Settings(BaseSettings):
     # Transcription Settings
     nvidia_function_id: str = ""
 
+    # Self-hosted translation: an OpenAI-compatible server (Ollama, llama.cpp, vLLM) run by
+    # the operator. Only the server sets this URL, so event owners can't aim requests at
+    # internal addresses. Models is a comma-separated allow list; the first is the default.
+    self_hosted_llm_base_url: str = ""
+    self_hosted_llm_api_key: str = Field(default="", repr=False)
+    self_hosted_llm_models: str = ""
+
     # Supertonic synthesis quality/speed trade-off. Fewer diffusion steps =
     # faster (lower real-time factor) at a small quality cost. 4 keeps CPU
     # synthesis at/below real-time so audio never backs up; 8 is reference
@@ -147,6 +171,7 @@ class Settings(BaseSettings):
     smtp_user: str = ""
     smtp_password: str = ""
     smtp_from_email: str = "noreply@voxbento.com"
+    smtp_from_name: str = "VoxBento"
     # Team inbox notified of each new hosting access request.
     hosting_requests_email: str = "voxbento.dev@gmail.com"
     public_base_url: str = "https://voxbento.com"
@@ -168,6 +193,55 @@ class Settings(BaseSettings):
         if parsed.query or parsed.fragment:
             raise ValueError("public_base_url must not include a query string or fragment")
         return value
+
+    @field_validator("self_hosted_llm_base_url")
+    @classmethod
+    def validate_self_hosted_llm_base_url(cls, value: str) -> str:
+        """Accept only a plain http(s) base URL; the key belongs in SELF_HOSTED_LLM_API_KEY."""
+        value = value.strip().rstrip("/")
+        if not value:
+            return ""
+        parsed = urlparse(value)
+        if parsed.scheme not in {"http", "https"} or not parsed.hostname:
+            raise ValueError("self_hosted_llm_base_url must be an http(s) URL such as http://localhost:11434/v1")
+        if not _is_ip(parsed.hostname) and not re.fullmatch(r"[A-Za-z0-9._-]+", parsed.hostname):
+            raise ValueError("self_hosted_llm_base_url has an invalid host name")
+        # Reading the port raises ValueError for one that isn't a number in 0-65535.
+        if parsed.port == 0:
+            raise ValueError("self_hosted_llm_base_url port must be between 1 and 65535")
+        if parsed.username or parsed.password or parsed.query or parsed.fragment:
+            raise ValueError("self_hosted_llm_base_url must not include credentials, a query string or a fragment")
+        if parsed.path.endswith("/chat/completions"):
+            raise ValueError("self_hosted_llm_base_url is the base URL; leave out /chat/completions")
+        return value
+
+    @field_validator("self_hosted_llm_models")
+    @classmethod
+    def validate_self_hosted_llm_models(cls, value: str) -> str:
+        """Model names are stored on rooms and booths, whose columns hold 100 characters."""
+        if any(len(m.strip()) > 100 for m in value.split(",")):
+            raise ValueError("each SELF_HOSTED_LLM_MODELS name must be 100 characters or fewer")
+        return value
+
+    @property
+    def self_hosted_llm_model_list(self) -> tuple[str, ...]:
+        """The allowed self-hosted models, in the order the operator listed them."""
+        return tuple(dict.fromkeys(m.strip() for m in self.self_hosted_llm_models.split(",") if m.strip()))
+
+    @property
+    def self_hosted_llm_enabled(self) -> bool:
+        """Self-hosted translation is offered only with both a server URL and at least one model."""
+        return bool(self.self_hosted_llm_base_url and self.self_hosted_llm_model_list)
+
+    def self_hosted_llm_allows(self, model: str | None) -> bool:
+        """Whether rooms and booths may use ``model`` on the self-hosted server right now."""
+        return self.self_hosted_llm_enabled and model in self.self_hosted_llm_model_list
+
+    def self_hosted_llm_model_or_default(self, model: str | None) -> str | None:
+        """``model`` when allowed, else the default (first listed) model, else None when not configured."""
+        if self.self_hosted_llm_allows(model):
+            return model
+        return self.self_hosted_llm_model_list[0] if self.self_hosted_llm_enabled else None
 
 
 settings = Settings()
