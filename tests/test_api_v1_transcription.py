@@ -297,6 +297,37 @@ async def test_export_returns_empty_when_no_translations_for_target_lang(event):
 
 
 @pytest.mark.anyio
+async def test_export_normalizes_target_lang_case(real_db):
+    """target_lang is matched case-insensitively, like the booth language code in the path."""
+    event = await create_event(real_db, slug=EVENT_SLUG, display_name="PyCon 2026")
+    room = await create_room(real_db, event_id=event.id, display_name="Hall A")
+    await create_booth(real_db, event_id=event.id, room_id=room.id, language_code="en", language_name="English")
+    segment = TranscriptSegment(room_id=room.id, language_code="en", text="Hello")
+    real_db.add(segment)
+    await real_db.flush()
+    real_db.add(TranscriptTranslation(segment_id=segment.id, language_code="es", text="Hola"))
+    await real_db.flush()
+
+    response = await api_v1.export_transcript(EVENT_SLUG, room.id, "EN", target_lang="ES", db=real_db, token=object())
+
+    assert response["target_lang"] == "es"
+    assert [s["text"] for s in response["segments"]] == ["Hola"]
+
+
+@pytest.mark.anyio
+async def test_export_rejects_invalid_target_lang(real_db):
+    """An unknown target_lang is a 400, as for the booth language code, not an empty export."""
+    event = await create_event(real_db, slug=EVENT_SLUG, display_name="PyCon 2026")
+    room = await create_room(real_db, event_id=event.id, display_name="Hall A")
+    await create_booth(real_db, event_id=event.id, room_id=room.id, language_code="en", language_name="English")
+
+    with pytest.raises(api_v1.HTTPException) as exc_info:
+        await api_v1.export_transcript(EVENT_SLUG, room.id, "en", target_lang="zz", db=real_db, token=object())
+
+    assert exc_info.value.status_code == 400
+
+
+@pytest.mark.anyio
 async def test_export_segments_ordered_by_created_at(real_db):
     """Segments and translations are ordered chronologically and tie-broken by id."""
     event = await create_event(real_db, slug=EVENT_SLUG, display_name="PyCon 2026")

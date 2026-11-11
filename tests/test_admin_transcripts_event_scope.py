@@ -86,3 +86,30 @@ async def test_transcripts_page_loads_external_module_and_exposes_ids(client):
     assert f'data-room-id="{room_a}"' in r.text
     assert 'onclick="fetchTranscripts()"' not in r.text
     assert "function fetchTranscripts" not in r.text
+
+
+@pytest.mark.anyio
+async def test_api_transcripts_normalizes_language_codes(client):
+    """Language codes are matched case-insensitively and validated, as in the API v1 export."""
+    from portal.database import get_session
+    from portal.models import TranscriptSegment, TranscriptTranslation
+
+    token, ev_a, room_a, _room_b = await _setup()
+    client.cookies.set("user_token", token)
+    async with get_session() as s:
+        segment = TranscriptSegment(room_id=room_a, language_code="en", text="Hello")
+        s.add(segment)
+        await s.flush()
+        s.add(TranscriptTranslation(segment_id=segment.id, language_code="es", text="Hola"))
+        await s.commit()
+
+    r = await client.get(f"/api/workspace/events/{ev_a}/rooms/{room_a}/transcripts/EN")
+    assert r.status_code == 200
+    assert [t["text"] for t in r.json()] == ["Hello"]
+
+    r = await client.get(f"/api/workspace/events/{ev_a}/rooms/{room_a}/transcripts/en?target_lang=ES")
+    assert r.status_code == 200
+    assert [t["text"] for t in r.json()] == ["Hola"]
+
+    r = await client.get(f"/api/workspace/events/{ev_a}/rooms/{room_a}/transcripts/en?target_lang=zz")
+    assert r.status_code == 400

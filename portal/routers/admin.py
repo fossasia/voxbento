@@ -3773,6 +3773,13 @@ async def api_admin_get_transcripts(
 
     from portal.database import get_session
 
+    # Stored codes are lowercase, as in the API v1 export.
+    try:
+        language_code = validate_language_code(language_code)
+        target_lang = validate_language_code(target_lang) if target_lang else None
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
     async with get_session() as session:
         # require_owner_or_coordinator only checks access to event_id, so the room must belong to it.
         room = await get_room_by_id(session, room_id)

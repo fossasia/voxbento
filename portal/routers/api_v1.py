@@ -1109,6 +1109,8 @@ async def export_transcript(
     room = await _verify_token_rbac(db, token, event, room_id, lock_event=True)
     target_room_id = _extract_room_id(room, room_id)
     language_code = _validate_lang(language_code)
+    if target_lang:
+        target_lang = _validate_lang(target_lang)
 
     # Validate that the booth exists within this event/room
     result = await db.execute(
