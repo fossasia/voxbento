@@ -300,7 +300,8 @@ if (root && form) {
     reviewFallback.hidden = true;
 
     warnings.replaceChildren();
-    boothCodes.forEach((code) => {
+    const selected = new Set(chosenCodes());
+    boothCodes.filter((code) => !selected.has(code)).forEach((code) => {
       const li = document.createElement('li');
       li.textContent = `${nameOf(code)} remains available as a configured audio source.`;
       warnings.append(li);

@@ -949,6 +949,7 @@ def _room_setup_response(
     from_setup: bool = False,
     status_code: int = status.HTTP_200_OK,
 ) -> Response:
+    """Render the room setup form with its current plan and validation state."""
     chosen = [code for code, _ in plan.languages]
     chip_codes = list(dict.fromkeys([code for code, _ in ROOM_COMMON_LANGUAGES] + chosen))
     return templates.TemplateResponse(
@@ -1034,6 +1035,7 @@ async def admin_room_setup_create(request: Request, event_id: int):
 
 @router.get("/admin/events/{event_id}/rooms/{room_id}/setup", dependencies=[Depends(require_event_owner)])
 async def admin_room_setup_edit(request: Request, event_id: int, room_id: int):
+    """Render an existing room's setup form."""
     source = request.query_params.get("from")
     admin_flags = await get_access_flags(request, event_id=event_id, room_id=room_id)
     async with get_session() as session:
@@ -1057,6 +1059,7 @@ async def admin_room_setup_edit(request: Request, event_id: int, room_id: int):
 
 @router.post("/admin/events/{event_id}/rooms/{room_id}/setup", dependencies=[Depends(require_event_owner), Depends(require_admin_csrf)])
 async def admin_room_setup_save(request: Request, event_id: int, room_id: int):
+    """Validate and save an existing room's setup without deleting its booths."""
     if not verify_same_origin(request):
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Invalid request origin.")
     form = await request.form()

@@ -15,7 +15,6 @@ from portal.auth import (
     create_listener_token,
     decode_token,
     get_current_user,
-    is_cookie_secure,
     is_listener_token,
 )
 from portal.booth_identity import make_booth_id
@@ -31,6 +30,7 @@ from portal.database import (
 from portal.globals import _JS_CACHE_BUST, asset_version_context
 from portal.join_code_limit import JoinCodeThrottled, verify_join_code
 from portal.overlay_channels import overlay_channels
+from portal.security_headers import forwarded_https
 from portal.utils import _ensure_mediamtx_path
 
 # Allowlists for embed theming params — no free-text values accepted.
@@ -59,7 +59,7 @@ def _set_listener_code_cookie(request: Request, response: Response, event_slug: 
         f"listener_code_{event_slug}",
         code,
         httponly=True,
-        secure=is_cookie_secure(request),
+        secure=request.url.scheme == "https" or forwarded_https(request.headers),
         samesite="lax",
         max_age=31536000,
     )
