@@ -182,6 +182,25 @@ def test_redaction_filter_never_breaks_placeholder_interpolation():
     assert "eyJhbGciOiJIUzI1NiJ9" not in message
 
 
+def test_a_non_string_argument_is_left_intact_so_repr_keeps_its_type():
+    """logger.error("failed: %r", exc) must still say which exception it was.
+
+    Converting every non-string argument to str() before formatting turned
+    ConnectError('refused') into the bare 'refused'.
+    """
+    record = _record("failed: %r", (ValueError("bad input"),))
+    RedactionFilter().filter(record)
+    assert record.getMessage() == "failed: ValueError('bad input')"
+
+
+@pytest.mark.parametrize("spec", ["%s", "%r"])
+def test_a_non_string_argument_that_carries_a_secret_is_still_redacted(spec):
+    record = _record(f"failed: {spec}", (ValueError("token=abc12345xyz"),))
+    RedactionFilter().filter(record)
+    assert "abc12345xyz" not in record.getMessage()
+    assert "[REDACTED]" in record.getMessage()
+
+
 @pytest.mark.parametrize("formatter", [JsonFormatter(), TextFormatter()])
 def test_formatter_redacts_a_secret_formed_by_interpolation(formatter):
     # "token=%s" keeps its placeholder through the filter, so the secret only

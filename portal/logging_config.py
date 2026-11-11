@@ -129,7 +129,13 @@ def _redact_structure(value: object, *, name: str = "", _depth: int = 0, _seen: 
             return {k: _redact_structure(v, name=str(k), _depth=_depth + 1, _seen=seen) for k, v in value.items()}
         return [_redact_structure(v, _depth=_depth + 1, _seen=seen) for v in value]
 
-    return redact(str(value))
+    # Any other object (an exception, a model) is kept as it is when neither its
+    # str() nor its repr() carries anything to redact, so a "%r" still shows the
+    # type: ConnectError('refused') rather than the bare 'refused'.
+    text, shown = str(value), repr(value)
+    if redact(text) == text and redact(shown) == shown:
+        return value
+    return redact(text)
 
 
 def _redact_format_string(msg: str) -> str:
