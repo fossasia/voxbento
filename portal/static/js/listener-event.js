@@ -119,11 +119,14 @@ function resetCaptions() {
 }
 
 // Writes "<label> text" into a caption line; text stays untrusted (textContent only).
-function fillCaptionLine(div, langName, text) {
+function fillCaptionLine(div, langName, text, languageCode) {
   div.innerHTML =
     '<span class="lang-label"></span><span class="untrusted-text"></span>';
   div.querySelector(".lang-label").textContent = langName;
-  div.querySelector(".untrusted-text").textContent = text;
+  const captionText = div.querySelector(".untrusted-text");
+  captionText.setAttribute("dir", "auto");
+  captionText.setAttribute("lang", languageCode);
+  captionText.textContent = text;
 }
 
 applyCaptionSize();
@@ -559,6 +562,7 @@ function renderItem(data) {
           : null;
         var srcLangOpt = languageSelect.options[languageSelect.selectedIndex];
         var srcLangName = srcLangOpt ? srcLangOpt.text : "Source";
+        var srcLangCode = srcLangOpt?.dataset.captionLanguage || "";
 
         if (!existingBlock) {
           var block = document.createElement("div");
@@ -571,7 +575,7 @@ function renderItem(data) {
           var srcDiv = document.createElement("div");
           srcDiv.id = "src-" + data.segment_id;
           srcDiv.className = "caption-src-text";
-          fillCaptionLine(srcDiv, srcLangName, data.text);
+          fillCaptionLine(srcDiv, srcLangName, data.text, srcLangCode);
 
           if (mode === "translated") {
             srcDiv.classList.add("listener-hidden");
@@ -583,7 +587,7 @@ function renderItem(data) {
             historyBox.removeChild(historyBox.firstChild);
         } else {
           var srcDiv = existingBlock.querySelector(".caption-src-text");
-          if (srcDiv) fillCaptionLine(srcDiv, srcLangName, data.text);
+          if (srcDiv) fillCaptionLine(srcDiv, srcLangName, data.text, srcLangCode);
         }
       }
       if (data.status === "final") {
@@ -598,10 +602,11 @@ function renderItem(data) {
       var tgtLangOpt =
         translationLangSelect.options[translationLangSelect.selectedIndex];
       var tgtLangName = tgtLangOpt ? tgtLangOpt.text : "Translation";
+      var tgtLangCode = data.text_language_code ?? data.language_code;
 
       var tDiv = document.createElement("div");
       tDiv.className = "translation-text caption-tgt-text";
-      fillCaptionLine(tDiv, tgtLangName, data.text);
+      fillCaptionLine(tDiv, tgtLangName, data.text, tgtLangCode);
 
       if (mode === "original") {
         tDiv.classList.add("listener-hidden");
@@ -613,7 +618,7 @@ function renderItem(data) {
       if (block) {
         var existingTDiv = block.querySelector(".translation-text");
         if (existingTDiv) {
-          fillCaptionLine(existingTDiv, tgtLangName, data.text);
+          fillCaptionLine(existingTDiv, tgtLangName, data.text, tgtLangCode);
         } else {
           block.appendChild(tDiv);
           applyCaptionMode();
@@ -705,6 +710,7 @@ function pumpSegmentQueue() {
       var fakeData = {
         type: "translation",
         language_code: translationLangSelect.value,
+        text_language_code: nextSeg.translation ? translationLangSelect.value : "en",
         text: tText,
         segment_id: "seq-" + expectedSeq,
       };
@@ -998,9 +1004,11 @@ roomSelect.addEventListener("change", function () {
     if (b.language_code === "floor") {
       opt.dataset.boothId = eventSlug + "-" + roomId + "-floor";
       opt.dataset.languageCode = "floor";
+      opt.dataset.captionLanguage = b.caption_language_code || "";
     } else {
       opt.dataset.boothId = eventSlug + "-" + roomId + "-" + b.language_code;
       opt.dataset.languageCode = b.language_code;
+      opt.dataset.captionLanguage = b.language_code;
     }
     opt.dataset.boothObjId = b.id;
     languageSelect.appendChild(opt);

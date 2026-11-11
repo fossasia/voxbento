@@ -267,7 +267,7 @@ listenerData.textContent = JSON.stringify({
   shareUrl: 'https://example.test/listener/demo',
   rooms: [{ id: 1, floor_tts_enabled: false }],
   booths: [
-    { id: 'floor_1', room_id: 1, language_code: 'floor', language_name: 'Floor Audio', whep_url: 'http://mtx/floor/whep', audio_delay_ms: 0 },
+    { id: 'floor_1', room_id: 1, language_code: 'floor', caption_language_code: 'en', language_name: 'Floor Audio', whep_url: 'http://mtx/floor/whep', audio_delay_ms: 0 },
     { id: 2, room_id: 1, language_code: 'es', language_name: 'Spanish', whep_url: 'http://mtx/es/whep', audio_delay_ms: 0 },
   ],
 });
@@ -465,10 +465,17 @@ async function run() {
   assert(captionsBox.scrollTop === readingPosition, 'captions stop following beyond the 40px threshold');
 
   const translationSelect = document.getElementById('translation-lang-select');
-  translationSelect.innerHTML = '<option value="fr">French</option>';
-  const translation = { type: 'translated_caption', language_code: 'fr', seq: 44, text: 'Ligne 44' };
+  translationSelect.innerHTML = '<option value="ar">Arabic</option>';
+  const translation = { type: 'translated_caption', language_code: 'ar', seq: 44, text: 'مرحبا (VoxBento 44)!' };
   socket.onmessage({ data: JSON.stringify(translation) });
-  assert(historyBox.children[historyBox.children.length - 1].textContent.includes('Ligne 44'), 'translations render in the matching caption row');
+  const captionRow = document.getElementById('segment-seq-44');
+  const sourceText = captionRow.querySelector('.caption-src-text').querySelector('.untrusted-text');
+  const translationLine = captionRow.querySelector('.caption-tgt-text');
+  const translatedText = translationLine.querySelector('.untrusted-text');
+  assert(translatedText.textContent === translation.text, 'mixed Arabic and English render in the matching caption row');
+  assert(sourceText.getAttribute('lang') === 'es' && sourceText.getAttribute('dir') === 'auto', 'original captions carry the booth language and automatic direction');
+  assert(translatedText.getAttribute('lang') === 'ar' && translatedText.getAttribute('dir') === 'auto', 'translated captions carry the target language and automatic direction');
+  assert(translationLine.querySelector('.lang-label').getAttribute('dir') === null, 'caption direction applies to the text without moving the language label');
   assert(captionsBox.scrollTop === readingPosition, 'translations preserve the reading position while scrolled up');
 
   const jumpButton = document.getElementById('jump-to-latest');
@@ -477,7 +484,7 @@ async function run() {
   assert(captionsBox.scrollTop === captionsBox.scrollHeight - captionsBox.clientHeight,
     'Jump to latest returns to the newest caption');
   assert(jumpButton.hidden, 'Jump to latest hides after returning to live');
-  socket.onmessage({ data: JSON.stringify({ ...translation, seq: 45, text: 'Ligne 45' }) });
+  socket.onmessage({ data: JSON.stringify({ ...translation, seq: 45, text: 'مرحبا (VoxBento 45)!' }) });
   assert(
     captionsBox.scrollTop === captionsBox.scrollHeight - captionsBox.clientHeight,
     'translations follow again at the bottom',
@@ -503,6 +510,7 @@ async function run() {
   assert(!waitingText.classList.contains('listener-hidden'), 'the placeholder comes back after switching source');
 
   captionsSocket().onmessage({ data: JSON.stringify({ type: 'caption', status: 'final', seq: 1, text: 'Floor' }) });
+  assert(historyBox.firstChild.querySelector('.untrusted-text').getAttribute('lang') === 'en', 'floor captions use the configured language');
   choose(roomSelect, '');
   assert(!waitingText.classList.contains('listener-hidden'), 'the placeholder comes back after clearing the room');
 
@@ -531,6 +539,8 @@ async function run() {
     data: bundleFrame({ segment_id: 'b', seq: 2, caption: 'Hello', translation: '', error: 'pipeline_failed' }),
   });
   assert(historyBox.textContent.includes('(Translation failed)'), 'a failed translation still says so, right after an empty one');
+  const statusCaption = document.getElementById('segment-seq-2').querySelector('.caption-tgt-text');
+  assert(statusCaption.querySelector('.untrusted-text').getAttribute('lang') === 'en', 'translation status messages are marked as English');
 
   console.log('\n' + passed + ' passed, ' + failed + ' failed');
   process.exit(failed > 0 ? 1 : 0);
