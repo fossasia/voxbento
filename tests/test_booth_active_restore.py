@@ -305,6 +305,19 @@ async def test_stopping_persistence_drops_pending_writes_and_stores_nothing_more
 
 
 @pytest.mark.anyio
+async def test_stopping_persistence_lets_an_immediate_write_finish():
+    store = FakeStore()
+    registry = BoothRegistry(persist_active=store.save)
+    await join(registry, "A", "user:1")
+    assert registry._pending_persist  # the write for the new active interpreter has not run yet
+
+    await registry.stop_persistence()
+
+    assert store.saved[BOOTH] == "user:1"
+    assert not registry._pending_persist
+
+
+@pytest.mark.anyio
 async def test_removing_a_booth_drops_its_persist_lock():
     store = FakeStore()
     registry = BoothRegistry(persist_active=store.save)

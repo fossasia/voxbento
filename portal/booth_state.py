@@ -181,6 +181,8 @@ class BoothRegistry:
         # booth_id -> (session_key of the interpreter who was active before a restart, deadline)
         self._reservations: dict[str, tuple[str, float]] = {}
         self._pending_persist: dict[str, asyncio.Task] = {}
+        # Booths whose pending write is the deliberately delayed one written after someone left.
+        self._delayed_persist: set[str] = set()
         self._persist_locks: dict[str, asyncio.Lock] = {}
 
     def attach_persistence(self, persist_active: PersistActive) -> None:
@@ -188,18 +190,30 @@ class BoothRegistry:
         self._persist_active = persist_active
 
     async def stop_persistence(self) -> None:
-        """Stop storing the active interpreter and drop writes that have not run yet (app shutdown).
+        """Stop storing the active interpreter at app shutdown, then forget the store.
 
+        A write started by a selection or an expiry gets up to 5 s to finish. The delayed write that
+        follows someone leaving is dropped on purpose: at shutdown every participant "leaves", and
+        the stored value must stay the interpreter who was active (LEAVE_PERSIST_DELAY_SECONDS).
         Without this a registry that outlives its app (the shared one in tests) would keep starting
         database writes that nobody waits for, and they can block the event loop from closing.
         """
-        self._persist_active = None
-        pending = list(self._pending_persist.values())
-        self._pending_persist.clear()
-        for task in pending:
+        pending = dict(self._pending_persist)
+        delayed = [task for booth_id, task in pending.items() if booth_id in self._delayed_persist]
+        immediate = [task for booth_id, task in pending.items() if booth_id not in self._delayed_persist]
+        for task in delayed:
             task.cancel()
-        if pending:
-            await asyncio.wait(pending, timeout=5)
+        unfinished: set[asyncio.Task] = set()
+        if immediate:
+            _, unfinished = await asyncio.wait(immediate, timeout=5)
+            for task in unfinished:
+                task.cancel()
+        self._persist_active = None
+        self._pending_persist.clear()
+        self._delayed_persist.clear()
+        cancelled = [*delayed, *unfinished]
+        if cancelled:
+            await asyncio.wait(cancelled, timeout=5)
 
     def restore_active(self, rows: Iterable[tuple[str, str]]) -> None:
         """Reserve each booth's active slot for the session that held it before the restart.
@@ -230,6 +244,10 @@ class BoothRegistry:
             pending.cancel()
         task = asyncio.create_task(self._persist_after(booth_id, delay))
         self._pending_persist[booth_id] = task
+        if delay:
+            self._delayed_persist.add(booth_id)
+        else:
+            self._delayed_persist.discard(booth_id)
         track_task(task)
 
     async def _persist_after(self, booth_id: str, delay: float) -> None:
@@ -246,6 +264,7 @@ class BoothRegistry:
         finally:
             if self._pending_persist.get(booth_id) is asyncio.current_task():
                 del self._pending_persist[booth_id]
+                self._delayed_persist.discard(booth_id)
 
     async def expire_reservations(self) -> list[dict]:
         """End reservations whose window has passed; return the booths that got an active interpreter.
