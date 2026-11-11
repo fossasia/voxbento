@@ -26,7 +26,12 @@ class FakeElement {
     this.value = '';
     this.textContent = '';
     this.innerHTML = '';
+    this.style = {};
   }
+
+  after(element) { this.next = element; element.isConnected = true; }
+  remove() { this.isConnected = false; }
+  select() { this.selected = true; }
 
   setAttribute(name, value) { this.attributes[name] = String(value); }
   removeAttribute(name) { delete this.attributes[name]; }
@@ -83,6 +88,8 @@ function resetDom() {
     querySelector: (selector) => selectors[selector] || null,
     querySelectorAll: (selector) => lists[selector] || [],
     addEventListener() {},
+    createElement: () => new FakeElement(),
+    execCommand: () => false,
   };
   document.body.dataset.managementPrefix = '/admin';
   document.activeElement = document.body;
@@ -367,23 +374,82 @@ test('copyToClipboard: works on a button without a tooltip', async () => {
   }
 });
 
-test('copyToClipboard: a denied clipboard logs and shows no success', async () => {
-  resetDom();
-  const denied = new Error('NotAllowedError');
-  setClipboard(async () => { throw denied; });
-  const logged = mock.method(console, 'error', () => {});
+function copyButton() {
   const button = new FakeElement('copy');
+  button.dataset.copyText = 'copied-value';
   const tooltip = new FakeElement('tip');
   tooltip.textContent = 'Copy to clipboard';
   button.children['.copy-tooltip'] = tooltip;
+  return { button, tooltip };
+}
+
+// Plain http outside localhost has no navigator.clipboard.
+function noClipboard() {
+  Object.defineProperty(globalThis, 'navigator', { value: {}, configurable: true });
+}
+
+test('copyToClipboard: without navigator.clipboard it copies through a textarea next to the button', async () => {
+  resetDom();
+  noClipboard();
+  const copied = [];
+  document.execCommand = (command) => {
+    copied.push([command, document.activeElement.value, document.activeElement.selected]);
+    return true;
+  };
+  const { button } = copyButton();
 
   await copyToClipboard(button);
 
-  assert.deepEqual(logged.mock.calls[0].arguments, ['Failed to copy text: ', denied]);
-  assert.ok(!button.classes.has('copied'));
-  assert.equal(tooltip.textContent, 'Copy to clipboard');
+  assert.deepEqual(copied, [['copy', 'copied-value', true]]);
+  assert.equal(button.next.isConnected, false, 'the textarea is removed again');
+  assert.equal(button.next.style.position, 'fixed');
+  assert.equal(document.activeElement, button, 'focus goes back to the copy button');
+  assert.ok(button.classes.has('copied'));
+});
+
+test('copyToClipboard: a denied clipboard logs and falls back to the textarea', async () => {
+  resetDom();
+  const denied = new Error('NotAllowedError');
+  setClipboard(async () => { throw denied; });
+  document.execCommand = () => true;
+  const logged = mock.method(console, 'error', () => {});
+  const { button } = copyButton();
+
+  await copyToClipboard(button);
+
+  assert.deepEqual(logged.mock.calls[0].arguments, ['navigator.clipboard.writeText rejected, trying the textarea fallback', denied]);
+  assert.ok(button.classes.has('copied'));
   logged.mock.restore();
 });
+
+for (const [label, execCommand] of [
+  ['the textarea copy is refused', () => false],
+  ['the textarea copy throws', () => { throw new Error('blocked'); }],
+]) {
+  test(`copyToClipboard: shows Copy failed when ${label}`, async () => {
+    resetDom();
+    mock.timers.enable({ apis: ['setTimeout'] });
+    const logged = mock.method(console, 'error', () => {});
+    try {
+      noClipboard();
+      document.execCommand = execCommand;
+      const { button, tooltip } = copyButton();
+
+      await copyToClipboard(button);
+      assert.ok(button.classes.has('copy-failed'));
+      assert.ok(!button.classes.has('copied'));
+      assert.equal(tooltip.textContent, 'Copy failed');
+      assert.equal(logged.mock.calls.length, 1, 'the failure is logged');
+
+      mock.timers.tick(2000);
+      assert.ok(!button.classes.has('copy-failed'));
+      assert.equal(tooltip.textContent, 'Copy to clipboard');
+    } finally {
+      logged.mock.restore();
+      mock.timers.reset();
+    }
+  });
+}
 
 // ---------------------------------------------------------------------------
 // admin.js: event API key dialogs

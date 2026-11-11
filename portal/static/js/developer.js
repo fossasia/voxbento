@@ -4,21 +4,53 @@ import { closeDialog, initDialog, openDialog } from './modal-dialog.js';
 
 const COPIED_MS = 2000;
 
-export async function copyToClipboard(button) {
+// navigator.clipboard is missing on plain http outside localhost, so copy through a hidden textarea.
+// It goes next to the button because the page behind an open modal dialog cannot take focus.
+function copyWithTextarea(button, text) {
+  const textarea = document.createElement('textarea');
+  textarea.value = text;
+  textarea.style.position = 'fixed';
+  textarea.style.opacity = '0';
+  button.after(textarea);
+  textarea.focus();
+  textarea.select();
   try {
-    await navigator.clipboard.writeText(button.dataset.copyText);
-  } catch (err) {
-    console.error('Failed to copy text: ', err);
-    return;
+    return document.execCommand('copy');
+  } finally {
+    textarea.remove();
+    button.focus();
   }
-  button.classList.add('copied');
+}
+
+async function writeText(button, text) {
+  if (navigator.clipboard) {
+    try {
+      await navigator.clipboard.writeText(text);
+      return true;
+    } catch (err) {
+      console.error('navigator.clipboard.writeText rejected, trying the textarea fallback', err);
+    }
+  }
+  try {
+    if (copyWithTextarea(button, text)) return true;
+    console.error('Could not copy to the clipboard');
+  } catch (err) {
+    console.error('Could not copy to the clipboard', err);
+  }
+  return false;
+}
+
+export async function copyToClipboard(button) {
+  const copied = await writeText(button, button.dataset.copyText);
+  const state = copied ? 'copied' : 'copy-failed';
+  button.classList.add(state);
   const tooltip = button.querySelector('.copy-tooltip');
   if (tooltip) {
-    tooltip.textContent = 'Copied!';
-    tooltip.classList.add('copied-tooltip');
+    tooltip.textContent = copied ? 'Copied!' : 'Copy failed';
+    if (copied) tooltip.classList.add('copied-tooltip');
   }
   setTimeout(() => {
-    button.classList.remove('copied');
+    button.classList.remove(state);
     if (tooltip) {
       tooltip.textContent = 'Copy to clipboard';
       tooltip.classList.remove('copied-tooltip');
