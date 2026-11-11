@@ -10,9 +10,11 @@ Covers:
 
 from __future__ import annotations
 
+import asyncio
 import json
 import os
 import re
+from pathlib import Path
 
 os.environ["BOOTH_ACCESS_TOKEN"] = ""
 
@@ -20,8 +22,12 @@ from datetime import datetime, timedelta, timezone
 from html.parser import HTMLParser
 
 import pytest
+from sqlalchemy import Update
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from portal.auth import create_user_token, decode_token, hash_password
+from portal.database import configure, dispose, init_db
+from portal.models import EventAPIKey
 
 # ---------------------------------------------------------------------------
 # Fixtures
@@ -31,12 +37,18 @@ from portal.auth import create_user_token, decode_token, hash_password
 @pytest.fixture(autouse=True)
 async def setup_db():
     """Set up an in-memory database for the FastAPI app."""
-    from portal.database import configure, dispose, init_db
-
     configure("sqlite+aiosqlite://")
     await init_db()
     yield
     await dispose()
+
+
+@pytest.fixture
+async def concurrent_db(setup_db, tmp_path: Path):
+    """Give overlapping requests separate connections and real transaction isolation."""
+    await dispose()
+    configure(f"sqlite+aiosqlite:///{tmp_path / 'concurrent.db'}")
+    await init_db()
 
 
 @pytest.fixture
@@ -3602,9 +3614,8 @@ class TestAPIKeyCRUD:
             assert res_remake.json()["name"] == "Integration Key"
 
     @pytest.mark.anyio
-    async def test_concurrent_api_key_revocation(self, setup_db):
-        import asyncio
-
+    async def test_concurrent_api_key_revocation(self, concurrent_db, monkeypatch):
+        """Competing revocations reach the update together and only one succeeds."""
         from portal.auth import create_user_token
         from portal.database import create_event, create_user, get_session, set_event_membership
 
@@ -3626,11 +3637,25 @@ class TestAPIKeyCRUD:
             assert res.status_code == 200
             key_id = res.json()["id"]
 
-            # Overlapping concurrent revoke requests
+            barrier = asyncio.Barrier(2)
+            updates_reached = 0
+            execute = AsyncSession.execute
+
+            async def competing_execute(session, statement, *args, **kwargs):
+                """Hold both revocation writes until both requests reach the database."""
+                nonlocal updates_reached
+                if isinstance(statement, Update) and statement.table.name == EventAPIKey.__tablename__:
+                    updates_reached += 1
+                    await asyncio.wait_for(barrier.wait(), timeout=5)
+                return await execute(session, statement, *args, **kwargs)
+
+            monkeypatch.setattr(AsyncSession, "execute", competing_execute)
+
             req1 = c.delete(f"/workspace/api/events/{event_id}/api-keys/{key_id}")
             req2 = c.delete(f"/workspace/api/events/{event_id}/api-keys/{key_id}")
             res1, res2 = await asyncio.gather(req1, req2)
 
+            assert updates_reached == 2
             status_codes = sorted([res1.status_code, res2.status_code])
             assert status_codes == [200, 404]
 
