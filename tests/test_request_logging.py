@@ -181,11 +181,16 @@ def test_a_websocket_handshake_carries_the_request_id():
     assert len(headers.get(REQUEST_ID_HEADER, "")) == 16
 
 
+def test_a_handler_error_carries_the_correlation_header(client):
+    resp = client.get("/boom")
+    assert resp.status_code == 500
+    assert len(resp.headers.get(REQUEST_ID_HEADER, "")) == 16
+
+
 def test_a_handler_error_records_the_resulting_status(client, caplog):
     with caplog.at_level(logging.INFO, logger="portal.request"):
         client.get("/boom")
     record = next(r for r in caplog.records if getattr(r, "event", "") == "request.failed")
-    # Starlette turns this into a 500 outside this middleware.
     assert record.status == 500
 
 
