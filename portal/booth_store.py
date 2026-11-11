@@ -20,7 +20,7 @@ from sqlalchemy.exc import SQLAlchemyError
 
 from portal.booth_identity import make_booth_id, parse_booth_id
 from portal.database import get_session
-from portal.models import DBBooth, Event, utc_now
+from portal.models import DBBooth, Event, Room, utc_now
 from portal.outage_log import OutageLog
 
 if TYPE_CHECKING:
@@ -63,8 +63,9 @@ async def save_active(booth_id: str, session_key: str | None) -> None:
 async def load_active() -> list[tuple[str, str]]:
     """Return ``(booth_id, session_key)`` for every booth that had an active interpreter.
 
-    Entries older than ``MAX_AGE`` are cleared and left out. Returns ``[]`` if the database
-    cannot be read: the booths then start the way they did before this existed.
+    Entries older than ``MAX_AGE`` are cleared and left out, and so are booths of a deleted event
+    or whose room belongs to another event. Returns ``[]`` if the database cannot be read: the
+    booths then start the way they did before this existed.
     """
     stale: list[int] = []
     found: list[tuple[str, str]] = []
@@ -80,7 +81,12 @@ async def load_active() -> list[tuple[str, str]]:
                     Event.slug,
                 )
                 .join(Event, Event.id == DBBooth.event_id)
-                .where(DBBooth.active_interpreter_session_key.is_not(None))
+                .join(Room, Room.id == DBBooth.room_id)
+                .where(
+                    DBBooth.active_interpreter_session_key.is_not(None),
+                    Event.deleted_at.is_(None),
+                    Room.event_id == DBBooth.event_id,
+                )
             )
             now = utc_now()
             for booth_pk, room_id, language_code, session_key, since, event_slug in rows:
@@ -93,18 +99,26 @@ async def load_active() -> list[tuple[str, str]]:
                     found.append((make_booth_id(event_slug, room_id, language_code), session_key))
                 except ValueError:
                     continue
-            if stale:
-                await session.execute(
-                    update(DBBooth)
-                    .where(DBBooth.id.in_(stale))
-                    .values(active_interpreter_session_key=None, active_interpreter_since=None)
-                )
     except SQLAlchemyError:
         _outage.failed()
         return []
     _outage.recovered()
+    if stale:
+        await _clear_stale(stale)
     return found
 
+
+async def _clear_stale(booth_pks: list[int]) -> None:
+    """Forget old entries. A failure here only leaves them for the next start; it never costs a reservation."""
+    try:
+        async with get_session() as session:
+            await session.execute(
+                update(DBBooth)
+                .where(DBBooth.id.in_(booth_pks))
+                .values(active_interpreter_session_key=None, active_interpreter_since=None)
+            )
+    except SQLAlchemyError:
+        _outage.failed()
 
 
 async def enable_persistence(registry: BoothRegistry) -> None:

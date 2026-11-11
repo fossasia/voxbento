@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import time
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Iterable
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
 from uuid import uuid4
@@ -187,7 +187,7 @@ class BoothRegistry:
         """Start storing the active interpreter of every booth (called once at startup)."""
         self._persist_active = persist_active
 
-    def restore_active(self, rows: list[tuple[str, str]]) -> None:
+    def restore_active(self, rows: Iterable[tuple[str, str]]) -> None:
         """Reserve each booth's active slot for the session that held it before the restart.
 
         Nothing is given back automatically: the same person has to join again (their role
@@ -222,7 +222,10 @@ class BoothRegistry:
         try:
             if delay:
                 await asyncio.sleep(delay)
-            async with self._persist_locks.setdefault(booth_id, asyncio.Lock()):
+            lock = self._persist_locks.get(booth_id)
+            if lock is None:
+                lock = self._persist_locks[booth_id] = asyncio.Lock()
+            async with lock:
                 booth = self._booths.get(booth_id)
                 active = booth.participants.get(booth.active_interpreter_id) if booth else None
                 await self._persist_active(booth_id, active.joined_by if active else None)
@@ -766,6 +769,7 @@ class BoothRegistry:
             pending = self._pending_persist.pop(booth_id, None)
             if pending is not None:
                 pending.cancel()
+            self._persist_locks.pop(booth_id, None)
             self.attendance.forget_booth(booth_id)
 
     async def validate_booth_event(self, booth_id: str, expected_event: str) -> None:

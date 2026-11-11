@@ -286,6 +286,20 @@ async def test_publishing_still_needs_the_active_slot():
     await registry.check_publish_permission(BOOTH, returning.participant_id, "French", "ch")
 
 
+@pytest.mark.anyio
+async def test_removing_a_booth_drops_its_persist_lock():
+    store = FakeStore()
+    registry = BoothRegistry(persist_active=store.save)
+    assert make_booth_id("hall", 1, "fr") == BOOTH
+    await join(registry, "A", "user:1")
+    await settle(registry)
+    assert BOOTH in registry._persist_locks
+
+    await registry.remove_booth("hall", 1, "fr")
+
+    assert BOOTH not in registry._persist_locks
+
+
 # ── the database side ────────────────────────────────────────────────────
 
 
@@ -343,6 +357,62 @@ async def test_an_old_entry_is_forgotten_and_cleared(booth_in_db):
     async with get_session() as session:
         booth = (await session.execute(select(DBBooth).where(DBBooth.id == booth_pk))).scalar_one()
         assert booth.active_interpreter_session_key is None
+
+
+@pytest.mark.anyio
+async def test_a_deleted_event_does_not_restore_a_reservation(booth_in_db):
+    booth_id, _ = booth_in_db
+    await booth_store.save_active(booth_id, "user:5")
+    async with get_session() as session:
+        event = (await session.execute(select(Event).where(Event.slug == "persist-event"))).scalar_one()
+        event.deleted_at = utc_now()
+
+    assert await booth_store.load_active() == []
+
+
+@pytest.mark.anyio
+async def test_a_booth_whose_room_belongs_to_another_event_is_not_restored(booth_in_db):
+    booth_id, booth_pk = booth_in_db
+    await booth_store.save_active(booth_id, "user:5")
+    async with get_session() as session:
+        other = Event(slug="other-event", display_name="Other Event")
+        session.add(other)
+        await session.flush()
+        booth = (await session.execute(select(DBBooth).where(DBBooth.id == booth_pk))).scalar_one()
+        booth.event_id = other.id  # the room still belongs to persist-event
+
+    assert await booth_store.load_active() == []
+
+
+@pytest.mark.anyio
+async def test_a_failing_cleanup_keeps_the_valid_reservations(booth_in_db, monkeypatch):
+    booth_id, booth_pk = booth_in_db
+    await booth_store.save_active(booth_id, "user:5")
+    async with get_session() as session:
+        booth = (await session.execute(select(DBBooth).where(DBBooth.id == booth_pk))).scalar_one()
+        old = DBBooth(
+            event_id=booth.event_id,
+            room_id=booth.room_id,
+            language_code="de",
+            language_name="German",
+            active_interpreter_session_key="user:9",
+            active_interpreter_since=utc_now() - booth_store.MAX_AGE - timedelta(minutes=1),
+        )
+        session.add(old)
+
+    real_get_session = booth_store.get_session
+    calls = {"count": 0}
+
+    def second_session_fails():
+        calls["count"] += 1
+        if calls["count"] == 2:  # the cleanup of the old entry
+            raise OperationalError("update", {}, Exception("database is locked"))
+        return real_get_session()
+
+    monkeypatch.setattr(booth_store, "get_session", second_session_fails)
+
+    assert await booth_store.load_active() == [(booth_id, "user:5")]
+    assert calls["count"] == 2
 
 
 @pytest.mark.anyio
