@@ -230,13 +230,25 @@ async def test_a_slow_lookup_times_out_into_no_terms(monkeypatch):
 
 
 @pytest.mark.anyio
-async def test_other_errors_are_not_hidden(monkeypatch):
+async def test_an_unexpected_error_means_no_terms_and_is_logged(monkeypatch, caplog):
     async def bug(*_args):
         raise TypeError("a bug")
 
     monkeypatch.setattr(vocabulary, "_lookup_terms", bug)
 
-    with pytest.raises(TypeError):
+    assert await load_vocabulary_terms("glossary-event", 1, "fr") == ()
+    assert "Unexpected error reading the glossary for room 1" in caplog.text
+    assert "TypeError: a bug" in caplog.text  # the traceback is kept, so the bug can still be found
+
+
+@pytest.mark.anyio
+async def test_cancellation_is_not_swallowed(monkeypatch):
+    async def cancelled(*_args):
+        raise asyncio.CancelledError
+
+    monkeypatch.setattr(vocabulary, "_lookup_terms", cancelled)
+
+    with pytest.raises(asyncio.CancelledError):
         await load_vocabulary_terms("glossary-event", 1, "fr")
 
 

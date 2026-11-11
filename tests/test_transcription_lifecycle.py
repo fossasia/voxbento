@@ -260,6 +260,33 @@ async def test_without_glossary_terms_the_provider_gets_the_callers_config(mock_
 
 
 @pytest.mark.anyio
+async def test_a_failing_glossary_lookup_does_not_stop_the_worker(mock_providers):
+    """A broken glossary read means captions without terms, not a dead caption worker (#1164)."""
+    booth_id = "test_booth_glossary_error"
+    seen_configs = []
+
+    async def mock_run_stream(process, language, model, config, *args):
+        seen_configs.append(config)
+        await asyncio.sleep(1000)
+
+    mock_providers["local"].run_stream = mock_run_stream
+
+    async def broken_lookup(*_args):
+        raise TypeError("a bug in the glossary lookup")
+
+    with patch("portal.transcription.vocabulary._lookup_terms", broken_lookup):
+        await start_transcription_worker(
+            "evt", "fr", booth_id, None, "local", "base", ProviderConfig(api_key=None), room_id=5
+        )
+        await asyncio.sleep(0.3)
+        session = active_workers[booth_id]
+        assert session.state == State.RUNNING
+        await stop_transcription_worker(booth_id)
+
+    assert [config.terms for config in seen_configs] == [()]
+
+
+@pytest.mark.anyio
 async def test_serialized_replacement(mock_providers):
     """
     Assert that for a given booth_id, the number of active transcription sessions/process groups

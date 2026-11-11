@@ -130,6 +130,7 @@ async def load_vocabulary_terms(event_slug: str, room_id: int | None, language_c
     """The glossary's source terms for one transcription worker, or ``()`` when there are none.
 
     ``()`` also covers a room that has switched the glossary off and a lookup that failed or timed out.
+    Cancellation is not swallowed: it is not an ``Exception``, so a stopping worker still stops.
     """
     if room_id is None:
         return ()
@@ -141,5 +142,11 @@ async def load_vocabulary_terms(event_slug: str, room_id: int | None, language_c
             "Glossary lookup for transcription failed for room %s (%s). Transcribing without glossary terms.",
             room_id,
             exc,
+        )
+        return ()
+    except Exception:
+        # The glossary is optional context: whatever goes wrong while reading it must not cost the worker its captions.
+        logger.exception(
+            "Unexpected error reading the glossary for room %s. Transcribing without glossary terms.", room_id
         )
         return ()
