@@ -14,6 +14,7 @@ import os
 os.environ["BOOTH_ACCESS_TOKEN"] = ""
 
 import re
+from html.parser import HTMLParser
 
 import pytest
 from sqlalchemy import select
@@ -428,6 +429,19 @@ async def test_dashboard_csrf_cookie_secure_flag_follows_scheme(setup_db, monkey
 # ---------------------------------------------------------------------------
 
 
+class _InlineScripts(HTMLParser):
+    """Collect every script without a `src`, whatever its case or spacing."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.found: list[dict[str, str | None]] = []
+
+    def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+        attributes = dict(attrs)
+        if tag == "script" and "src" not in attributes:
+            self.found.append(attributes)
+
+
 def _assert_labelled_dialog(html: str, dialog_id: str, title: str) -> None:
     # A div never matches the dialog-only :not([open]) rule in admin.css, so the popups must be dialogs.
     tag = re.search(rf'<(\w+) id="{dialog_id}"[^>]*>', html)
@@ -451,7 +465,9 @@ async def test_dashboard_create_app_popup_is_a_dialog_driven_by_developer_js(set
     _assert_labelled_dialog(resp.text, "modal-create-app", "Create OAuth Client")
     assert 'id="modal-new-secret"' not in resp.text
     assert re.search(r'<script type="module" src="[^"]*/js/developer\.js\?v=', resp.text)
-    assert not re.search(r"<script(?![^>]*\bsrc=)[^>]*>", resp.text), "no inline scripts"
+    scripts = _InlineScripts()
+    scripts.feed(resp.text)
+    assert scripts.found == [], "no inline scripts"
     assert "onclick=" not in resp.text
     assert re.search(rf'<button type="button" class="copy-wrapper" data-copy-text="{client.client_id}">', resp.text)
 

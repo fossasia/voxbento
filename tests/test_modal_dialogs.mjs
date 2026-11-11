@@ -85,10 +85,11 @@ function resetDom() {
   document.activeElement = document.body;
 }
 
-function add(element, parent) {
-  elements[element.id] = element;
-  if (parent) parent.children[`#${element.id}`] = element;
-  return element;
+// Give a fake its page id. It returns nothing, so the fake itself is never built from a call that takes an id.
+function register(id, element, parent) {
+  element.id = id;
+  elements[id] = element;
+  if (parent) parent.children[`#${id}`] = element;
 }
 
 const fade = () => new Promise((resolve) => setTimeout(resolve, 250));
@@ -104,7 +105,7 @@ globalThis.window = globalThis;
 const { openDialog, closeDialog, initDialog } = await import('../portal/static/js/modal-dialog.js');
 const { copyToClipboard, initDeveloperDashboard } = await import('../portal/static/js/developer.js');
 await import('../portal/static/js/admin.js');
-const keys = window.adminAPIKeys;
+const integrations = window.adminAPIKeys;
 
 // ---------------------------------------------------------------------------
 // modal-dialog.js
@@ -112,7 +113,8 @@ const keys = window.adminAPIKeys;
 
 test('openDialog opens modally, fades in after a reflow and focuses the target', () => {
   resetDom();
-  const opener = add(new FakeElement('opener'));
+  const opener = new FakeElement();
+  register('opener', opener);
   const dialog = new FakeDialog('d');
   const field = new FakeElement('field');
   opener.focus();
@@ -213,29 +215,33 @@ test('initDialog: a browser-forced close drops .active so the next open fades in
 // developer.js
 // ---------------------------------------------------------------------------
 
-function dashboard({ withSecret = false } = {}) {
+function dashboard({ afterCreate = false } = {}) {
   resetDom();
-  const createButton = add(new FakeElement('btn-create-app'));
-  const createDialog = add(new FakeDialog('modal-create-app'));
-  const appName = add(new FakeElement('app_name'));
+  const createButton = new FakeElement();
+  register('btn-create-app', createButton);
+  const createDialog = new FakeDialog();
+  register('modal-create-app', createDialog);
+  const appName = new FakeElement();
+  register('app_name', appName);
   const createCancel = new FakeElement('create-cancel');
   createDialog.children['[data-dialog-close]'] = createCancel;
   const copyButtons = [];
-  let secretDialog = null;
-  let secretCopy = null;
-  let secretDone = null;
-  if (withSecret) {
-    secretDialog = add(new FakeDialog('modal-new-secret'));
-    secretCopy = new FakeElement('secret-copy');
-    secretCopy.dataset.copyText = 'secret_abc';
-    secretDone = new FakeElement('secret-done');
-    secretDialog.children['.secret-box-danger'] = secretCopy;
-    secretDialog.children['[data-dialog-close]'] = secretDone;
-    copyButtons.push(secretCopy);
+  let newAppDialog = null;
+  let newAppCopy = null;
+  let newAppDone = null;
+  if (afterCreate) {
+    newAppDialog = new FakeDialog();
+    register('modal-new-secret', newAppDialog);
+    newAppCopy = new FakeElement('new-app-copy');
+    newAppCopy.dataset.copyText = 'copied-value';
+    newAppDone = new FakeElement('new-app-done');
+    newAppDialog.children['.secret-box-danger'] = newAppCopy;
+    newAppDialog.children['[data-dialog-close]'] = newAppDone;
+    copyButtons.push(newAppCopy);
   }
   lists['[data-copy-text]'] = copyButtons;
   initDeveloperDashboard();
-  return { createButton, createDialog, appName, createCancel, secretDialog, secretCopy, secretDone };
+  return { createButton, createDialog, appName, createCancel, newAppDialog, newAppCopy, newAppDone };
 }
 
 test('dashboard: Create New App opens the create dialog; Cancel and Escape close it', async () => {
@@ -258,29 +264,29 @@ test('dashboard: Create New App opens the create dialog; Cancel and Escape close
 });
 
 test('dashboard: the secret dialog opens on load and closes from its button or Escape', async () => {
-  const page = dashboard({ withSecret: true });
-  assert.equal(page.secretDialog.open, true);
-  assert.deepEqual(page.secretDialog.calls[0], 'showModal');
-  assert.equal(document.activeElement, page.secretCopy);
+  const page = dashboard({ afterCreate: true });
+  assert.equal(page.newAppDialog.open, true);
+  assert.deepEqual(page.newAppDialog.calls[0], 'showModal');
+  assert.equal(document.activeElement, page.newAppCopy);
   assert.equal(page.createDialog.open, false, 'only the secret dialog opens');
 
-  page.secretDone.click();
+  page.newAppDone.click();
   await fade();
-  assert.equal(page.secretDialog.open, false);
+  assert.equal(page.newAppDialog.open, false);
 
-  const again = dashboard({ withSecret: true });
-  again.secretDialog.dispatch('cancel');
+  const again = dashboard({ afterCreate: true });
+  again.newAppDialog.dispatch('cancel');
   await fade();
-  assert.equal(again.secretDialog.open, false);
+  assert.equal(again.newAppDialog.open, false);
 });
 
 test('dashboard: the secret dialog stays closed when back/forward restores the page', () => {
   const restored = mock.method(performance, 'getEntriesByType', () => [{ type: 'back_forward' }]);
   try {
-    const page = dashboard({ withSecret: true });
-    assert.deepEqual(page.secretDialog.calls, []);
-    page.secretDialog.dispatch('cancel');
-    assert.equal(page.secretDialog.open, false);
+    const page = dashboard({ afterCreate: true });
+    assert.deepEqual(page.newAppDialog.calls, []);
+    page.newAppDialog.dispatch('cancel');
+    assert.equal(page.newAppDialog.open, false);
   } finally {
     restored.mock.restore();
   }
@@ -292,12 +298,12 @@ test('dashboard: a page without the dialogs (no approved account) still loads', 
 });
 
 test('dashboard: clicking a copy button copies its data-copy-text', async () => {
-  const page = dashboard({ withSecret: true });
+  const page = dashboard({ afterCreate: true });
   const written = [];
   setClipboard(async (text) => { written.push(text); });
-  page.secretCopy.click();
+  page.newAppCopy.click();
   await tick();
-  assert.deepEqual(written, ['secret_abc']);
+  assert.deepEqual(written, ['copied-value']);
 });
 
 test('copyToClipboard: success shows Copied! and resets after two seconds', async () => {
@@ -386,57 +392,71 @@ function eventPage(routes) {
   globalThis.alert = (message) => alerts.push(message);
   selectors['meta[name="csrf-token"]'] = { content: 'csrf-1' };
 
-  const section = add(new FakeElement('api-keys-section'));
+  const section = new FakeElement();
+  register('api-keys-section', section);
   section.dataset.eventId = '7';
-  const container = add(new FakeElement('api-keys-container'));
-  const form = add(new FakeElement('api-key-form'));
-  const generateButton = add(new FakeElement('api-key-generate-btn'));
+  const container = new FakeElement();
+  register('api-keys-container', container);
+  const form = new FakeElement();
+  register('api-key-form', form);
+  const generateButton = new FakeElement();
+  register('api-key-generate-btn', generateButton);
 
-  const createDialog = add(new FakeDialog('api-key-modal'));
-  const name = add(new FakeElement('api-key-name'), createDialog);
-  const cancel = add(new FakeElement('api-key-cancel-btn'), createDialog);
+  const createDialog = new FakeDialog();
+  register('api-key-modal', createDialog);
+  const name = new FakeElement();
+  register('api-key-name', name, createDialog);
+  const cancel = new FakeElement();
+  register('api-key-cancel-btn', cancel, createDialog);
   const submit = new FakeElement('submit');
   createDialog.children.submit = submit;
   selectors['#api-key-form button[type="submit"]'] = submit;
 
-  const successDialog = add(new FakeDialog('api-key-success-modal'));
-  const rawValue = add(new FakeElement('api-key-raw-value'), successDialog);
-  const copyButton = add(new FakeElement('api-key-copy-btn'), successDialog);
+  const successDialog = new FakeDialog();
+  register('api-key-success-modal', successDialog);
+  const rawValue = new FakeElement();
+  register('api-key-raw-value', rawValue, successDialog);
+  const copyButton = new FakeElement();
+  register('api-key-copy-btn', copyButton, successDialog);
 
-  const revokeDialog = add(new FakeDialog('api-key-revoke-modal'));
-  const revokeMessage = add(new FakeElement('api-key-revoke-message'), revokeDialog);
-  add(new FakeElement('api-key-revoke-funny'), revokeDialog);
-  const revokeCancel = add(new FakeElement('api-key-revoke-cancel-btn'), revokeDialog);
-  const revokeConfirm = add(new FakeElement('api-key-revoke-confirm-btn'), revokeDialog);
+  const revokeDialog = new FakeDialog();
+  register('api-key-revoke-modal', revokeDialog);
+  const revokeMessage = new FakeElement();
+  register('api-key-revoke-message', revokeMessage, revokeDialog);
+  register('api-key-revoke-funny', new FakeElement(), revokeDialog);
+  const revokeCancel = new FakeElement();
+  register('api-key-revoke-cancel-btn', revokeCancel, revokeDialog);
+  const revokeConfirm = new FakeElement();
+  register('api-key-revoke-confirm-btn', revokeConfirm, revokeDialog);
 
-  keys.init();
+  integrations.init();
   return {
     requests, alerts, container, form, generateButton, createDialog, name, cancel, submit,
     successDialog, rawValue, copyButton, revokeDialog, revokeMessage, revokeCancel, revokeConfirm,
   };
 }
 
-const KEY = { id: 3, name: 'Main', preview: 'vb_ab…', created_at: '2026-11-01T00:00:00Z', active: true };
+const LISTED_ROW = { id: 3, name: 'Main', preview: 'vb_ab…', created_at: '2026-11-01T00:00:00Z', active: true };
 
 test('api keys: Generate API Key opens the dialog empty with focus in the name field', async () => {
   const page = eventPage({ GET: response(200, []) });
   page.name.value = 'old';
   page.generateButton.focus();
 
-  keys.showCreateModal();
+  integrations.showCreateModal();
   assert.deepEqual(page.createDialog.calls[0], 'showModal');
   assert.equal(page.name.value, '');
   assert.equal(document.activeElement, page.name);
 
-  await keys.closeModal('api-key-modal');
+  await integrations.closeModal('api-key-modal');
   assert.equal(page.createDialog.open, false);
   assert.equal(document.activeElement, page.generateButton);
 });
 
 test('api keys: showModal/closeModal ignore unknown ids', async () => {
   eventPage({ GET: response(200, []) });
-  assert.doesNotThrow(() => keys.showModal('nope'));
-  const closing = keys.closeModal('nope');
+  assert.doesNotThrow(() => integrations.showModal('nope'));
+  const closing = integrations.closeModal('nope');
   assert.ok(closing instanceof Promise, 'callers await closeModal');
   await closing;
 });
@@ -448,11 +468,11 @@ test('api keys: generate posts once, blocks Escape while running, then shows the
     POST: () => new Promise((resolve) => { finish = () => resolve(response(200, { raw_key: 'vb_raw_123' })); }),
   });
   page.generateButton.focus();
-  keys.showCreateModal();
+  integrations.showCreateModal();
   page.name.value = 'Integration';
   page.copyButton.textContent = '✓ Copied';
 
-  const running = keys.generateKey();
+  const running = integrations.generateKey();
   assert.equal(page.submit.disabled, true);
   assert.equal(page.cancel.disabled, true);
   page.createDialog.dispatch('cancel');
@@ -475,7 +495,7 @@ test('api keys: generate posts once, blocks Escape while running, then shows the
   assert.equal(page.submit.disabled, false);
   assert.equal(page.cancel.disabled, false);
 
-  await keys.closeModal('api-key-success-modal');
+  await integrations.closeModal('api-key-success-modal');
   assert.equal(document.activeElement, page.generateButton, 'Done returns focus to Generate API Key');
   assert.equal(page.rawValue.value, 'vb_raw_123', 'closing does not clear anything');
 });
@@ -487,8 +507,8 @@ for (const [label, reply, expected] of [
 ]) {
   test(`api keys: generate with ${label} alerts and keeps the dialog usable`, async () => {
     const page = eventPage({ GET: response(200, []), POST: reply });
-    keys.showCreateModal();
-    await keys.generateKey();
+    integrations.showCreateModal();
+    await integrations.generateKey();
     assert.deepEqual(page.alerts, [expected]);
     assert.equal(page.createDialog.open, true);
     assert.equal(page.successDialog.open, false);
@@ -499,7 +519,7 @@ for (const [label, reply, expected] of [
 
 test('api keys: revoke asks first, sends one DELETE and shows the empty list', async () => {
   let finish;
-  const lists = [[KEY], []];
+  const lists = [[LISTED_ROW], []];
   const page = eventPage({
     GET: () => response(200, lists.shift()),
     DELETE: () => new Promise((resolve) => { finish = () => resolve(response(204, null)); }),
@@ -509,7 +529,7 @@ test('api keys: revoke asks first, sends one DELETE and shows the empty list', a
   const rowButton = new FakeElement('row-revoke');
   rowButton.focus();
 
-  keys.revokeKey('3', 'Main');
+  integrations.revokeKey('3', 'Main');
   assert.deepEqual(page.revokeDialog.calls[0], 'showModal');
   assert.match(page.revokeMessage.textContent, /'Main'/);
   assert.equal(document.activeElement, page.revokeCancel, 'focus starts on Cancel');
@@ -535,31 +555,31 @@ test('api keys: revoke asks first, sends one DELETE and shows the empty list', a
   assert.equal(page.container.innerHTML, '<p class="muted">No API keys generated yet.</p>');
   assert.equal(document.activeElement, page.generateButton, 'focus lands on Generate API Key');
   assert.equal(page.revokeConfirm.disabled, false);
-  assert.equal(keys.revokeKeyId, null);
+  assert.equal(integrations.revokeKeyId, null);
 });
 
 test('api keys: after revoke, focus that is still on the page is left alone', async () => {
   const page = eventPage({ GET: response(200, []), DELETE: response(204, null) });
   const rowButton = new FakeElement('row-revoke');
   rowButton.focus();
-  keys.revokeKey('3', 'Main');
-  await keys.confirmRevokeKey();
+  integrations.revokeKey('3', 'Main');
+  await integrations.confirmRevokeKey();
   assert.equal(document.activeElement, rowButton);
   assert.deepEqual(page.revokeDialog.calls, ['showModal', 'reflow:false', 'close']);
 });
 
 test('api keys: Cancel on revoke closes without a request', async () => {
   const page = eventPage({ GET: response(200, []) });
-  keys.revokeKey('3', 'Main');
-  await keys.closeModal('api-key-revoke-modal');
+  integrations.revokeKey('3', 'Main');
+  await integrations.closeModal('api-key-revoke-modal');
   assert.deepEqual(page.revokeDialog.calls, ['showModal', 'reflow:false', 'close']);
   assert.equal(page.requests.filter((r) => r.method === 'DELETE').length, 0);
 });
 
 test('api keys: a failed revoke alerts and leaves the dialog open', async () => {
   const page = eventPage({ GET: response(200, []), DELETE: response(500, {}) });
-  keys.revokeKey('3', 'Main');
-  await keys.confirmRevokeKey();
+  integrations.revokeKey('3', 'Main');
+  await integrations.confirmRevokeKey();
   assert.deepEqual(page.alerts, ['Error revoking key: Failed to revoke']);
   assert.equal(page.revokeDialog.open, true);
   assert.equal(page.revokeConfirm.disabled, false);
