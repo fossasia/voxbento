@@ -187,6 +187,31 @@ def test_a_handler_error_carries_the_correlation_header(client):
     assert len(resp.headers.get(REQUEST_ID_HEADER, "")) == 16
 
 
+async def test_an_error_after_the_response_started_does_not_send_a_second_start():
+    """A streaming response that fails midway has already sent http.response.start.
+
+    A second start violates the ASGI spec and would mask the real exception, so
+    the middleware must leave the response alone and let the error propagate.
+    """
+    sent: list = []
+
+    async def streaming_app(scope, receive, send):
+        await send({"type": "http.response.start", "status": 200, "headers": []})
+        raise RuntimeError("failed mid-stream")
+
+    async def capture(message):
+        sent.append(message)
+
+    with pytest.raises(RuntimeError, match="failed mid-stream"):
+        await RequestLoggingMiddleware(streaming_app)(
+            {"type": "http", "method": "GET", "path": "/stream", "headers": []},
+            None,
+            capture,
+        )
+
+    assert [m["type"] for m in sent] == ["http.response.start"]
+
+
 def test_a_handler_error_records_the_resulting_status(client, caplog):
     with caplog.at_level(logging.INFO, logger="portal.request"):
         client.get("/boom")

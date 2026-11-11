@@ -110,7 +110,10 @@ class RequestLoggingMiddleware:
                     duration_ms=round((time.perf_counter() - started) * 1000, 2),
                 ),
             )
-            if scope["type"] == "http":
+            # Once http.response.start has gone out a second one is an ASGI
+            # protocol error that would mask this exception, so only answer
+            # with a 500 when nothing has been sent yet.
+            if scope["type"] == "http" and status_code == 0:
                 from portal.security_headers import apply_security_headers
 
                 body = b'{"detail":"Internal Server Error","request_id":"' + request_id.encode() + b'"}'
