@@ -2534,23 +2534,24 @@ def _clean_booth_target_languages(codes: list[str], saved: set[str]) -> list[str
 
     Each code gets one row per booth, so a repeat or a second spelling ("ES" next to "es")
     would break the save or translate every segment twice. Empty values are skipped. A code
-    the booth already has is kept as saved: the language picker sends back saved codes it
-    does not list, and refusing them would block every later save of the booth.
+    the booth already has, in any case, is kept in its saved spelling: the language picker
+    sends back saved codes it does not list, and refusing them would block every later save
+    of the booth, while a new row for "es" next to a saved "ES" would translate twice.
     """
+    # Sorted so that when both "ES" and "es" are saved, the lowercase row is the one kept.
+    saved_spelling = {code.lower(): code for code in sorted(saved)}
     cleaned: list[str] = []
-    seen: set[str] = set()
     for raw in codes:
-        code = raw.strip()
-        if code not in saved:
-            code = code.lower()
-            if code and code not in ROOM_LANGUAGE_NAMES:
-                raise TranslationLanguageError(
-                    status_code=400, detail="One of the chosen translation languages isn't recognised."
-                )
-        if not code or code.lower() in seen:
+        key = raw.strip().lower()
+        if not key:
             continue
-        seen.add(code.lower())
-        cleaned.append(code)
+        if key not in saved_spelling and key not in ROOM_LANGUAGE_NAMES:
+            raise TranslationLanguageError(
+                status_code=400, detail="One of the chosen translation languages isn't recognised."
+            )
+        code = saved_spelling.get(key, key)
+        if code not in cleaned:
+            cleaned.append(code)
     return cleaned
 
 

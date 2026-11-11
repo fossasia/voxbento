@@ -146,3 +146,28 @@ async def test_a_saved_code_can_be_removed_and_a_new_unknown_one_is_still_refuse
     assert refused.status_code == 400
     assert removed.status_code == 303
     assert await _languages(booth_id) == [("de", "German", True), ("pt-BR", "pt-BR", False)]
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("languages", [["es"], ["ES", "es"], [" Es "]])
+async def test_a_saved_code_sent_in_another_case_reuses_its_row(admin_booth, languages):
+    """The picker sends a saved "ES" back hidden; adding Spanish again must not make a second row."""
+    cookie, event_id, room_id, booth_id = admin_booth
+    await _add_saved(booth_id, "ES")
+
+    res = await _save(cookie, event_id, room_id, booth_id, languages)
+
+    assert res.status_code == 303
+    assert await _languages(booth_id) == [("ES", "ES", True)]
+
+
+@pytest.mark.anyio
+async def test_when_both_spellings_are_saved_the_lowercase_row_is_kept(admin_booth):
+    cookie, event_id, room_id, booth_id = admin_booth
+    await _add_saved(booth_id, "ES")
+    await _add_saved(booth_id, "es")
+
+    res = await _save(cookie, event_id, room_id, booth_id, ["ES", "es"])
+
+    assert res.status_code == 303
+    assert await _languages(booth_id) == [("ES", "ES", False), ("es", "es", True)]
