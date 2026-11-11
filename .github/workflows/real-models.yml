@@ -1,0 +1,84 @@
+name: Real models
+
+# Runs real inference through the local models (Supertonic TTS, faster-whisper, NLLB).
+# Every other test mocks them, so this is the only place a broken dependency bump or a
+# changed upstream model shows up before production. See tests/test_real_models.py.
+
+on:
+  pull_request:
+    branches:
+      - main
+      - dev
+    paths:
+      - "portal/transcription/providers/local.py"
+      - "portal/transcription/providers/base.py"
+      - "portal/translations/providers/local.py"
+      - "portal/translations/constants.py"
+      - "portal/translations/vocabulary.py"
+      - "portal/tts/providers/supertonic.py"
+      - "portal/tts/providers/base.py"
+      - "portal/tts/constants.py"
+      - "tests/test_real_models.py"
+      - "pyproject.toml"
+      - "uv.lock"
+      - ".github/workflows/real-models.yml"
+
+  # The Whisper weights are not pinned to a revision, so they can change without a commit here.
+  schedule:
+    - cron: "17 3 * * *"
+
+  workflow_dispatch:
+    inputs:
+      whisper_sizes:
+        description: "Comma-separated faster-whisper sizes to run (tiny, base, small, medium, large-v2, large-v3)"
+        required: false
+        default: "tiny"
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.sha }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+permissions:
+  contents: read
+
+jobs:
+  real-models:
+    name: real-models (TTS, STT, translation on CPU)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      API_KEY_ENCRYPTION_KEY: "ci-test-encryption-key-must-be-32-chars-long"
+      VOXBENTO_REAL_MODELS: "1"
+      REAL_MODELS_WHISPER_SIZES: ${{ inputs.whisper_sizes || 'tiny' }}
+      HF_HOME: ${{ github.workspace }}/.model-cache/huggingface
+      SUPERTONIC_CACHE_DIR: ${{ github.workspace }}/.model-cache/supertonic
+      HF_HUB_DISABLE_PROGRESS_BARS: "1"
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v7
+
+      - name: Set up Python 3.13
+        uses: actions/setup-python@v7
+        with:
+          python-version: "3.13"
+
+      # Model revisions live in uv.lock (Supertonic pins its own) and the NLLB provider.
+      # restore-keys reuses an older cache; the hub then fetches only what changed.
+      - name: Restore model weights
+        uses: actions/cache@v6.1.0
+        with:
+          path: .model-cache
+          key: real-models-${{ env.REAL_MODELS_WHISPER_SIZES }}-${{ hashFiles('uv.lock', 'portal/translations/providers/local.py') }}
+          restore-keys: |
+            real-models-${{ env.REAL_MODELS_WHISPER_SIZES }}-
+
+      - name: Sync dependencies (including dev and Supertonic)
+        run: uv sync --all-groups --extra supertonic --frozen
+
+      - name: Real inference through Supertonic, faster-whisper and NLLB
+        run: uv run pytest tests/test_real_models.py -v

@@ -22,6 +22,7 @@ _WORKSPACE_ROUTE_PATTERNS = (
     re.compile(r"/workspace/events/\d+/?"),
     re.compile(r"/workspace/events/\d+/(?:setup/(?:rooms|booths|invite)|regenerate_join_code|api-settings|caption-overlays|delete)/?"),
     re.compile(r"/workspace/events/\d+/(?:rooms|members)/?"),
+    re.compile(r"/workspace/events/\d+/attendance/(?:export)?"),
     re.compile(r"/workspace/events/\d+/rooms/new/?"),
     re.compile(r"/workspace/events/\d+/members/\d+/(?:invite|delete)/?"),
     re.compile(r"/workspace/events/\d+/team(?:/(?:add|remove|resend|links(?:/revoke)?)?)?"),
