@@ -15,7 +15,7 @@ CLOUDFLARE_PEER = "104.16.0.10"
 
 
 def _caddy_trusted() -> list[str]:
-    match = re.search(r"^\s*trusted_proxies (.+)$", (ROOT / "Caddyfile").read_text(), re.MULTILINE)
+    match = re.search(r"^\s*trusted_proxies (.+)$", (ROOT / "Caddyfile").read_text(encoding="utf-8"), re.MULTILINE)
     assert match, "Caddyfile must trust Cloudflare's ranges"
     return match.group(1).split()
 
