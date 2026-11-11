@@ -60,6 +60,9 @@ class Settings(BaseSettings):
     program_relay_control_secret: str = ""
     program_relay_max: int = 4
     program_relay_allowed_hosts: str = "a.rtmps.youtube.com,b.rtmps.youtube.com"
+    # Memory the local translation models may use together, in MB (#1193). Loading a model past this
+    # evicts the least recently used idle model, or is refused. 0 means no limit.
+    local_translation_memory_mb: int = Field(default=0, ge=0)
 
     @property
     def rtmps_ingest_enabled(self) -> bool:

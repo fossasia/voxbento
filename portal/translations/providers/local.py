@@ -19,6 +19,7 @@ import pycountry
 from huggingface_hub.utils import LocalEntryNotFoundError
 from tqdm.auto import tqdm
 
+from portal.config import settings
 from portal.translations.constants import TranslationProviderEnum
 from portal.translations.engine import (
     EngineKind,
@@ -171,6 +172,55 @@ def decrement_model_ref(model_size: str):
             _active_translations_per_model[model_size] -= 1
 
 
+class ModelMemoryBudgetError(RuntimeError):
+    """A local translation model cannot be loaded without going over the memory budget."""
+
+
+def model_memory_mb(model_size: str) -> int:
+    """The memory a model takes, from its registry entry; 0 for a model that has none (an operator's own path)."""
+    entry = get_translation_model(model_size)
+    return entry.approx_ram_mb if entry else 0
+
+
+def make_room_for(model_size: str) -> None:
+    """Evict idle models until ``model_size`` fits in the memory budget, or refuse to load it.
+
+    The least recently used model that is not translating goes first. A model in use is never
+    evicted. Nothing is evicted when the model cannot fit anyway. Called with the load lock held.
+    """
+    budget = settings.local_translation_memory_mb
+    needed = model_memory_mb(model_size)
+    if budget <= 0 or needed <= 0:
+        return
+    if needed > budget:
+        raise ModelMemoryBudgetError(
+            f"{model_size} needs about {needed} MB, more than the {budget} MB LOCAL_TRANSLATION_MEMORY_MB budget"
+        )
+
+    with _model_lock:
+        used = sum(model_memory_mb(loaded) for loaded in _loaded_models)
+        idle_oldest_first = sorted(
+            (name for name in _loaded_models if _active_translations_per_model.get(name, 0) == 0),
+            key=lambda name: _loaded_models[name].last_used,
+        )
+        to_evict = []
+        for name in idle_oldest_first:
+            if used + needed <= budget:
+                break
+            used -= model_memory_mb(name)
+            to_evict.append(name)
+        if used + needed > budget:
+            raise ModelMemoryBudgetError(
+                f"Not enough memory to load {model_size} (about {needed} MB): the other loaded models are in use "
+                f"and the LOCAL_TRANSLATION_MEMORY_MB budget is {budget} MB"
+            )
+        for name in to_evict:
+            logger.info("Evicting idle model %s to make room for %s", name, model_size)
+            del _loaded_models[name]
+    if to_evict:
+        gc.collect()
+
+
 def get_model_and_tokenizer(model_size: str):
     """Load or retrieve the cached CTranslate2 generator and tokenizer for a local model."""
     with _model_lock:
@@ -184,6 +234,8 @@ def get_model_and_tokenizer(model_size: str):
             if model_size in _loaded_models:
                 _loaded_models[model_size].last_used = time.time()
                 return _loaded_models[model_size].model, _loaded_models[model_size].tokenizer
+
+        make_room_for(model_size)
 
         logger.info(f"Loading NLLB model: {model_size}")
         import ctranslate2
@@ -221,10 +273,13 @@ def get_model_and_tokenizer(model_size: str):
         tokenizer = transformers.AutoTokenizer.from_pretrained(local_model_path, src_lang="eng_Latn", revision="main")  # nosec
         cpu_count = os.cpu_count() or 4
         intra_threads = min(cpu_count, 2)
+        device = "cuda" if ctranslate2.get_cuda_device_count() > 0 else "cpu"
+        logger.info("Running %s on the %s", model_size, device)
         model = ctranslate2.Translator(
             local_model_path,
-            device="cpu",
-            compute_type="int8",
+            device=device,
+            # "int8" on the CPU as before; on a GPU let CTranslate2 pick the fastest type it supports.
+            compute_type="int8" if device == "cpu" else "auto",
             inter_threads=1,
             intra_threads=intra_threads,
         )
@@ -395,6 +450,9 @@ class LocalProvider(TranslationProvider, TranslationEngine):
             translated_text = tokenizer.decode(tokenizer.convert_tokens_to_ids(target))
             return translated_text.strip()
 
+        except ModelMemoryBudgetError as e:
+            logger.error("[NLLB] Cannot load model %s: %s", model_size, e)
+            return None
         except Exception as e:
             import traceback
 
