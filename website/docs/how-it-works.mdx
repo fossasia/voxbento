@@ -240,7 +240,7 @@ Monitors floor audio via the Jitsi iframe and publishes translated audio to Medi
 
 ### Listeners
 
-Listening is not a role. Listeners receive the interpreted audio stream from MediaMTX via WHEP or HLS. They connect to the event's public listener page and choose a room and language — no login required by default.
+Listening is not a role. Listeners receive the interpreted audio stream from MediaMTX via WHEP or HLS. They connect to the event's public listener page and choose a room and language — no login required by default. A link can preselect the room and language with `room` and `lang` query parameters (for example `/listener/pycon2026?room=1&lang=hi`); unknown values fall back to the normal choice, and an event with a single room opens with that room selected.
   
 
 ## Live Captions
@@ -398,6 +398,9 @@ Templates may only use the placeholders declared for each notification and
 account links are encrypted at rest; a queued email whose sign-in or invitation
 link has been used or has expired is not sent, and the content of finished
 emails is erased after 30 days.
+
+The welcome email is queued for delivery 15 minutes after verification or magic-link sign-in changes an unverified account to verified.
+Already-verified accounts do not gain a welcome email or change an existing welcome delivery time by redeeming an old verification link.
 
 Every email uses one fixed layout, so they all look alike: the logo, the message
 in a white card with one button, and a footer. Admins edit only the message;

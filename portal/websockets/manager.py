@@ -16,7 +16,7 @@ from sqlalchemy.exc import SQLAlchemyError
 
 import portal.webhooks.worker as _wh_worker
 from portal.auth import WSAuthError, can_perform_role
-from portal.booth_identity import booth_id_to_mediamtx_path
+from portal.booth_identity import booth_id_to_mediamtx_path, parse_booth_id
 from portal.booth_publish import TICKET_TTL_SECS, issue_ticket
 from portal.globals import booths
 from portal.roles import ALL_ROLES, INTERPRETER, can_set_active
@@ -44,6 +44,7 @@ class Session:
     channel_id: str
     # Role derived from the bearer cookie at WS connection time — never from client data.
     granted_role: str | None = None
+    auth_payload: dict | None = None
     user_id: int | None = None
     invite_token_id: str | int | None = None
     revoked: bool = False
@@ -704,6 +705,12 @@ async def _handle_join(ws: WebSocket, session: Session, data: dict) -> None:
     """
     display_name = data.get("display_name", "Interpreter")
     role = data.get("role", INTERPRETER)
+    # Check these before they are used: a non-string role breaks the role lookup, and a falsy
+    # non-string language (null, 0, false) would be replaced by the booth's language below.
+    for name in ("role", "language"):
+        if name in data and not isinstance(data[name], str):
+            await ws.send_text(json.dumps({"type": "booth:error", "message": f"{name} must be a string."}))
+            return
     language = data.get("language") or session.language
     if not language:
         await ws.send_text(
@@ -732,13 +739,23 @@ async def _handle_join(ws: WebSocket, session: Session, data: dict) -> None:
         except PermissionError as exc:
             await ws.send_text(json.dumps({"type": "booth:error", "message": str(exc)}))
             return
+    # The booth ID names the room. A malformed one would create a booth with no
+    # identity or MediaMTX path, so it is rejected whether or not room_id is sent.
+    try:
+        _, booth_room_id, _ = parse_booth_id(session.booth_id)
+    except ValueError:
+        await ws.send_text(json.dumps({"type": "booth:error", "message": "Invalid booth_id format."}))
+        return
     room_id = data.get("room_id")
-    if room_id is not None:
-        try:
-            room_id = int(room_id)
-        except (TypeError, ValueError):
-            await ws.send_text(json.dumps({"type": "booth:error", "message": "room_id must be an integer."}))
-            return
+    # int() would turn 1.5, true or "1" into 1 (and fail on Infinity), so require a JSON integer.
+    if room_id is not None and (isinstance(room_id, bool) or not isinstance(room_id, int)):
+        await ws.send_text(json.dumps({"type": "booth:error", "message": "room_id must be an integer."}))
+        return
+    # A different room would give the booth another room's stream path if this
+    # join is the one that creates it (#975).
+    if room_id is not None and room_id != booth_room_id:
+        await ws.send_text(json.dumps({"type": "booth:error", "message": "room_id does not match this booth."}))
+        return
     try:
         participant, state = await booths.join_participant(
             booth_id=session.booth_id,
