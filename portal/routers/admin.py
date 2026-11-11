@@ -2529,21 +2529,27 @@ async def admin_delete_booth(request: Request, event_id: int, room_id: int, boot
     )
 
 
-def _clean_booth_target_languages(codes: list[str]) -> list[str]:
+def _clean_booth_target_languages(codes: list[str], saved: set[str]) -> list[str]:
     """The submitted target languages as the lowercase codes room setup offers, each once.
 
     Each code gets one row per booth, so a repeat or a second spelling ("ES" next to "es")
-    would break the save or translate every segment twice. Empty values are skipped.
+    would break the save or translate every segment twice. Empty values are skipped. A code
+    the booth already has is kept as saved: the language picker sends back saved codes it
+    does not list, and refusing them would block every later save of the booth.
     """
     cleaned: list[str] = []
+    seen: set[str] = set()
     for raw in codes:
-        code = raw.strip().lower()
-        if not code or code in cleaned:
+        code = raw.strip()
+        if code not in saved:
+            code = code.lower()
+            if code and code not in ROOM_LANGUAGE_NAMES:
+                raise TranslationLanguageError(
+                    status_code=400, detail="One of the chosen translation languages isn't recognised."
+                )
+        if not code or code.lower() in seen:
             continue
-        if code not in ROOM_LANGUAGE_NAMES:
-            raise TranslationLanguageError(
-                status_code=400, detail="One of the chosen translation languages isn't recognised."
-            )
+        seen.add(code.lower())
         cleaned.append(code)
     return cleaned
 
@@ -2564,9 +2570,11 @@ async def admin_booth_translation_settings(
 ):
     """Save supported translation settings or return the validation error to the form."""
     try:
-        translation_languages = _clean_booth_target_languages(translation_languages)
         async with get_session() as session:
             db_booth = await booth_in_room(session, event_id, room_id, booth_id)
+            translation_languages = _clean_booth_target_languages(
+                translation_languages, {lang.language_code for lang in db_booth.translation_languages}
+            )
             event = await get_event_by_id(session, event_id)
             if event is None:
                 raise HTTPException(status_code=404, detail="Event not found.")

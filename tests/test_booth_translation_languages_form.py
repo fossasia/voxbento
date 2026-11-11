@@ -37,9 +37,9 @@ async def admin_booth():
     await dispose()
 
 
-async def _save(cookie, event_id, room_id, booth_id, languages, *, accept="application/json"):
+async def _save(cookie, event_id, room_id, booth_id, languages, *, accept="application/json", enabled=True):
     data = {
-        "translation_enabled": "true",
+        "translation_enabled": "true" if enabled else "false",
         "translation_provider": "openai",
         "translation_model": "gpt-4o-mini",
         "translation_languages": languages,
@@ -101,6 +101,7 @@ async def test_the_browser_form_shows_the_error(admin_booth):
     res = await _save(cookie, event_id, room_id, booth_id, ["zz"], accept="text/html")
 
     assert res.status_code == 400
+    assert res.headers["content-type"].startswith("text/html")
     assert "isn&#39;t recognised" in res.text or "isn't recognised" in res.text
 
 
@@ -112,3 +113,36 @@ async def test_empty_values_are_skipped(admin_booth):
 
     assert res.status_code == 303
     assert await _languages(booth_id) == [("es", "Spanish", True)]
+
+
+async def _add_saved(booth_id, code):
+    """Store a target language the way an earlier version of the form could."""
+    async with get_session() as s:
+        s.add(BoothTranslationLanguage(booth_id=booth_id, language_code=code, language_name=code, enabled=True))
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("enabled", [True, False])
+async def test_a_code_the_booth_already_has_is_kept_as_saved(admin_booth, enabled):
+    """The picker sends back saved codes it does not list; the booth must still save."""
+    cookie, event_id, room_id, booth_id = admin_booth
+    await _add_saved(booth_id, "pt-BR")
+    await _add_saved(booth_id, "ES")
+
+    res = await _save(cookie, event_id, room_id, booth_id, ["pt-BR", "ES", "de"], enabled=enabled)
+
+    assert res.status_code == 303
+    assert await _languages(booth_id) == [("ES", "ES", True), ("de", "German", True), ("pt-BR", "pt-BR", True)]
+
+
+@pytest.mark.anyio
+async def test_a_saved_code_can_be_removed_and_a_new_unknown_one_is_still_refused(admin_booth):
+    cookie, event_id, room_id, booth_id = admin_booth
+    await _add_saved(booth_id, "pt-BR")
+
+    refused = await _save(cookie, event_id, room_id, booth_id, ["pt-BR", "zh-TW"])
+    removed = await _save(cookie, event_id, room_id, booth_id, ["de"])
+
+    assert refused.status_code == 400
+    assert removed.status_code == 303
+    assert await _languages(booth_id) == [("de", "German", True), ("pt-BR", "pt-BR", False)]
