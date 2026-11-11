@@ -42,7 +42,8 @@ _REDACTIONS: tuple[tuple[re.Pattern[str], str], ...] = (
     (
         re.compile(
             r"(?i)\b(token|key|api_key|apikey|client_secret|secret|code|access_token"
-            r"|refresh_token|password|passwd|signature|stream_key|join_code)"
+            r"|refresh_token|password|passwd|signature|stream_key|join_code"
+            r"|code_verifier|login_hint)"
             r"(['\"]?\s*[:=]\s*)(['\"])[^'\"]*\3"
         ),
         r"\1\2\3" + _PLACEHOLDER + r"\3",
@@ -53,7 +54,8 @@ _REDACTIONS: tuple[tuple[re.Pattern[str], str], ...] = (
     (
         re.compile(
             r"(?i)\b(token|key|api_key|apikey|client_secret|secret|code|access_token"
-            r"|refresh_token|password|passwd|signature|stream_key|join_code)"
+            r"|refresh_token|password|passwd|signature|stream_key|join_code"
+            r"|code_verifier|login_hint)"
             r"(['\"]?\s*[:=]\s*['\"]?)"
             # A percent escape is part of the value, but a bare "%" is not, so
             # "token=%s" keeps its format placeholder while "token=a%2Fb" is covered.
@@ -65,6 +67,8 @@ _REDACTIONS: tuple[tuple[re.Pattern[str], str], ...] = (
     (re.compile(r"(?i)\brtmps?://\S+"), _PLACEHOLDER),
     # Email addresses are PII even when the surrounding message is safe.
     (re.compile(r"\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}\b"), _PLACEHOLDER),
+    # The same address percent-encoded in a URL, where "@" arrives as "%40".
+    (re.compile(r"(?i)\b[A-Za-z0-9._+-]+%40[A-Za-z0-9.-]+\.[A-Za-z]{2,}\b"), _PLACEHOLDER),
 )
 
 

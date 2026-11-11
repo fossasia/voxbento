@@ -212,6 +212,34 @@ def test_redact_covers_mapping_reprs_basic_auth_and_encoded_values(raw, leaked):
     assert "[REDACTED]" in cleaned
 
 
+@pytest.mark.parametrize(
+    "url,leaked",
+    [
+        # The OAuth authorize redirect carries the user's email as a query parameter.
+        ("/oauth/authorize?client_id=c&login_hint=evy-admin%40demo.eventyay.test&event=demo", "evy-admin"),
+        ("/oauth/authorize?login_hint=someone@example.com", "someone"),
+        # A percent-encoded address is still an address, whatever the parameter is called.
+        ("/lookup?who=jo.doe%40example.org&page=2", "jo.doe"),
+        ("/oauth/token?code_verifier=dBjftJeZ4CVP-mB92K27uhbUJU1p1r_wW1gFWFOEjXk", "dBjftJeZ4CVP"),
+    ],
+)
+def test_an_access_line_does_not_carry_an_encoded_email_or_pkce_verifier(url, leaked):
+    record = _record("%s - %s %d", ("127.0.0.1", url, 200))
+    RedactionFilter().filter(record)
+    message = record.getMessage()
+    assert leaked not in message
+    assert "[REDACTED]" in message
+
+
+def test_redacting_an_encoded_email_leaves_the_rest_of_the_query_readable():
+    url = "/oauth/authorize?client_id=c&login_hint=a%40b.example&event=demo"
+    record = _record("%s - %s %d", ("127.0.0.1", url, 200))
+    RedactionFilter().filter(record)
+    message = record.getMessage()
+    assert "client_id=c" in message
+    assert "event=demo" in message
+
+
 def test_redaction_filter_scrubs_a_credential_named_extra():
     # The value looks like nothing on its own; the field name is the signal.
     record = _record("saved", password="hunter2")
