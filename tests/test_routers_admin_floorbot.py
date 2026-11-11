@@ -10,7 +10,7 @@ from fastapi_app import app
 
 os.environ["BOOTH_ACCESS_TOKEN"] = ""
 
-from portal.auth import create_user_token
+from portal.auth import create_user_token, decode_token, generate_admin_csrf_token
 
 
 @pytest.fixture(autouse=True)
@@ -25,7 +25,10 @@ async def setup_db():
 
 @pytest.fixture
 def client():
-    return AsyncClient(transport=ASGITransport(app=app), base_url="http://test")
+    return AsyncClient(
+        transport=ASGITransport(app=app),
+        base_url="http://test",
+    )
 
 
 async def _create_user(email="owner@test.com", is_admin=False):
@@ -67,13 +70,14 @@ async def _set_membership(user_id, event_id=None, room_id=None, role="event_owne
 
 
 @pytest.mark.anyio
-@patch('portal.meeting_source.start_transcription_worker')
-@patch('portal.meeting_source.stop_transcription_worker')
+@patch("portal.meeting_source.start_transcription_worker")
+@patch("portal.meeting_source.stop_transcription_worker")
 async def test_event_owner_can_start_stop_status(mock_stop, mock_start, client, setup_db):
     user = await _create_user()
     ev, rm = await _create_event_room()
     await _set_membership(user.id, event_id=ev.id, role="event_owner")
     token = create_user_token(user_id=user.id, email=user.email)
+    csrf_token = generate_admin_csrf_token(str(decode_token(token)["jti"]))
 
     with patch("portal.meeting_source.get_http_client") as mock_http:
         from unittest.mock import AsyncMock
@@ -87,26 +91,39 @@ async def test_event_owner_can_start_stop_status(mock_stop, mock_start, client, 
         mock_http.return_value = mock_client
 
         # Start
-        r = await client.post(f"/api/rooms/{rm.id}/floor-transcription/start", cookies={"user_token": token})
+        r = await client.post(
+            f"/api/rooms/{rm.id}/floor-transcription/start",
+            cookies={"user_token": token, "admin_csrf": csrf_token},
+            headers={"X-CSRF-Token": csrf_token},
+        )
         assert r.status_code == 200
 
         # Stop
-        r = await client.post(f"/api/rooms/{rm.id}/floor-transcription/stop", cookies={"user_token": token})
+        r = await client.post(
+            f"/api/rooms/{rm.id}/floor-transcription/stop",
+            cookies={"user_token": token, "admin_csrf": csrf_token},
+            headers={"X-CSRF-Token": csrf_token},
+        )
         assert r.status_code == 200
 
         # Status
-        r = await client.get(f"/api/rooms/{rm.id}/floor-transcription/status", cookies={"user_token": token})
+        r = await client.get(
+            f"/api/rooms/{rm.id}/floor-transcription/status",
+            cookies={"user_token": token, "admin_csrf": csrf_token},
+            headers={"X-CSRF-Token": csrf_token},
+        )
         assert r.status_code == 200
 
 
 @pytest.mark.anyio
-@patch('portal.meeting_source.start_transcription_worker')
-@patch('portal.meeting_source.stop_transcription_worker')
+@patch("portal.meeting_source.start_transcription_worker")
+@patch("portal.meeting_source.stop_transcription_worker")
 async def test_room_coordinator_can_start_stop(mock_stop, mock_start, client, setup_db):
     user = await _create_user()
     ev, rm = await _create_event_room()
     await _set_membership(user.id, room_id=rm.id, role="room_coordinator")
     token = create_user_token(user_id=user.id, email=user.email)
+    csrf_token = generate_admin_csrf_token(str(decode_token(token)["jti"]))
 
     with patch("portal.meeting_source.get_http_client") as mock_http:
         from unittest.mock import AsyncMock
@@ -117,7 +134,11 @@ async def test_room_coordinator_can_start_stop(mock_stop, mock_start, client, se
         mock_client.post = AsyncMock(return_value=mock_resp)
         mock_client.get = AsyncMock(return_value=mock_resp)
         mock_http.return_value = mock_client
-        r = await client.post(f"/api/rooms/{rm.id}/floor-transcription/start", cookies={"user_token": token})
+        r = await client.post(
+            f"/api/rooms/{rm.id}/floor-transcription/start",
+            cookies={"user_token": token, "admin_csrf": csrf_token},
+            headers={"X-CSRF-Token": csrf_token},
+        )
         assert r.status_code == 200
 
 
@@ -127,8 +148,13 @@ async def test_invalid_role_gets_403(client, setup_db):
     ev, rm = await _create_event_room()
     await _set_membership(user.id, event_id=ev.id, role="interpreter")
     token = create_user_token(user_id=user.id, email=user.email)
+    csrf_token = generate_admin_csrf_token(str(decode_token(token)["jti"]))
 
-    r = await client.post(f"/api/rooms/{rm.id}/floor-transcription/start", cookies={"user_token": token})
+    r = await client.post(
+        f"/api/rooms/{rm.id}/floor-transcription/start",
+        cookies={"user_token": token, "admin_csrf": csrf_token},
+        headers={"X-CSRF-Token": csrf_token},
+    )
     assert r.status_code == 403
 
 
@@ -139,18 +165,24 @@ async def test_cross_event_leak_gets_403(client, setup_db):
     ev2, rm2 = await _create_event_room("ev2")
     await _set_membership(user.id, event_id=ev1.id, role="event_owner")
     token = create_user_token(user_id=user.id, email=user.email)
+    csrf_token = generate_admin_csrf_token(str(decode_token(token)["jti"]))
 
-    r = await client.post(f"/api/rooms/{rm2.id}/floor-transcription/start", cookies={"user_token": token})
+    r = await client.post(
+        f"/api/rooms/{rm2.id}/floor-transcription/start",
+        cookies={"user_token": token, "admin_csrf": csrf_token},
+        headers={"X-CSRF-Token": csrf_token},
+    )
     assert r.status_code == 403
 
 
 @pytest.mark.anyio
-@patch('portal.meeting_source.start_transcription_worker')
-@patch('portal.meeting_source.stop_transcription_worker')
+@patch("portal.meeting_source.start_transcription_worker")
+@patch("portal.meeting_source.stop_transcription_worker")
 async def test_admin_does_no_extra_query(mock_stop, mock_start, client, setup_db):
     user = await _create_user(is_admin=True)
     ev, rm = await _create_event_room()
     token = create_user_token(user_id=user.id, email=user.email)
+    csrf_token = generate_admin_csrf_token(str(decode_token(token)["jti"]))
 
     # We will assert that only 2 queries happen in the dependency (fetch user, etc)
     # The short circuit means we shouldn't hit the `RoomMembership` OR query
@@ -163,7 +195,11 @@ async def test_admin_does_no_extra_query(mock_stop, mock_start, client, setup_db
         mock_client.post = AsyncMock(return_value=mock_resp)
         mock_client.get = AsyncMock(return_value=mock_resp)
         mock_http.return_value = mock_client
-        r = await client.post(f"/api/rooms/{rm.id}/floor-transcription/start", cookies={"user_token": token})
+        r = await client.post(
+            f"/api/rooms/{rm.id}/floor-transcription/start",
+            cookies={"user_token": token, "admin_csrf": csrf_token},
+            headers={"X-CSRF-Token": csrf_token},
+        )
         assert r.status_code == 200
 
 
@@ -173,7 +209,12 @@ async def test_admin_missing_room_gets_400(client, setup_db):
     # for a non-existent room because the room lookup fails before bot logic runs.
     user = await _create_user(is_admin=True)
     token = create_user_token(user_id=user.id, email=user.email)
-    r = await client.post("/api/rooms/999/floor-transcription/start", cookies={"user_token": token})
+    csrf_token = generate_admin_csrf_token(str(decode_token(token)["jti"]))
+    r = await client.post(
+        "/api/rooms/999/floor-transcription/start",
+        cookies={"user_token": token, "admin_csrf": csrf_token},
+        headers={"X-CSRF-Token": csrf_token},
+    )
     assert r.status_code == 400
 
 
@@ -183,7 +224,12 @@ async def test_non_admin_missing_room_403(client, setup_db):
     ev, rm = await _create_event_room()
     await _set_membership(user.id, event_id=ev.id, role="event_owner")
     token = create_user_token(user_id=user.id, email=user.email)
-    r = await client.post("/api/rooms/999/floor-transcription/start", cookies={"user_token": token})
+    csrf_token = generate_admin_csrf_token(str(decode_token(token)["jti"]))
+    r = await client.post(
+        "/api/rooms/999/floor-transcription/start",
+        cookies={"user_token": token, "admin_csrf": csrf_token},
+        headers={"X-CSRF-Token": csrf_token},
+    )
     assert r.status_code == 403
 
 
@@ -191,11 +237,16 @@ async def test_non_admin_missing_room_403(client, setup_db):
 async def test_malformed_room_id_422(client, setup_db):
     user = await _create_user(is_admin=True)
     token = create_user_token(user_id=user.id, email=user.email, is_admin=True)
-    r = await client.post("/api/rooms/abc/floor-transcription/start", cookies={"user_token": token})
+    csrf_token = generate_admin_csrf_token(str(decode_token(token)["jti"]))
+    r = await client.post(
+        "/api/rooms/abc/floor-transcription/start",
+        cookies={"user_token": token, "admin_csrf": csrf_token},
+        headers={"X-CSRF-Token": csrf_token},
+    )
     assert r.status_code == 422
 
     r = await client.post("/api/rooms/abc/floor-transcription/start")
-    assert r.status_code == 422
+    assert r.status_code == 403
 
 
 @pytest.mark.anyio
@@ -211,6 +262,7 @@ async def test_downstream_failure_returns_502(client, setup_db):
     ev, rm = await _create_event_room()
     await _set_membership(user.id, event_id=ev.id, role="event_owner")
     token = create_user_token(user_id=user.id, email=user.email)
+    csrf_token = generate_admin_csrf_token(str(decode_token(token)["jti"]))
 
     with patch("portal.meeting_source.get_http_client") as mock_http:
         from unittest.mock import AsyncMock
@@ -227,7 +279,11 @@ async def test_downstream_failure_returns_502(client, setup_db):
         mock_client.post = AsyncMock(side_effect=err)
         mock_http.return_value = mock_client
 
-        r = await client.post(f"/api/rooms/{rm.id}/floor-transcription/start", cookies={"user_token": token})
+        r = await client.post(
+            f"/api/rooms/{rm.id}/floor-transcription/start",
+            cookies={"user_token": token, "admin_csrf": csrf_token},
+            headers={"X-CSRF-Token": csrf_token},
+        )
         assert r.status_code == 502
         assert "meeting agent service is unreachable" in r.text
 
@@ -238,8 +294,11 @@ async def test_privilege_escalation(client, setup_db):
     ev, rm = await _create_event_room()
     await _set_membership(user.id, event_id=ev.id, role="event_owner")
     token = create_user_token(user_id=user.id, email=user.email)
+    csrf_token = generate_admin_csrf_token(str(decode_token(token)["jti"]))
 
-    r = await client.get("/admin/users/", cookies={"user_token": token})
+    r = await client.get(
+        "/admin/users/", cookies={"user_token": token, "admin_csrf": csrf_token}, headers={"X-CSRF-Token": csrf_token}
+    )
     assert r.status_code == 403
 
 
@@ -270,6 +329,7 @@ async def test_revoked_admin_flag_takes_effect_immediately(client, setup_db):
     # Token is created while the user is still an admin, carrying is_admin=True in the JWT payload.
     # This simulates a stale token that remains in the browser after the DB role is revoked.
     token = create_user_token(user_id=user.id, email=user.email, is_admin=True)
+    csrf_token = generate_admin_csrf_token(str(decode_token(token)["jti"]))
 
     # Immediately revoke admin in the DB (simulating an admin demotion while
     # the user's JWT is still valid)
@@ -277,6 +337,7 @@ async def test_revoked_admin_flag_takes_effect_immediately(client, setup_db):
         from sqlalchemy import select as sa_select
 
         from portal.models import User
+
         db_user = (await s.execute(sa_select(User).where(User.id == user.id))).scalars().first()
         db_user.is_admin = False
         await s.commit()
@@ -284,6 +345,10 @@ async def test_revoked_admin_flag_takes_effect_immediately(client, setup_db):
     # The DB now says is_admin=False; even though the token was created when the
     # user was an admin, the endpoint must deny global-admin access.
     ev, rm = await _create_event_room()
-    r = await client.post(f"/api/rooms/{rm.id}/floor-transcription/start", cookies={"user_token": token})
+    r = await client.post(
+        f"/api/rooms/{rm.id}/floor-transcription/start",
+        cookies={"user_token": token, "admin_csrf": csrf_token},
+        headers={"X-CSRF-Token": csrf_token},
+    )
     # No event_owner membership exists, so 403 is correct here.
     assert r.status_code == 403, f"Expected 403 after admin revocation, got {r.status_code}"
