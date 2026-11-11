@@ -4,6 +4,10 @@
    that the template used to carry.
    ─────────────────────────────────────────────────────────────────────────── */
 
+.custom-modal-overlay.active:not([open]) {
+  display: flex;
+}
+
 /* ── Page layout ─────────────────────────────────────────────────────────── */
 .admin-main.dev-main { max-width: 1000px; padding: 40px 24px; }
 

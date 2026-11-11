@@ -5,70 +5,51 @@
 
 const COPY_FEEDBACK_MS = 2000;
 const copyFeedbackByElement = new WeakMap();
-let clipboardWriteQueue = null;
 
 /**
- * Copies text using the synchronous fallback when it is still within the click gesture,
- * then uses the Clipboard API if necessary.
+ * Copies text synchronously within the click gesture to keep credential writes ordered.
  */
-async function copyTextNow(text, allowSynchronousFallback) {
-  if (allowSynchronousFallback && typeof document.execCommand === 'function') {
-    let textarea;
-    try {
-      textarea = document.createElement('textarea');
-      textarea.value = text;
-      textarea.readOnly = true;
-      textarea.style.position = 'fixed';
-      textarea.style.opacity = '0';
-      document.body.appendChild(textarea);
-      textarea.focus();
-      textarea.select();
-      if (document.execCommand('copy')) {
-        return true;
-      }
-    } catch (error) {
-      console.error('Clipboard fallback failed:', error);
-    } finally {
-      textarea?.remove();
-    }
+function copyText(text) {
+  if (typeof document.execCommand !== 'function') {
+    return false;
   }
 
-  // Fallback failed or unavailable, try async Clipboard API
-  if (navigator.clipboard?.writeText) {
-    try {
-      await navigator.clipboard.writeText(text);
-      return true;
-    } catch (error) {
-      console.error('Clipboard API failed:', error);
-      return false;
-    }
+  let textarea;
+  try {
+    textarea = document.createElement('textarea');
+    textarea.value = text;
+    textarea.readOnly = true;
+    textarea.style.position = 'fixed';
+    textarea.style.opacity = '0';
+    document.body.appendChild(textarea);
+    textarea.focus();
+    textarea.select();
+    return document.execCommand('copy');
+  } catch (error) {
+    console.error('Clipboard copy failed:', error);
+    return false;
+  } finally {
+    textarea?.remove();
   }
-
-  return false;
 }
 
 /**
- * Serializes credential writes so a delayed older write cannot replace a newer copy.
+ * Resets copy feedback only while the same attempt still owns the element.
  */
-function copyText(text) {
-  // Only an operation started immediately can use execCommand in the click gesture.
-  const allowSynchronousFallback = clipboardWriteQueue === null;
-  const operation = clipboardWriteQueue
-    ? clipboardWriteQueue.then(
-        () => copyTextNow(text, allowSynchronousFallback),
-        () => copyTextNow(text, allowSynchronousFallback),
-      )
-    : copyTextNow(text, allowSynchronousFallback);
-  clipboardWriteQueue = operation;
-
-  const clearQueue = () => {
-    if (clipboardWriteQueue === operation) {
-      clipboardWriteQueue = null;
+function scheduleCopyFeedbackReset(element, tooltip, state) {
+  state.timerId = setTimeout(() => {
+    if (copyFeedbackByElement.get(element) !== state) {
+      return;
     }
-  };
-  operation.then(clearQueue, clearQueue);
 
-  return operation;
+    element.classList.remove('copied', 'copy-failed');
+
+    if (tooltip) {
+      tooltip.textContent = 'Copy to clipboard';
+      tooltip.classList.remove('copied-tooltip');
+    }
+    copyFeedbackByElement.delete(element);
+  }, COPY_FEEDBACK_MS);
 }
 
 /**
@@ -93,7 +74,7 @@ async function copyToClipboard(element, text) {
       tooltip.classList.remove('copied-tooltip');
     }
 
-    const copied = await copyText(text);
+    const copied = copyText(text);
     if (copyFeedbackByElement.get(element) !== state) {
       return;
     }
@@ -110,22 +91,10 @@ async function copyToClipboard(element, text) {
     }
 
     if (!copied) {
-      console.error('Failed to copy text using available clipboard methods');
+      console.error('Failed to copy credential with the synchronous clipboard API');
     }
 
-    state.timerId = setTimeout(() => {
-      if (copyFeedbackByElement.get(element) !== state) {
-        return;
-      }
-
-      element.classList.remove('copied', 'copy-failed');
-
-      if (tooltip) {
-        tooltip.textContent = 'Copy to clipboard';
-        tooltip.classList.remove('copied-tooltip');
-      }
-      copyFeedbackByElement.delete(element);
-    }, COPY_FEEDBACK_MS);
+    scheduleCopyFeedbackReset(element, tooltip, state);
   } catch (error) {
     console.error('Unexpected error while copying developer credential:', error);
     if (state && copyFeedbackByElement.get(element) !== state) {
@@ -138,6 +107,9 @@ async function copyToClipboard(element, text) {
       if (tooltip) {
         tooltip.textContent = 'Copy failed';
         tooltip.classList.remove('copied-tooltip');
+      }
+      if (state) {
+        scheduleCopyFeedbackReset(element, tooltip, state);
       }
     } catch (feedbackError) {
       console.error('Could not display clipboard failure feedback:', feedbackError);

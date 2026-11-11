@@ -44,6 +44,32 @@ function loadCopyHandler({
     return wrapper;
   }
   const wrapper = createWrapper("secret-value");
+  /** Applies the dashboard's active overlay visibility rule to a fixture. */
+  function isOverlayVisible(modal) {
+    const styles = fs.readFileSync(
+      path.join(__dirname, "../portal/static/css/admin.css"),
+      "utf8",
+    );
+    const developerStyles = fs.readFileSync(
+      path.join(__dirname, "../portal/static/css/developer.css"),
+      "utf8",
+    );
+    const hiddenRule = styles.match(
+      /\.custom-modal-overlay:not\(\[open\]\)\s*\{([^}]+)\}/,
+    )?.[1];
+    const visibleRule = developerStyles.match(
+      /\.custom-modal-overlay\.active:not\(\[open\]\)\s*\{([^}]+)\}/,
+    )?.[1];
+    assert.ok(hiddenRule, "admin.css hides unopened custom modal overlays");
+    assert.ok(visibleRule, "developer.css overrides unopened active overlays");
+    const hiddenDisplay = hiddenRule.match(/display:\s*([^;]+)/)?.[1];
+    const visibleDisplay = visibleRule.match(/display:\s*([^;]+)/)?.[1];
+    assert.equal(hiddenDisplay, "none");
+    assert.equal(visibleDisplay, "flex");
+    return modal.modalClasses.has("active")
+      ? visibleDisplay !== "none"
+      : hiddenDisplay !== "none";
+  }
   /** Creates a minimal event target for modal behavior tests. */
   function createEventTarget() {
     const listeners = new Map();
@@ -184,6 +210,7 @@ function loadCopyHandler({
     appendedElements,
     errors: context.console.errors,
     modalFixtures,
+    isOverlayVisible,
     runTimer(timer) {
       timer.callback();
     },
@@ -201,6 +228,10 @@ async function main() {
   assert.ok(
     modalHandlers.modalFixtures.createAppModal.modal.modalClasses.has("active"),
   );
+  assert.equal(
+    modalHandlers.isOverlayVisible(modalHandlers.modalFixtures.createAppModal.modal),
+    true,
+  );
   modalHandlers.modalFixtures.createAppModal.confirmButton.click();
   assert.equal(
     modalHandlers.modalFixtures.createAppModal.modal.modalClasses.has("active"),
@@ -215,6 +246,10 @@ async function main() {
     false,
   );
   modalHandlers.modalFixtures.newSecretModal.modal.classList.add("active");
+  assert.equal(
+    modalHandlers.isOverlayVisible(modalHandlers.modalFixtures.newSecretModal.modal),
+    true,
+  );
   assert.equal(
     modalHandlers.modalFixtures.newSecretModal.confirmButton.textContent,
     "I have copied my secret",
@@ -238,54 +273,29 @@ async function main() {
     ),
   );
 
-  let rejectedWriteCalls = 0;
-  const rejectedClipboard = {
-    writeText: async () => {
-      rejectedWriteCalls += 1;
-      throw new Error("clipboard denied");
+  let pendingWriteCalls = 0;
+  const clipboardValue = { value: "" };
+  const synchronousCopy = loadCopyHandler({
+    clipboard: {
+      writeText() {
+        pendingWriteCalls += 1;
+        return new Promise(() => {});
+      },
     },
-  };
-  const rejectedClipboardCopy = loadCopyHandler({
-    clipboard: rejectedClipboard,
     execCommand(command, elements) {
       assert.equal(command, "copy");
-      assert.equal(elements[0].value, "secret-value");
-      return false;
+      clipboardValue.value = elements[0].value;
+      return true;
     },
   });
-  await rejectedClipboardCopy.click();
-  assert.equal(rejectedWriteCalls, 1);
-  assert.ok(rejectedClipboardCopy.wrapperClasses.has("copy-failed"));
-  assert.equal(rejectedClipboardCopy.tooltip.textContent, "Copy failed");
-  assert.equal(rejectedClipboardCopy.appendedElements.length, 0);
-
-  let successfulWriteCalls = 0;
-  const asyncClipboardCopy = loadCopyHandler({
-    clipboard: {
-      async writeText(text) {
-        successfulWriteCalls += 1;
-        assert.equal(text, "secret-value");
-      },
-    },
-    execCommand: () => false,
-  });
-  await asyncClipboardCopy.click();
-  assert.equal(successfulWriteCalls, 1);
-  assert.ok(asyncClipboardCopy.wrapperClasses.has("copied"));
-  assert.equal(asyncClipboardCopy.tooltip.textContent, "Copied!");
-
-  let unexpectedWriteCalls = 0;
-  const synchronousFallback = loadCopyHandler({
-    clipboard: {
-      async writeText() {
-        unexpectedWriteCalls += 1;
-      },
-    },
-    execCommand: () => true,
-  });
-  await synchronousFallback.click();
-  assert.equal(unexpectedWriteCalls, 0);
-  assert.ok(synchronousFallback.wrapperClasses.has("copied"));
+  const firstCredential = synchronousCopy.createWrapper("first-secret");
+  const newestCredential = synchronousCopy.createWrapper("newest-secret");
+  await synchronousCopy.click(firstCredential);
+  assert.ok(firstCredential.wrapperClasses.has("copied"));
+  await synchronousCopy.click(newestCredential);
+  assert.ok(newestCredential.wrapperClasses.has("copied"));
+  assert.equal(clipboardValue.value, "newest-secret");
+  assert.equal(pendingWriteCalls, 0);
 
   const failedCopy = loadCopyHandler({
     clipboard: undefined,
@@ -321,17 +331,23 @@ async function main() {
   assert.equal(successThenFailure.wrapperClasses.has("copied"), false);
 
   const unexpectedClipboardError = loadCopyHandler({
-    clipboard: {
-      get writeText() {
-        throw new Error("clipboard access failed unexpectedly");
-      },
-    },
+    clipboard: undefined,
     execCommand: () => false,
   });
-  await unexpectedClipboardError.click();
-  assert.ok(unexpectedClipboardError.wrapperClasses.has("copy-failed"));
+  const clickTarget = unexpectedClipboardError.createWrapper("secret-value");
+  const removeTooltipClass = clickTarget.tooltip.classList.remove;
+  let throwOnTooltipClassRemoval = true;
+  clickTarget.tooltip.classList.remove = (...names) => {
+    if (throwOnTooltipClassRemoval) {
+      throwOnTooltipClassRemoval = false;
+      throw new Error("tooltip class update failed");
+    }
+    removeTooltipClass(...names);
+  };
+  await unexpectedClipboardError.click(clickTarget);
+  assert.ok(clickTarget.wrapperClasses.has("copy-failed"));
   assert.equal(
-    unexpectedClipboardError.tooltip.textContent,
+    clickTarget.tooltip.textContent,
     "Copy failed",
   );
   assert.ok(
@@ -339,67 +355,17 @@ async function main() {
       args[0].includes("Unexpected error while copying developer credential"),
     ),
   );
-
-  let resolveFirstWrite;
-  const clipboardWrites = [];
-  let clipboardValue = "";
-  const serializedCopy = loadCopyHandler({
-    clipboard: {
-      writeText(text) {
-        clipboardWrites.push(text);
-        if (text === "secret-value") {
-          return new Promise((resolve) => {
-            resolveFirstWrite = () => {
-              clipboardValue = text;
-              resolve();
-            };
-          });
-        }
-        clipboardValue = text;
-        return Promise.resolve();
-      },
-    },
-    execCommand: () => false,
-  });
-  const firstWrapper = serializedCopy.createWrapper("secret-value");
-  const secondWrapper = serializedCopy.createWrapper("new-secret");
-  const firstWrite = serializedCopy.click(firstWrapper);
-  const secondWrite = serializedCopy.click(secondWrapper);
-  assert.deepEqual(clipboardWrites, ["secret-value"]);
-  assert.equal(secondWrapper.tooltip.textContent, "Copying…");
-  assert.equal(secondWrapper.wrapperClasses.has("copy-failed"), false);
-  resolveFirstWrite();
-  await firstWrite;
-  await secondWrite;
-  assert.deepEqual(clipboardWrites, ["secret-value", "new-secret"]);
-  assert.equal(clipboardValue, "new-secret");
-  assert.ok(firstWrapper.wrapperClasses.has("copied"));
-  assert.ok(secondWrapper.wrapperClasses.has("copied"));
-
-  let resolveRetry;
-  let retryWriteCount = 0;
-  const retryCopy = loadCopyHandler({
-    clipboard: {
-      writeText() {
-        retryWriteCount += 1;
-        if (retryWriteCount === 1) {
-          return Promise.resolve();
-        }
-        return new Promise((resolve) => {
-          resolveRetry = resolve;
-        });
-      },
-    },
-    execCommand: () => false,
-  });
-  await retryCopy.click();
-  assert.equal(retryCopy.tooltip.textContent, "Copied!");
-  const retry = retryCopy.click();
-  assert.equal(retryCopy.tooltip.textContent, "Copying…");
-  assert.equal(retryCopy.wrapperClasses.has("copied"), false);
-  resolveRetry();
-  await retry;
-  assert.equal(retryCopy.tooltip.textContent, "Copied!");
+  const unexpectedErrorReset = unexpectedClipboardError.timers.at(-1);
+  assert.equal(unexpectedErrorReset.delay, 2000);
+  unexpectedClipboardError.runTimer(unexpectedErrorReset);
+  assert.equal(
+    clickTarget.wrapperClasses.has("copy-failed"),
+    false,
+  );
+  assert.equal(
+    clickTarget.tooltip.textContent,
+    "Copy to clipboard",
+  );
 
   const repeatedCopy = loadCopyHandler({ execCommand: () => true });
   await repeatedCopy.click();
