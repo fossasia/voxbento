@@ -20,7 +20,7 @@ from portal.crypto import decrypt_val, encrypt_val
 from portal.database import configure, dispose, get_session, init_db
 from portal.models import Event, Room, User
 from portal.transcription import worker
-from portal.transcription.providers.base import ProviderConfig
+from portal.transcription.providers.base import ProviderConfig, TranscriptionProvider
 
 # These tests are not about CSRF; their requests carry the token a real page would send.
 pytestmark = pytest.mark.usefixtures("auto_csrf")
@@ -43,7 +43,7 @@ class DummyFfmpeg:
         """Finish the simulated process without external resources."""
 
 
-class RecordingProvider:
+class RecordingProvider(TranscriptionProvider):
     """Capture effective credentials on initial connections and retries."""
 
     def __init__(self) -> None:
@@ -461,7 +461,7 @@ async def test_sarvam_permanent_auth_failure_suppresses_reconciler_restarts_unti
     env = environment
     calls: asyncio.Queue[tuple[str | None, str]] = asyncio.Queue()
 
-    class _SarvamAuthStub:
+    class _SarvamAuthStub(TranscriptionProvider):
         async def run_stream(
             self, process, language_code, model_variant, config, broadcast_callback, booth_id, room_id
         ) -> None:

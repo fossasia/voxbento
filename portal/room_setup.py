@@ -26,7 +26,8 @@ from portal.roles import INTERPRETER
 from portal.transcription.constants import ALLOWED_MODELS, ProviderEnum
 from portal.transcription.providers.base import get_api_key
 from portal.transcription.providers.sarvam import is_supported_sarvam_language
-from portal.translations.registry import NLLB_200_DISTILLED_600M, get_translation_model
+from portal.translations.model_languages import supported_languages, unsupported_languages
+from portal.translations.registry import NLLB_200_DISTILLED_600M
 from portal.tts.constants import DEEPGRAM_VOICE_MAPPING, SUPERTONIC_SUPPORTED_LANGS
 from portal.utils import _make_jitsi_url
 
@@ -137,6 +138,33 @@ class EngineCatalog:
     def voice_support(self) -> dict[str, list[str]]:
         """The languages each available voice service can speak, for the setup form."""
         return {engine.provider: sorted(voice_languages_for(engine.provider)) for engine in self.voice}
+
+    @property
+    def translation_support(self) -> dict[str, list[str]]:
+        """The languages of each translation service that has a fixed list, for the setup form.
+
+        A service that is missing here translates any language.
+        """
+        support = {engine.provider: supported_languages(engine.provider, engine.model) for engine in self.translation}
+        return {provider: codes for provider, codes in support.items() if codes is not None}
+
+    def translation_unfit(self, language_codes: Iterable[str | None]) -> set[str]:
+        """The translation services that cannot handle every one of these languages."""
+        codes = list(language_codes)
+        return {
+            engine.provider
+            for engine in self.translation
+            if unsupported_languages(engine.provider, engine.model, codes)
+        }
+
+    def translation_hidden(self, language_codes: Iterable[str | None]) -> set[str]:
+        """The unfit services a settings page leaves out of its service picker.
+
+        None when no service fits: hiding them all would leave the picker empty, and saving
+        one still explains which language it cannot translate.
+        """
+        unfit = self.translation_unfit(language_codes)
+        return unfit if len(unfit) < len(self.translation) else set()
 
     def find(self, kind: str, provider: str) -> Engine | None:
         return next((e for e in getattr(self, kind) if e.provider == provider), None)
@@ -475,10 +503,14 @@ def parse_plan(
             f"AI voice isn't available for {', '.join(language_name(code) for code in plan.voice_languages)}: "
             "no voice service is set up for this event. Choose AI captions, or add a Deepgram key on API keys."
         )
-    if ai_languages and plan.translation_engine == "local":
-        chosen = catalog.find("translation", plan.translation_engine)
-        model = (get_translation_model(chosen.model) if chosen else None) or NLLB_200_DISTILLED_600M
-        unsupported = [language_name(code) for code in model.unsupported((plan.spoken_language, *plan.ai_languages))]
+    chosen_translation = catalog.find("translation", plan.translation_engine)
+    if ai_languages and chosen_translation:
+        unsupported = [
+            language_name(code)
+            for code in unsupported_languages(
+                chosen_translation.provider, chosen_translation.model, (plan.spoken_language, *plan.ai_languages)
+            )
+        ]
         if unsupported:
             errors.append(
                 f"The built-in translator doesn't support {', '.join(unsupported)}. "
