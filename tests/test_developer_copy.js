@@ -5,7 +5,12 @@ const fs = require("node:fs");
 const path = require("node:path");
 const vm = require("node:vm");
 
-function loadCopyHandler({ clipboard, execCommand }) {
+function loadCopyHandler({
+  clipboard,
+  execCommand,
+  withModals = false,
+  includeSecretModal = true,
+}) {
   const timers = [];
   let nextTimerId = 0;
   const activeTimers = new Map();
@@ -35,13 +40,71 @@ function loadCopyHandler({ clipboard, execCommand }) {
     return wrapper;
   }
   const wrapper = createWrapper("secret-value");
+  function createEventTarget() {
+    const listeners = new Map();
+    return {
+      addEventListener(type, callback) {
+        const callbacks = listeners.get(type) ?? [];
+        callbacks.push(callback);
+        listeners.set(type, callbacks);
+      },
+      dispatch(type, event = {}) {
+        for (const callback of listeners.get(type) ?? []) {
+          callback(event);
+        }
+      },
+    };
+  }
+  function createButton() {
+    return {
+      ...createEventTarget(),
+      click() {
+        this.dispatch("click");
+      },
+    };
+  }
+  function createModal() {
+    const modalClasses = new Set();
+    const modal = {
+      ...createEventTarget(),
+      classList: {
+        add: (name) => modalClasses.add(name),
+        remove: (name) => modalClasses.delete(name),
+      },
+      querySelector: () => cancelButton,
+      dispatchClick(target) {
+        this.dispatch("click", { target });
+      },
+      modalClasses,
+    };
+    const cancelButton = createButton();
+    return { modal, cancelButton };
+  }
+  const createAppModal = withModals ? createModal() : null;
+  const newSecretModal =
+    withModals && includeSecretModal ? createModal() : null;
+  const modalFixtures = withModals
+    ? {
+        createButton: createButton(),
+        createAppModal,
+        newSecretModal,
+      }
+    : null;
+  const elementsById = new Map();
+  if (modalFixtures) {
+    elementsById.set("btn-create-app", modalFixtures.createButton);
+    elementsById.set("modal-create-app", createAppModal.modal);
+    if (newSecretModal) {
+      elementsById.set("modal-new-secret", newSecretModal.modal);
+    }
+  }
   let clickHandler;
   const document = {
     addEventListener(type, handler) {
       if (type === "DOMContentLoaded") handler();
       if (type === "click") clickHandler = handler;
     },
-    getElementById: () => null,
+    getElementById: (id) => elementsById.get(id) ?? null,
     querySelectorAll: () => [],
     createElement: () => ({
       style: {},
@@ -109,6 +172,7 @@ function loadCopyHandler({ clipboard, execCommand }) {
     timers,
     appendedElements,
     errors: context.console.errors,
+    modalFixtures,
     runTimer(timer) {
       timer.callback();
     },
@@ -116,6 +180,48 @@ function loadCopyHandler({ clipboard, execCommand }) {
 }
 
 async function main() {
+  const modalHandlers = loadCopyHandler({
+    clipboard: undefined,
+    execCommand: () => false,
+    withModals: true,
+  });
+  modalHandlers.modalFixtures.createButton.click();
+  assert.ok(
+    modalHandlers.modalFixtures.createAppModal.modal.modalClasses.has("active"),
+  );
+  modalHandlers.modalFixtures.createAppModal.cancelButton.click();
+  assert.equal(
+    modalHandlers.modalFixtures.createAppModal.modal.modalClasses.has("active"),
+    false,
+  );
+  modalHandlers.modalFixtures.createButton.click();
+  modalHandlers.modalFixtures.createAppModal.modal.dispatchClick(
+    modalHandlers.modalFixtures.createAppModal.modal,
+  );
+  assert.equal(
+    modalHandlers.modalFixtures.createAppModal.modal.modalClasses.has("active"),
+    false,
+  );
+  modalHandlers.modalFixtures.newSecretModal.modal.classList.add("active");
+  modalHandlers.modalFixtures.newSecretModal.cancelButton.click();
+  assert.equal(
+    modalHandlers.modalFixtures.newSecretModal.modal.modalClasses.has("active"),
+    false,
+  );
+
+  const missingSecretModal = loadCopyHandler({
+    clipboard: undefined,
+    execCommand: () => false,
+    withModals: true,
+    includeSecretModal: false,
+  });
+  missingSecretModal.modalFixtures.createButton.click();
+  assert.ok(
+    missingSecretModal.modalFixtures.createAppModal.modal.modalClasses.has(
+      "active",
+    ),
+  );
+
   let rejectedWriteCalls = 0;
   const rejectedClipboard = {
     writeText: async () => {
