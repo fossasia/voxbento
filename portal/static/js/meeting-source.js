@@ -90,7 +90,10 @@ async function refresh() {
 async function change(action, confirmSourceChange = false) {
   const response = await fetch(card.dataset.url, {
     method: 'POST',
-    headers: {'Content-Type': 'application/json'},
+    headers: {
+      'Content-Type': 'application/json',
+      'X-CSRF-Token': document.querySelector('meta[name="csrf-token"]')?.content || ''
+    },
     body: JSON.stringify({action, meeting_url: urlInput.value, confirm_source_change: confirmSourceChange}),
   });
   let data;
