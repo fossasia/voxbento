@@ -7,6 +7,10 @@ const COPY_FEEDBACK_MS = 2000;
 const copyFeedbackByElement = new WeakMap();
 let clipboardWriteQueue = null;
 
+/**
+ * Copies text using the synchronous fallback when it is still within the click gesture,
+ * then uses the Clipboard API if necessary.
+ */
 async function copyTextNow(text, allowSynchronousFallback) {
   if (allowSynchronousFallback && typeof document.execCommand === 'function') {
     let textarea;
@@ -43,6 +47,9 @@ async function copyTextNow(text, allowSynchronousFallback) {
   return false;
 }
 
+/**
+ * Serializes credential writes so a delayed older write cannot replace a newer copy.
+ */
 function copyText(text) {
   // Only an operation started immediately can use execCommand in the click gesture.
   const allowSynchronousFallback = clipboardWriteQueue === null;

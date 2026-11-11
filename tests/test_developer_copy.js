@@ -5,6 +5,9 @@ const fs = require("node:fs");
 const path = require("node:path");
 const vm = require("node:vm");
 
+/**
+ * Loads developer.js with controlled DOM, clipboard, and timer behavior.
+ */
 function loadCopyHandler({
   clipboard,
   execCommand,
@@ -16,6 +19,7 @@ function loadCopyHandler({
   const activeTimers = new Map();
   const appendedElements = [];
   const wrappers = [];
+  /** Creates a copy control with inspectable feedback state. */
   function createWrapper(copyText) {
     const wrapperClasses = new Set();
     const tooltipClasses = new Set();
@@ -30,7 +34,7 @@ function loadCopyHandler({
       dataset: { copyText },
       classList: {
         add: (name) => wrapperClasses.add(name),
-        remove: (name) => wrapperClasses.delete(name),
+        remove: (...names) => names.forEach((name) => wrapperClasses.delete(name)),
       },
       querySelector: () => tooltip,
       wrapperClasses,
@@ -40,6 +44,7 @@ function loadCopyHandler({
     return wrapper;
   }
   const wrapper = createWrapper("secret-value");
+  /** Creates a minimal event target for modal behavior tests. */
   function createEventTarget() {
     const listeners = new Map();
     return {
@@ -55,6 +60,7 @@ function loadCopyHandler({
       },
     };
   }
+  /** Creates a button that dispatches click listeners. */
   function createButton() {
     return {
       ...createEventTarget(),
@@ -63,26 +69,31 @@ function loadCopyHandler({
       },
     };
   }
-  function createModal() {
+  /** Creates a modal fixture and its close or confirmation button. */
+  function createModal(confirmLabel) {
     const modalClasses = new Set();
+    const confirmButton = createButton();
+    confirmButton.textContent = confirmLabel;
     const modal = {
       ...createEventTarget(),
       classList: {
         add: (name) => modalClasses.add(name),
         remove: (name) => modalClasses.delete(name),
       },
-      querySelector: () => cancelButton,
+      querySelector: (selector) =>
+        selector === 'button[type="button"]' ? confirmButton : null,
       dispatchClick(target) {
         this.dispatch("click", { target });
       },
       modalClasses,
     };
-    const cancelButton = createButton();
-    return { modal, cancelButton };
+    return { modal, confirmButton };
   }
-  const createAppModal = withModals ? createModal() : null;
+  const createAppModal = withModals ? createModal("Cancel") : null;
   const newSecretModal =
-    withModals && includeSecretModal ? createModal() : null;
+    withModals && includeSecretModal
+      ? createModal("I have copied my secret")
+      : null;
   const modalFixtures = withModals
     ? {
         createButton: createButton(),
@@ -179,6 +190,7 @@ function loadCopyHandler({
   };
 }
 
+/** Runs copy feedback, clipboard ordering, and modal behavior assertions. */
 async function main() {
   const modalHandlers = loadCopyHandler({
     clipboard: undefined,
@@ -189,7 +201,7 @@ async function main() {
   assert.ok(
     modalHandlers.modalFixtures.createAppModal.modal.modalClasses.has("active"),
   );
-  modalHandlers.modalFixtures.createAppModal.cancelButton.click();
+  modalHandlers.modalFixtures.createAppModal.confirmButton.click();
   assert.equal(
     modalHandlers.modalFixtures.createAppModal.modal.modalClasses.has("active"),
     false,
@@ -203,7 +215,11 @@ async function main() {
     false,
   );
   modalHandlers.modalFixtures.newSecretModal.modal.classList.add("active");
-  modalHandlers.modalFixtures.newSecretModal.cancelButton.click();
+  assert.equal(
+    modalHandlers.modalFixtures.newSecretModal.confirmButton.textContent,
+    "I have copied my secret",
+  );
+  modalHandlers.modalFixtures.newSecretModal.confirmButton.click();
   assert.equal(
     modalHandlers.modalFixtures.newSecretModal.modal.modalClasses.has("active"),
     false,
@@ -279,6 +295,30 @@ async function main() {
   await failedCopy.click();
   assert.ok(failedCopy.wrapperClasses.has("copy-failed"));
   assert.equal(failedCopy.tooltip.textContent, "Copy failed");
+
+  let failureThenSuccessCount = 0;
+  const failureThenSuccess = loadCopyHandler({
+    clipboard: undefined,
+    execCommand: () => ++failureThenSuccessCount > 1,
+  });
+  await failureThenSuccess.click();
+  assert.ok(failureThenSuccess.wrapperClasses.has("copy-failed"));
+  assert.equal(failureThenSuccess.wrapperClasses.has("copied"), false);
+  await failureThenSuccess.click();
+  assert.ok(failureThenSuccess.wrapperClasses.has("copied"));
+  assert.equal(failureThenSuccess.wrapperClasses.has("copy-failed"), false);
+
+  let successThenFailureCount = 0;
+  const successThenFailure = loadCopyHandler({
+    clipboard: undefined,
+    execCommand: () => ++successThenFailureCount === 1,
+  });
+  await successThenFailure.click();
+  assert.ok(successThenFailure.wrapperClasses.has("copied"));
+  assert.equal(successThenFailure.wrapperClasses.has("copy-failed"), false);
+  await successThenFailure.click();
+  assert.ok(successThenFailure.wrapperClasses.has("copy-failed"));
+  assert.equal(successThenFailure.wrapperClasses.has("copied"), false);
 
   const unexpectedClipboardError = loadCopyHandler({
     clipboard: {
