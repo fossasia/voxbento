@@ -38,6 +38,10 @@ from portal.room_setup import (
     parse_plan,
 )
 from portal.routers import admin
+from portal.transcription.constants import ALLOWED_MODELS, ProviderEnum
+
+# These tests are not about CSRF; their requests carry the token a real page would send.
+pytestmark = pytest.mark.usefixtures("auto_csrf")
 
 ORIGIN = {"origin": "http://test"}
 
@@ -135,6 +139,7 @@ def test_without_keys_only_self_hosted_engines_are_offered():
         "Deepgram",
         "ElevenLabs",
         "OpenAI",
+        "Atlas Cloud",
         "NVIDIA",
         "Anthropic",
         "Google Gemini",
@@ -173,30 +178,35 @@ def test_missing_optional_dependencies_are_not_offered(monkeypatch):
     assert any("supertonic extra" in reason for reason in catalog.unavailable)
 
 
-def test_locked_services_are_listed_for_captions_and_translation_separately():
-    key = encrypt_val("sk-test")
-    event = _event(encrypted_translation_openai_api_key=key)
-    catalog = engine_catalog(event)
-    assert room_setup.locked_services(catalog, "speech") == ["Deepgram", "ElevenLabs", "OpenAI", "NVIDIA"]
-    assert room_setup.locked_services(catalog, "translation") == ["Anthropic", "Google Gemini", "Groq", "OpenRouter"]
-
-
-def test_translation_models_put_the_recommended_model_first_and_keep_a_saved_one():
-    key = encrypt_val("sk-test")
-    catalog = engine_catalog(_event(encrypted_translation_openai_api_key=key))
-    models = room_setup.translation_models(catalog, "openai", "gpt-legacy")
-    assert list(models) == ["openai", "local"]
-    assert models["openai"][0] == "gpt-4o-mini"
-    assert models["openai"][-1] == "gpt-legacy"
-    assert models["openai"].count("gpt-4o-mini") == 1
-    assert models["local"] == ["nllb-200-distilled-600M"]
-
-
 def test_nvidia_requires_its_function_id(monkeypatch):
     monkeypatch.setattr(settings, "nvidia_function_id", "")
     event = _event(encrypted_nvidia_api_key=encrypt_val("k"))
     event.transcription_api_enabled = True
     assert "nvidia" not in {engine.provider for engine in engine_catalog(event).speech}
+
+
+def test_locked_services_are_listed_for_each_kind():
+    event = _event(encrypted_deepgram_api_key=encrypt_val("k"))
+    event.transcription_api_enabled = True
+    catalog = engine_catalog(event)
+    assert "Deepgram" not in catalog.locked_speech
+    assert "ElevenLabs" in catalog.locked_speech
+    assert "Anthropic" in catalog.locked_translation
+    assert "Anthropic" not in catalog.locked_speech
+    assert "ElevenLabs" not in catalog.locked_translation
+    assert set(catalog.locked_speech + catalog.locked_translation) <= set(catalog.locked)
+
+
+def test_booth_speech_models_are_all_accepted_by_a_booth():
+    models = room_setup.booth_speech_models()
+    for provider, options in models.items():
+        accepted = ALLOWED_MODELS[ProviderEnum(provider)]
+        assert options, provider
+        assert all(value in accepted for value, _ in options), provider
+    # Rooms and booths both offer every built-in Whisper size.
+    sizes = ["tiny", "base", "small", "medium", "large-v2", "large-v3"]
+    assert [value for value, _ in models["local"]] == sizes
+    assert [value for value, _ in room_setup.SPEECH_MODELS["local"]] == sizes
 
 
 # ── Reading the form ───────────────────────────────────────────────────────
@@ -291,6 +301,15 @@ def test_captions_only_room_is_allowed():
 def test_unsupported_local_translation_is_explained():
     _, errors = _parse(languages=["az"], delivery_az=AI_TEXT)
     assert any("The built-in translator doesn't support Azerbaijani" in error for error in errors)
+
+
+def test_local_translation_support_is_checked_by_language_code():
+    """Greek was refused while support was looked up by English name, which two tables spelled differently."""
+    _, errors = _parse(spoken_language="el", languages=["fr", "zh"], delivery_fr=AI_TEXT, delivery_zh=AI_TEXT)
+    assert not errors
+
+    _, errors = _parse(spoken_language="az", languages=["fr", "no"], delivery_fr=AI_TEXT, delivery_no=AI_TEXT)
+    assert any("The built-in translator doesn't support Azerbaijani, Norwegian" in error for error in errors), errors
 
 
 def test_unsupported_ai_voice_is_explained_per_language():
@@ -878,6 +897,27 @@ async def test_ai_settings_never_switch_languages_or_captions(admin_cookie, even
 
 
 @pytest.mark.anyio
+async def test_ai_settings_save_larger_built_in_whisper_sizes(admin_cookie, event_room):
+    event, _ = event_room
+    room_id = await _create_ai_room(admin_cookie, event)
+    async with _client() as c:
+        resp = await c.post(
+            f"/admin/events/{event.id}/rooms/{room_id}/edit",
+            data={
+                "form_section": "ai",
+                "floor_transcription_provider": "local",
+                "floor_transcription_model": "large-v3",
+            },
+            headers=ORIGIN,
+            cookies=admin_cookie,
+            follow_redirects=False,
+        )
+    assert resp.status_code == 303
+    room = await _room(room_id)
+    assert room.floor_transcription_provider == "local" and room.floor_transcription_model == "large-v3"
+
+
+@pytest.mark.anyio
 async def test_ai_settings_ignore_services_the_event_cannot_use(admin_cookie, event_room):
     event, _ = event_room
     room_id = await _create_ai_room(admin_cookie, event)
@@ -944,19 +984,3 @@ def test_room_audio_tab_opens_on_the_source_in_use(fields, choice):
     for key, value in fields.items():
         setattr(room, key, value)
     assert room_setup.room_audio_choice(room) == choice
-
-
-def test_locked_services_skip_providers_without_a_brand_name(monkeypatch):
-    catalog = engine_catalog(_event())
-    monkeypatch.setattr(
-        room_setup,
-        "_SPEECH_ENGINES",
-        (*room_setup._SPEECH_ENGINES, ("mystery", "m", "Mystery", "encrypted_openai_api_key")),
-    )
-    assert room_setup.locked_services(catalog, "speech") == ["Deepgram", "ElevenLabs", "OpenAI", "NVIDIA"]
-
-
-def test_translation_models_never_bring_back_a_retired_model():
-    catalog = engine_catalog(_event(encrypted_translation_openai_api_key=encrypt_val("sk-test")))
-    for retired in ("gpt-4-turbo", "gpt-4-turbo-2024-04-09", "gpt-4o-mini-realtime-preview"):
-        assert retired not in room_setup.translation_models(catalog, "openai", retired)["openai"]

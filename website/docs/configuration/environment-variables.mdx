@@ -90,6 +90,7 @@ These variables control external encoder ingest and YouTube RTMPS forwarding.
 | `PROGRAM_INGEST_DISCONNECT_GRACE_SECS` | `15.0` | Grace period in seconds before marking a disconnected encoder stream as terminated. |
 | `PROGRAM_INGEST_STALL_SECS` | `30.0` | Duration without packets before declaring a stream stalled. |
 | `PROGRAM_SENDER_SESSION_TTL_SECS` | `150` | Browser sender publish window for WHIP session negotiation. |
+| `PROGRAM_RTMPS_ENABLED` | `false` | Accepts room-authenticated RTMPS ingest without relaying, so a streaming tool can add VoxBento as an extra destination (`docker-compose.rtmps.yml`). Relay deployments imply it. Needs `PROGRAM_INGEST_ENABLED`. |
 | `PROGRAM_RELAY_ENABLED` | `false` | Enables operator-controlled RTMPS relaying to YouTube destinations via the `program-relay` service (`docker-compose.relay.yml`). |
 | `PROGRAM_RTMPS_PUBLIC_BASE` | _(none)_ | Public base RTMPS URL (e.g. `rtmps://voxbento.com:1936`) for incoming RTMP/RTMPS encoder streams. |
 | `PROGRAM_RTMPS_CERT_DIR` | _(none)_ | Directory holding the RTMPS certificate and key, e.g. Caddy's certificate directory for the hostname. MediaMTX reloads renewed files. |
@@ -115,6 +116,9 @@ These variables control external encoder ingest and YouTube RTMPS forwarding.
 | `SUPERTONIC_TOTAL_STEPS` | `4` | Diffusion steps for self-hosted Supertonic ONNX TTS. `4` provides real-time CPU synthesis; `8` offers reference quality. |
 | `SUPERTONIC_INTRA_OP_THREADS` | `0` | Intra-op threads for ONNX Runtime (`0` defaults to all available CPU cores). |
 | `NVIDIA_FUNCTION_ID` | _(empty)_ | Optional function ID for NVIDIA Cloud Riva integrations. |
+| `SELF_HOSTED_LLM_BASE_URL` | _(empty)_ | Base URL of your own OpenAI-compatible server, for example `http://localhost:11434/v1`, without `/chat/completions`. Must be `http` or `https` with a valid port and no credentials, query string or fragment. Only the server sets it; rooms can't. |
+| `SELF_HOSTED_LLM_MODELS` | _(empty)_ | Comma-separated models rooms and booths may use, spelled exactly as the server names them (for Ollama, as `ollama list` shows them). The first one is the default. Each name can be at most 100 characters. Self-hosted translation is offered only when this and the URL are both set. |
+| `SELF_HOSTED_LLM_API_KEY` | _(empty)_ | Optional bearer token, for servers started with an API key (for example vLLM `--api-key`). |
 
 ## Email and Notification Variables
 
@@ -127,8 +131,9 @@ Configured for transactional emails (invitations, password resets, hosting acces
 | `SMTP_USER` | _(none)_ | SMTP authentication username. |
 | `SMTP_PASSWORD` | _(none)_ | SMTP authentication password. |
 | `SMTP_FROM_EMAIL` | `noreply@voxbento.com` | Sender address on outgoing notification emails. |
+| `SMTP_FROM_NAME` | `VoxBento` | Sender name shown next to the address. Leave empty to send the bare address. |
 | `HOSTING_REQUESTS_EMAIL` | `voxbento.dev@gmail.com` | Team inbox alerted when users request event hosting access. |
-| `PUBLIC_BASE_URL` | `https://voxbento.com` | Canonical public URL used to build invite and confirmation links. |
+| `PUBLIC_BASE_URL` | `https://voxbento.com` | Canonical public URL used to build invite and confirmation links. An `https://` value with `DEBUG=false` also marks session cookies `Secure` and sends `Strict-Transport-Security`. Plain-HTTP deployments must set an `http://` URL, otherwise browsers discard the login cookies. |
 
 ## Jitsi Internal Auth Variables
 
