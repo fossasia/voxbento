@@ -329,12 +329,6 @@ rejected/suspended. **Sign-in** changes the password (the current one is
 required), sets a first password, or removes it so the person signs in with
 email links only. Event, room and booth roles are listed on My events instead.
 
-Approved developers can create OAuth apps at `/developer` and copy client IDs or
-one-time client secrets. Copy attempts show success or failure feedback. The page
-tries a synchronous fallback first, then the async Clipboard API when needed; a
-failed copy reports failure, and a pending write is allowed to settle before the
-next credential is written so older writes cannot replace newer copies.
-
 ## Admin Users pages
 
 `/admin/users/` lists every account with a search, a **Show** filter (All users,
