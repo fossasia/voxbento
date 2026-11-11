@@ -293,6 +293,7 @@ const API_KEY_DIALOG_FOCUS = {
 
 window.adminAPIKeys = {
   eventId: null,
+  listRequest: 0,
   
   init() {
     const section = document.getElementById('api-keys-section');
@@ -329,11 +330,14 @@ window.adminAPIKeys = {
   async loadKeys() {
     const container = document.getElementById('api-keys-container');
     if (!container || !this.eventId) return;
+    // Only the newest list request draws the table, so an older answer cannot bring back a revoked key.
+    const request = ++this.listRequest;
 
     try {
       const res = await fetch(`${managementPrefix()}/api/events/${this.eventId}/api-keys`);
       if (!res.ok) throw new Error('Failed to load keys');
       const keys = await res.json();
+      if (request !== this.listRequest) return;
       
       const activeKeys = keys.filter(k => k.active !== false);
       
@@ -371,6 +375,7 @@ window.adminAPIKeys = {
       html += '</tbody></table>';
       container.innerHTML = html;
     } catch (err) {
+      if (request !== this.listRequest) return;
       container.innerHTML = '<p class="text-danger">Failed to load API keys.</p>';
       console.error(err);
     }
@@ -485,7 +490,7 @@ window.adminAPIKeys = {
     const cancelBtn = document.getElementById('api-key-revoke-cancel-btn');
     confirmBtn.disabled = true;
     cancelBtn.disabled = true;
-    
+
     try {
       const res = await fetch(`${managementPrefix()}/api/events/${this.eventId}/api-keys/${this.revokeKeyId}`, {
         method: 'DELETE',
@@ -494,20 +499,22 @@ window.adminAPIKeys = {
         }
       });
       if (!res.ok) throw new Error('Failed to revoke');
-      
-      await this.closeModal('api-key-revoke-modal');
-      
-      await this.loadKeys();
-      // The Revoke button that opened the dialog went away with the old table.
-      if (document.activeElement === document.body) {
-        document.getElementById('api-key-generate-btn')?.focus();
-      }
     } catch (err) {
+      // The key stays selected, so Revoke can simply be pressed again.
       alert('Error revoking key: ' + err.message);
+      return;
     } finally {
-      this.revokeKeyId = null;
       confirmBtn.disabled = false;
       cancelBtn.disabled = false;
+    }
+
+    // Done before the slower close and reload, so a revoke opened meanwhile keeps its own key.
+    this.revokeKeyId = null;
+    await this.closeModal('api-key-revoke-modal');
+    await this.loadKeys();
+    // The Revoke button that opened the dialog went away with the old table.
+    if (document.activeElement === document.body) {
+      document.getElementById('api-key-generate-btn')?.focus();
     }
   }
 };

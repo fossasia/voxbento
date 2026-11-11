@@ -68,11 +68,14 @@ class FakeDialog extends FakeElement {
 let elements = {};
 let selectors = {};
 let lists = {};
+let windowHandlers = {};
 
 function resetDom() {
   elements = {};
   selectors = {};
   lists = {};
+  windowHandlers = {};
+  globalThis.addEventListener = (type, handler) => (windowHandlers[type] ||= []).push(handler);
   globalThis.document = {
     activeElement: null,
     body: new FakeElement('body'),
@@ -92,6 +95,7 @@ function register(id, element, parent) {
   if (parent) parent.children[`#${id}`] = element;
 }
 
+const fireWindow = (type, extra = {}) => (windowHandlers[type] || []).forEach((handler) => handler({ type, ...extra }));
 const fade = () => new Promise((resolve) => setTimeout(resolve, 250));
 const tick = () => new Promise((resolve) => setImmediate(resolve));
 
@@ -225,6 +229,8 @@ function dashboard({ afterCreate = false } = {}) {
   register('app_name', appName);
   const createCancel = new FakeElement('create-cancel');
   createDialog.children['[data-dialog-close]'] = createCancel;
+  const createForm = new FakeElement('create-form');
+  createDialog.children.form = createForm;
   const copyButtons = [];
   let newAppDialog = null;
   let newAppCopy = null;
@@ -241,7 +247,7 @@ function dashboard({ afterCreate = false } = {}) {
   }
   lists['[data-copy-text]'] = copyButtons;
   initDeveloperDashboard();
-  return { createButton, createDialog, appName, createCancel, newAppDialog, newAppCopy, newAppDone };
+  return { createButton, createDialog, appName, createCancel, createForm, newAppDialog, newAppCopy, newAppDone };
 }
 
 test('dashboard: Create New App opens the create dialog; Cancel and Escape close it', async () => {
@@ -290,6 +296,21 @@ test('dashboard: the secret dialog stays closed when back/forward restores the p
   } finally {
     restored.mock.restore();
   }
+});
+
+test('dashboard: a second Create App click while the first is on its way is dropped', () => {
+  const page = dashboard();
+  assert.equal(page.createForm.dispatch('submit').defaultPrevented, false, 'the first submit goes through');
+  assert.equal(page.createForm.dispatch('submit').defaultPrevented, true, 'no second app with a secret nobody sees');
+});
+
+test('dashboard: a page restored from the back/forward cache can create an app again', () => {
+  const page = dashboard();
+  page.createForm.dispatch('submit');
+  fireWindow('pageshow', { persisted: false });
+  assert.equal(page.createForm.dispatch('submit').defaultPrevented, true, 'a normal page load changes nothing');
+  fireWindow('pageshow', { persisted: true });
+  assert.equal(page.createForm.dispatch('submit').defaultPrevented, false);
 });
 
 test('dashboard: a page without the dialogs (no approved account) still loads', () => {
@@ -566,6 +587,82 @@ test('api keys: after revoke, focus that is still on the page is left alone', as
   await integrations.confirmRevokeKey();
   assert.equal(document.activeElement, rowButton);
   assert.deepEqual(page.revokeDialog.calls, ['showModal', 'reflow:false', 'close']);
+});
+
+test('api keys: an older list answer that lands last does not redraw the table', async () => {
+  const answers = [];
+  const page = eventPage({ GET: () => new Promise((resolve) => answers.push(resolve)) });
+  const newer = integrations.loadKeys();
+  answers[1](response(200, []));
+  await newer;
+  answers[0](response(200, [LISTED_ROW]));
+  await tick();
+  assert.equal(page.container.innerHTML, '<p class="muted">No API keys generated yet.</p>');
+});
+
+test('api keys: a failed list request shows the error', async () => {
+  const page = eventPage({ GET: response(500, {}) });
+  const logged = mock.method(console, 'error', () => {});
+  await integrations.loadKeys();
+  assert.equal(page.container.innerHTML, '<p class="text-danger">Failed to load API keys.</p>');
+  logged.mock.restore();
+});
+
+test('api keys: an older list request that fails last does not replace the table', async () => {
+  const answers = [];
+  const page = eventPage({ GET: () => new Promise((resolve) => answers.push(resolve)) });
+  const logged = mock.method(console, 'error', () => {});
+  const newer = integrations.loadKeys();
+  answers[1](response(200, []));
+  await newer;
+  answers[0](response(500, {}));
+  await tick();
+  assert.equal(page.container.innerHTML, '<p class="muted">No API keys generated yet.</p>');
+  logged.mock.restore();
+});
+
+test('api keys: a revoke started while the last one reloads the list keeps its own key', async () => {
+  const gets = [];
+  const page = eventPage({ GET: () => new Promise((resolve) => gets.push(resolve)), DELETE: () => response(200, null) });
+  gets[0](response(200, []));
+  await tick();
+
+  integrations.revokeKey('3', 'Main');
+  const first = integrations.confirmRevokeKey();
+  await fade();
+  await tick();
+  assert.equal(page.revokeDialog.open, false, 'the first revoke is done and its list is reloading');
+
+  integrations.revokeKey('4', 'Other');
+  gets[1](response(200, []));
+  await first;
+  assert.equal(integrations.revokeKeyId, '4');
+  assert.equal(page.revokeConfirm.disabled, false);
+  assert.equal(document.activeElement, page.revokeCancel, 'focus stays in the second dialog');
+
+  const second = integrations.confirmRevokeKey();
+  await fade();
+  await tick();
+  gets[2](response(200, []));
+  await second;
+  assert.deepEqual(page.requests.filter((r) => r.method === 'DELETE').map((r) => r.url), [
+    '/admin/api/events/7/api-keys/3',
+    '/admin/api/events/7/api-keys/4',
+  ]);
+});
+
+test('api keys: Revoke can be tried again after a failed request', async () => {
+  const replies = [response(500, {}), response(200, null)];
+  const page = eventPage({ GET: response(200, []), DELETE: () => replies.shift() });
+  integrations.revokeKey('3', 'Main');
+  await integrations.confirmRevokeKey();
+  assert.equal(page.revokeDialog.open, true);
+  await integrations.confirmRevokeKey();
+  assert.deepEqual(page.requests.filter((r) => r.method === 'DELETE').map((r) => r.url), [
+    '/admin/api/events/7/api-keys/3',
+    '/admin/api/events/7/api-keys/3',
+  ]);
+  assert.equal(page.revokeDialog.open, false);
 });
 
 test('api keys: Cancel on revoke closes without a request', async () => {

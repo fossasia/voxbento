@@ -37,6 +37,17 @@ export function initDeveloperDashboard() {
   if (createDialog && createButton) {
     wireDialog(createDialog);
     createButton.addEventListener('click', () => openDialog(createDialog, document.getElementById('app_name')));
+
+    // A second click while the answer is slow would create a second app whose secret nobody sees.
+    const form = createDialog.querySelector('form');
+    let submitting = false;
+    form.addEventListener('submit', (event) => {
+      if (submitting) event.preventDefault();
+      submitting = true;
+    });
+    window.addEventListener('pageshow', (event) => {
+      if (event.persisted) submitting = false;
+    });
   }
 
   // Only rendered right after an app is created; the secret is shown this once.
