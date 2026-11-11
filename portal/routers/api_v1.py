@@ -599,15 +599,18 @@ def _check_libretranslate(payload_dict: dict, room: Room | None) -> None:
     """
     if not {"translation_provider", "translation_model", "enable_translation"} & payload_dict.keys():
         return
-    if payload_dict.get("enable_translation") is False:
-        return
     current_provider = room.floor_translation_provider if room else None
     if payload_dict.get("translation_provider", current_provider) != TranslationProviderEnum.LIBRETRANSLATE.value:
         return
-    if not settings.libretranslate_enabled:
+    disabling = payload_dict.get("enable_translation") is False
+    if not disabling and not settings.libretranslate_enabled:
         raise HTTPException(status_code=422, detail="LibreTranslate is not configured on this server")
     model = payload_dict.get("translation_model")
     if model is not None and model != LIBRETRANSLATE_MODEL_ID:
+        if disabling:
+            # Normalize so a later request that turns translation back on isn't rejected.
+            payload_dict["translation_model"] = LIBRETRANSLATE_MODEL_ID
+            return
         raise HTTPException(status_code=422, detail="translation_model is not valid for LibreTranslate")
     # Pin the one valid model when the caller left it out or sent the default.
     payload_dict["translation_model"] = LIBRETRANSLATE_MODEL_ID

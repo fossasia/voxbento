@@ -508,8 +508,8 @@ async def test_room_page_names_a_removed_libretranslate_plainly(admin_room, unse
     async with _client(cookie) as client:
         page = await client.get(f"/admin/events/{event_id}/rooms/{room_id}/")
     assert page.status_code == 200
-    # The generic select-fallback prints the provider name with underscores replaced.
-    assert "Libretranslate — not available now" in page.text
+    # brand_name() renders the proper capitalisation ("LibreTranslate") on the removed-service fallback.
+    assert "LibreTranslate — not available now" in page.text
 
 
 # ── Worker ─────────────────────────────────────────────────────────────────
@@ -697,3 +697,31 @@ async def test_api_turns_off_libretranslate_after_server_is_removed(api_event, m
     res = await _put_room({"enable_translation": False, "translation_provider": "libretranslate"})
     assert res.status_code == 200, res.text
     assert (await _api_room()).floor_translation_enabled is False
+
+
+@pytest.mark.anyio
+async def test_api_disabled_save_pins_canonical_model(api_event, libre):
+    """Saving LibreTranslate with translation off and a bogus model pins the registry id.
+
+    Otherwise, a later request that turns translation back on would be rejected because
+    the stored model is non-canonical.
+    """
+    res = await _put_room(
+        {
+            "name": "Hall",
+            "enable_translation": False,
+            "translation_provider": "libretranslate",
+            "translation_model": "not-a-model",
+        }
+    )
+    assert res.status_code == 200, res.text
+    room = await _api_room()
+    assert (room.floor_translation_provider, room.floor_translation_model) == (
+        "libretranslate",
+        LIBRETRANSLATE_MODEL_ID,
+    )
+    assert room.floor_translation_enabled is False
+    # Turning translation back on now works because the saved model is the canonical one.
+    res = await _put_room({"enable_translation": True})
+    assert res.status_code == 200, res.text
+    assert (await _api_room()).floor_translation_enabled is True

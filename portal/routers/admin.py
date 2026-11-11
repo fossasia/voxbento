@@ -2485,11 +2485,14 @@ async def admin_booth_translation_settings(
                 raise HTTPException(status_code=400, detail="Self-hosted translation is not configured on this server")
             if not settings.self_hosted_llm_allows(translation_model):
                 raise HTTPException(status_code=400, detail="That model is not allowed for self-hosted translation")
-        if translation_enabled and translation_provider == TranslationProviderEnum.LIBRETRANSLATE.value:
-            if not settings.libretranslate_enabled:
+        if translation_provider == TranslationProviderEnum.LIBRETRANSLATE.value:
+            if translation_enabled and not settings.libretranslate_enabled:
                 raise HTTPException(status_code=400, detail="LibreTranslate is not configured on this server")
             if translation_model != LIBRETRANSLATE_MODEL_ID:
-                raise HTTPException(status_code=400, detail="That model is not valid for LibreTranslate")
+                if translation_enabled:
+                    raise HTTPException(status_code=400, detail="That model is not valid for LibreTranslate")
+                # Pin to the canonical id so a later turn-on doesn't trip the model check.
+                translation_model = LIBRETRANSLATE_MODEL_ID
         db_booth.translation_enabled = translation_enabled
         db_booth.translation_provider = translation_provider
         db_booth.translation_model = translation_model

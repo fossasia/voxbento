@@ -238,7 +238,7 @@
           <label for="floor_translation_provider">Service</label>
           <select id="floor_translation_provider" name="floor_translation_provider">
             {% if room.floor_translation_provider and not catalog.find("translation", room.floor_translation_provider) %}
-            <option value="" selected disabled>{{ room.floor_translation_provider | replace('_', '-') | capitalize }} — not available now, choose another</option>
+            <option value="" selected disabled>{{ brand_name(room.floor_translation_provider) }} — not available now, choose another</option>
             {% endif %}
             {% for engine in catalog.translation %}
             <option value="{{ engine.provider }}" {% if room.floor_translation_provider == engine.provider %}selected{% endif %}>{{ engine.label }} — {{ engine.note }}</option>
