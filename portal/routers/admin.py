@@ -183,6 +183,7 @@ from portal.transcription.worker import (
     wait_for_worker_start,
 )
 from portal.translations.constants import TRANSLATION_MODELS, TranslationProviderEnum
+from portal.translations.model_languages import language_support_error
 from portal.translations.source_documents import (
     MAX_DISCARDED_UPLOAD_BYTES,
     MAX_MULTIPART_OVERHEAD_BYTES,
@@ -202,7 +203,6 @@ from portal.translations.term_suggestions import (
     suggestion_engine,
     suggestion_languages,
 )
-from portal.translations.model_languages import language_support_error
 from portal.translations.vocabulary import (
     VocabularyOverlapIndex,
     VocabularyScopeError,

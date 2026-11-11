@@ -41,6 +41,7 @@ from portal.translations.providers.base import ProviderEngine
 from portal.translations.source_documents import SourceDocumentError, extract_source_text
 from portal.translations.term_suggestions import (
     ALL_LANGUAGES,
+    MAX_ONE_OFF_TERMS,
     TermSuggestion,
     TermTranslator,
     TranslationProposals,
@@ -126,6 +127,34 @@ def test_acronyms_ending_in_a_capital_s_keep_it():
 def test_repeated_word_count_includes_its_capitalised_uses():
     terms = terms_of("We saw Kubernetes today. Then kubernetes, kubernetes and kubernetes again.")
     assert terms["kubernetes"].count == 4
+
+
+def test_one_off_rare_word_is_suggested_after_the_stronger_terms():
+    suggestions = extract_terms("We tested speaker diarization on Kubernetes.")
+    assert [suggestion.term for suggestion in suggestions] == ["Kubernetes", "diarization"]
+    assert suggestions[1].count == 1
+    assert suggestions[1].case_sensitive is False
+
+
+def test_everyday_long_words_are_not_rare():
+    assert terms_of("The conference presentation shares information and experiences.") == {}
+
+
+def test_short_one_off_words_are_not_rare():
+    assert terms_of("We tested the codec once.") == {}
+
+
+def test_one_off_words_are_capped_keeping_the_longest():
+    words = [f"zzrare{'x' * length}" for length in range(4, 4 + MAX_ONE_OFF_TERMS + 5)]
+    terms = terms_of(" ".join(words))
+    assert len(terms) == MAX_ONE_OFF_TERMS
+    assert words[-1] in terms
+    assert words[0] not in terms
+
+
+def test_rare_words_never_push_out_stronger_terms():
+    text = "The WebRTC talk. " + " ".join(f"zzrare{'x' * length}" for length in range(4, 24))
+    assert extract_terms(text, limit=1)[0].term == "WebRTC"
 
 
 def test_repeated_lowercase_pair_is_suggested_only_when_repeated():

@@ -64,7 +64,7 @@ Exporting downloads the normalized glossary in the identical CSV schema. Formula
 
 Instead of writing a CSV by hand, upload a talk's abstract, script or slide deck in the **Glossary** card under **Suggest terms from talk material**. VoxBento accepts UTF-8 plain text, Markdown and PDF files up to 10 MB. PDFs need selectable text, because scanned pages are not read.
 
-VoxBento picks out names, acronyms, product-style words such as `WebRTC` and terms the document repeats, then shows them on a review page with how often each appears. Nothing is added until you tick a row and choose **Add ticked terms**. You can edit any term or translation first, and clearing a translation skips that language. Ticked rows pass the same validation as a CSV upload and then appear in the glossary and its CSV export.
+VoxBento picks out names, acronyms, product-style words such as `WebRTC`, terms the document repeats, and long uncommon words it uses only once or twice, then shows them on a review page with how often each appears. Nothing is added until you tick a row and choose **Add ticked terms**. You can edit any term or translation first, and clearing a translation skips that language. Ticked rows pass the same validation as a CSV upload and then appear in the glossary and its CSV export.
 
 Each translation starts as the original term, because most names stay as written. If the room uses a cloud or self-hosted translation LLM with a working key, you can tick the option to have it propose translations. Only the extracted terms are sent to that service, never the file. The request happens once, while you prepare the glossary, and is not part of live translation.
 

@@ -44,6 +44,9 @@ MAX_WORD_CHARS = 64
 MIN_REPEATS = 3
 #: Without a word-frequency table, a long word that keeps recurring stands in for a rare one.
 MIN_RARE_WORD_CHARS = 9
+#: A word seen once needs to be longer than a repeated one before it is worth a row.
+MIN_ONE_OFF_WORD_CHARS = 10
+MAX_ONE_OFF_TERMS = 15
 MIN_PAIR_WORD_CHARS = 4
 
 TERM_BATCH_SIZE = 25
@@ -93,9 +96,70 @@ COMMON_WORDS = frozenset(
 )
 
 
+#: Everyday English words long enough to pass as rare vocabulary if seen only once.
+LONG_COMMON_WORDS = frozenset(
+    """
+    absolutely accessible accordingly achievement activities additional addressing adjustment advantages
+    agreements alternative altogether apparently appearance application applications approaches appropriate
+    approximately architecture arrangement assessment assistance associated assumption attendance attention
+    attractive audiences automatically availability background basically beautiful beginning beneficial
+    capabilities capability categories celebrate certainly challenge challenges challenging characteristics
+    collaboration collection collective combination comfortable commercial commitment committee communicate
+    communication communities community companies comparison competition completely complicated components
+    comprehensive concentrate conclusion conditions conference confidence configuration connection connections
+    consequence considerable consideration considered considering consistent constantly construction consumption
+    contemporary continuing continuous contribute contribution controlled convenient conversation cooperation
+    corporation correspond countries creativity currently customers dangerous decisions definitely definition
+    delivering demonstrate department dependent describing description designing determined developer developers
+    developing development difference differences different difficult difficulties directions directly disappear
+    discovered discussing discussion distribution documentation downloading education effective effectively
+    efficiency efficient electronic elsewhere emergency emphasize employment encourage engineering engineers
+    enterprise enthusiasm entertainment environment environments equipment especially essentially established
+    establishment evaluation eventually everybody everything everywhere evolution examination excellent exception
+    exchanging excitement executive existence expectation expensive experience experiences experiment explanation
+    expression extensive extremely facilities familiar fantastic favourite financial flexibility following
+    foundation framework frequently friendship functional functionality fundamental furthermore generally
+    generation generations government graduate guidelines happening headquarters highlight historical
+    identifying illustrate imagination immediately implement implementation implications importance impossible
+    impression improvement improvements incredible independent individual individuals industrial industries
+    influence information infrastructure initiative innovation innovative institution instructions instrument
+    insurance integration intelligence intelligent interaction interested interesting international internet
+    interpretation interpreter interpreters interview introduce introduced introducing investigation investment
+    involvement knowledge laboratory languages leadership legislation limitations listeners literature
+    maintaining maintenance management manufacturing marketing materials meaningful measurement mechanism
+    mechanisms membership mentioned methodology microphone minimum modification monitoring motivation
+    necessarily necessary negotiation neighbourhood nevertheless newspaper nonetheless normally notification
+    objectives obviously occasionally operating operations opportunities opportunity optimization organisation
+    organisations organization organizations organizers originally otherwise outstanding overwhelming
+    participant participants participate participation particular particularly partnership perfectly performance
+    permission personally perspective perspectives philosophy photograph physically platforms political
+    population portfolio possibility possibilities potential potentially practically preparation preparing
+    presentation presentations presenting pressure previously principles priorities probability problems
+    procedure procedures processes processing production productive productivity professional professor
+    programme programmes programming progressive projects properties proportion proposition protection
+    publication purchasing qualification qualities quantities questionnaire reasonable receiving recognition
+    recommend recommendation reconsider recording reference references reflection regarding regardless
+    registration regulation regulations relationship relationships relatively relevance reliability remarkable
+    remembering replacement representation representative reputation requirement requirements researchers
+    resolution resources respectively responding response responses responsibility responsible restaurant
+    restriction resulting retirement revolution satisfaction scientific scientists secondary secretary
+    separately seriously significant significantly similarities simultaneous simultaneously situation situations
+    solutions something sometimes somewhere specialist specifically specification speakers spectacular
+    standards statement statements statistics straightforward strategies strengthen structure structures
+    struggling subsequent substantial successful successfully sufficient suggestion suggestions supporting
+    surprised surprising surrounding sustainable systematic technical techniques technologies technology
+    temperature temporary terminology themselves throughout tomorrow traditional transcription transformation
+    translation translations translator translators transportation tremendous understand understanding
+    unfortunately university unnecessary uncomfortable utilization variations vocabulary volunteers
+    whatsoever wonderful workshops worldwide yourselves
+    """.split()
+)
+
+
 class TermKind(IntEnum):
     """Ordered so a stronger signal outranks a weaker one for the same frequency."""
 
+    RARE = 0
     REPEATED = 1
     NAME = 2
     PHRASE = 3
@@ -272,6 +336,33 @@ def record_repeated_lowercase(tally: TermTally, tokens: Sequence[Token]) -> None
             tally.mid_sentence.add(term)
 
 
+def record_one_off_words(tally: TermTally, tokens: Sequence[Token]) -> None:
+    """Long lowercase words used only once or twice, the closest stand-in for rare vocabulary.
+
+    Without a word-frequency table some ordinary words get through, so these are capped,
+    longest first, and listed after every other kind of suggestion for the owner to reject.
+    """
+    words = Counter(
+        token.text
+        for token in tokens
+        if len(token.text) >= MIN_ONE_OFF_WORD_CHARS
+        and token.text.isalpha()
+        and token.text.islower()
+        and token.text not in COMMON_WORDS
+        and token.text.removesuffix("s") not in LONG_COMMON_WORDS
+    )
+    rare = [
+        (word, count)
+        for word, count in words.items()
+        if count < MIN_REPEATS and tally.kinds.get(word, TermKind.NAME) <= TermKind.NAME
+    ]
+    rare.sort(key=lambda item: (-len(item[0]), item[0]))
+    for word, count in rare[:MAX_ONE_OFF_TERMS]:
+        tally.spellings.setdefault(word, Counter())[word] += count
+        tally.kinds[word] = TermKind.RARE
+        tally.mid_sentence.add(word)
+
+
 def is_address_or_blob(word: str) -> bool:
     return "://" in word or "@" in word or word.startswith("www.") or len(word) > MAX_WORD_CHARS
 
@@ -298,6 +389,7 @@ def extract_terms(text: str, existing_terms: Iterable[str] = (), limit: int = MA
         record_run(tally, tokens[index:end], lowercase)
         index = end
     record_repeated_lowercase(tally, tokens)
+    record_one_off_words(tally, tokens)
 
     skip = {term.casefold() for term in existing_terms}
     suggestions: list[tuple[TermKind, TermSuggestion]] = []
@@ -313,7 +405,7 @@ def extract_terms(text: str, existing_terms: Iterable[str] = (), limit: int = MA
             continue
         suggestions.append((kind, TermSuggestion(term, count, case_sensitive=kind is TermKind.ACRONYM)))
     suggestions.sort(
-        key=lambda item: (item[0] is TermKind.REPEATED, -item[1].count * item[0], item[1].term.casefold())
+        key=lambda item: (item[0] <= TermKind.REPEATED, -item[1].count * item[0], item[1].term.casefold())
     )
     return [suggestion for _, suggestion in suggestions[:limit]]
 
