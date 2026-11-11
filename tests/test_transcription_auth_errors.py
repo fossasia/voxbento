@@ -138,7 +138,7 @@ async def test_openai_raises_on_a_rejected_key(status):
             await OpenAIProvider().process_chunk(b"audio", "en", "whisper-1", ProviderConfig(api_key="bad"))
 
     assert exc.value.error_code == "auth_failed"
-    assert str(status) in exc.value.detail
+    assert "rejected" in exc.value.detail.lower()
 
 
 @pytest.mark.anyio
@@ -155,7 +155,7 @@ async def test_elevenlabs_raises_on_a_rejected_key(status):
             await ElevenLabsProvider().process_chunk(b"audio", "en", "scribe_v1", ProviderConfig(api_key="bad"))
 
     assert exc.value.error_code == "auth_failed"
-    assert str(status) in exc.value.detail
+    assert "rejected" in exc.value.detail.lower()
 
 
 @pytest.mark.anyio
@@ -167,7 +167,7 @@ async def test_reason_travels_from_process_chunk_through_the_real_run_stream():
 
         async def process_chunk(self, chunk, language_code, model_variant, config, booth_state=None):
             self.chunks += 1
-            raise TranscriptionAuthError("openai", "OpenAI API key was rejected (401 Unauthorized).", 401)
+            raise TranscriptionAuthError("openai", "OpenAI API key was rejected.", 401)
 
     provider = RejectingProvider()
 
@@ -192,7 +192,7 @@ async def test_reason_travels_from_process_chunk_through_the_real_run_stream():
 
     stopped = [payload for event, payload in calls if event == "booth.transcription.stopped"]
     assert stopped[-1]["error_code"] == "auth_failed"
-    assert stopped[-1]["error_detail"] == "OpenAI API key was rejected (401 Unauthorized)."
+    assert stopped[-1]["error_detail"] == "OpenAI API key was rejected."
     # One rejected chunk is enough; it must not grind through the retry budget.
     assert provider.chunks == 1
 
