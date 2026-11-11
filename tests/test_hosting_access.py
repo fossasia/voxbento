@@ -779,6 +779,10 @@ async def test_rotating_forwarded_headers_cannot_evade_event_create_limit():
     token2 = create_user_token(user_id=host2_id, email="rate_limit_creator_2@example.com")
     token3 = create_user_token(user_id=host3_id, email="rate_limit_creator_3@example.com")
 
+    csrf1 = generate_admin_csrf_token(str(decode_token(token1)["jti"]))
+    csrf2 = generate_admin_csrf_token(str(decode_token(token2)["jti"]))
+    csrf3 = generate_admin_csrf_token(str(decode_token(token3)["jti"]))
+
     # Peer A consumes its 10 requests using host1 account
     async with AsyncClient(
         transport=ASGITransport(app=app, client=("192.0.2.30", 12345)),
@@ -787,8 +791,12 @@ async def test_rotating_forwarded_headers_cannot_evade_event_create_limit():
         for i in range(10):
             resp = await http_peer_a.post(
                 "/workspace/setup",
-                data={"display_name": f"Event {i}", "slug": f"unique-event-slug-{i}"},
-                cookies={"user_token": token1},
+                data={
+                    "display_name": f"Event {i}",
+                    "slug": f"unique-event-slug-{i}",
+                    "csrf_token": csrf1,
+                },
+                cookies={"user_token": token1, "admin_csrf": csrf1},
                 headers={"X-Forwarded-For": f"198.51.100.{i}"},
                 follow_redirects=False,
             )
@@ -798,8 +806,12 @@ async def test_rotating_forwarded_headers_cannot_evade_event_create_limit():
         # must still be rate-limited because the limit is per client IP, not per account.
         resp11 = await http_peer_a.post(
             "/workspace/setup",
-            data={"display_name": "Event 11", "slug": "unique-event-slug-11"},
-            cookies={"user_token": token2},
+            data={
+                "display_name": "Event 11",
+                "slug": "unique-event-slug-11",
+                "csrf_token": csrf2,
+            },
+            cookies={"user_token": token2, "admin_csrf": csrf2},
             headers={"X-Forwarded-For": "198.51.100.99"},
             follow_redirects=False,
         )
@@ -810,8 +822,12 @@ async def test_rotating_forwarded_headers_cannot_evade_event_create_limit():
         # must also be rate-limited (429) since Peer A's quota is exhausted.
         resp12 = await http_peer_a.post(
             "/workspace/setup",
-            data={"display_name": "Event 12", "slug": "unique-event-slug-12"},
-            cookies={"user_token": token1},
+            data={
+                "display_name": "Event 12",
+                "slug": "unique-event-slug-12",
+                "csrf_token": csrf1,
+            },
+            cookies={"user_token": token1, "admin_csrf": csrf1},
             follow_redirects=False,
         )
         assert resp12.status_code == 429
@@ -824,8 +840,12 @@ async def test_rotating_forwarded_headers_cannot_evade_event_create_limit():
     ) as http_peer_b:
         resp_peer_b = await http_peer_b.post(
             "/workspace/setup",
-            data={"display_name": "Peer B Event", "slug": "unique-event-peer-b"},
-            cookies={"user_token": token3},
+            data={
+                "display_name": "Peer B Event",
+                "slug": "unique-event-peer-b",
+                "csrf_token": csrf3,
+            },
+            cookies={"user_token": token3, "admin_csrf": csrf3},
             follow_redirects=False,
         )
         assert resp_peer_b.status_code == 303
