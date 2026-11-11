@@ -8,6 +8,7 @@ Covers:
 
 from __future__ import annotations
 
+import hashlib
 import os
 
 os.environ["BOOTH_ACCESS_TOKEN"] = ""
@@ -420,3 +421,51 @@ async def test_dashboard_csrf_cookie_secure_flag_follows_scheme(setup_db, monkey
     cookie = next(v for k, v in resp.headers.multi_items() if k == "set-cookie" and v.startswith("dashboard_csrf="))
     assert ("Secure" in cookie) is secure
     assert "HttpOnly" in cookie
+
+
+# ---------------------------------------------------------------------------
+# Dashboard dialogs (#1243)
+# ---------------------------------------------------------------------------
+
+
+def _assert_labelled_dialog(html: str, dialog_id: str, title: str) -> None:
+    # A div never matches the dialog-only :not([open]) rule in admin.css, so the popups must be dialogs.
+    tag = re.search(rf'<(\w+) id="{dialog_id}"[^>]*>', html)
+    assert tag is not None and tag.group(1) == "dialog", dialog_id
+    assert " open" not in tag.group(0), "showModal() opens it; an open attribute would make it non-modal"
+    label = re.search(r'aria-labelledby="([^"]+)"', tag.group(0))
+    assert label is not None, dialog_id
+    assert re.search(rf'id="{label.group(1)}"[^>]*>{title}<', html), dialog_id
+
+
+@pytest.mark.anyio
+async def test_dashboard_create_app_popup_is_a_dialog_driven_by_developer_js(setup_db):
+    cookies = await _developer_cookies()
+    assert (await _register(cookies, "My Plugin", "https://app.example/cb")).status_code == 200
+    (client,) = await _stored_clients()
+
+    async with _client() as c:
+        resp = await c.get("/developer", cookies=cookies)
+
+    assert resp.status_code == 200
+    _assert_labelled_dialog(resp.text, "modal-create-app", "Create OAuth Client")
+    assert 'id="modal-new-secret"' not in resp.text
+    assert re.search(r'<script type="module" src="[^"]*/js/developer\.js\?v=', resp.text)
+    assert not re.search(r"<script(?![^>]*\bsrc=)[^>]*>", resp.text), "no inline scripts"
+    assert "onclick=" not in resp.text
+    assert re.search(rf'<button type="button" class="copy-wrapper" data-copy-text="{client.client_id}">', resp.text)
+
+
+@pytest.mark.anyio
+async def test_new_secret_popup_is_a_dialog_with_copy_buttons(setup_db):
+    cookies = await _developer_cookies()
+
+    resp = await _register(cookies, "My Plugin", "https://app.example/cb")
+
+    assert resp.status_code == 200
+    _assert_labelled_dialog(resp.text, "modal-new-secret", "App Created Successfully")
+    (client,) = await _stored_clients()
+    secret = re.search(r'data-copy-text="(secret_[^"]+)"', resp.text).group(1)
+    assert hashlib.sha256(secret.encode()).hexdigest() == client.client_secret_hash
+    assert re.search(rf'<button type="button" class="[^"]*copy-wrapper" data-copy-text="{client.client_id}"', resp.text)
+    assert "onclick=" not in resp.text

@@ -4,6 +4,7 @@
  */
 
 import { initLocalModelDownloader } from './download-model.js';
+import { closeDialog, initDialog, openDialog } from './modal-dialog.js';
 
 function managementPrefix() {
   return document.body.dataset.managementPrefix || '/admin';
@@ -284,6 +285,12 @@ function initCustomModal() {
 // API Keys (Embeddable B2B)
 // ---------------------------------------------------------------------------
 
+const API_KEY_DIALOG_FOCUS = {
+  'api-key-modal': 'api-key-name',
+  'api-key-success-modal': 'api-key-copy-btn',
+  'api-key-revoke-modal': 'api-key-revoke-cancel-btn',
+};
+
 window.adminAPIKeys = {
   eventId: null,
   
@@ -311,6 +318,12 @@ window.adminAPIKeys = {
         }
       });
     }
+
+    Object.keys(API_KEY_DIALOG_FOCUS).forEach((id) => {
+      const modal = document.getElementById(id);
+      // Generate and Revoke disable the dialog's buttons while their request runs; Escape waits too.
+      if (modal) initDialog(modal, () => !modal.querySelector('button:disabled'));
+    });
   },
 
   async loadKeys() {
@@ -371,9 +384,7 @@ window.adminAPIKeys = {
       document.getElementById('api-key-name').value = '';
     }
     
-    modal.hidden = false;
-    void modal.offsetWidth; // force reflow
-    modal.classList.add('active');
+    openDialog(modal, document.getElementById(API_KEY_DIALOG_FOCUS[id]));
   },
 
   showCreateModal() {
@@ -382,20 +393,18 @@ window.adminAPIKeys = {
   
   closeModal(id) {
     const modal = document.getElementById(id);
-    if (!modal) return;
-    
-    modal.classList.remove('active');
-    setTimeout(() => {
-      modal.hidden = true;
-    }, 200);
+    if (!modal) return Promise.resolve();
+    return closeDialog(modal);
   },
 
   async generateKey() {
     const nameInput = document.getElementById('api-key-name').value;
     const btn = document.querySelector('#api-key-form button[type="submit"]');
+    const cancelBtn = document.getElementById('api-key-cancel-btn');
     
     try {
       btn.disabled = true;
+      cancelBtn.disabled = true;
       const res = await fetch(`${managementPrefix()}/api/events/${this.eventId}/api-keys`, {
         method: 'POST',
         headers: {
@@ -412,7 +421,7 @@ window.adminAPIKeys = {
       
       const data = await res.json();
       
-      this.closeModal('api-key-modal');
+      await this.closeModal('api-key-modal');
       
       const valEl = document.getElementById('api-key-raw-value');
       valEl.value = data.raw_key;
@@ -429,6 +438,7 @@ window.adminAPIKeys = {
       alert(err.message);
     } finally {
       btn.disabled = false;
+      cancelBtn.disabled = false;
     }
   },
 
@@ -471,6 +481,10 @@ window.adminAPIKeys = {
 
   async confirmRevokeKey() {
     if (!this.revokeKeyId) return;
+    const confirmBtn = document.getElementById('api-key-revoke-confirm-btn');
+    const cancelBtn = document.getElementById('api-key-revoke-cancel-btn');
+    confirmBtn.disabled = true;
+    cancelBtn.disabled = true;
     
     try {
       const res = await fetch(`${managementPrefix()}/api/events/${this.eventId}/api-keys/${this.revokeKeyId}`, {
@@ -481,13 +495,19 @@ window.adminAPIKeys = {
       });
       if (!res.ok) throw new Error('Failed to revoke');
       
-      this.closeModal('api-key-revoke-modal');
+      await this.closeModal('api-key-revoke-modal');
       
-      this.loadKeys();
+      await this.loadKeys();
+      // The Revoke button that opened the dialog went away with the old table.
+      if (document.activeElement === document.body) {
+        document.getElementById('api-key-generate-btn')?.focus();
+      }
     } catch (err) {
       alert('Error revoking key: ' + err.message);
     } finally {
       this.revokeKeyId = null;
+      confirmBtn.disabled = false;
+      cancelBtn.disabled = false;
     }
   }
 };

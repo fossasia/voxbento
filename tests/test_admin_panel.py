@@ -1321,6 +1321,26 @@ class TestEventCRUD:
         assert b"Main Hall" in resp.content
 
     @pytest.mark.anyio
+    async def test_event_api_key_popups_are_labelled_dialogs(self, admin_cookie, seed_event):
+        # A div never matches the dialog-only :not([open]) rule in admin.css, so these must be dialogs (#1243).
+        event, _, _ = seed_event
+        async with _client() as c:
+            resp = await c.get(f"/admin/events/{event.id}/", cookies=admin_cookie)
+        assert resp.status_code == 200
+        for dialog_id, title in (
+            ("api-key-modal", "Generate API Key"),
+            ("api-key-success-modal", "API Key Generated"),
+            ("api-key-revoke-modal", "Revoke API Key"),
+        ):
+            tag = re.search(rf'<(\w+) id="{dialog_id}"[^>]*>', resp.text)
+            assert tag is not None and tag.group(1) == "dialog", dialog_id
+            assert " hidden" not in tag.group(0) and " open" not in tag.group(0)
+            label = re.search(r'aria-labelledby="([^"]+)"', tag.group(0))
+            assert label is not None, dialog_id
+            assert re.search(rf'id="{label.group(1)}"[^>]*>{title}<', resp.text), dialog_id
+        assert 'aria-describedby="api-key-revoke-message"' in resp.text
+
+    @pytest.mark.anyio
     async def test_api_settings_update_and_clear_keys(self, admin_cookie, seed_event):
         from portal.crypto import decrypt_val
         from portal.database import get_event_by_id, get_session

@@ -199,6 +199,8 @@
   border-radius: 8px;
   font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
   font-size: 0.85rem;
+  line-height: inherit;
+  text-align: inherit;
   color: var(--color-text, #1e293b);
   cursor: pointer;
   transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1);
@@ -313,7 +315,7 @@
   border-color: #10b981;
 }
 
-/* Copy / check icon swap — driven by the .copied class set in the template script */
+/* Copy / check icon swap — driven by the .copied class set in developer.js */
 .copy-wrapper .icon-check { display: none; }
 .copy-wrapper.copied .icon-copy { display: none; }
 .copy-wrapper.copied .icon-check { display: block; }
