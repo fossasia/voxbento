@@ -65,6 +65,7 @@
     {% endif %}
 
     <form method="post" action="{{ form_action }}" id="room-setup-form">
+      <input type="hidden" name="csrf_token" value="{{ request.state.admin_csrf_token }}" />
       {% if from_setup %}<input type="hidden" name="from" value="setup">{% endif %}
 
       {# ── Step 1: the room ───────────────────────────────────── #}
