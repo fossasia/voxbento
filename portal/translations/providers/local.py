@@ -28,8 +28,9 @@ from portal.translations.engine import (
     TranslationRows,
     translate_each,
 )
+from portal.translations.model_languages import fixed_language_model
 from portal.translations.providers.base import TranslationProvider
-from portal.translations.registry import NLLB_200_DISTILLED_600M, get_translation_model
+from portal.translations.registry import get_translation_model
 from portal.translations.vocabulary import protect_terms, restore_terms
 
 logger = logging.getLogger(__name__)
@@ -83,7 +84,7 @@ def _engine_code(model_size: str, language_code: str, language_name: str) -> str
     the NLLB-200 language codes. A caller that has only the English name gets it resolved
     to its ISO code first; the name may also be the ISO code itself.
     """
-    entry = get_translation_model(model_size) or NLLB_200_DISTILLED_600M
+    entry = fixed_language_model(TranslationProviderEnum.LOCAL.value, model_size)
     for code in (language_code, language_name):
         engine_code = entry.engine_code(code) if code else None
         if engine_code:
