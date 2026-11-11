@@ -3766,17 +3766,18 @@ async def api_admin_get_transcripts(
     event_id: int,
     room_id: int,
     language_code: str,
-    target_lang: str = Query(None),
+    target_lang: str | None = Query(None, min_length=1),
     admin: bool = Depends(require_owner_or_coordinator),
 ):
-    from sqlalchemy import select
+    from sqlalchemy import func, select
 
     from portal.database import get_session
+    from portal.translations.model_languages import validate_translation_language
 
-    # Stored codes are lowercase, as in the API v1 export.
+    # Booth codes are stored lowercase; translation codes are the ones room setup offers (as in the API v1 export).
     try:
         language_code = validate_language_code(language_code)
-        target_lang = validate_language_code(target_lang) if target_lang else None
+        target_lang = validate_translation_language(target_lang) if target_lang else None
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
@@ -3793,7 +3794,8 @@ async def api_admin_get_transcripts(
                 .where(
                     TranscriptSegment.room_id == room_id,
                     TranscriptSegment.language_code == language_code,
-                    TranscriptTranslation.language_code == target_lang,
+                    # Rows saved before codes were normalized can be in any case.
+                    func.lower(TranscriptTranslation.language_code) == target_lang,
                 )
                 .order_by(TranscriptSegment.created_at)
             )

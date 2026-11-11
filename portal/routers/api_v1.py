@@ -6,7 +6,7 @@ from typing import Annotated, Any
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 from pydantic import BaseModel, Field, field_validator
-from sqlalchemy import select, update
+from sqlalchemy import func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from portal.auth import coordinates_room, load_membership_scope, require_oauth_scope
@@ -33,7 +33,7 @@ from portal.roles import EVENT_OWNER
 from portal.transcription.constants import ProviderEnum
 from portal.transcription.worker import active_workers, start_transcription_worker, stop_transcription_worker
 from portal.translations.constants import TranslationProviderEnum
-from portal.translations.model_languages import language_support_error
+from portal.translations.model_languages import language_support_error, validate_translation_language
 from portal.websockets.revocation import revoke_booths_for_deleted_entity
 
 logger = logging.getLogger(__name__)
@@ -1110,7 +1110,10 @@ async def export_transcript(
     target_room_id = _extract_room_id(room, room_id)
     language_code = _validate_lang(language_code)
     if target_lang:
-        target_lang = _validate_lang(target_lang)
+        try:
+            target_lang = validate_translation_language(target_lang)
+        except ValueError as exc:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
 
     # Validate that the booth exists within this event/room
     result = await db.execute(
@@ -1131,7 +1134,8 @@ async def export_transcript(
             .where(
                 TranscriptSegment.room_id == target_room_id,
                 TranscriptSegment.language_code == language_code,
-                TranscriptTranslation.language_code == target_lang,
+                # Rows saved before codes were normalized can be in any case.
+                func.lower(TranscriptTranslation.language_code) == target_lang,
             )
             .order_by(TranscriptSegment.created_at, TranscriptSegment.id)
         )

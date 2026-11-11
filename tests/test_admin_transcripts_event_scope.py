@@ -101,15 +101,26 @@ async def test_api_transcripts_normalizes_language_codes(client):
         s.add(segment)
         await s.flush()
         s.add(TranscriptTranslation(segment_id=segment.id, language_code="es", text="Hola"))
+        # Saved in another case, and in a language room setup offers but booths do not accept.
+        s.add(TranscriptTranslation(segment_id=segment.id, language_code="SH", text="Zdravo"))
         await s.commit()
+    base = f"/api/workspace/events/{ev_a}/rooms/{room_a}/transcripts"
 
-    r = await client.get(f"/api/workspace/events/{ev_a}/rooms/{room_a}/transcripts/EN")
+    r = await client.get(f"{base}/EN")
     assert r.status_code == 200
     assert [t["text"] for t in r.json()] == ["Hello"]
 
-    r = await client.get(f"/api/workspace/events/{ev_a}/rooms/{room_a}/transcripts/en?target_lang=ES")
+    r = await client.get(f"{base}/en?target_lang=ES")
     assert r.status_code == 200
     assert [t["text"] for t in r.json()] == ["Hola"]
 
-    r = await client.get(f"/api/workspace/events/{ev_a}/rooms/{room_a}/transcripts/en?target_lang=zz")
-    assert r.status_code == 400
+    r = await client.get(f"{base}/en?target_lang=sh")
+    assert r.status_code == 200
+    assert [t["text"] for t in r.json()] == ["Zdravo"]
+
+    for bad in (f"{base}/zz", f"{base}/en?target_lang=zz", f"{base}/en?target_lang=floor"):
+        r = await client.get(bad)
+        assert r.status_code == 400, bad
+
+    r = await client.get(f"{base}/en?target_lang=")
+    assert r.status_code == 422

@@ -296,33 +296,57 @@ async def test_export_returns_empty_when_no_translations_for_target_lang(event):
     assert response["segments"] == []
 
 
-@pytest.mark.anyio
-async def test_export_normalizes_target_lang_case(real_db):
-    """target_lang is matched case-insensitively, like the booth language code in the path."""
+async def _booth_with_translation(real_db, translation_language: str):
     event = await create_event(real_db, slug=EVENT_SLUG, display_name="PyCon 2026")
     room = await create_room(real_db, event_id=event.id, display_name="Hall A")
     await create_booth(real_db, event_id=event.id, room_id=room.id, language_code="en", language_name="English")
     segment = TranscriptSegment(room_id=room.id, language_code="en", text="Hello")
     real_db.add(segment)
     await real_db.flush()
-    real_db.add(TranscriptTranslation(segment_id=segment.id, language_code="es", text="Hola"))
+    real_db.add(TranscriptTranslation(segment_id=segment.id, language_code=translation_language, text="Translated"))
     await real_db.flush()
+    return room
+
+
+@pytest.mark.anyio
+async def test_export_normalizes_target_lang_case(real_db):
+    """target_lang is matched case-insensitively, like the booth language code in the path."""
+    room = await _booth_with_translation(real_db, "es")
 
     response = await api_v1.export_transcript(EVENT_SLUG, room.id, "EN", target_lang="ES", db=real_db, token=object())
 
     assert response["target_lang"] == "es"
-    assert [s["text"] for s in response["segments"]] == ["Hola"]
+    assert [s["text"] for s in response["segments"]] == ["Translated"]
 
 
 @pytest.mark.anyio
-async def test_export_rejects_invalid_target_lang(real_db):
+async def test_export_finds_translations_stored_in_another_case(real_db):
+    """Rows whose code was saved in another case are still exported."""
+    room = await _booth_with_translation(real_db, "ES")
+
+    response = await api_v1.export_transcript(EVENT_SLUG, room.id, "en", target_lang="es", db=real_db, token=object())
+
+    assert [s["text"] for s in response["segments"]] == ["Translated"]
+
+
+@pytest.mark.anyio
+async def test_export_accepts_translation_languages_room_setup_offers(real_db):
+    """Room setup offers pycountry languages such as Serbo-Croatian (sh), which booths do not accept."""
+    room = await _booth_with_translation(real_db, "sh")
+
+    response = await api_v1.export_transcript(EVENT_SLUG, room.id, "en", target_lang="sh", db=real_db, token=object())
+
+    assert [s["text"] for s in response["segments"]] == ["Translated"]
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("target_lang", ["zz", "floor", "english"])
+async def test_export_rejects_invalid_target_lang(real_db, target_lang):
     """An unknown target_lang is a 400, as for the booth language code, not an empty export."""
-    event = await create_event(real_db, slug=EVENT_SLUG, display_name="PyCon 2026")
-    room = await create_room(real_db, event_id=event.id, display_name="Hall A")
-    await create_booth(real_db, event_id=event.id, room_id=room.id, language_code="en", language_name="English")
+    room = await _booth_with_translation(real_db, "es")
 
     with pytest.raises(api_v1.HTTPException) as exc_info:
-        await api_v1.export_transcript(EVENT_SLUG, room.id, "en", target_lang="zz", db=real_db, token=object())
+        await api_v1.export_transcript(EVENT_SLUG, room.id, "en", target_lang=target_lang, db=real_db, token=object())
 
     assert exc_info.value.status_code == 400
 
