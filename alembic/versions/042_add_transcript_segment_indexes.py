@@ -1,7 +1,7 @@
 """add transcript segment indexes
 
-Revision ID: 040
-Revises: 039
+Revision ID: 042
+Revises: 041
 Create Date: 2026-10-26 17:10:00.000000
 
 """
@@ -15,16 +15,20 @@ from sqlalchemy import text
 from alembic import op
 
 # revision identifiers, used by Alembic.
-revision: str = "040"
-down_revision: Union[str, Sequence[str], None] = "039"
+revision: str = "042"
+down_revision: Union[str, Sequence[str], None] = "041"
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
 
 ROOM_LANGUAGE_CREATED = "ix_transcript_segments_room_language_created"
 BOOTH_ID = "ix_transcript_segments_booth_id"
-MIGRATION_ADVISORY_LOCK_ID = 20261026040
-ADVISORY_LOCK = text("SELECT pg_advisory_lock(20261026040)")
-ADVISORY_UNLOCK = text("SELECT pg_advisory_unlock(20261026040)")
+# alembic/env.py takes the same session lock around the whole run, and advisory locks
+# are re-entrant within a session, so this pair is a no-op under alembic but still
+# serializes a run that bypasses that entry point. The number encodes the revision so
+# the two files can be matched by eye. It stays a literal because ``--sql`` mode does
+# not inline bound parameters and would emit ``%(lock_id)s`` instead.
+ADVISORY_LOCK = text("SELECT pg_advisory_lock(20261026042)")
+ADVISORY_UNLOCK = text("SELECT pg_advisory_unlock(20261026042)")
 
 
 def upgrade() -> None:
@@ -58,6 +62,12 @@ def upgrade() -> None:
     abort every deployment before the application starts. The block emits a ``COMMIT``
     before the statements and resumes a transaction afterwards; the advisory lock is
     session-scoped, so it still spans the block.
+
+    Known limitation: a ``CREATE INDEX CONCURRENTLY`` that fails part way leaves the
+    index behind marked invalid, and because ``if_not_exists`` matches on the name
+    alone, a retry skips it rather than rebuilding. The revision still records as
+    applied while the planner ignores the index. If a build is interrupted, drop the
+    invalid index by name and re-run, or check ``pg_index.indisvalid`` afterwards.
     """
     context = op.get_context()
     if context.dialect.name == "postgresql":

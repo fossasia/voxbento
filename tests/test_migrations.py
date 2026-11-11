@@ -156,7 +156,7 @@ def test_migration_018_downgrade_backfills_passwordless_accounts():
         os.unlink(db_path)
 
 
-def _create_pre_040_transcript_segments(db_path: str) -> None:
+def _create_pre_042_transcript_segments(db_path: str) -> None:
     """Recreate transcript_segments exactly as migration 010 left it: no secondary index."""
     conn = sqlite3.connect(db_path)
     try:
@@ -181,6 +181,7 @@ def _create_pre_040_transcript_segments(db_path: str) -> None:
 
 
 def _indexes(db_path: str, table: str) -> dict[str, list[str]]:
+    """Return ``{index name: [column, …]}`` for one table, read back from SQLite."""
     conn = sqlite3.connect(db_path)
     try:
         names = [row[1] for row in conn.execute(f"PRAGMA index_list({table})")]
@@ -189,8 +190,8 @@ def _indexes(db_path: str, table: str) -> dict[str, list[str]]:
         conn.close()
 
 
-def test_migration_040_indexes_transcript_segments():
-    """Migration 040 must index the transcript export predicate and the booth cascade (#1033).
+def test_migration_042_indexes_transcript_segments():
+    """Migration 042 must index the transcript export predicate and the booth cascade (#1033).
 
     ``transcript_segments`` arrives from 010 with no secondary index at all, so the
     export in ``api_v1.py`` filtered and sorted over the table, and the ``ON DELETE
@@ -200,12 +201,12 @@ def test_migration_040_indexes_transcript_segments():
     leaving ``id`` out still forces PostgreSQL to sort rows that tie on ``created_at``.
     ``booth_id`` gets its own index because it is not a leading column of that composite.
     """
-    migration = _load_migration("040_add_transcript_segment_indexes.py")
+    migration = _load_migration("042_add_transcript_segment_indexes.py")
 
     fd, db_path = tempfile.mkstemp(suffix=".db")
     os.close(fd)
     try:
-        _create_pre_040_transcript_segments(db_path)
+        _create_pre_042_transcript_segments(db_path)
         assert _indexes(db_path, "transcript_segments") == {}, "010 leaves the table unindexed"
 
         _run(db_path, migration.upgrade)
@@ -233,14 +234,14 @@ def test_migration_040_indexes_transcript_segments():
         os.unlink(db_path)
 
 
-def test_migration_040_emits_sql_offline():
-    """Migration 040 must generate SQL in ``--sql`` mode.
+def test_migration_042_emits_sql_offline():
+    """Migration 042 must generate SQL in ``--sql`` mode.
 
     Offline generation runs against a mock connection that cannot be reflected, so
     the revision must never inspect the live schema. An inspector call here fails
     with ``NoInspectionAvailable`` instead of emitting the index statements.
     """
-    migration = _load_migration("040_add_transcript_segment_indexes.py")
+    migration = _load_migration("042_add_transcript_segment_indexes.py")
 
     for dialect in ("postgresql", "sqlite"):
         buffer = io.StringIO()
@@ -255,8 +256,8 @@ def test_migration_040_emits_sql_offline():
         assert "ix_transcript_segments_booth_id" in emitted
         assert "LOCK TABLE" not in emitted
         if dialect == "postgresql":
-            assert "pg_advisory_lock(20261026040)" in emitted
-            assert "pg_advisory_unlock(20261026040)" in emitted
+            assert "pg_advisory_lock(20261026042)" in emitted
+            assert "pg_advisory_unlock(20261026042)" in emitted
             assert "%(lock_id)s" not in emitted
             assert "CONCURRENTLY" in emitted
             # CONCURRENTLY is rejected inside a transaction (SQLSTATE 25001), so the
@@ -279,8 +280,8 @@ def test_migration_040_emits_sql_offline():
         assert "ix_transcript_segments_booth_id" in emitted_down
         assert "LOCK TABLE" not in emitted_down
         if dialect == "postgresql":
-            assert "pg_advisory_lock(20261026040)" in emitted_down
-            assert "pg_advisory_unlock(20261026040)" in emitted_down
+            assert "pg_advisory_lock(20261026042)" in emitted_down
+            assert "pg_advisory_unlock(20261026042)" in emitted_down
             assert "%(lock_id)s" not in emitted_down
             assert "CONCURRENTLY" in emitted_down
             assert emitted_down.index("COMMIT") < emitted_down.index("DROP INDEX CONCURRENTLY")
