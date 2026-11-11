@@ -287,6 +287,24 @@ async def test_publishing_still_needs_the_active_slot():
 
 
 @pytest.mark.anyio
+async def test_stopping_persistence_drops_pending_writes_and_stores_nothing_more():
+    store = FakeStore()
+    registry = BoothRegistry(persist_active=store.save)
+    first = await join(registry, "A", "user:1")
+    await settle(registry)
+    stored = list(store.calls)
+    await registry.leave_participant(BOOTH, first.participant_id, "French", f"{BOOTH}-audio")
+    assert registry._pending_persist  # the delayed write for the departure is waiting
+
+    await registry.stop_persistence()
+
+    assert not registry._pending_persist
+    await join(registry, "B", "user:2")
+    await asyncio.sleep(0)
+    assert store.calls == stored  # nothing was written after the stop
+
+
+@pytest.mark.anyio
 async def test_removing_a_booth_drops_its_persist_lock():
     store = FakeStore()
     registry = BoothRegistry(persist_active=store.save)

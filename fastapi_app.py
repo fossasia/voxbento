@@ -126,6 +126,7 @@ async def lifespan(app: FastAPI):
     for task in tasks_to_cancel:
         task.cancel()
     await asyncio.gather(*tasks_to_cancel, return_exceptions=True)
+    await booths.stop_persistence()
 
     if pg.shared_http_client:
         await pg.shared_http_client.aclose()

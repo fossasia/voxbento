@@ -187,6 +187,20 @@ class BoothRegistry:
         """Start storing the active interpreter of every booth (called once at startup)."""
         self._persist_active = persist_active
 
+    async def stop_persistence(self) -> None:
+        """Stop storing the active interpreter and drop writes that have not run yet (app shutdown).
+
+        Without this a registry that outlives its app (the shared one in tests) would keep starting
+        database writes that nobody waits for, and they can block the event loop from closing.
+        """
+        self._persist_active = None
+        pending = list(self._pending_persist.values())
+        self._pending_persist.clear()
+        for task in pending:
+            task.cancel()
+        if pending:
+            await asyncio.wait(pending, timeout=5)
+
     def restore_active(self, rows: Iterable[tuple[str, str]]) -> None:
         """Reserve each booth's active slot for the session that held it before the restart.
 
