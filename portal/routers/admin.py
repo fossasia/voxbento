@@ -1266,11 +1266,13 @@ async def admin_event_api_settings_post(
     gemini_api_key: str | None = Form(None),
     anthropic_api_key: str | None = Form(None),
     groq_api_key: str | None = Form(None),
+    google_translate_api_key: str | None = Form(None),
     clear_translation_openai_api_key: bool | None = Form(False),
     clear_openrouter_api_key: bool | None = Form(False),
     clear_gemini_api_key: bool | None = Form(False),
     clear_anthropic_api_key: bool | None = Form(False),
     clear_groq_api_key: bool | None = Form(False),
+    clear_google_translate_api_key: bool | None = Form(False),
 ):
     async with get_session() as session:
         event = await get_event_by_id(session, event_id)
@@ -1295,6 +1297,11 @@ async def admin_event_api_settings_post(
                     ("encrypted_gemini_api_key", gemini_api_key, clear_gemini_api_key),
                     ("encrypted_anthropic_api_key", anthropic_api_key, clear_anthropic_api_key),
                     ("encrypted_groq_api_key", groq_api_key, clear_groq_api_key),
+                    (
+                        "encrypted_google_translate_api_key",
+                        google_translate_api_key,
+                        clear_google_translate_api_key,
+                    ),
                 ),
             )
         except (ValueError, RuntimeError) as e:

@@ -122,6 +122,26 @@ async def test_update_event_api_keys_encrypts_initial_value_and_rotates_existing
 
 
 @pytest.mark.anyio
+async def test_update_event_api_keys_stores_google_translate_key_without_returning_it(event_api_access):
+    access_token, event_id = event_api_access
+
+    async with _client() as client:
+        response = await client.patch(
+            "/api/v1/events/api-key-test/api_keys",
+            json={"google_translate_api_key": "google-translate-key"},
+            headers={"Authorization": f"Bearer {access_token}"},
+        )
+    assert response.status_code == 200
+    assert response.json() == {"status": "ok"}
+
+    async with get_session() as session:
+        event = await session.get(Event, event_id)
+        assert event is not None
+        assert event.encrypted_google_translate_api_key != "google-translate-key"
+        assert decrypt_val(event.encrypted_google_translate_api_key) == "google-translate-key"
+
+
+@pytest.mark.anyio
 async def test_update_event_api_keys_only_changes_fields_sent_in_payload(event_api_access):
     """Updating OpenAI leaves other encrypted provider keys byte-for-byte unchanged."""
     access_token, event_id = event_api_access

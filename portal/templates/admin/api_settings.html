@@ -142,13 +142,24 @@
       </div>
     </div>
 
-    <div class="form-group api-key-field api-key-field--last">
+    <div class="form-group api-key-field">
       <label for="groq_api_key" class="api-key-label">Groq API Key</label>
       <input type="password" id="groq_api_key" name="groq_api_key" placeholder="{{ 'Configured' if event.encrypted_groq_api_key else 'gsk_...' }}" value="" class="input api-key-input">
       <div class="api-key-meta">
         <p class="form-help api-key-help">Required for Groq hosted models (Llama 3.3 70B, Mixtral 8x7B)</p>
         <label class="api-key-clear">
           <input type="checkbox" name="clear_groq_api_key" value="1"> Clear Key
+        </label>
+      </div>
+    </div>
+
+    <div class="form-group api-key-field api-key-field--last">
+      <label for="google_translate_api_key" class="api-key-label">Google Cloud Translation API Key</label>
+      <input type="password" id="google_translate_api_key" name="google_translate_api_key" placeholder="{{ 'Configured' if event.encrypted_google_translate_api_key else 'AIza...' }}" value="" class="input api-key-input">
+      <div class="api-key-meta">
+        <p class="form-help api-key-help">Required for Google Cloud Translation. A key for the Cloud Translation API, separate from a Gemini key.</p>
+        <label class="api-key-clear">
+          <input type="checkbox" name="clear_google_translate_api_key" value="1"> Clear Key
         </label>
       </div>
     </div>

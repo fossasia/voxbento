@@ -1336,6 +1336,7 @@ class TestEventCRUD:
             "gemini_api_key": "gemini-secret",
             "anthropic_api_key": "anthropic-secret",
             "groq_api_key": "groq-secret",
+            "google_translate_api_key": "google-translate-secret",
         }
         async with _client() as c:
             response = await c.post(
@@ -1353,6 +1354,12 @@ class TestEventCRUD:
             for form_name, expected in keys.items():
                 attribute = f"encrypted_{form_name}"
                 assert decrypt_val(getattr(updated, attribute)) == expected.strip()
+
+        async with _client() as c:
+            page = await c.get(f"/admin/events/{event.id}/api-settings/", cookies=admin_cookie)
+        assert page.status_code == 200
+        assert "google-translate-secret" not in page.text
+        assert updated.encrypted_google_translate_api_key not in page.text
 
         async with _client() as c:
             response = await c.post(
