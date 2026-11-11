@@ -26,11 +26,13 @@ from starlette.datastructures import FormData
 from portal import meeting_source
 from portal import roles as roles_module
 from portal.auth import (
+    ADMIN_CSRF_COOKIE,
     coordinates_room,
     get_access_flags,
     get_accessible_event_ids,
     get_current_user,
     require_admin,
+    require_admin_csrf,
     require_event_owner,
     require_hosting_access,
     require_owner_or_coordinator,
@@ -146,11 +148,13 @@ from portal.room_setup import (
     apply_plan,
     blank_plan,
     booth_speech_models,
+    brand_name,
     default_jitsi_url,
     engine_catalog,
     load_snapshot,
     parse_plan,
     room_audio_choice,
+    server_unavailable_reason,
     summarize,
 )
 from portal.room_setup import ALL_LANGUAGES as ROOM_ALL_LANGUAGES
@@ -170,12 +174,15 @@ from portal.team import remove_assignment as remove_team_assignment
 from portal.team import revoke_invite_link as revoke_team_invite_link
 from portal.transcription import ALLOWED_MODELS, ProviderConfig, ProviderEnum, get_api_key
 from portal.transcription.worker import (
+    State,
     WorkerCapacityError,
     active_workers,
     start_transcription_worker,
     stop_transcription_worker,
+    wait_for_worker_start,
 )
 from portal.translations.constants import TRANSLATION_MODELS, TranslationProviderEnum
+from portal.translations.model_languages import language_support_error
 from portal.translations.vocabulary import (
     VocabularyOverlapIndex,
     VocabularyScopeError,
@@ -202,6 +209,7 @@ templates = Jinja2Templates(
 )
 # Templates read role names and labels from portal.roles (#757).
 templates.env.globals["roles"] = roles_module
+templates.env.globals["brand_name"] = brand_name
 templates.env.filters["role_label"] = role_label
 
 
@@ -339,7 +347,7 @@ async def admin_emails(
     )
 
 
-@router.post("/admin/emails/branding", dependencies=[Depends(require_admin)])
+@router.post("/admin/emails/branding", dependencies=[Depends(require_admin), Depends(require_admin_csrf)])
 async def admin_email_branding(
     request: Request,
     show_logo: str = Form(""),
@@ -372,7 +380,7 @@ async def admin_email_preview(key: str, db: AsyncSession = Depends(get_db_sessio
     )
 
 
-@router.post("/admin/emails/{key}/draft", dependencies=[Depends(require_admin)])
+@router.post("/admin/emails/{key}/draft", dependencies=[Depends(require_admin), Depends(require_admin_csrf)])
 async def admin_email_save_draft(
     key: str,
     request: Request,
@@ -393,7 +401,7 @@ async def admin_email_save_draft(
     return safe_redirect(url=f"/admin/emails/{safe_key}/?saved=1", status_code=status.HTTP_303_SEE_OTHER)
 
 
-@router.post("/admin/emails/{key}/publish", dependencies=[Depends(require_admin)])
+@router.post("/admin/emails/{key}/publish", dependencies=[Depends(require_admin), Depends(require_admin_csrf)])
 async def admin_email_publish(
     key: str,
     request: Request,
@@ -410,7 +418,7 @@ async def admin_email_publish(
     return safe_redirect(url=f"/admin/emails/{safe_key}/?published=1", status_code=status.HTTP_303_SEE_OTHER)
 
 
-@router.post("/admin/emails/{key}/test", dependencies=[Depends(require_admin)])
+@router.post("/admin/emails/{key}/test", dependencies=[Depends(require_admin), Depends(require_admin_csrf)])
 async def admin_email_test(
     key: str,
     request: Request,
@@ -591,6 +599,7 @@ async def admin_logout():
     response.delete_cookie("admin_token")
     response.delete_cookie("user_token")
     response.delete_cookie("session_token")
+    response.delete_cookie(ADMIN_CSRF_COOKIE)
     return response
 
 
@@ -698,7 +707,7 @@ async def admin_event_list(request: Request, page: int = 1, search: str | None =
     )
 
 
-@router.post("/admin/events/", dependencies=[Depends(require_hosting_access)])
+@router.post("/admin/events/", dependencies=[Depends(require_hosting_access), Depends(require_admin_csrf)])
 async def admin_create_event(request: Request, principal: dict = Depends(require_hosting_access)):
     form = await request.form()
     slug = form.get("slug", "").strip()
@@ -750,7 +759,7 @@ async def admin_setup_start(request: Request):
     return templates.TemplateResponse(request=request, name="admin/wizard_event.html", context={**admin_flags})
 
 
-@router.post("/admin/setup", dependencies=[Depends(require_hosting_access)])
+@router.post("/admin/setup", dependencies=[Depends(require_hosting_access), Depends(require_admin_csrf)])
 async def admin_setup_create_event(request: Request, principal: dict = Depends(require_hosting_access)):
     form = await request.form()
     display_name = form.get("display_name", "").strip()
@@ -846,7 +855,7 @@ async def admin_setup_rooms(request: Request, event_id: int):
     )
 
 
-@router.post("/admin/events/{event_id}/setup/rooms", dependencies=[Depends(require_event_owner)])
+@router.post("/admin/events/{event_id}/setup/rooms", dependencies=[Depends(require_event_owner), Depends(require_admin_csrf)])
 async def admin_setup_add_room(request: Request, event_id: int):
     # Compatibility for forms opened before room setup was consolidated.
     form = await request.form()
@@ -866,7 +875,7 @@ async def admin_setup_add_room(request: Request, event_id: int):
     )
 
 
-@router.post("/admin/events/{event_id}/setup/booths", dependencies=[Depends(require_event_owner)])
+@router.post("/admin/events/{event_id}/setup/booths", dependencies=[Depends(require_event_owner), Depends(require_admin_csrf)])
 async def admin_setup_add_booth(request: Request, event_id: int):
     """Add a booth to a room during event setup."""
     async with get_session() as session:
@@ -998,7 +1007,7 @@ async def admin_room_setup_new(request: Request, event_id: int, source: str | No
     )
 
 
-@router.post("/admin/events/{event_id}/rooms/new", dependencies=[Depends(require_event_owner)])
+@router.post("/admin/events/{event_id}/rooms/new", dependencies=[Depends(require_event_owner), Depends(require_admin_csrf)])
 async def admin_room_setup_create(request: Request, event_id: int):
     if not verify_same_origin(request):
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Invalid request origin.")
@@ -1060,7 +1069,7 @@ async def admin_room_setup_edit(request: Request, event_id: int, room_id: int):
     )
 
 
-@router.post("/admin/events/{event_id}/rooms/{room_id}/setup", dependencies=[Depends(require_event_owner)])
+@router.post("/admin/events/{event_id}/rooms/{room_id}/setup", dependencies=[Depends(require_event_owner), Depends(require_admin_csrf)])
 async def admin_room_setup_save(request: Request, event_id: int, room_id: int):
     if not verify_same_origin(request):
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Invalid request origin.")
@@ -1128,7 +1137,7 @@ async def admin_setup_invite(request: Request, event_id: int, success: str | Non
     )
 
 
-@router.post("/admin/events/{event_id}/setup/invite", dependencies=[Depends(require_event_owner)])
+@router.post("/admin/events/{event_id}/setup/invite", dependencies=[Depends(require_event_owner), Depends(require_admin_csrf)])
 async def admin_setup_add_invite(request: Request, event_id: int):
     form = await request.form()
     email = form.get("email", "").strip()
@@ -1159,7 +1168,7 @@ async def admin_setup_add_invite(request: Request, event_id: int):
     )
 
 
-@router.post("/admin/events/{event_id}/regenerate_join_code/", dependencies=[Depends(require_event_owner)])
+@router.post("/admin/events/{event_id}/regenerate_join_code/", dependencies=[Depends(require_event_owner), Depends(require_admin_csrf)])
 async def admin_regenerate_join_code(request: Request, event_id: int):
     async with get_session() as session:
         event = await get_event_by_id(session, event_id)
@@ -1237,7 +1246,7 @@ async def admin_event_api_settings_get(request: Request, event_id: int):
     )
 
 
-@router.post("/admin/events/{event_id}/api-settings", dependencies=[Depends(require_event_owner)])
+@router.post("/admin/events/{event_id}/api-settings", dependencies=[Depends(require_event_owner), Depends(require_admin_csrf)])
 async def admin_event_api_settings_post(
     request: Request,
     event_id: int,
@@ -1297,7 +1306,7 @@ async def admin_event_api_settings_post(
     )
 
 
-@router.post("/admin/events/{event_id}/delete", dependencies=[Depends(require_event_owner)])
+@router.post("/admin/events/{event_id}/delete", dependencies=[Depends(require_event_owner), Depends(require_admin_csrf)])
 async def admin_delete_event(request: Request, event_id: int):
     """Delete an event by ID, returning 404 if missing or redirecting with an error alert on database failure."""
     try:
@@ -1342,7 +1351,7 @@ async def admin_room_list(request: Request, event_id: int, search: str | None = 
     )
 
 
-@router.post("/admin/events/{event_id}/rooms/", dependencies=[Depends(require_event_owner)])
+@router.post("/admin/events/{event_id}/rooms/", dependencies=[Depends(require_event_owner), Depends(require_admin_csrf)])
 async def admin_create_room(request: Request, event_id: int):
     form = await request.form()
     display_name = form.get("display_name", "").strip()
@@ -1446,6 +1455,7 @@ async def admin_redirect_room_by_eventyay_id(request: Request, event_slug: str, 
 
 @router.get("/admin/events/{event_id}/rooms/{room_id}/", dependencies=[Depends(require_owner_or_coordinator)])
 async def admin_room_detail(request: Request, event_id: int, room_id: int):
+    """Render room settings and any translation validation error."""
     admin_flags = await get_access_flags(request, event_id=event_id, room_id=room_id)
     async with get_session() as session:
         event = await get_event_by_id(session, event_id)
@@ -1492,11 +1502,14 @@ async def admin_room_detail(request: Request, event_id: int, room_id: int):
             },
             "room_overlay_channels": overlay_channels([room], db_booths),
             "floor_overlay_url": _overlay_url(event, room.id, "floor") if room.has_floor_captions else None,
+            "error_notice": getattr(request.state, "translation_error", None),
             "just_created": request.query_params.get("created") == "1",
             "just_updated": request.query_params.get("updated") == "1",
             "kept_live_languages": kept_live,
             "fallback_jitsi_url": fallback_jitsi_url,
             "catalog": catalog,
+            # Services that cannot translate this room's languages are not offered.
+            "translation_unfit": catalog.translation_hidden((room.floor_language_code, *snapshot.plan.ai_languages)),
             "audio_choice": room_audio_choice(room),
             "speech_models": ROOM_SPEECH_MODELS,
             "voice_presets": ROOM_VOICE_PRESETS,
@@ -1556,6 +1569,37 @@ async def admin_room_transcripts(request: Request, event_id: int, room_id: int):
     )
 
 
+class TranslationLanguageError(HTTPException):
+    """A translation-language validation error that can be shown on its settings form."""
+
+
+async def _translation_form_response(
+    request: Request, error: TranslationLanguageError, event_id: int, room_id: int, booth_id: int | None = None
+):
+    """Re-render browser settings after rollback, retaining JSON errors for other clients."""
+    if "text/html" not in request.headers.get("accept", ""):
+        raise error
+    request.state.translation_error = error.detail
+    if booth_id is None:
+        response = await admin_room_detail(request, event_id, room_id)
+    else:
+        response = await admin_booth_detail(request, event_id, room_id, booth_id)
+    response.status_code = error.status_code
+    return response
+
+
+def _require_translatable(provider: str | None, model: str | None, language_codes: Iterable[str | None]) -> None:
+    """Refuse a translation model that cannot handle the language spoken or a language translated into."""
+    error = language_support_error(provider, model, language_codes)
+    if error:
+        raise TranslationLanguageError(status_code=400, detail=error)
+
+
+def _enabled_codes(translation_languages) -> list[str]:
+    """The ISO codes of enabled target languages for a room."""
+    return [lang.language_code for lang in translation_languages if lang.enabled]
+
+
 def _apply_ai_settings(room: Room, form: FormData, catalog: EngineCatalog) -> None:
     """Save the room page's AI settings: services, models, voice and translator instructions.
 
@@ -1573,8 +1617,17 @@ def _apply_ai_settings(room: Room, form: FormData, catalog: EngineCatalog) -> No
     translation = catalog.find("translation", str(form.get("floor_translation_provider", "")))
     if translation:
         model = str(form.get("floor_translation_model", "")).strip()[:100]
+        if translation.provider == TranslationProviderEnum.SELF_HOSTED.value:
+            model = settings.self_hosted_llm_model_or_default(model) or ""
+        model = model or translation.model
+        # Only a changed choice is checked, so a room saved before this rule can still save its other settings.
+        changed = (translation.provider, model) != (room.floor_translation_provider, room.floor_translation_model)
+        if changed and room.floor_translation_enabled:
+            _require_translatable(
+                translation.provider, model, (room.floor_language_code, *_enabled_codes(room.translation_languages))
+            )
         room.floor_translation_provider = translation.provider
-        room.floor_translation_model = model or translation.model
+        room.floor_translation_model = model
     if "floor_ai_interpreter_persona" in form:
         room.floor_ai_interpreter_persona = str(form.get("floor_ai_interpreter_persona", "")).strip() or None
         room.floor_ai_interpretation_style = str(form.get("floor_ai_interpretation_style", "")).strip() or None
@@ -1588,96 +1641,160 @@ def _apply_ai_settings(room: Room, form: FormData, catalog: EngineCatalog) -> No
             room.floor_tts_voice = preset
 
 
-@router.post("/admin/events/{event_id}/rooms/{room_id}/edit", dependencies=[Depends(require_event_owner)])
+def _process_room_general_section(room: Room, form: FormData) -> None:
+    display_name = form.get("display_name", "").strip()
+    jitsi_url = form.get("jitsi_url", "").strip()
+    audio_delay_ms = parse_audio_delay_ms(form.get("audio_delay_ms", "0"))
+    if display_name:
+        room.display_name = display_name
+    room.jitsi_url = jitsi_url if jitsi_url else None
+    room.audio_delay_ms = audio_delay_ms
+
+
+async def _process_room_relay_section(session: AsyncSession, room: Room, event_id: int, form: FormData) -> None:
+    relay_booth_id_str = form.get("relay_booth_id", "").strip()
+    relay_booth_id = int(relay_booth_id_str) if relay_booth_id_str and relay_booth_id_str.lower() != "none" else None
+    if relay_booth_id is not None:
+        relay_booth = await get_booth_by_id(session, relay_booth_id)
+        if relay_booth is None or relay_booth.event_id != event_id:
+            raise HTTPException(status_code=404, detail="Booth not found.")
+        relay_room = await get_room_by_id(session, relay_booth.room_id)
+        if relay_room is None or relay_room.event_id != event_id:
+            raise HTTPException(status_code=404, detail="Booth not found.")
+    room.relay_booth_id = relay_booth_id
+
+
+def _process_room_transcription_section(room: Room, form: FormData) -> None:
+    room.floor_transcription_enabled = form.get("floor_transcription_enabled") == "on"
+    room.floor_transcription_provider = form.get("floor_transcription_provider", "local").strip().lower() or "none"
+    room.floor_transcription_model = form.get("floor_transcription_model", "tiny").strip()
+    room.floor_language_code = form.get("floor_language_code", "").strip() or None
+
+
+def _room_translation_choice(form: FormData, form_section: str) -> tuple[bool, str | None, str | None]:
+    """The translation switch, provider and model the form asks for."""
+    floor_translation_enabled = form.get("floor_translation_enabled") == "on"
+    floor_translation_provider = form.get("floor_translation_provider", "").strip() or None
+    floor_translation_model = form.get("floor_translation_model", "").strip() or None
+    if floor_translation_provider == TranslationProviderEnum.SELF_HOSTED.value:
+        # Turning translation off must still work after the server setting is removed.
+        if floor_translation_enabled and form_section in ("", "translation") and not settings.self_hosted_llm_enabled:
+            raise HTTPException(status_code=400, detail="Self-hosted translation is not configured on this server")
+        floor_translation_model = settings.self_hosted_llm_model_or_default(floor_translation_model)
+    return floor_translation_enabled, floor_translation_provider, floor_translation_model
+
+
+def _require_room_form_translatable(room: Room, form: FormData, form_section: str) -> None:
+    """Refuse the form when the translation it would leave the room with cannot handle its languages.
+
+    Called before any section is applied, and it only checks when the form changes the
+    translation setup, so a room saved before this rule can still save its other settings
+    and can always turn translation off.
+    """
+    saves_translation = form_section in ("", "translation")
+    saves_source = form_section in ("", "transcription")
+    before = (
+        room.floor_translation_enabled,
+        room.floor_translation_provider,
+        room.floor_translation_model,
+        room.floor_language_code,
+        sorted(_enabled_codes(room.translation_languages)),
+    )
+    after = before
+    if saves_translation:
+        enabled, provider, model = _room_translation_choice(form, form_section)
+        after = (enabled, provider, model, before[3], sorted(set(form.getlist("floor_translation_languages"))))
+    if saves_source:
+        after = (*after[:3], form.get("floor_language_code", "").strip() or None, after[4])
+    if after != before and after[0]:
+        _require_translatable(after[1], after[2], (after[3], *after[4]))
+
+
+def _process_room_translation_section(session: AsyncSession, room: Room, form: FormData, form_section: str) -> None:
+    floor_translation_enabled, floor_translation_provider, floor_translation_model = _room_translation_choice(
+        form, form_section
+    )
+
+    room.floor_translation_enabled = floor_translation_enabled
+    room.floor_translation_provider = floor_translation_provider
+    room.floor_translation_model = floor_translation_model
+    room.floor_ai_interpreter_persona = form.get("floor_ai_interpreter_persona", "").strip() or None
+    room.floor_ai_interpretation_style = form.get("floor_ai_interpretation_style", "").strip() or None
+    room.floor_ai_vocabulary_enabled = form.get("floor_ai_vocabulary_enabled") == "on"
+
+    floor_translation_languages = form.getlist("floor_translation_languages")
+    existing_langs = {lang.language_code: lang for lang in room.translation_languages}
+    requested_codes = set(floor_translation_languages)
+    for code, lang in existing_langs.items():
+        if code not in requested_codes:
+            lang.enabled = False
+    for code in requested_codes:
+        if code in existing_langs:
+            existing_langs[code].enabled = True
+        else:
+            lang_obj = pycountry.languages.get(alpha_2=code)
+            lang_name = lang_obj.name if lang_obj else code
+            new_lang = RoomTranslationLanguage(
+                room_id=room.id, language_code=code, language_name=lang_name, enabled=True
+            )
+            session.add(new_lang)
+
+
+def _process_room_tts_section(room: Room, form: FormData) -> None:
+    room.floor_tts_enabled = form.get("floor_tts_enabled") == "on"
+    floor_tts_provider = (form.get("floor_tts_provider", "deepgram") or "deepgram").strip().lower() or "deepgram"
+    if floor_tts_provider not in {"deepgram", "supertonic"}:
+        floor_tts_provider = "deepgram"
+    room.floor_tts_provider = floor_tts_provider
+
+    floor_tts_voice = (form.get("floor_tts_voice", "M1") or "M1").strip().upper() or "M1"
+    if floor_tts_voice not in {"M1", "M2", "M3", "M4", "M5", "F1", "F2", "F3", "F4", "F5"}:
+        floor_tts_voice = "M1"
+    room.floor_tts_voice = floor_tts_voice
+
+
+async def _process_room_ai_section(session: AsyncSession, room: Room, event_id: int, form: FormData) -> None:
+    event = await get_event_by_id(session, event_id)
+    if event is None:
+        raise HTTPException(status_code=404, detail="Event not found.")
+    _apply_ai_settings(room, form, engine_catalog(event))
+
+
+@router.post("/admin/events/{event_id}/rooms/{room_id}/edit", dependencies=[Depends(require_event_owner), Depends(require_admin_csrf)])
 async def admin_edit_room(request: Request, event_id: int, room_id: int):
     """Update settings and configuration for an event room."""
     form = await request.form()
     form_section = form.get("form_section", "").strip()
-    display_name = form.get("display_name", "").strip()
-    jitsi_url = form.get("jitsi_url", "").strip()
-    relay_booth_id_str = form.get("relay_booth_id", "").strip()
-    relay_booth_id = int(relay_booth_id_str) if relay_booth_id_str and relay_booth_id_str.lower() != "none" else None
-    audio_delay_ms = parse_audio_delay_ms(form.get("audio_delay_ms", "0"))
-    floor_transcription_enabled = form.get("floor_transcription_enabled") == "on"
-    floor_transcription_provider = form.get("floor_transcription_provider", "local").strip().lower() or "none"
-    floor_transcription_model = form.get("floor_transcription_model", "tiny").strip()
-    floor_language_code = form.get("floor_language_code", "").strip() or None
-    floor_translation_enabled = form.get("floor_translation_enabled") == "on"
-    floor_translation_provider = form.get("floor_translation_provider", "").strip() or None
-    floor_translation_model = form.get("floor_translation_model", "").strip() or None
-    floor_translation_languages = form.getlist("floor_translation_languages")
-    floor_ai_interpreter_persona = form.get("floor_ai_interpreter_persona", "").strip() or None
-    floor_ai_interpretation_style = form.get("floor_ai_interpretation_style", "").strip() or None
-    floor_ai_vocabulary_enabled = form.get("floor_ai_vocabulary_enabled") == "on"
-    floor_tts_enabled = form.get("floor_tts_enabled") == "on"
-    floor_tts_provider = (form.get("floor_tts_provider", "deepgram") or "deepgram").strip().lower() or "deepgram"
-    if floor_tts_provider not in {"deepgram", "supertonic"}:
-        floor_tts_provider = "deepgram"
-    floor_tts_voice = (form.get("floor_tts_voice", "M1") or "M1").strip().upper() or "M1"
-    if floor_tts_voice not in {"M1", "M2", "M3", "M4", "M5", "F1", "F2", "F3", "F4", "F5"}:
-        floor_tts_voice = "M1"
-    async with get_session() as session:
-        room = await get_room_by_id(session, room_id)
-        if room is None or room.event_id != event_id:
-            raise HTTPException(status_code=404, detail="Room not found.")
 
-        if not form_section or form_section == "general":
-            if display_name:
-                room.display_name = display_name
-            room.jitsi_url = jitsi_url if jitsi_url else None
-            room.audio_delay_ms = audio_delay_ms
+    try:
+        async with get_session() as session:
+            room = await get_room_by_id(session, room_id)
+            if room is None or room.event_id != event_id:
+                raise HTTPException(status_code=404, detail="Room not found.")
 
-        if not form_section or form_section == "relay":
-            if relay_booth_id is not None:
-                relay_booth = await get_booth_by_id(session, relay_booth_id)
-                if relay_booth is None or relay_booth.event_id != event_id:
-                    raise HTTPException(status_code=404, detail="Booth not found.")
-                relay_room = await get_room_by_id(session, relay_booth.room_id)
-                if relay_room is None or relay_room.event_id != event_id:
-                    raise HTTPException(status_code=404, detail="Booth not found.")
-            room.relay_booth_id = relay_booth_id
+            _require_room_form_translatable(room, form, form_section)
 
-        if not form_section or form_section == "transcription":
-            room.floor_transcription_enabled = floor_transcription_enabled
-            room.floor_transcription_provider = floor_transcription_provider
-            room.floor_transcription_model = floor_transcription_model
-            room.floor_language_code = floor_language_code
+            if not form_section or form_section == "general":
+                _process_room_general_section(room, form)
 
-        if not form_section or form_section == "translation":
-            room.floor_translation_enabled = floor_translation_enabled
-            room.floor_translation_provider = floor_translation_provider
-            room.floor_translation_model = floor_translation_model
-            room.floor_ai_interpreter_persona = floor_ai_interpreter_persona
-            room.floor_ai_interpretation_style = floor_ai_interpretation_style
-            room.floor_ai_vocabulary_enabled = floor_ai_vocabulary_enabled
+            if not form_section or form_section == "relay":
+                await _process_room_relay_section(session, room, event_id, form)
 
-            existing_langs = {lang.language_code: lang for lang in room.translation_languages}
-            requested_codes = set(floor_translation_languages)
-            for code, lang in existing_langs.items():
-                if code not in requested_codes:
-                    lang.enabled = False
-            for code in requested_codes:
-                if code in existing_langs:
-                    existing_langs[code].enabled = True
-                else:
-                    lang_obj = pycountry.languages.get(alpha_2=code)
-                    lang_name = lang_obj.name if lang_obj else code
-                    new_lang = RoomTranslationLanguage(
-                        room_id=room_id, language_code=code, language_name=lang_name, enabled=True
-                    )
-                    session.add(new_lang)
+            if not form_section or form_section == "transcription":
+                _process_room_transcription_section(room, form)
 
-        if not form_section or form_section == "tts":
-            room.floor_tts_enabled = floor_tts_enabled
-            room.floor_tts_provider = floor_tts_provider
-            room.floor_tts_voice = floor_tts_voice
+            if not form_section or form_section == "translation":
+                _process_room_translation_section(session, room, form, form_section)
 
-        if form_section == "ai":
-            event = await get_event_by_id(session, event_id)
-            if event is None:
-                raise HTTPException(status_code=404, detail="Event not found.")
-            _apply_ai_settings(room, form, engine_catalog(event))
-        await session.flush()
+            if not form_section or form_section == "tts":
+                _process_room_tts_section(room, form)
+
+            if form_section == "ai":
+                await _process_room_ai_section(session, room, event_id, form)
+
+            await session.flush()
+    except TranslationLanguageError as error:
+        return await _translation_form_response(request, error, event_id, room_id)
     return safe_redirect(
         url=management_url(request, f"events/{event_id}/rooms/{room_id}/"),
         status_code=status.HTTP_303_SEE_OTHER,
@@ -1697,7 +1814,7 @@ def _vocabulary_result_url(event_id: int, room_id: int, imported: int, warnings:
 
 @router.post(
     "/admin/events/{event_id}/rooms/{room_id}/ai-vocabulary/upload",
-    dependencies=[Depends(require_event_owner)],
+    dependencies=[Depends(require_event_owner), Depends(require_admin_csrf)],
 )
 async def admin_upload_ai_vocabulary(request: Request, event_id: int, room_id: int):
     form = await request.form()
@@ -1800,7 +1917,7 @@ async def admin_export_ai_vocabulary(event_id: int, room_id: int):
 
 @router.post(
     "/admin/events/{event_id}/rooms/{room_id}/ai-vocabulary/delete",
-    dependencies=[Depends(require_event_owner)],
+    dependencies=[Depends(require_event_owner), Depends(require_admin_csrf)],
 )
 async def admin_delete_ai_vocabulary(request: Request, event_id: int, room_id: int):
     form = await request.form()
@@ -1825,7 +1942,9 @@ async def admin_delete_ai_vocabulary(request: Request, event_id: int, room_id: i
 
 @router.get("/api/admin/providers/translation/models", dependencies=[Depends(require_owner_or_coordinator)])
 async def get_translation_models():
-    return TRANSLATION_MODELS
+    if not settings.self_hosted_llm_enabled:
+        return TRANSLATION_MODELS
+    return {**TRANSLATION_MODELS, TranslationProviderEnum.SELF_HOSTED.value: list(settings.self_hosted_llm_model_list)}
 
 
 MAX_AUDIO_DELAY_MS = 10_000
@@ -1861,7 +1980,7 @@ async def admin_list_api_keys(request: Request, event_id: int):
         ]
 
 
-@router.post("/admin/api/events/{event_id}/api-keys", dependencies=[Depends(require_event_owner)])
+@router.post("/admin/api/events/{event_id}/api-keys", dependencies=[Depends(require_event_owner), Depends(require_admin_csrf)])
 async def admin_create_api_key(request: Request, event_id: int, data: APIKeyCreateRequest):
     if not data.name or not data.name.strip():
         raise HTTPException(status_code=400, detail="API Key name cannot be blank.")
@@ -1891,7 +2010,7 @@ async def admin_create_api_key(request: Request, event_id: int, data: APIKeyCrea
         }
 
 
-@router.delete("/admin/api/events/{event_id}/api-keys/{key_id}", dependencies=[Depends(require_event_owner)])
+@router.delete("/admin/api/events/{event_id}/api-keys/{key_id}", dependencies=[Depends(require_event_owner), Depends(require_admin_csrf)])
 async def admin_delete_api_key(request: Request, event_id: int, key_id: int):
     async with get_session() as session:
         success = await revoke_api_key(session, key_id, event_id)
@@ -1903,7 +2022,7 @@ async def admin_delete_api_key(request: Request, event_id: int, key_id: int):
 # Legacy room-scoped API retained for coordinators and scripts. It drives the
 # same managed meeting agent as the room page, so the reconcile loop owns retries
 # and starts the floor worker once audio arrives.
-@router.post("/api/rooms/{room_id}/floor-transcription/start", dependencies=[Depends(require_room_event_access)])
+@router.post("/api/rooms/{room_id}/floor-transcription/start", dependencies=[Depends(require_room_event_access), Depends(require_admin_csrf)])
 async def api_start_floor_transcription(room_id: int):
     async with room_lock(room_id), get_session() as session:
         room = await get_room_by_id(session, room_id)
@@ -1923,7 +2042,7 @@ async def api_start_floor_transcription(room_id: int):
     return {"status": "started"}
 
 
-@router.post("/api/rooms/{room_id}/floor-transcription/stop", dependencies=[Depends(require_room_event_access)])
+@router.post("/api/rooms/{room_id}/floor-transcription/stop", dependencies=[Depends(require_room_event_access), Depends(require_admin_csrf)])
 async def api_stop_floor_transcription(room_id: int):
     async with room_lock(room_id), get_session() as session:
         room = await get_room_by_id(session, room_id)
@@ -1960,7 +2079,7 @@ async def api_floor_transcription_status(room_id: int):
     return body
 
 
-@router.post("/admin/events/{event_id}/rooms/{room_id}/delete", dependencies=[Depends(require_event_owner)])
+@router.post("/admin/events/{event_id}/rooms/{room_id}/delete", dependencies=[Depends(require_event_owner), Depends(require_admin_csrf)])
 async def admin_delete_room(request: Request, event_id: int, room_id: int):
     async with get_session() as session:
         room = await get_room_by_id(session, room_id)
@@ -1997,7 +2116,7 @@ async def admin_booth_list(request: Request, event_id: int, room_id: int):
     )
 
 
-@router.post("/admin/events/{event_id}/rooms/{room_id}/booths/", dependencies=[Depends(require_event_owner)])
+@router.post("/admin/events/{event_id}/rooms/{room_id}/booths/", dependencies=[Depends(require_event_owner), Depends(require_admin_csrf)])
 async def admin_create_booth(request: Request, event_id: int, room_id: int):
     form = await request.form()
     language_code = form.get("language_code", "").strip().lower()
@@ -2042,13 +2161,33 @@ BOOTH_SAVE_NOTICES = {
     "settings": "Booth details saved.",
 }
 BOOTH_WORKER_NOTICES = {
-    "restarted": "The caption worker was restarted with the new settings.",
+    "restarted": "The caption worker was restarted with the saved settings.",
     "stopped": "The caption worker was stopped.",
     "kept": "Nothing changed, so the caption worker kept running.",
     "off": "Captions stay off.",
     "failed": "The caption worker could not be started, so there are no live captions right now. Try saving again in a moment.",
 }
+BOOTH_ERROR_NOTICES = {
+    "model": "That caption model is no longer supported. Pick another model and save again; nothing was changed.",
+    "server": "That service is not available on this server. Pick another service and save again; nothing was changed.",
+    "api_off": "External transcription is turned off for this event. Turn it on under API keys, or pick Local; nothing was changed.",
+    "no_key": "That service has no API key on this event. Add its key under API keys, or pick another service; nothing was changed.",
+    "api_off_no_key": "External transcription is turned off for this event and that service has no API key. Turn it on and add the key under API keys, or pick Local; nothing was changed.",
+}
 BOOTH_IDLE_WORKER_NOTICE = "These settings are used the next time an interpreter goes live."
+
+
+def _kept_speech_hint(event: Event, catalog: EngineCatalog, provider: str) -> str:
+    """What to do to keep using a saved caption service that is no longer offered."""
+    if catalog.unavailable_reasons.get(provider):
+        return "not available on this server"
+    try:
+        has_key = bool(get_api_key(event, ProviderEnum(provider)))
+    except ValueError:  # a provider name this version no longer knows
+        has_key = False
+    if has_key and not event.transcription_api_enabled:
+        return "turn on external transcription to keep using it"
+    return "add its API key to keep using it"
 
 
 def _booth_saved_notice(request: Request) -> str | None:
@@ -2061,14 +2200,24 @@ def _booth_saved_notice(request: Request) -> str | None:
     return f"{saved} {worker}"
 
 
-def _booth_saved_url(request: Request, event_id: int, room_id: int, booth_id: int, saved: str, worker: str = "") -> str:
+def _booth_error_notice(request: Request) -> str | None:
+    return BOOTH_ERROR_NOTICES.get(request.query_params.get("error", ""))
+
+
+def _booth_saved_url(
+    request: Request, event_id: int, room_id: int, booth_id: int, saved: str, worker: str = "", error: str = ""
+) -> str:
     """Back to the booth page on the tab that was saved, with a note on what happened."""
+    if error:
+        query = urllib.parse.urlencode({"error": error})
+        return management_url(request, f"events/{event_id}/rooms/{room_id}/booths/{booth_id}/?{query}#{saved}")
     query = urllib.parse.urlencode({"saved": saved, **({"worker": worker} if worker else {})})
     return management_url(request, f"events/{event_id}/rooms/{room_id}/booths/{booth_id}/?{query}#{saved}")
 
 
 @router.get("/admin/events/{event_id}/rooms/{room_id}/booths/{booth_id}/", dependencies=[Depends(require_owner_or_coordinator)])
 async def admin_booth_detail(request: Request, event_id: int, room_id: int, booth_id: int):
+    """Render booth settings and any translation validation error."""
     admin_flags = await get_access_flags(request, event_id=event_id, room_id=room_id)
     async with get_session() as session:
         event = await get_event_by_id(session, event_id)
@@ -2096,24 +2245,38 @@ async def admin_booth_detail(request: Request, event_id: int, room_id: int, boot
     ]
     translation_languages_dataset.sort(key=lambda x: x["name"])
     enabled_translation_language_codes = [lang.language_code for lang in db_booth.translation_languages if lang.enabled]
-    # The saved model stays selectable even when it is no longer offered, so saving never swaps it silently.
-    speech_models = {provider: list(models) for provider, models in booth_speech_models().items()}
-    translation_models = {
-        provider: [(model, model) for model in models] for provider, models in TRANSLATION_MODELS.items()
-    }
-    # Booths saved before the streaming ElevenLabs model was named scribe_v2_realtime still say scribe_v2.
+    # Coordinators only see the Overview tab, so only event owners need the engine catalog and model lists.
+    catalog = None
+    speech_models: dict = {}
+    translation_models: dict = {}
     saved_speech_model = db_booth.transcription_model
-    if saved_speech_model == "scribe_v2":
-        saved_speech_model = "scribe_v2_realtime"
-    for models, saved_provider, saved_model in (
-        (speech_models, db_booth.transcription_provider, saved_speech_model),
-        (translation_models, db_booth.translation_provider, db_booth.translation_model),
-    ):
-        if not saved_provider:  # a new booth has no translation service saved yet
-            continue
-        offered = models.setdefault(saved_provider, [])
-        if saved_model and saved_model not in {value for value, _ in offered}:
-            offered.append((saved_model, f"{saved_model} (current)"))
+    kept_speech_hint = ""
+    if admin_flags["is_event_owner"]:
+        # The saved model stays selectable even when it is no longer offered, so saving never swaps it silently.
+        speech_models = {provider: list(models) for provider, models in booth_speech_models().items()}
+        translation_models = {
+            provider: [(model, model) for model in models] for provider, models in TRANSLATION_MODELS.items()
+        }
+        # Booths saved before the streaming ElevenLabs model was named scribe_v2_realtime still say scribe_v2.
+        saved_speech_model = db_booth.transcription_model
+        if saved_speech_model == "scribe_v2":
+            saved_speech_model = "scribe_v2_realtime"
+        for models, saved_provider, saved_model in (
+            (speech_models, db_booth.transcription_provider, saved_speech_model),
+            (translation_models, db_booth.translation_provider, db_booth.translation_model),
+        ):
+            if not saved_provider:  # a new booth has no translation service saved yet
+                continue
+            offered = models.setdefault(saved_provider, [])
+            if saved_model and saved_model not in {value for value, _ in offered}:
+                offered.append((saved_model, f"{saved_model} (current)"))
+        if settings.self_hosted_llm_enabled:
+            # Set after the step above: a self-hosted model the server no longer lists can't be saved, so it isn't offered.
+            translation_models[TranslationProviderEnum.SELF_HOSTED.value] = [
+                (model, model) for model in settings.self_hosted_llm_model_list
+            ]
+        catalog = engine_catalog(event)
+        kept_speech_hint = _kept_speech_hint(event, catalog, db_booth.transcription_provider)
     return templates.TemplateResponse(
         request=request,
         name="admin/booth_detail.html",
@@ -2121,11 +2284,18 @@ async def admin_booth_detail(request: Request, event_id: int, room_id: int, boot
             "event": event,
             "room": room,
             "booth": db_booth,
-            "catalog": engine_catalog(event),
+            "catalog": catalog,
+            "translation_unfit": (
+                catalog.translation_hidden((db_booth.language_code, *enabled_translation_language_codes))
+                if catalog
+                else set()
+            ),
+            "kept_speech_hint": kept_speech_hint,
             "speech_models": speech_models,
             "saved_speech_model": saved_speech_model,
             "translation_models": translation_models,
             "saved_notice": _booth_saved_notice(request),
+            "error_notice": getattr(request.state, "translation_error", None) or _booth_error_notice(request),
             "show_next_steps": not (db_booth.transcription_enabled or db_booth.translation_enabled),
             "booth_id": bid,
             "mediamtx_path": mediamtx_path,
@@ -2145,7 +2315,7 @@ async def admin_booth_detail(request: Request, event_id: int, room_id: int, boot
     )
 
 
-@router.post("/admin/events/{event_id}/rooms/{room_id}/members/", dependencies=[Depends(require_event_owner)])
+@router.post("/admin/events/{event_id}/rooms/{room_id}/members/", dependencies=[Depends(require_event_owner), Depends(require_admin_csrf)])
 async def admin_add_room_member(request: Request, event_id: int, room_id: int):
     """Add or update a room membership assignment for a user."""
     async with get_session() as session:
@@ -2194,7 +2364,7 @@ async def admin_add_room_member(request: Request, event_id: int, room_id: int):
 
 
 @router.post(
-    "/admin/events/{event_id}/rooms/{room_id}/members/{membership_id}/invite", dependencies=[Depends(require_event_owner)]
+    "/admin/events/{event_id}/rooms/{room_id}/members/{membership_id}/invite", dependencies=[Depends(require_event_owner), Depends(require_admin_csrf)]
 )
 async def admin_invite_room_member(request: Request, event_id: int, room_id: int, membership_id: int):
     """Send an invitation email to a room member."""
@@ -2219,7 +2389,7 @@ async def admin_invite_room_member(request: Request, event_id: int, room_id: int
 
 
 @router.post(
-    "/admin/events/{event_id}/rooms/{room_id}/members/{membership_id}/delete", dependencies=[Depends(require_event_owner)]
+    "/admin/events/{event_id}/rooms/{room_id}/members/{membership_id}/delete", dependencies=[Depends(require_event_owner), Depends(require_admin_csrf)]
 )
 async def admin_remove_room_member(request: Request, event_id: int, room_id: int, membership_id: int):
     """Remove a room membership assignment."""
@@ -2241,7 +2411,7 @@ async def admin_remove_room_member(request: Request, event_id: int, room_id: int
 
 
 @router.post(
-    "/admin/events/{event_id}/rooms/{room_id}/booths/{booth_id}/members/", dependencies=[Depends(require_event_owner)]
+    "/admin/events/{event_id}/rooms/{room_id}/booths/{booth_id}/members/", dependencies=[Depends(require_event_owner), Depends(require_admin_csrf)]
 )
 async def admin_add_booth_member(request: Request, event_id: int, room_id: int, booth_id: int):
     """Add or update a booth membership assignment for a user."""
@@ -2295,7 +2465,7 @@ async def admin_add_booth_member(request: Request, event_id: int, room_id: int, 
 
 @router.post(
     "/admin/events/{event_id}/rooms/{room_id}/booths/{booth_id}/members/{membership_id}/invite",
-    dependencies=[Depends(require_event_owner)],
+    dependencies=[Depends(require_event_owner), Depends(require_admin_csrf)],
 )
 async def admin_invite_booth_member(request: Request, event_id: int, room_id: int, booth_id: int, membership_id: int):
     """Send an invitation email to a booth member."""
@@ -2324,7 +2494,7 @@ async def admin_invite_booth_member(request: Request, event_id: int, room_id: in
 
 @router.post(
     "/admin/events/{event_id}/rooms/{room_id}/booths/{booth_id}/members/{membership_id}/delete",
-    dependencies=[Depends(require_event_owner)],
+    dependencies=[Depends(require_event_owner), Depends(require_admin_csrf)],
 )
 async def admin_remove_booth_member(request: Request, event_id: int, room_id: int, booth_id: int, membership_id: int):
     """Remove a booth membership assignment."""
@@ -2345,7 +2515,7 @@ async def admin_remove_booth_member(request: Request, event_id: int, room_id: in
     )
 
 
-@router.post("/admin/events/{event_id}/rooms/{room_id}/booths/{booth_id}/delete", dependencies=[Depends(require_event_owner)])
+@router.post("/admin/events/{event_id}/rooms/{room_id}/booths/{booth_id}/delete", dependencies=[Depends(require_event_owner), Depends(require_admin_csrf)])
 async def admin_delete_booth(request: Request, event_id: int, room_id: int, booth_id: int):
     """Delete an interpretation booth from a room."""
     async with get_session() as session:
@@ -2360,7 +2530,7 @@ async def admin_delete_booth(request: Request, event_id: int, room_id: int, boot
 
 @router.post(
     "/admin/events/{event_id}/rooms/{room_id}/booths/{booth_id}/translation-settings",
-    dependencies=[Depends(require_event_owner)],
+    dependencies=[Depends(require_event_owner), Depends(require_admin_csrf)],
 )
 async def admin_booth_translation_settings(
     request: Request,
@@ -2372,55 +2542,83 @@ async def admin_booth_translation_settings(
     translation_model: str = Form("gpt-4o-mini"),
     translation_languages: list[str] = Form([]),
 ):
-    async with get_session() as session:
-        db_booth = await booth_in_room(session, event_id, room_id, booth_id)
-        event = await get_event_by_id(session, event_id)
-        if event is None:
-            raise HTTPException(status_code=404, detail="Event not found.")
-        try:
-            TranslationProviderEnum(translation_provider)
-        except ValueError:
-            raise HTTPException(status_code=400, detail="Invalid translation provider")
-        db_booth.translation_enabled = translation_enabled
-        db_booth.translation_provider = translation_provider
-        db_booth.translation_model = translation_model
-        current_langs = {lang.language_code: lang for lang in db_booth.translation_languages}
-        for code in translation_languages:
-            if code in current_langs:
-                current_langs[code].enabled = True
-            else:
-                lang_obj = pycountry.languages.get(alpha_2=code)
-                lang_name = lang_obj.name if lang_obj else code
-                db_booth.translation_languages.append(
-                    BoothTranslationLanguage(
-                        booth_id=db_booth.id, language_code=code, language_name=lang_name, enabled=True
+    """Save supported translation settings or return the validation error to the form."""
+    try:
+        async with get_session() as session:
+            db_booth = await booth_in_room(session, event_id, room_id, booth_id)
+            event = await get_event_by_id(session, event_id)
+            if event is None:
+                raise HTTPException(status_code=404, detail="Event not found.")
+            try:
+                TranslationProviderEnum(translation_provider)
+            except ValueError:
+                raise HTTPException(status_code=400, detail="Invalid translation provider")
+            # Checked only when translation is on, so a booth left on a removed server can still turn it off.
+            if translation_enabled and translation_provider == TranslationProviderEnum.SELF_HOSTED.value:
+                if not settings.self_hosted_llm_enabled:
+                    raise HTTPException(
+                        status_code=400, detail="Self-hosted translation is not configured on this server"
                     )
+                if not settings.self_hosted_llm_allows(translation_model):
+                    raise HTTPException(status_code=400, detail="That model is not allowed for self-hosted translation")
+            if translation_enabled:
+                _require_translatable(
+                    translation_provider, translation_model, (db_booth.language_code, *translation_languages)
                 )
-        for code, lang_model in current_langs.items():
-            if code not in translation_languages:
-                lang_model.enabled = False
-        await session.flush()
+            db_booth.translation_enabled = translation_enabled
+            db_booth.translation_provider = translation_provider
+            db_booth.translation_model = translation_model
+            current_langs = {lang.language_code: lang for lang in db_booth.translation_languages}
+            for code in translation_languages:
+                if code in current_langs:
+                    current_langs[code].enabled = True
+                else:
+                    lang_obj = pycountry.languages.get(alpha_2=code)
+                    lang_name = lang_obj.name if lang_obj else code
+                    db_booth.translation_languages.append(
+                        BoothTranslationLanguage(
+                            booth_id=db_booth.id, language_code=code, language_name=lang_name, enabled=True
+                        )
+                    )
+            for code, lang_model in current_langs.items():
+                if code not in translation_languages:
+                    lang_model.enabled = False
+            await session.flush()
+    except TranslationLanguageError as error:
+        return await _translation_form_response(request, error, event_id, room_id, booth_id)
     return safe_redirect(
         url=_booth_saved_url(request, event_id, room_id, booth_id, "translations"),
         status_code=status.HTTP_303_SEE_OTHER,
     )
 
 
-@router.post("/admin/events/{event_id}/rooms/{room_id}/booths/{booth_id}/edit", dependencies=[Depends(require_event_owner)])
+@router.post("/admin/events/{event_id}/rooms/{room_id}/booths/{booth_id}/edit", dependencies=[Depends(require_event_owner), Depends(require_admin_csrf)])
 async def admin_edit_booth(request: Request, event_id: int, room_id: int, booth_id: int):
+    """Update booth identity only when its translation model supports the new language."""
     form = await request.form()
     language_name = form.get("language_name", "").strip()
     language_code_raw = form.get("language_code", "").strip()
-    async with get_session() as session:
-        booth = await booth_in_room(session, event_id, room_id, booth_id)
-        if language_name:
-            booth.language_name = language_name
-        if language_code_raw:
-            try:
-                booth.language_code = validate_language_code(language_code_raw)
-            except ValueError as e:
-                raise HTTPException(status_code=400, detail=str(e))
-        await session.flush()
+    try:
+        async with get_session() as session:
+            booth = await booth_in_room(session, event_id, room_id, booth_id)
+            if language_name:
+                booth.language_name = language_name
+            if language_code_raw:
+                try:
+                    language_code = validate_language_code(language_code_raw)
+                except ValueError as e:
+                    raise HTTPException(status_code=400, detail=str(e))
+                # The booth's language is what its translation model translates from.
+                if language_code != booth.language_code and booth.translation_enabled:
+                    _require_translatable(
+                        booth.translation_provider,
+                        booth.translation_model,
+                        (language_code, *_enabled_codes(booth.translation_languages)),
+                    )
+                booth.language_code = language_code
+            await session.flush()
+    except TranslationLanguageError as error:
+        return await _translation_form_response(request, error, event_id, room_id, booth_id)
     return safe_redirect(
         url=_booth_saved_url(request, event_id, room_id, booth_id, "settings"),
         status_code=status.HTTP_303_SEE_OTHER,
@@ -2429,7 +2627,7 @@ async def admin_edit_booth(request: Request, event_id: int, room_id: int, booth_
 
 @router.post(
     "/admin/events/{event_id}/rooms/{room_id}/booths/{booth_id}/transcription-settings",
-    dependencies=[Depends(require_event_owner)],
+    dependencies=[Depends(require_event_owner), Depends(require_admin_csrf)],
 )
 async def admin_transcription_settings(
     request: Request,
@@ -2447,20 +2645,44 @@ async def admin_transcription_settings(
         except ValueError:
             raise HTTPException(status_code=400, detail="Invalid transcription provider")
         if transcription_model not in ALLOWED_MODELS.get(provider_enum, set()):
-            raise HTTPException(
-                status_code=400, detail=f"Invalid model '{transcription_model}' for provider '{transcription_provider}'"
+            # The page keeps a saved model selectable even after it stops being supported. Turning captions
+            # off must still save with it; turning them on with it gets a notice on the Captions tab.
+            keeps_saved_model = (
+                not transcription_enabled
+                and transcription_provider == db_booth.transcription_provider
+                and transcription_model == db_booth.transcription_model
             )
+            if not keeps_saved_model:
+                if transcription_enabled:
+                    return safe_redirect(
+                        url=_booth_saved_url(request, event_id, room_id, booth_id, "captions", error="model"),
+                        status_code=status.HTTP_303_SEE_OTHER,
+                    )
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"Invalid model '{transcription_model}' for provider '{transcription_provider}'",
+                )
         event = await get_event_by_id(session, event_id)
         if event is None:
             raise HTTPException(status_code=404, detail="Event not found.")
         # Turning captions off must work even if the saved service lost its key, so the key and
         # external-API checks only apply when captions will be on.
+        if transcription_enabled and server_unavailable_reason(transcription_provider):
+            # A key cannot fix this: the server itself cannot run the service.
+            return safe_redirect(
+                url=_booth_saved_url(request, event_id, room_id, booth_id, "captions", error="server"),
+                status_code=status.HTTP_303_SEE_OTHER,
+            )
         if transcription_enabled and provider_enum != ProviderEnum.LOCAL:
-            if not event.transcription_api_enabled:
-                raise HTTPException(status_code=400, detail="External API transcription is disabled for this event.")
-            if not get_api_key(event, provider_enum):
-                raise HTTPException(
-                    status_code=400, detail=f"API key for {transcription_provider} is not configured on the event."
+            # Both are fixed on the API keys page, so say so on the Captions tab instead of showing a bare 400.
+            # Name both when both are missing, so fixing one does not lead to a second refusal.
+            api_off = not event.transcription_api_enabled
+            no_key = not get_api_key(event, provider_enum)
+            missing = "api_off_no_key" if api_off and no_key else "api_off" if api_off else "no_key" if no_key else ""
+            if missing:
+                return safe_redirect(
+                    url=_booth_saved_url(request, event_id, room_id, booth_id, "captions", error=missing),
+                    status_code=status.HTTP_303_SEE_OTHER,
                 )
         old_enabled = db_booth.transcription_enabled
         old_provider = db_booth.transcription_provider
@@ -2485,8 +2707,11 @@ async def admin_transcription_settings(
                 old_enabled != transcription_enabled
                 or old_provider != transcription_provider
                 or old_model != transcription_model
-                # A start that failed earlier left the settings saved but no worker: saving again retries it.
+                # A start that failed earlier left the settings saved but no worker (or a dead one still in the
+                # registry): saving again retries it. One that is shutting down is about to disappear, so it is
+                # replaced too: stop_transcription_worker waits for it to finish, then a new one starts.
                 or bid not in active_workers
+                or active_workers[bid].state in (State.STOPPING, State.STOPPED)
             ):
                 await stop_transcription_worker(bid)
                 await broadcast_transcription(bid, "")
@@ -2504,9 +2729,15 @@ async def admin_transcription_settings(
                         config,
                         room_id=db_booth.room_id,
                     )
-                    worker = "restarted"
+                    # The start call only schedules the worker; ffmpeg is launched right after, so wait for that.
+                    worker = "restarted" if await wait_for_worker_start(bid) else "failed"
                 except WorkerCapacityError:
                     logger.warning("Could not start caption worker for %s", bid, exc_info=True)
+                    worker = "failed"
+                except Exception:
+                    # Deliberately broad (#1155): the old worker is already stopped and the settings are saved,
+                    # so any start failure must show the notice, not a 500 that rolls the settings back.
+                    logger.exception("Caption worker for %s failed to start", bid)
                     worker = "failed"
     return safe_redirect(
         url=_booth_saved_url(request, event_id, room_id, booth_id, "captions", worker),
@@ -2714,7 +2945,7 @@ async def apply_user_access(request: Request, user_id: int, field: str, value: b
     return change
 
 
-@router.post("/admin/users/{user_id}/access", dependencies=[Depends(require_admin)])
+@router.post("/admin/users/{user_id}/access", dependencies=[Depends(require_admin), Depends(require_admin_csrf)])
 async def admin_set_user_access(request: Request, user_id: int):
     """Turn hosting access, Admin or the account on or off (users list toggles and user page buttons)."""
     if not verify_same_origin(request):
@@ -2738,8 +2969,8 @@ async def admin_set_user_access(request: Request, user_id: int):
     return user_action_redirect(request, user_id, f"error={error.code}")
 
 
-@router.post("/admin/users/invite", dependencies=[Depends(require_admin)])
-@router.post("/admin/users/invite/", dependencies=[Depends(require_admin)])
+@router.post("/admin/users/invite", dependencies=[Depends(require_admin), Depends(require_admin_csrf)])
+@router.post("/admin/users/invite/", dependencies=[Depends(require_admin), Depends(require_admin_csrf)])
 async def admin_invite_user(request: Request):
     if not verify_same_origin(request):
         raise HTTPException(status_code=400, detail="Invalid request origin.")
@@ -2817,8 +3048,8 @@ async def admin_invite_user(request: Request):
     return safe_redirect(url=hosting_return_url(request, "/admin/users/", "success=invite_sent"), status_code=status.HTTP_303_SEE_OTHER)
 
 
-@router.post("/admin/users/{user_id}/hosting", dependencies=[Depends(require_admin)])
-@router.post("/admin/users/{user_id}/hosting/", dependencies=[Depends(require_admin)])
+@router.post("/admin/users/{user_id}/hosting", dependencies=[Depends(require_admin), Depends(require_admin_csrf)])
+@router.post("/admin/users/{user_id}/hosting/", dependencies=[Depends(require_admin), Depends(require_admin_csrf)])
 async def admin_toggle_user_hosting(request: Request, user_id: int):
     """Grant or remove hosting access (used by the Hosting access page)."""
     if not verify_same_origin(request):
@@ -2838,8 +3069,8 @@ async def admin_toggle_user_hosting(request: Request, user_id: int):
     return safe_redirect(url=hosting_return_url(request, "/admin/users/", outcome), status_code=status.HTTP_303_SEE_OTHER)
 
 
-@router.post("/admin/users/invite/{token_id}/cancel", dependencies=[Depends(require_admin)])
-@router.post("/admin/users/invite/{token_id}/cancel/", dependencies=[Depends(require_admin)])
+@router.post("/admin/users/invite/{token_id}/cancel", dependencies=[Depends(require_admin), Depends(require_admin_csrf)])
+@router.post("/admin/users/invite/{token_id}/cancel/", dependencies=[Depends(require_admin), Depends(require_admin_csrf)])
 async def admin_cancel_invite(request: Request, token_id: int):
     if not verify_same_origin(request):
         raise HTTPException(status_code=400, detail="Invalid request origin.")
@@ -2858,8 +3089,8 @@ async def admin_cancel_invite(request: Request, token_id: int):
     )
 
 
-@router.post("/admin/users/invite/{token_id}/resend", dependencies=[Depends(require_admin)])
-@router.post("/admin/users/invite/{token_id}/resend/", dependencies=[Depends(require_admin)])
+@router.post("/admin/users/invite/{token_id}/resend", dependencies=[Depends(require_admin), Depends(require_admin_csrf)])
+@router.post("/admin/users/invite/{token_id}/resend/", dependencies=[Depends(require_admin), Depends(require_admin_csrf)])
 async def admin_resend_invite(request: Request, token_id: int):
     if not verify_same_origin(request):
         raise HTTPException(status_code=400, detail="Invalid request origin.")
@@ -3019,7 +3250,7 @@ async def admin_hosting_requests(request: Request):
     return render_hosting_access(request, tab="requests", entries=[], hosting_requests=hosting_requests)
 
 
-@router.post("/admin/hosting-access/requests/{request_id}/grant", dependencies=[Depends(require_admin)])
+@router.post("/admin/hosting-access/requests/{request_id}/grant", dependencies=[Depends(require_admin), Depends(require_admin_csrf)])
 async def admin_grant_hosting_request(request: Request, request_id: int):
     """Grant hosting access to the requester and close the request."""
     if not verify_same_origin(request):
@@ -3064,7 +3295,7 @@ async def admin_grant_hosting_request(request: Request, request_id: int):
     return safe_redirect(url=f"{HOSTING_REQUESTS_URL}?success=request_granted", status_code=status.HTTP_303_SEE_OTHER)
 
 
-@router.post("/admin/hosting-access/requests/{request_id}/decline", dependencies=[Depends(require_admin)])
+@router.post("/admin/hosting-access/requests/{request_id}/decline", dependencies=[Depends(require_admin), Depends(require_admin_csrf)])
 async def admin_decline_hosting_request(request: Request, request_id: int):
     """Decline a hosting request and tell the requester why."""
     if not verify_same_origin(request):
@@ -3104,7 +3335,7 @@ async def admin_decline_hosting_request(request: Request, request_id: int):
     return safe_redirect(url=f"{HOSTING_REQUESTS_URL}?success=request_declined", status_code=status.HTTP_303_SEE_OTHER)
 
 
-@router.post("/admin/users/{user_id}/toggle-active", dependencies=[Depends(require_admin)])
+@router.post("/admin/users/{user_id}/toggle-active", dependencies=[Depends(require_admin), Depends(require_admin_csrf)])
 async def admin_toggle_user_active(request: Request, user_id: int):
     """Older form endpoint: flip the account between active and deactivated."""
     if not verify_same_origin(request):
@@ -3116,7 +3347,7 @@ async def admin_toggle_user_active(request: Request, user_id: int):
     return user_action_redirect(request, user_id, f"notice={change.notice}")
 
 
-@router.post("/admin/users/{user_id}/delete", dependencies=[Depends(require_admin)])
+@router.post("/admin/users/{user_id}/delete", dependencies=[Depends(require_admin), Depends(require_admin_csrf)])
 async def admin_delete_user(request: Request, user_id: int):
     """Delete an account and all its roles; the form must repeat the account's email."""
     if not verify_same_origin(request):
@@ -3225,7 +3456,7 @@ async def admin_user_detail(request: Request, user_id: int):
     )
 
 
-@router.post("/admin/users/{user_id}/toggle-admin", dependencies=[Depends(require_admin)])
+@router.post("/admin/users/{user_id}/toggle-admin", dependencies=[Depends(require_admin), Depends(require_admin_csrf)])
 async def admin_toggle_user_admin(request: Request, user_id: int):
     """Older form endpoint: flip Admin. Event roles are managed by each event's owners (#765)."""
     if not verify_same_origin(request):
@@ -3284,7 +3515,7 @@ async def admin_event_team(request: Request, event_id: int):
     return await render_team(request, event_id)
 
 
-@router.post("/admin/events/{event_id}/team/add", dependencies=[Depends(require_event_owner)])
+@router.post("/admin/events/{event_id}/team/add", dependencies=[Depends(require_event_owner), Depends(require_admin_csrf)])
 async def admin_team_add(request: Request, event_id: int):
     if not verify_same_origin(request):
         raise HTTPException(status_code=400, detail="Invalid request origin.")
@@ -3308,7 +3539,7 @@ async def admin_team_add(request: Request, event_id: int):
     return team_redirect(request, event_id, "added" if changed else "already")
 
 
-@router.post("/admin/events/{event_id}/team/remove", dependencies=[Depends(require_event_owner)])
+@router.post("/admin/events/{event_id}/team/remove", dependencies=[Depends(require_event_owner), Depends(require_admin_csrf)])
 async def admin_team_remove(request: Request, event_id: int):
     if not verify_same_origin(request):
         raise HTTPException(status_code=400, detail="Invalid request origin.")
@@ -3327,7 +3558,7 @@ async def admin_team_remove(request: Request, event_id: int):
     return team_redirect(request, event_id, "removed")
 
 
-@router.post("/admin/events/{event_id}/team/resend", dependencies=[Depends(require_event_owner)])
+@router.post("/admin/events/{event_id}/team/resend", dependencies=[Depends(require_event_owner), Depends(require_admin_csrf)])
 async def admin_team_resend(request: Request, event_id: int):
     if not verify_same_origin(request):
         raise HTTPException(status_code=400, detail="Invalid request origin.")
@@ -3348,7 +3579,7 @@ async def admin_team_resend(request: Request, event_id: int):
     return team_redirect(request, event_id, "resent")
 
 
-@router.post("/admin/events/{event_id}/team/links", dependencies=[Depends(require_event_owner)])
+@router.post("/admin/events/{event_id}/team/links", dependencies=[Depends(require_event_owner), Depends(require_admin_csrf)])
 async def admin_team_create_link(request: Request, event_id: int):
     if not verify_same_origin(request):
         raise HTTPException(status_code=400, detail="Invalid request origin.")
@@ -3370,7 +3601,7 @@ async def admin_team_create_link(request: Request, event_id: int):
     return team_redirect(request, event_id, "link_created")
 
 
-@router.post("/admin/events/{event_id}/team/links/revoke", dependencies=[Depends(require_event_owner)])
+@router.post("/admin/events/{event_id}/team/links/revoke", dependencies=[Depends(require_event_owner), Depends(require_admin_csrf)])
 async def admin_team_revoke_link(request: Request, event_id: int):
     if not verify_same_origin(request):
         raise HTTPException(status_code=400, detail="Invalid request origin.")
@@ -3390,7 +3621,7 @@ async def admin_event_members(request: Request, event_id: int):
     return safe_redirect(url=management_url(request, f"events/{event_id}/team/"), status_code=status.HTTP_303_SEE_OTHER)
 
 
-@router.post("/admin/events/{event_id}/members/", dependencies=[Depends(require_event_owner)])
+@router.post("/admin/events/{event_id}/members/", dependencies=[Depends(require_event_owner), Depends(require_admin_csrf)])
 async def admin_add_event_member(request: Request, event_id: int):
     """Add or update an event membership assignment for a user."""
     async with get_session() as session:
@@ -3438,7 +3669,7 @@ async def admin_add_event_member(request: Request, event_id: int):
     )
 
 
-@router.post("/admin/events/{event_id}/members/{membership_id}/invite", dependencies=[Depends(require_event_owner)])
+@router.post("/admin/events/{event_id}/members/{membership_id}/invite", dependencies=[Depends(require_event_owner), Depends(require_admin_csrf)])
 async def admin_invite_event_member(request: Request, event_id: int, membership_id: int):
     """Send an invitation email to an event member."""
     async with get_session() as session:
@@ -3460,7 +3691,7 @@ async def admin_invite_event_member(request: Request, event_id: int, membership_
     )
 
 
-@router.post("/admin/events/{event_id}/members/{membership_id}/delete", dependencies=[Depends(require_event_owner)])
+@router.post("/admin/events/{event_id}/members/{membership_id}/delete", dependencies=[Depends(require_event_owner), Depends(require_admin_csrf)])
 async def admin_remove_event_member(request: Request, event_id: int, membership_id: int):
     """Remove an event membership assignment."""
     try:
@@ -3485,7 +3716,7 @@ async def admin_remove_event_member(request: Request, event_id: int, membership_
 
 
 @router.post(
-    "/admin/events/{event_id}/rooms/{room_id}/booths/{booth_id}/tokens/", dependencies=[Depends(require_event_owner)]
+    "/admin/events/{event_id}/rooms/{room_id}/booths/{booth_id}/tokens/", dependencies=[Depends(require_event_owner), Depends(require_admin_csrf)]
 )
 async def admin_create_token(request: Request, event_id: int, room_id: int, booth_id: int):
     """Create an invite token for a booth."""
@@ -3515,7 +3746,7 @@ async def admin_create_token(request: Request, event_id: int, room_id: int, boot
 
 @router.post(
     "/admin/events/{event_id}/rooms/{room_id}/booths/{booth_id}/tokens/{token_id}/revoke",
-    dependencies=[Depends(require_event_owner)],
+    dependencies=[Depends(require_event_owner), Depends(require_admin_csrf)],
 )
 async def admin_revoke_token(request: Request, event_id: int, room_id: int, booth_id: int, token_id: str):
     async with get_session() as session:
@@ -3573,7 +3804,7 @@ async def api_admin_get_transcripts(
             return [{"id": s.id, "text": s.text, "created_at": s.created_at.isoformat()} for s in segments]
 
 
-@router.post("/admin/models/trigger_download", dependencies=[Depends(require_event_owner)])
+@router.post("/admin/models/trigger_download", dependencies=[Depends(require_event_owner), Depends(require_admin_csrf)])
 async def api_trigger_download(request: Request):
     from portal.translations.providers.local import trigger_download
 
@@ -3601,7 +3832,7 @@ async def api_download_progress(model: str = Query("nllb-200-distilled-600M")):
     return progress
 
 
-@router.post("/admin/models/supertonic/trigger_download", dependencies=[Depends(require_event_owner)])
+@router.post("/admin/models/supertonic/trigger_download", dependencies=[Depends(require_event_owner), Depends(require_admin_csrf)])
 async def api_supertonic_trigger_download():
     from portal.tts.providers.supertonic import trigger_supertonic_download
 
@@ -3657,7 +3888,7 @@ async def admin_developer_accounts(
 @router.post(
     "/api/admin/developer-accounts/{account_id}/approve",
     include_in_schema=False,
-    dependencies=[Depends(require_admin)],
+    dependencies=[Depends(require_admin), Depends(require_admin_csrf)],
 )
 async def admin_developer_approve(
     account_id: int,
@@ -3693,7 +3924,7 @@ async def admin_developer_approve(
 @router.post(
     "/api/admin/developer-accounts/{account_id}/reject",
     include_in_schema=False,
-    dependencies=[Depends(require_admin)],
+    dependencies=[Depends(require_admin), Depends(require_admin_csrf)],
 )
 async def admin_developer_reject(
     account_id: int,

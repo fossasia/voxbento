@@ -7,6 +7,7 @@ from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
 from uuid import uuid4
 
+from portal.attendance import AttendanceTracker
 from portal.booth_identity import (
     BoothInstance,
     make_booth_id,
@@ -35,6 +36,15 @@ LEAVE_PERSIST_DELAY_SECONDS = 60.0
 # Stores (booth_id, session_key or None) as the booth's active interpreter. See portal.booth_store.
 PersistActive = Callable[[str, str | None], Awaitable[None]]
 
+# Every booth:state carries each participant's id, name, language and channel, so keep them small.
+# The name and language limits match User.display_name and DBBooth.language_name; real channel
+# ids are MediaMTX paths built from an event slug of at most 64 characters, and the server's
+# participant ids are 32-character hex strings.
+DISPLAY_NAME_MAX_LENGTH = 200
+LANGUAGE_MAX_LENGTH = 100
+CHANNEL_ID_MAX_LENGTH = 200
+PARTICIPANT_ID_MAX_LENGTH = 64
+
 
 def utc_now_iso() -> str:
     return datetime.now(tz=timezone.utc).isoformat()
@@ -54,6 +64,9 @@ class Participant:
     updated_at: str = field(default_factory=utc_now_iso)
     # Key of the session that joined (see portal.auth.booth_session_key). Server-only.
     joined_by: str | None = field(default=None, repr=False)
+    # Who this is, for attendance records (#1215). Server-only.
+    user_id: int | None = field(default=None, repr=False)
+    invite_public_id: str | None = field(default=None, repr=False)
 
 
 def participant_public_dict(participant: Participant) -> dict:
@@ -63,7 +76,8 @@ def participant_public_dict(participant: Participant) -> dict:
     names, so roles stay defined only in portal.roles.
     """
     public = asdict(participant)
-    del public["joined_by"]
+    for server_only in ("joined_by", "user_id", "invite_public_id"):
+        del public[server_only]
     return {
         **public,
         "role_label": role_label(participant.role),
@@ -148,6 +162,7 @@ def _pick_next_interpreter(booth: Booth) -> str | None:
 class BoothRegistry:
     def __init__(
         self,
+        attendance: AttendanceTracker | None = None,
         *,
         persist_active: PersistActive | None = None,
         clock: Callable[[], float] = time.monotonic,
@@ -156,6 +171,8 @@ class BoothRegistry:
     ) -> None:
         self._booths: dict[str, Booth] = {}
         self._lock = asyncio.Lock()
+        # Told about every participant change, under the lock (#1215).
+        self.attendance = attendance or AttendanceTracker()
         # Without persist_active nothing is stored and booths behave as they always did.
         self._persist_active = persist_active
         self._clock = clock
@@ -335,6 +352,8 @@ class BoothRegistry:
         *,
         reclaim: bool = False,
         joined_by: str | None = None,
+        user_id: int | None = None,
+        invite_public_id: str | None = None,
     ) -> tuple[Participant, dict]:
         """Add a participant, auto-assigning the active slot if it is free.
 
@@ -343,6 +362,18 @@ class BoothRegistry:
         fresh ID instead of taking over that record, e.g. the active interpreter's.
         ``joined_by`` records the session that joined, for checks made outside the socket.
         """
+        fields = [
+            ("display_name", display_name, DISPLAY_NAME_MAX_LENGTH),
+            ("language", language, LANGUAGE_MAX_LENGTH),
+            ("channel_id", channel_id, CHANNEL_ID_MAX_LENGTH),
+        ]
+        if participant_id is not None:
+            fields.append(("participant_id", participant_id, PARTICIPANT_ID_MAX_LENGTH))
+        for name, value, max_length in fields:
+            if not isinstance(value, str):
+                raise ValueError(f"{name} must be a string.")
+            if len(value) > max_length:
+                raise ValueError(f"{name} must not exceed {max_length} characters.")
         async with self._lock:
             booth = self._get_or_create_booth(booth_id, language, channel_id, room_id=room_id)
             if participant_id in booth.participants and not reclaim:
@@ -354,6 +385,8 @@ class BoothRegistry:
                 language=language.strip() or booth.language,
                 channel_id=channel_id.strip() or booth.channel_id,
                 joined_by=joined_by,
+                user_id=user_id,
+                invite_public_id=invite_public_id,
             )
             booth.participants[participant.participant_id] = participant
             # Auto-assign active slot to any role that can go live.
@@ -370,6 +403,7 @@ class BoothRegistry:
                     del self._reservations[booth_id]
                     self._schedule_persist(booth_id)
                 # Otherwise the slot is kept for the interpreter who was active before the restart.
+            self.attendance.observe(booth)
             return participant, booth.as_public_dict()
 
     async def leave_participant(self, booth_id: str, participant_id: str, language: str, channel_id: str) -> dict:
@@ -392,6 +426,7 @@ class BoothRegistry:
             if not booth.participants:
                 booth.ingest_status = "disconnected"
                 booth.handoff_state = "idle"
+            self.attendance.observe(booth)
             return booth.as_public_dict()
 
     async def set_broadcast_unlocked(
@@ -415,6 +450,7 @@ class BoothRegistry:
                     participant.ingest_connected = False
                     participant.updated_at = utc_now_iso()
                 booth.ingest_status = "disconnected"
+            self.attendance.observe(booth)
 
             # Enqueue webhook in background
             import asyncio
@@ -473,6 +509,7 @@ class BoothRegistry:
                 p.mic_active = p.participant_id == target_id and p.mic_active
                 p.updated_at = utc_now_iso()
             booth.refresh_ingest_status()
+            self.attendance.observe(booth)
             return booth.as_public_dict()
 
     async def initiate_handoff(
@@ -570,6 +607,7 @@ class BoothRegistry:
                 p.mic_active = p.participant_id == new_active and p.mic_active
                 p.updated_at = utc_now_iso()
             booth.refresh_ingest_status()
+            self.attendance.observe(booth)
             return booth.as_public_dict()
 
     async def cancel_handoff(
@@ -655,6 +693,7 @@ class BoothRegistry:
                 participant.connected = connected
             participant.updated_at = utc_now_iso()
             booth.refresh_ingest_status()
+            self.attendance.observe(booth)
             return booth.as_public_dict()
 
     async def check_publish_permission(
@@ -727,6 +766,7 @@ class BoothRegistry:
             pending = self._pending_persist.pop(booth_id, None)
             if pending is not None:
                 pending.cancel()
+            self.attendance.forget_booth(booth_id)
 
     async def validate_booth_event(self, booth_id: str, expected_event: str) -> None:
         """Raise PermissionError if *booth_id* does not belong to *expected_event*.
