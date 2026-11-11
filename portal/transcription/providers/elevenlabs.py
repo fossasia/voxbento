@@ -49,19 +49,15 @@ class ElevenLabsProvider(TranscriptionProvider):
                     resp = await client.post(
                         "https://api.elevenlabs.io/v1/speech-to-text", headers=headers, files=files, data=data
                     )
-                    if resp.status_code in (429, 502, 503, 504):
-                        resp.raise_for_status()
-
                     if resp.status_code in (401, 403):
                         raise TranscriptionAuthError(
                             "elevenlabs",
                             "ElevenLabs API key was rejected.",
                             resp.status_code,
                         )
-                    if resp.status_code == 200:
-                        return resp.json().get("text", "").strip()
-                    else:
-                        logger.error(f"ElevenLabs error status={resp.status_code}")
+                    # Surface every other non-2xx (400/500…) instead of dropping the chunk silently.
+                    resp.raise_for_status()
+                    return resp.json().get("text", "").strip()
         except TranscriptionAuthError:
             raise
         except Exception as e:

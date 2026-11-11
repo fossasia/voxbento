@@ -159,6 +159,39 @@ async def test_elevenlabs_raises_on_a_rejected_key(status):
 
 
 @pytest.mark.anyio
+@pytest.mark.parametrize("provider_name", ["openai", "elevenlabs"])
+@pytest.mark.parametrize("status", [400, 404, 500, 502])
+async def test_a_non_auth_http_error_is_surfaced_not_dropped_as_an_empty_chunk(provider_name, status):
+    """Only 401/403 mean a rejected key. Every other non-2xx must still raise,
+    as it did before the auth handling, so the retry policy sees it instead of
+    the chunk silently becoming an empty transcript.
+    """
+    import httpx
+    from tenacity import RetryError, wait_none
+
+    if provider_name == "openai":
+        from portal.transcription.providers.openai import OpenAIProvider as Provider
+
+        model = "whisper-1"
+    else:
+        from portal.transcription.providers.elevenlabs import ElevenLabsProvider as Provider
+
+        model = "scribe_v1"
+    module = f"portal.transcription.providers.{provider_name}"
+
+    response = httpx.Response(status, request=httpx.Request("POST", "https://provider.test/transcribe"))
+    client = MagicMock()
+    client.post = AsyncMock(return_value=response)
+
+    with (
+        patch(f"{module}.get_http_client", return_value=client),
+        patch(f"{module}.wait_exponential", return_value=wait_none()),
+    ):
+        with pytest.raises((httpx.HTTPStatusError, RetryError)):
+            await Provider().process_chunk(b"audio", "en", model, ProviderConfig(api_key="k"))
+
+
+@pytest.mark.anyio
 async def test_reason_travels_from_process_chunk_through_the_real_run_stream():
     """The provider path the worker actually uses, not a stubbed run_stream."""
     class RejectingProvider(TranscriptionProvider):
