@@ -4,16 +4,26 @@ from __future__ import annotations
 
 import dataclasses
 import re
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 import pycountry
 import pytest
 
 from portal.translations.constants import TRANSLATION_MODELS, TranslationProviderEnum
 from portal.translations.engine import EngineKind, Language, TranslationContext
-from portal.translations.providers.local import LocalProvider, _engine_code, _hf_source, trigger_download
+from portal.translations.model_languages import language_support_error
+from portal.translations.providers.local import (
+    LocalProvider,
+    _engine_code,
+    _hf_source,
+    _loaded_models,
+    get_model_and_tokenizer,
+    trigger_download,
+)
 from portal.translations.registry import (
     LOCAL_TRANSLATION_MODELS,
+    M2M100_1_2B,
+    M2M100_418M,
     NLLB_200_DISTILLED_600M,
     TranslationModel,
     get_translation_model,
@@ -257,3 +267,138 @@ async def test_local_provider_translate_batch_forwards_source_code(monkeypatch):
 
     assert rows == [["Hallo"]]
     assert calls == [("fra_Latn", "deu_Latn")]
+
+
+# --- The M2M100 entries (#1196) ------------------------------------------------------------
+
+M2M100_MODELS = [M2M100_418M, M2M100_1_2B]
+#: The languages the issue asks both models to translate to and from English.
+M2M100_CHECKED = ["es", "fr", "pt", "de", "zh", "ar", "hi"]
+
+
+def test_both_m2m100_sizes_can_be_selected_after_nllb():
+    assert list(LOCAL_TRANSLATION_MODELS) == [NLLB, "m2m100_418M", "m2m100_1.2B"]
+    assert TRANSLATION_MODELS[TranslationProviderEnum.LOCAL.value] == [NLLB, "m2m100_418M", "m2m100_1.2B"]
+
+
+@pytest.mark.parametrize(
+    ("model", "hf_repo", "hf_revision"),
+    [
+        (M2M100_418M, "jncraton/m2m100_418M-ct2-int8", "7c1b2620a4e58dacecbd8bf89cfd6da7eb9eb7b0"),
+        (M2M100_1_2B, "jncraton/m2m100_1.2B-ct2-int8", "e50078df6be13a88592b70ea42f4d74c2082e448"),
+    ],
+    ids=lambda value: value.id if isinstance(value, TranslationModel) else None,
+)
+def test_m2m100_is_described_by_its_entry(model, hf_repo, hf_revision):
+    assert get_translation_model(model.id) is model
+    assert model.engine_kind is EngineKind.CT2_SEQ2SEQ is LocalProvider.kind
+    assert (model.hf_repo, model.hf_revision) == (hf_repo, hf_revision)
+    assert _hf_source(model.id) == (hf_repo, hf_revision)
+    assert model.supports_prompt is False
+    assert model.supports_multi_target_batch is True
+    assert model.licence == "MIT"
+    assert model.tokenizer_type == "m2m_100"
+
+
+def test_the_m2m100_sizes_share_one_language_map():
+    assert M2M100_418M.languages == M2M100_1_2B.languages
+    assert M2M100_1_2B.approx_ram_mb > M2M100_418M.approx_ram_mb
+
+
+def test_m2m100_codes_are_the_iso_code_in_underscores():
+    """M2M100 has 100 languages; Asturian, Cebuano, Iloko and Northern Sotho have no ISO 639-1 code."""
+    assert len(M2M100_418M.languages) == 96
+    assert all(engine_code == f"__{code}__" for code, engine_code in M2M100_418M.languages.items())
+
+
+@pytest.mark.parametrize("code", ["nb", "nn", "eo", "ast", "ceb", "ns", "xx"])
+def test_m2m100_lacks_languages_outside_its_list(code):
+    assert M2M100_418M.engine_code(code) is None
+
+
+def test_m2m100_rejects_a_room_language_it_lacks_by_name():
+    assert language_support_error("local", "m2m100_418M", ["en", *M2M100_CHECKED]) is None
+    assert language_support_error("local", "m2m100_1.2B", ["en", "eo"]) == (
+        "The built-in translator (m2m100_1.2B) doesn't support Esperanto. "
+        "Choose another translation service or change the languages."
+    )
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("code", M2M100_CHECKED)
+@pytest.mark.parametrize("model", M2M100_MODELS, ids=lambda model: model.id)
+async def test_m2m100_translates_english_both_ways(monkeypatch, model, code):
+    calls = []
+
+    def fake_inference(self, text, source_token, target_token, model_size):
+        calls.append((source_token, target_token, model_size))
+        return "translated"
+
+    monkeypatch.setattr(LocalProvider, "_run_inference", fake_inference)
+    english = Language(code="en", name="English")
+    other = Language(code=code, name=code)
+
+    assert await LocalProvider().translate_batch(english, [other], ["Hello"], TranslationContext(), model=model.id) == [
+        ["translated"]
+    ]
+    assert await LocalProvider().translate_batch(other, [english], ["Hello"], TranslationContext(), model=model.id) == [
+        ["translated"]
+    ]
+    assert calls == [("__en__", f"__{code}__", model.id), (f"__{code}__", "__en__", model.id)]
+
+
+class FakeTokenizer:
+    """Tokenizes like M2M100Tokenizer with its default source language: ``__en__``, the words, ``</s>``."""
+
+    def encode(self, text):
+        return ["__en__", *text.split(), "</s>"]
+
+    def convert_ids_to_tokens(self, ids):
+        return list(ids)
+
+    def convert_tokens_to_ids(self, tokens):
+        return list(tokens)
+
+    def decode(self, ids):
+        return " ".join(token for token in ids if token != "</s>")
+
+
+def test_m2m100_inference_marks_the_source_language_and_forces_the_target():
+    translator = MagicMock()
+    translator.translate_batch.return_value = [MagicMock(hypotheses=[["__fr__", "Bonjour", "</s>"]])]
+
+    with patch(
+        "portal.translations.providers.local.get_model_and_tokenizer", return_value=(translator, FakeTokenizer())
+    ):
+        result = LocalProvider()._run_inference("Hallo", "__de__", "__fr__", "m2m100_418M")
+
+    assert result == "Bonjour"
+    (source,) = translator.translate_batch.call_args.args[0]
+    assert source == ["__de__", "Hallo", "</s>"]
+    assert translator.translate_batch.call_args.kwargs["target_prefix"] == [["__fr__"]]
+
+
+@pytest.mark.parametrize(
+    ("model_id", "tokenizer_options"),
+    [
+        (NLLB, {"src_lang": "eng_Latn"}),
+        ("m2m100_418M", {"tokenizer_type": "m2m_100"}),
+        ("m2m100_1.2B", {"tokenizer_type": "m2m_100"}),
+        # An operator's own build is loaded as NLLB, as before.
+        ("someone/their-nllb-build", {"src_lang": "eng_Latn"}),
+    ],
+)
+def test_the_tokenizer_is_loaded_as_the_registry_entry_says(model_id, tokenizer_options):
+    """M2M100's repository names no tokenizer class, and its tokenizer has no eng_Latn language."""
+    _loaded_models.pop(model_id, None)
+    try:
+        with (
+            patch("huggingface_hub.snapshot_download", return_value="/cache/model"),
+            patch("ctranslate2.Translator"),
+            patch("transformers.AutoTokenizer.from_pretrained") as from_pretrained,
+        ):
+            get_model_and_tokenizer(model_id)
+    finally:
+        _loaded_models.pop(model_id, None)
+
+    from_pretrained.assert_called_once_with("/cache/model", revision="main", **tokenizer_options)
