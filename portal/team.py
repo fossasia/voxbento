@@ -222,11 +222,22 @@ def check_assignment(role: str, place: Place) -> None:
         raise TeamError(error)
 
 
-async def add_member(session: AsyncSession, *, event_id: int, email: str, role: str, place: Place) -> tuple[User, bool]:
-    """Give *role* at *place* to the person with *email*; returns (user, newly_added)."""
+INVALID_EMAIL = "Enter a valid email address."
+
+
+def clean_email(email: str | None) -> str | None:
+    """Lowercased *email*, or None if it isn't a usable address (same rule as User._validate_email, plus a length cap)."""
     email = (email or "").strip().lower()
     if "@" not in email or "." not in email.split("@")[-1] or len(email) > 320:
-        raise TeamError("Enter a valid email address.")
+        return None
+    return email
+
+
+async def add_member(session: AsyncSession, *, event_id: int, email: str, role: str, place: Place) -> tuple[User, bool]:
+    """Give *role* at *place* to the person with *email*; returns (user, newly_added)."""
+    email = clean_email(email)
+    if email is None:
+        raise TeamError(INVALID_EMAIL)
     check_assignment(role, place)
 
     user = await get_user_by_email(session, email)

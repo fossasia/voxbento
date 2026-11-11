@@ -4192,3 +4192,60 @@ async def test_developer_accounts_page_has_no_inline_styles(seed_accounts):
     else:
         assert b"No developer applications" in resp.content
     assert not re.search(rb"\sstyle\s*=", resp.content, re.IGNORECASE)
+
+
+MEMBER_FORMS = [
+    ("/admin/events/{event}/setup/invite", "event_owner"),
+    ("/admin/events/{event}/members/", "event_owner"),
+    ("/admin/events/{event}/rooms/{room}/members/", "room_coordinator"),
+    ("/admin/events/{event}/rooms/{room}/booths/{booth}/members/", "interpreter"),
+]
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize(("path", "role"), MEMBER_FORMS)
+@pytest.mark.parametrize("email", ["testuser", "user@", "a@b", "x" * 320 + "@example.com"])
+async def test_member_forms_reject_invalid_email(path, role, email, admin_cookie, seed_event):
+    """#1239: a bad address used to reach User._validate_email and return a 500."""
+    from sqlalchemy import func, select
+
+    from portal.database import get_session
+    from portal.models import User
+
+    event, room, booth = seed_event
+    async with get_session() as s:
+        users_before = await s.scalar(select(func.count(User.id)))
+
+    async with _client() as c:
+        resp = await c.post(
+            path.format(event=event.id, room=room.id, booth=booth.id),
+            data={"email": email, "role": role},
+            cookies=admin_cookie,
+        )
+        if resp.status_code == 303:
+            assert resp.headers["location"].endswith("?error=invalid_email")
+            resp = await c.get(resp.headers["location"], cookies=admin_cookie)
+
+    assert resp.status_code in (200, 400)
+    assert "Enter a valid email address." in resp.text
+    async with get_session() as s:
+        assert await s.scalar(select(func.count(User.id))) == users_before
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize(("path", "role"), MEMBER_FORMS)
+async def test_member_forms_still_add_valid_email(path, role, admin_cookie, seed_event):
+    from portal.database import get_session, get_user_by_email
+
+    event, room, booth = seed_event
+    async with _client() as c:
+        resp = await c.post(
+            path.format(event=event.id, room=room.id, booth=booth.id),
+            data={"email": "  New.Person@Example.com ", "role": role},
+            cookies=admin_cookie,
+        )
+
+    assert resp.status_code == 303
+    assert "error=" not in resp.headers["location"]
+    async with get_session() as s:
+        assert await get_user_by_email(s, "new.person@example.com") is not None
