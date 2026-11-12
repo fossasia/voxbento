@@ -200,20 +200,14 @@ class TranslationWorker:
 
     async def _process_completed_sentence(
         self,
-        session,
-        room_id: int,
-        segment,
+        job: _ResolvedTranslation,
         segment_id: int,
         text: str,
         booth_id_str: str,
         uuid_segment_id: str = "",
         seq: int = 0,
-    ) -> list | None:
-        """Process a completed sentence segment by resolving the job and executing translation tasks."""
-        job = await self._resolve_translation_job(session, room_id, segment, booth_id_str)
-        if job is None:
-            return None
-
+    ) -> list:
+        """Run the translation tasks of a resolved job: one per language with listeners."""
         tasks = self._build_language_tasks(job, segment_id, text, booth_id_str, uuid_segment_id, seq)
         if tasks:
             logger.error(f"[{booth_id_str}] Spawning {len(tasks)} translation tasks for active listeners")
@@ -238,10 +232,16 @@ class TranslationWorker:
                 "[%s] handle_translation triggered for segment %s (len=%s)", booth_id_str, segment_id, len(text)
             )
 
-            sentence = self._accumulate_sentence(text)
-            await self._process_completed_sentence(
-                session, room_id, segment, segment_id, sentence, booth_id_str, uuid_segment_id, seq
-            )
+            job = await self._resolve_translation_job(session, room_id, segment, booth_id_str)
+
+        # The connection goes back to the pool before translating: a segment can wait a while for
+        # the engine, and each translation needs a connection of its own to save its result.
+        # Holding this one meanwhile let busy rooms empty the pool. The job's rows stay readable
+        # (sessions do not expire them).
+        if job is None:
+            return
+        sentence = self._accumulate_sentence(text)
+        await self._process_completed_sentence(job, segment_id, sentence, booth_id_str, uuid_segment_id, seq)
 
     async def _resolve_translation_job(
         self, session, room_id: int, segment, booth_id_str: str
