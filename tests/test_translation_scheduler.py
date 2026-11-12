@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import threading
+from contextlib import asynccontextmanager
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
@@ -453,3 +454,49 @@ async def test_a_segment_waiting_when_the_download_starts_is_dropped_at_its_turn
     assert engine.calls == []
     assert bundle.await_args.args[8] == "model_downloading"
     assert worker_module.scheduler_for("slow").admitted(1, "event-1-floor:fr") == 0
+
+
+async def test_a_segment_leaves_its_language_queue_before_its_speech_is_made(monkeypatch):
+    """Slow speech synthesis must not count against the language's 15 admitted segments."""
+    engine = SlowEngine(max_concurrency=1)
+
+    async def answer(source, targets, texts, context, *, model, api_key=None):
+        return [["Bonjour" for _ in targets] for _ in texts]
+
+    engine.translate_batch = answer
+    monkeypatch.setitem(worker_module.ENGINES, "answering", engine)
+    stored = MagicMock(add=MagicMock(), flush=AsyncMock())
+
+    @asynccontextmanager
+    async def fake_session():
+        yield stored
+
+    monkeypatch.setattr(worker_module, "get_session", fake_session)
+    monkeypatch.setattr("portal.websockets.manager.tts_manager.broadcast_bundle", AsyncMock())
+    monkeypatch.setattr("portal.websockets.manager.listener_manager.broadcast", AsyncMock())
+    monkeypatch.setattr(worker_module.youtube_captions, "offer", MagicMock())
+    speaking = asyncio.Event()
+    finish_speaking = asyncio.Event()
+
+    async def slow_synthesize(room_id, text, lang_code):
+        speaking.set()
+        await finish_speaking.wait()
+        return b"audio"
+
+    monkeypatch.setattr("portal.tts.worker.synthesize", slow_synthesize)
+
+    task = asyncio.create_task(
+        TranslationWorker(MagicMock())._translate_and_broadcast(
+            SimpleNamespace(id=1), fake_room(1), "answering", "m", None, "fr", "French", "en", "English",
+            1, "Hello", "event-1-floor", "uuid", 1, "event-1-fr",
+        )
+    )
+    await asyncio.wait_for(speaking.wait(), timeout=5)
+
+    scheduler = worker_module.scheduler_for("answering")
+    assert scheduler.admitted(1, "event-1-floor:fr") == 0
+    assert scheduler.running == 0
+
+    finish_speaking.set()
+    await task
+    stored.add.assert_called_once()
