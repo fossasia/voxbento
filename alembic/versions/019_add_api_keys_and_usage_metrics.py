@@ -29,7 +29,7 @@ def upgrade() -> None:
         sa.Column("name", sa.String(length=200), nullable=True),
         sa.Column("preview", sa.String(length=16), nullable=False),
         sa.Column("key_hash", sa.String(length=64), nullable=False),
-        sa.Column("active", sa.Boolean(), server_default="1", nullable=False),
+        sa.Column("active", sa.Boolean(), server_default=sa.true(), nullable=False),
         sa.Column("created_at", sa.DateTime(timezone=True), nullable=False),
         sa.ForeignKeyConstraint(["event_id"], ["events.id"], ondelete="CASCADE"),
         sa.PrimaryKeyConstraint("id"),

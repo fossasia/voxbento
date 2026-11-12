@@ -28,7 +28,7 @@ def upgrade() -> None:
         )
 
     with op.batch_alter_table("events") as batch_op:
-        batch_op.add_column(sa.Column("transcription_api_enabled", sa.Boolean(), server_default="0", nullable=False))
+        batch_op.add_column(sa.Column("transcription_api_enabled", sa.Boolean(), server_default=sa.false(), nullable=False))
         batch_op.add_column(sa.Column("openai_api_key", sa.Text(), nullable=True))
         batch_op.add_column(sa.Column("deepgram_api_key", sa.Text(), nullable=True))
         batch_op.add_column(sa.Column("nvidia_api_key", sa.Text(), nullable=True))
