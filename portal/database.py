@@ -194,6 +194,22 @@ async def get_event_by_id(session: AsyncSession, event_id: int) -> Event | None:
     return result.scalar_one_or_none()
 
 
+async def update_event(
+    session: AsyncSession,
+    event_id: int,
+    display_name: str,
+    slug: str,
+) -> Event | None:
+    event = await get_event_by_id(session, event_id)
+    if event is None:
+        return None
+    event.display_name = display_name
+    event.slug = slug
+    session.add(event)
+    await session.flush()
+    return event
+
+
 def escape_event_search_term(value: str) -> str:
     return value.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
 
