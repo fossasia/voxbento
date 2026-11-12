@@ -141,13 +141,21 @@ def test_the_legacy_access_token_is_unaffected_by_the_role_scope_rule(monkeypatc
 # -- a cookie is held to the same scope, with or without BOOTH_ACCESS_TOKEN ------------------------
 
 
-@pytest.mark.parametrize("access_token", ["", "legacy-secret"], ids=["no-access-token", "access-token-set"])
-def test_a_cookie_for_another_booth_is_refused(monkeypatch, access_token):
-    monkeypatch.setattr(settings, "booth_access_token", access_token)
+def test_a_cookie_for_another_booth_is_refused_when_an_access_token_is_set(monkeypatch):
+    monkeypatch.setattr(settings, "booth_access_token", "legacy-secret")
 
     code = _refused_with(f"/ws/booth/{BOOTH}", cookies={"session_token": _participant(event_slug="other")})
 
     assert code == 4003
+
+
+def test_a_cookie_for_another_booth_stays_connected_but_holds_no_role_without_an_access_token():
+    """The #810 contract: no handshake refusal, but no role and so no broadcasts."""
+    with client.websocket_connect(f"/ws/booth/{BOOTH}", cookies={"session_token": _participant(event_slug="other")}) as ws:
+        reply = _join(ws)
+
+    assert reply["type"] == "booth:error"
+    assert "No role" in reply["message"]
 
 
 @pytest.mark.parametrize("access_token", ["", "legacy-secret"], ids=["no-access-token", "access-token-set"])
