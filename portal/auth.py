@@ -1006,7 +1006,10 @@ async def resolve_booth_role(
             token_event = sess.get("event_slug")
             token_lang = sess.get("language_code")
             token_room = sess.get("room_id")
-            if booth_id and (token_event or token_lang):
+            if booth_id and not (token_event and token_lang):
+                # A role claim without its event and language would apply to every booth.
+                scope_matches = False
+            elif booth_id:
                 from portal.booth_identity import parse_booth_id
 
                 try:
