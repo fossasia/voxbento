@@ -1,5 +1,52 @@
 # Plan 007: Add a guided "From a YouTube stream" choice to Room audio
 
+## In plain English
+
+Bring the finished pieces together into one room-page setup. Ask how the organiser
+streams, show the right instructions, and tell them whether the sound, captions
+and YouTube connection are working. They should not have to understand the
+underlying connection protocols to choose a route.
+
+**Status on 12 November 2026: IN PROGRESS — partial proposal, changes requested.**
+[#1125](https://github.com/fossasia/voxbento/pull/1125), reviewed at `8b6f2b40`, includes
+both a narrow source-selection fix for [#1119](https://github.com/fossasia/voxbento/issues/1119)
+and an incomplete guide. It is not merged. Its narrow fix is useful, but the added
+setup does not work end to end. Last recorded contributor: @samc4e. Coordinate with
+[#751](https://github.com/fossasia/voxbento/issues/751) and reuse the existing room controls.
+
+### What to do next, in order
+
+1. Either separate the small persisted-source fix from the guide, or finish both.
+   Reloading an existing forwarding room must select the right panel using saved
+   room state; test actual stored state rather than invented model attributes.
+2. Integrate the final plan 005 account controls and plan 006 caption controls.
+   A full guide needs both; a partial card must not claim the feature is finished.
+3. Ask how video reaches YouTube: show the independent-extra-output route, the
+   forwarding route, or the shared-browser-tab route. Preserve the explicit warning
+   that forwarding makes YouTube depend on VoxBento staying available.
+4. Make the buttons actually configure the chosen route. Include the page's request
+   protection token (CSRF), choose RTMPS for encoder outputs, and use the one-time
+   key returned by creation. Status requests must remain unable to retrieve secrets.
+5. Reuse the existing server/key and destination controls; make them visible in the
+   selected route. Confirm a destination really exists before claiming forwarding
+   is ready, and respect an owner's explicit removal of it.
+6. Show real status and link to the listener page for translated speech. Include
+   the actual account-enabled template value and only offer controls the owner can
+   use. Handle operator-disabled features, permission errors and unavailable tools.
+7. Walk through all three routes, including starting, stopping, switching sources,
+   reconnecting and reloading. Check keyboard navigation, smaller screens and
+   matching organiser instructions. Then assess #1119/#751 and update the index.
+
+Full review: [#1125](https://github.com/fossasia/voxbento/pull/1125#pullrequestreview-5872115846).
+See [the overall sequence](README.md#remaining-work-step-by-step).
+
+## Technical implementation reference
+
+The following implementation steps and excerpts were written against `250aefde`
+on 1 November 2026. The current status and completion steps above take precedence.
+Run the drift check before reusing an example; refresh stale code against current
+`dev` and the relevant PR. Completed implementation steps are maintenance reference.
+
 > **Executor instructions**: Follow this plan step by step. Run every
 > verification command and confirm the expected result before moving to the
 > next step. If anything in the "STOP conditions" section occurs, stop and
@@ -33,7 +80,7 @@ no direct entry, so people fall back to the Jitsi screen-share workaround. This 
 adds a fourth choice, **From a YouTube stream**, that asks two plain questions and shows
 exactly one recipe.
 
-## Current state
+## Original implementation baseline (1 November 2026)
 
 - `portal/room_setup.py:570-587`:
   ```python
@@ -134,7 +181,7 @@ and the panel `<div data-audio-panel="youtube">{% include 'admin/_youtube_source
 A three-step card (reuse `.program-setup-step`, `.program-step` classes from
 `_program_ingest.html`; no inline script; module script tag at the end like other partials):
 
-1. **Which broadcast?** If `settings.youtube_connect_enabled`: include
+1. **Which broadcast?** If the `youtube_connect_enabled` template value from plan 005 is true: include
    `_youtube_connect.html` (sign-in + broadcast picker). Below it, a quiet link:
    "Not your channel, or can't sign in? Skip to step 2." If not enabled: a sentence
    telling the owner the operator has not set up YouTube sign-in, and go to step 2.
@@ -168,6 +215,11 @@ A three-step card (reuse `.program-setup-step`, `.program-step` classes from
    (`youtube.captions`), *Captions and translation* (`health.processing`); plus the
    listener link/QR that already exists for the event (reuse its URL helper; do not
    create a new token type).
+
+Every state-changing request carries the page's `X-CSRF-Token`. Read a newly
+created VoxBento key from the enable/rotate response and display it intentionally;
+never try to recover it from a status GET. Passive status polling must not recreate
+a removed relay destination.
 
 `youtube-source.js` only orchestrates existing endpoints; it must not duplicate
 `program-ingest.js` logic. If shared helpers are needed, import them from
