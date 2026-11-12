@@ -484,10 +484,17 @@ async def _authorize_tts(
 @router.websocket("/ws/tts/{room_id}/{language_code}/{booth_id}")
 async def ws_tts(websocket: WebSocket, room_id: int, language_code: str, booth_id: str) -> None:
     """TTS WebSocket endpoint with pre-accept authorization."""
+    from portal.join_code_limit import JoinCodeThrottled
+
     try:
         await _authorize_tts(websocket, room_id, language_code, booth_id)
-    except WSAuthError:
-        await websocket.close(code=4003)
+    except WSAuthError as exc:
+        # Accept before closing: a close before accept() becomes an HTTP 403 and
+        # browsers only report 1006, so the listener could not tell a refusal
+        # (stop) from a dropped connection (reconnect). Nothing is registered or sent.
+        # A throttled join code clears on its own, so it gets 1008 (retry) as on /ws/captions.
+        await websocket.accept()
+        await websocket.close(code=1008 if isinstance(exc.__cause__, JoinCodeThrottled) else 4003)
         return
 
     async def authorize() -> None:

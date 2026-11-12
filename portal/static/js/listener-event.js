@@ -205,6 +205,8 @@ var captionsRetryTimer = null;
 var captionsRetryDelayMs = 1000;
 
 var ttsWs = null;
+var ttsRetryTimer = null;
+var ttsRetryDelayMs = 1000;
 var audioCtx = null;
 var nextStartTime = 0;
 var currentAudioDelayMs = 0;
@@ -372,6 +374,13 @@ function startTtsWs(roomId, langCode, boothId, audioDelayMs) {
     comfortNoiseLevelDb: -40,
   });
 
+  ttsRetryDelayMs = 1000;
+  openTtsWs(roomId, langCode, boothId);
+}
+
+// Kept apart from startTtsWs so a reconnect leaves the audio context and the
+// speech already scheduled on it alone.
+function openTtsWs(roomId, langCode, boothId) {
   var wsProto = window.location.protocol === "https:" ? "wss:" : "ws:";
   var wsUrl =
     wsProto +
@@ -383,11 +392,12 @@ function startTtsWs(roomId, langCode, boothId, audioDelayMs) {
     langCode +
     "/" +
     boothId;
-  ttsWs = new WebSocket(wsUrl);
-  ttsWs.binaryType = "arraybuffer";
+  var ws = new WebSocket(wsUrl);
+  ttsWs = ws;
+  ws.binaryType = "arraybuffer";
   updateTapToListen();
 
-  ttsWs.onmessage = function (event) {
+  ws.onmessage = function (event) {
     if (event.data instanceof ArrayBuffer) {
       try {
         var frame = window.TTSParser.parseFrame(event.data);
@@ -463,12 +473,52 @@ function startTtsWs(roomId, langCode, boothId, audioDelayMs) {
     }
   };
 
-  ttsWs.onclose = function () {
-    // closed
+  ws.onopen = function () {
+    ttsRetryDelayMs = 1000;
+  };
+  ws.onclose = function (event) {
+    // stopTtsWs() clears ttsWs before the close event fires, so this only
+    // reconnects sockets that dropped on their own. 4001/4003 are auth rejections,
+    // which retrying won't fix, so the listener is told instead of left in silence.
+    if (ttsWs !== ws) return;
+    ttsWs = null;
+    updateTapToListen();
+    if (event.code === 4001 || event.code === 4003) {
+      setStatus("Access ended. Reload the page and enter the new join code.", "error");
+      return;
+    }
+    ttsRetryTimer = setTimeout(function () {
+      ttsRetryTimer = null;
+      // Segments sent while the socket was down never arrive, and a restarted
+      // server numbers them again from the start, so the queue starts over
+      // from the first segment the new socket gets.
+      speechDelivery.reset();
+      resetSegmentQueue();
+      openTtsWs(roomId, langCode, boothId);
+    }, ttsRetryDelayMs);
+    ttsRetryDelayMs = Math.min(ttsRetryDelayMs * 2, 15000);
   };
 }
 
+function resetSegmentQueue() {
+  if (seqWaitTimer) {
+    clearTimeout(seqWaitTimer);
+    seqWaitTimer = null;
+  }
+  if (fallbackQueueTimer) {
+    clearTimeout(fallbackQueueTimer);
+    fallbackQueueTimer = null;
+  }
+  segmentStore = Object.create(null);
+  expectedSeq = null;
+  isSegmentPlaying = false;
+}
+
 function stopTtsWs() {
+  if (ttsRetryTimer) {
+    clearTimeout(ttsRetryTimer);
+    ttsRetryTimer = null;
+  }
   if (ttsWs) {
     ttsWs.close();
     ttsWs = null;

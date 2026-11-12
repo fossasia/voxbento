@@ -307,6 +307,8 @@ function captionsSocket() {
 }
 
 let boothState = { ingest_status: 'disconnected' };
+const realSetTimeout = setTimeout;
+const realClearTimeout = clearTimeout;
 function fetch(url) {
   const body = url.includes('/audio-delay') ? { audio_delay_ms: 0 } : boothState;
   return Promise.resolve({ ok: true, json: () => Promise.resolve(body) });
@@ -360,7 +362,30 @@ function choose(select, value) {
 }
 
 function flush() {
-  return new Promise((resolve) => setTimeout(resolve, 0));
+  return new Promise((resolve) => realSetTimeout(resolve, 0));
+}
+
+// Timers the test runs by hand, so retry delays are checked without waiting.
+const fakeTimers = new Set();
+function useFakeTimers() {
+  globalThis.setTimeout = (fn, ms) => {
+    const timer = { fn, ms: ms || 0 };
+    fakeTimers.add(timer);
+    return timer;
+  };
+  globalThis.clearTimeout = (timer) => {
+    if (!fakeTimers.delete(timer)) realClearTimeout(timer);
+  };
+}
+function pendingTimers(ms) {
+  return [...fakeTimers].filter((t) => t.ms === ms).length;
+}
+function runTimers(ms) {
+  for (const timer of [...fakeTimers]) {
+    if (timer.ms !== ms) continue;
+    fakeTimers.delete(timer);
+    timer.fn();
+  }
 }
 
 async function run() {
@@ -531,6 +556,133 @@ async function run() {
     data: bundleFrame({ segment_id: 'b', seq: 2, caption: 'Hello', translation: '', error: 'pipeline_failed' }),
   });
   assert(historyBox.textContent.includes('(Translation failed)'), 'a failed translation still says so, right after an empty one');
+
+  console.log('\n── Translation feed reconnects ──');
+
+  useFakeTimers();
+  const feedSockets = () => sockets.filter((s) => s.url.includes('/ws/tts/'));
+
+  // Count new audio contexts and schedulers from here on, and keep the page's context.
+  let audioContexts = 0;
+  let schedulerCreates = 0;
+  let pageContext = null;
+  const BaseAudioContext = window.AudioContext;
+  window.AudioContext = class extends BaseAudioContext {
+    constructor() {
+      super();
+      audioContexts++;
+    }
+  };
+  const baseCreate = window.AudioScheduler.create;
+  window.AudioScheduler.create = (context, options) => {
+    schedulerCreates++;
+    pageContext = context;
+    return baseCreate(context, options);
+  };
+  choose(translationSelect, 'fr');
+  pageContext.resume = () => Promise.resolve();
+  const feed = feedSockets().pop();
+  const feedUrl = feed.url;
+  const contextsBefore = audioContexts;
+  const schedulersBefore = schedulerCreates;
+
+  // The queue is at segment 7 when the feed drops.
+  feed.onmessage({
+    data: bundleFrame({ segment_id: 's7', seq: 7, caption: 'Seven', translation: 'Sept', error: null, audio_pending: false }),
+  });
+  // A frame held for the program's sync delay (3s), sent just before the drop.
+  feed.onmessage({
+    data: bundleFrame({ segment_id: 'held', seq: 50, caption: '', translation: 'Held', error: null, audio_pending: false,
+      source_received_at_ms: 5000, server_sent_at_ms: 2000 }),
+  });
+  const socketsBefore = feedSockets().length;
+  feed.onclose({ code: 1006 });
+  assert(feedSockets().length === socketsBefore, 'a dropped feed waits before reconnecting');
+  assert(pendingTimers(1000) === 1, 'the first retry waits 1s');
+  runTimers(1000);
+  const first = feedSockets().pop();
+  assert(feedSockets().length === socketsBefore + 1 && first.url === feedUrl, 'a dropped translation feed reopens the same feed');
+  assert(
+    audioContexts === contextsBefore && schedulerCreates === schedulersBefore,
+    'reconnecting keeps the audio context and the speech already scheduled on it',
+  );
+
+  // A restarted server numbers segments from 1 again, and the held frame from before the drop must not get in the way.
+  runTimers(3000);
+  assert(!historyBox.textContent.includes('Held'), 'a frame held from before the drop is dropped with the old feed');
+  first.onmessage({
+    data: bundleFrame({ segment_id: 'r1', seq: 1, caption: 'Restarted', translation: 'Redémarré', error: null, audio_pending: false }),
+  });
+  assert(historyBox.textContent.includes('Redémarré'), 'the first segment after a server restart shows, though its number went back to 1');
+  assert(historyBox.textContent.includes('Restarted'), 'and the queue plays it at once');
+
+  // Segment 2 is lost in the next drop, so the queue is left waiting up to 65s for it.
+  first.onmessage({
+    data: bundleFrame({ segment_id: 'r3', seq: 3, caption: 'Three', translation: 'Trois', error: null, audio_pending: false }),
+  });
+  runTimers(2500);
+  assert(pendingTimers(65000) === 1, 'the queue waits for the missing segment 2');
+
+  first.onclose({ code: 1006 });
+  assert(pendingTimers(2000) === 1 && pendingTimers(1000) === 0, 'a feed that drops again before opening waits twice as long');
+  runTimers(2000);
+  const second = feedSockets().pop();
+  assert(second !== first && second.url === feedUrl, 'the feed reopens after the longer wait');
+  assert(pendingTimers(65000) === 0, 'reconnecting drops the wait for a segment the old feed never sent');
+  second.onopen();
+
+  // Segments 2 to 4 were sent while the feed was down; 5 must not wait 65s for them.
+  second.onmessage({
+    data: bundleFrame({ segment_id: 'r5', seq: 5, caption: 'Five', translation: 'Cinq', error: null, audio_pending: false }),
+  });
+  assert(historyBox.textContent.includes('Five'), 'after a gap the queue moves on to the first new segment');
+
+  second.onclose({ code: 1006 });
+  assert(pendingTimers(1000) === 1 && pendingTimers(2000) === 0, 'a feed that opened again resets the wait to 1s');
+  assert(!statusText().includes('Access ended'), 'a dropped feed does not say access ended');
+  runTimers(1000);
+
+  // 1008 is a throttled join code, which clears on its own, so the feed keeps retrying.
+  feedSockets().pop().onclose({ code: 1008 });
+  assert(pendingTimers(2000) === 1, 'a feed closed with 1008 (throttled) retries');
+  assert(!statusText().includes('Access ended'), 'a throttled feed does not say access ended');
+  runTimers(2000);
+
+  for (const code of [4001, 4003]) {
+    const socket = feedSockets().pop();
+    const count = feedSockets().length;
+    socket.onclose({ code: code });
+    assert(pendingTimers(1000) === 0 && pendingTimers(2000) === 0, 'a feed closed with ' + code + ' does not reconnect');
+    assert(statusText() === 'Access ended. Reload the page and enter the new join code.', 'a ' + code + ' close tells the listener access ended');
+    runTimers(1000);
+    assert(feedSockets().length === count, 'no new feed opens after a ' + code + ' close');
+    choose(translationSelect, 'fr');
+  }
+
+  // Autoplay is blocked: Tap to listen shows while the feed is up and goes once the server refuses it.
+  pageContext.state = 'suspended';
+  choose(translationSelect, 'fr');
+  assert(tapButton.hidden === false, 'a feed waiting on a blocked audio context asks the listener to tap');
+  feedSockets().pop().onclose({ code: 4003 });
+  assert(tapButton.hidden === true, 'a refused feed no longer asks the listener to tap');
+  pageContext.state = 'running';
+  choose(translationSelect, 'fr');
+
+  // Switching language closes the old feed ourselves; its late close event must not reopen it.
+  const switched = feedSockets().pop();
+  choose(translationSelect, 'fr');
+  const count = feedSockets().length;
+  switched.onclose({ code: 1006 });
+  assert(pendingTimers(1000) === 0 && feedSockets().length === count, 'a feed we closed ourselves is not reopened');
+
+  // The last feed never opened and dropped once, but a newly chosen feed starts over at 1s.
+  feedSockets().pop().onclose({ code: 1006 });
+  assert(pendingTimers(1000) === 1, 'a newly started feed retries after 1s again');
+  choose(languageSelect, '');
+  assert(pendingTimers(1000) === 0, 'stopping the stream cancels a pending reconnect');
+  const afterStop = feedSockets().length;
+  runTimers(1000);
+  assert(feedSockets().length === afterStop, 'no feed opens after the stream was stopped');
 
   console.log('\n' + passed + ' passed, ' + failed + ' failed');
   process.exit(failed > 0 ? 1 : 0);
