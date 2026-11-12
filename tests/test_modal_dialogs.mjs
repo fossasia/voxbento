@@ -771,22 +771,31 @@ test('copyToClipboard: a rapid second click cancels the first reset timer so it 
     tooltip.textContent = 'Copy to clipboard';
     button.children['.copy-tooltip'] = tooltip;
 
-    // First click – succeeds and schedules a reset.
+    // First click – succeeds and schedules a reset at t = 2000 ms.
     await copyToClipboard(button);
     assert.ok(button.classes.has('copied'), 'first click marks copied');
 
-    // Second click before the reset fires – must cancel the first timer and
-    // schedule its own reset without clearing the banner prematurely.
+    // Advance 1300 ms (t = 1300 ms).
+    mock.timers.tick(1300);
+
+    // Second click at t = 1300 ms – cancels the first timer and schedules a new reset for t = 3300 ms.
     await copyToClipboard(button);
     assert.ok(button.classes.has('copied'), 'button is still copied after second click');
     assert.equal(tooltip.textContent, 'Copied!', 'tooltip still says Copied!');
 
-    // Advance past the original 2 s window – only the second click's timer fires.
-    mock.timers.tick(2000);
+    // Advance 700 ms to reach t = 2000 ms (the first timer's original deadline).
+    mock.timers.tick(700);
 
-    // The banner must be gone after the second click's reset fires.
-    assert.equal(button.classes.has('copied'), false, 'live second-click timer removes copied');
-    assert.equal(tooltip.textContent, 'Copy to clipboard', 'tooltip resets to default');
+    // The first timer must not have reset the banner.
+    assert.ok(button.classes.has('copied'), 'first timer deadline does not clear copied state');
+    assert.equal(tooltip.textContent, 'Copied!', 'tooltip remains Copied! at first timer deadline');
+
+    // Advance 1300 ms to reach t = 3300 ms (the second timer's deadline).
+    mock.timers.tick(1300);
+
+    // The second timer fires and clears the banner.
+    assert.equal(button.classes.has('copied'), false, 'second timer deadline removes copied');
+    assert.equal(tooltip.textContent, 'Copy to clipboard', 'tooltip resets to default at second timer deadline');
   } finally {
     mock.timers.reset();
   }
