@@ -79,16 +79,14 @@ PASSWORD_TOO_LONG_MESSAGE = (
 
 DISPLAY_NAME_MAX = 200
 INVALID_DISPLAY_NAME = f"Enter a display name of up to {DISPLAY_NAME_MAX} characters, without control characters."
-# Tabs and line breaks are collapsed to a single space like other whitespace; every other control character is refused.
-_COLLAPSIBLE_CONTROLS = frozenset("\t\n\r")
 
 
 def clean_display_name(raw) -> str | None:
-    """Collapse whitespace and check the name. Returns None if it is empty, too long or has control characters."""
+    """Collapse spaces and check the name. Returns None if it is empty, too long or has control characters."""
     if not isinstance(raw, str):
         return None
-    # Check the raw value: split() would turn controls such as \x1c or \x85 into spaces before a later check sees them.
-    if any(unicodedata.category(ch) == "Cc" and ch not in _COLLAPSIBLE_CONTROLS for ch in raw):
+    # Check the raw value: split() would turn controls such as \t, \x1c or \x85 into spaces before a later check sees them.
+    if any(unicodedata.category(ch) == "Cc" for ch in raw):
         return None
     name = " ".join(raw.split())
     if not name or len(name) > DISPLAY_NAME_MAX:

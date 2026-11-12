@@ -253,7 +253,17 @@ async def test_rate_limit_precedes_provider_requests(client, turnstile, monkeypa
 @pytest.mark.anyio
 @pytest.mark.parametrize(
     "name",
-    ["x" * 201, "bell\x07name", "esc\x1b[31mname", "nul\x00name", "fs\x1cname", "c1\x85name", "c1\x9bname"],
+    [
+        "x" * 201,
+        "bell\x07name",
+        "esc\x1b[31mname",
+        "nul\x00name",
+        "fs\x1cname",
+        "c1\x85name",
+        "c1\x9bname",
+        "tab\tname",
+        "new\nline",
+    ],
 )
 async def test_registration_rejects_invalid_display_name(client, name):
     form = {"email": "person@example.com", "display_name": name, "password": "a secure password"}
@@ -271,7 +281,6 @@ async def test_registration_rejects_invalid_display_name(client, name):
         ("  Priya   Sharma ", "Priya Sharma"),
         ("x" * 200, "x" * 200),
         ("\U0001f600" * 200, "\U0001f600" * 200),
-        ("tab\tname", "tab name"),
     ],
 )
 async def test_registration_saves_cleaned_display_name(client, name, saved):
