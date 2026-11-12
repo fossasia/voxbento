@@ -43,7 +43,6 @@ _WORKSPACE_ROUTE_PATTERNS = (
     ),
     re.compile(r"/workspace/events/\d+/rooms/\d+/booths/\d+/tokens(?:/[0-9a-f]{64}/revoke)?/?"),
     re.compile(r"/workspace/api/events/\d+/api-keys(?:/\d+)?/?"),
-    re.compile(r"/workspace/models/(?:trigger_download|download_progress)"),
     re.compile(r"/workspace/models/supertonic/(?:trigger_download|download_progress)"),
     re.compile(r"/api/workspace/events/\d+/rooms/\d+/transcripts/[^/]+"),
     re.compile(r"/api/workspace/providers/translation/models"),

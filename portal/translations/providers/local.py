@@ -19,6 +19,7 @@ import pycountry
 from huggingface_hub.utils import LocalEntryNotFoundError
 from tqdm.auto import tqdm
 
+from portal.config import settings
 from portal.translations.constants import TranslationProviderEnum
 from portal.translations.engine import (
     EngineKind,
@@ -106,6 +107,9 @@ def trigger_download(model_size: str):
             self._custom_model_id = model_size
 
     with _progress_lock:
+        # Checked and set under the lock, so a second request for the same model starts no second download.
+        if _download_progress.get(model_size, {}).get("status") == "downloading":
+            return
         _download_progress[model_size] = {"n": 0, "total": 100, "rate": 0, "status": "downloading"}
 
     try:
@@ -128,6 +132,10 @@ def get_download_progress(model_size: str):
         prog = _download_progress.get(model_size)
         if prog:
             return dict(prog)
+
+    # An operator's own build loaded from a folder is already on the server, as get_model_and_tokenizer treats it.
+    if os.path.exists(model_size):
+        return {"status": "completed", "n": 1, "total": 1, "rate": 0}
 
     # If not in active download, check if it exists on disk
     try:
@@ -328,6 +336,10 @@ class LocalProvider(TranslationProvider, TranslationEngine):
             f"[NLLB] translate called: source='{source_lang_name}' -> target='{target_lang_name}' "
             f"model='{model}' text_len={len(text)}"
         )
+        # Loading a model downloads it, so a room left on a model the operator no longer offers stops here.
+        if not settings.local_translation_allows(model):
+            logger.error("[NLLB] Model %r is not offered on this server (LOCAL_TRANSLATION_MODELS)", model)
+            return None
         # NLLB is sequence-to-sequence and has no system-prompt channel, so persona and style
         # cannot be applied here (glossary terms are, through placeholders). Say so once per
         # process rather than letting configured settings look active.

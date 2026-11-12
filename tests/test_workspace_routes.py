@@ -51,8 +51,6 @@ def client():
         ("/workspace/setup", "/admin/setup"),
         ("/workspace/events/1/caption-overlays/", "/admin/events/1/caption-overlays/"),
         ("/workspace/api/events/1/api-keys", "/admin/api/events/1/api-keys"),
-        ("/workspace/models/trigger_download", "/admin/models/trigger_download"),
-        ("/workspace/models/download_progress", "/admin/models/download_progress"),
         (
             "/workspace/models/supertonic/trigger_download",
             "/admin/models/supertonic/trigger_download",

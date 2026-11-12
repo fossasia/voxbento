@@ -795,44 +795,8 @@ async def test_zero_event_host_blocked_from_model_downloads():
 
     token = create_user_token(user_id=host_id, email="zero_host@example.com")
     async with client() as http:
-        resp = await http.post("/workspace/models/trigger_download", cookies={"user_token": token})
+        resp = await http.post("/workspace/models/supertonic/trigger_download", cookies={"user_token": token})
         assert resp.status_code == 403
-
-
-@pytest.mark.anyio
-async def test_nllb_download_trigger_accepts_csrf_for_event_owner():
-    from unittest.mock import patch
-
-    async with get_session() as session:
-        host = await create_user(
-            session,
-            email="nllb-csrf-host@example.com",
-            display_name="NLLB Host",
-            password_hash=hash_password("pw123"),
-            can_host=True,
-        )
-        event = await create_event(session, slug="nllb-csrf-event", display_name="NLLB Event")
-        await set_event_membership(session, user_id=host.id, event_id=event.id, role="event_owner")
-        user_id, email = host.id, host.email
-
-    token = create_user_token(user_id=user_id, email=email)
-    csrf_session_id = decode_token(token)["jti"]
-    csrf_token = generate_admin_csrf_token(str(csrf_session_id))
-    csrf_cookies = {"admin_csrf": csrf_token}
-    csrf_headers = {"X-CSRF-Token": csrf_token}
-
-    with patch("portal.translations.providers.local.trigger_download") as trigger:
-        async with client() as http:
-            response = await http.post(
-                "/workspace/models/trigger_download",
-                json={"model": "nllb-200-distilled-600M"},
-                cookies={"user_token": token, **csrf_cookies},
-                headers=csrf_headers,
-            )
-
-    assert response.status_code == 200
-    assert response.json() == {"status": "started"}
-    trigger.assert_called_once_with("nllb-200-distilled-600M")
 
 
 @pytest.mark.anyio
@@ -871,7 +835,7 @@ async def test_supertonic_download_trigger_accepts_csrf_for_event_owner():
 
 
 @pytest.mark.anyio
-async def test_model_download_triggers_reject_missing_csrf():
+async def test_model_download_trigger_rejects_missing_csrf():
     async with get_session() as session:
         host = await create_user(
             session,
@@ -887,17 +851,11 @@ async def test_model_download_triggers_reject_missing_csrf():
     token = create_user_token(user_id=user_id, email=email)
 
     async with client() as http:
-        nllb = await http.post(
-            "/workspace/models/trigger_download",
-            json={"model": "nllb-200-distilled-600M"},
-            cookies={"user_token": token},
-        )
         supertonic = await http.post(
             "/workspace/models/supertonic/trigger_download",
             cookies={"user_token": token},
         )
 
-    assert nllb.status_code == 403
     assert supertonic.status_code == 403
 
 

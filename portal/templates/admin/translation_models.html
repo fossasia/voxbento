@@ -1,0 +1,60 @@
+{% extends "admin/base.html" %}
+
+{% block title %}Translation models{% endblock %}
+
+{% block breadcrumb %}
+<nav class="breadcrumb" aria-label="Breadcrumb">
+  <a href="/admin/">Overview</a> <span>/</span>
+  <span class="breadcrumb-current" aria-current="page">Translation models</span>
+</nav>
+{% endblock %}
+
+{% block content %}
+<div class="page-header">
+  <div>
+    <h1>Translation models</h1>
+    <p>The built-in translator runs on this server. Events can only use the models offered here, and only Admins can download them.</p>
+  </div>
+</div>
+
+<section class="card email-card">
+  <div class="card-header">
+    <h2>Models</h2>
+    <p>Set <code>LOCAL_TRANSLATION_MODELS</code> to choose which models are offered. The first one is the default for new rooms. A model that isn't downloaded yet downloads the first time a room uses it, so download large ones here before the event.</p>
+  </div>
+  <div class="tm-table-wrap">
+    <table class="tm-table">
+      <thead>
+        <tr><th scope="col">Model</th><th scope="col">Offered</th><th scope="col">Size in memory</th><th scope="col">Languages</th><th scope="col">Licence</th><th scope="col">Download</th></tr>
+      </thead>
+      <tbody>
+        {% for model in models %}
+        <tr>
+          <td><code>{{ model.id }}</code></td>
+          <td>{{ 'Yes' if model.offered else 'No' }}</td>
+          <td>{{ '~%d MB' % model.approx_ram_mb if model.approx_ram_mb else 'Unknown' }}</td>
+          <td>{{ model.languages or 'Unknown' }}</td>
+          <td>{{ model.licence or 'Unknown' }}</td>
+          <td>
+            {% if model.status == 'completed' %}
+            <span class="tm-tag">Downloaded</span>
+            {% elif model.status == 'downloading' %}
+            <span class="tm-tag tm-tag--pending">Downloading</span> <a href="/admin/translation-models/">Refresh</a>
+            {% elif model.offered %}
+            {% if model.status == 'error' %}<span class="tm-tag tm-tag--pending">Failed</span>{% endif %}
+            <form method="post" action="/admin/translation-models/download">
+              <input type="hidden" name="csrf_token" value="{{ request.state.admin_csrf_token }}" />
+              <input type="hidden" name="model" value="{{ model.id }}" />
+              <button class="btn btn-secondary btn-sm" type="submit">{{ 'Try again' if model.status == 'error' else 'Download' }}</button>
+            </form>
+            {% else %}
+            Not downloaded
+            {% endif %}
+          </td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</section>
+{% endblock %}

@@ -1619,6 +1619,8 @@ def _apply_ai_settings(room: Room, form: FormData, catalog: EngineCatalog) -> No
         model = str(form.get("floor_translation_model", "")).strip()[:100]
         if translation.provider == TranslationProviderEnum.SELF_HOSTED.value:
             model = settings.self_hosted_llm_model_or_default(model) or ""
+        elif translation.provider == TranslationProviderEnum.LOCAL.value:
+            model = settings.local_translation_model_or_default(model) or ""
         model = model or translation.model
         # Only a changed choice is checked, so a room saved before this rule can still save its other settings.
         changed = (translation.provider, model) != (room.floor_translation_provider, room.floor_translation_model)
@@ -1681,6 +1683,14 @@ def _room_translation_choice(form: FormData, form_section: str) -> tuple[bool, s
         if floor_translation_enabled and form_section in ("", "translation") and not settings.self_hosted_llm_enabled:
             raise HTTPException(status_code=400, detail="Self-hosted translation is not configured on this server")
         floor_translation_model = settings.self_hosted_llm_model_or_default(floor_translation_model)
+    elif floor_translation_provider == TranslationProviderEnum.LOCAL.value:
+        if (
+            floor_translation_enabled
+            and form_section in ("", "translation")
+            and not settings.local_translation_model_list
+        ):
+            raise HTTPException(status_code=400, detail="Built-in translation is not offered on this server")
+        floor_translation_model = settings.local_translation_model_or_default(floor_translation_model)
     return floor_translation_enabled, floor_translation_provider, floor_translation_model
 
 
@@ -1942,9 +1952,14 @@ async def admin_delete_ai_vocabulary(request: Request, event_id: int, room_id: i
 
 @router.get("/api/admin/providers/translation/models", dependencies=[Depends(require_owner_or_coordinator)])
 async def get_translation_models():
-    if not settings.self_hosted_llm_enabled:
-        return TRANSLATION_MODELS
-    return {**TRANSLATION_MODELS, TranslationProviderEnum.SELF_HOSTED.value: list(settings.self_hosted_llm_model_list)}
+    models = {**TRANSLATION_MODELS}
+    # Built-in and self-hosted models are offered only as far as the server's allow lists go.
+    models.pop(TranslationProviderEnum.LOCAL.value, None)
+    if settings.local_translation_model_list:
+        models[TranslationProviderEnum.LOCAL.value] = list(settings.local_translation_model_list)
+    if settings.self_hosted_llm_enabled:
+        models[TranslationProviderEnum.SELF_HOSTED.value] = list(settings.self_hosted_llm_model_list)
+    return models
 
 
 MAX_AUDIO_DELAY_MS = 10_000
@@ -2275,6 +2290,10 @@ async def admin_booth_detail(request: Request, event_id: int, room_id: int, boot
             translation_models[TranslationProviderEnum.SELF_HOSTED.value] = [
                 (model, model) for model in settings.self_hosted_llm_model_list
             ]
+        # Likewise a built-in model the server no longer offers can't be saved.
+        translation_models[TranslationProviderEnum.LOCAL.value] = [
+            (model, model) for model in settings.local_translation_model_list
+        ]
         catalog = engine_catalog(event)
         kept_speech_hint = _kept_speech_hint(event, catalog, db_booth.transcription_provider)
     return templates.TemplateResponse(
@@ -2561,6 +2580,14 @@ async def admin_booth_translation_settings(
                     )
                 if not settings.self_hosted_llm_allows(translation_model):
                     raise HTTPException(status_code=400, detail="That model is not allowed for self-hosted translation")
+            if (
+                translation_enabled
+                and translation_provider == TranslationProviderEnum.LOCAL.value
+                and not settings.local_translation_allows(translation_model)
+            ):
+                raise HTTPException(
+                    status_code=400, detail="That built-in translation model is not offered on this server"
+                )
             if translation_enabled:
                 _require_translatable(
                     translation_provider, translation_model, (db_booth.language_code, *translation_languages)
@@ -3802,34 +3829,6 @@ async def api_admin_get_transcripts(
             result = await session.execute(stmt)
             segments = result.scalars().all()
             return [{"id": s.id, "text": s.text, "created_at": s.created_at.isoformat()} for s in segments]
-
-
-@router.post("/admin/models/trigger_download", dependencies=[Depends(require_event_owner), Depends(require_admin_csrf)])
-async def api_trigger_download(request: Request):
-    from portal.translations.providers.local import trigger_download
-
-    data = await request.json()
-    model = data.get("model", "nllb-200-distilled-600M")
-
-    from portal.translations.constants import TRANSLATION_MODELS, TranslationProviderEnum
-
-    supported_local_models = TRANSLATION_MODELS.get(TranslationProviderEnum.LOCAL.value, [])
-
-    if model not in supported_local_models:
-        raise HTTPException(status_code=400, detail=f"Unsupported local model: {model}")
-
-    import asyncio
-
-    asyncio.get_running_loop().run_in_executor(None, trigger_download, model)
-    return {"status": "started"}
-
-
-@router.get("/admin/models/download_progress", dependencies=[Depends(require_event_owner)])
-async def api_download_progress(model: str = Query("nllb-200-distilled-600M")):
-    from portal.translations.providers.local import get_download_progress
-
-    progress = get_download_progress(model)
-    return progress
 
 
 @router.post("/admin/models/supertonic/trigger_download", dependencies=[Depends(require_event_owner), Depends(require_admin_csrf)])
