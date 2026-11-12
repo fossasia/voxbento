@@ -267,13 +267,15 @@ jobs:
           node --check portal/static/js/program-sender.js
           node --check portal/static/js/program-sender-source.js
           node --check portal/static/js/translation-fit.js
-          node --check .github/scripts/jules-review.mjs
+          node --check portal/static/js/modal-dialog.js
           node --check portal/static/js/developer.js
+          node --check .github/scripts/jules-review.mjs
           node --check .github/scripts/agent-attribution-lib.mjs
       - name: run node tests
         run: |
           node tests/test_audio_scheduler.js
           node tests/test_tts_parser.js
+          node --test tests/test_demo_modal.js
           node tests/test_listener_event.js
           node tests/test_whep_listener.js
           node --test tests/test_whep_lifecycle.js
@@ -285,11 +287,11 @@ jobs:
           node tests/test_mic_activity.mjs
           node tests/test_booth_socket.mjs
           node tests/test_room_ai.mjs
-          node tests/test_developer_copy.js
           node tests/test_lang_picker.mjs
           node tests/test_tabs.mjs
           node tests/test_translation_fit.mjs
           node tests/test_program_sender_source.mjs
+          node --test tests/test_modal_dialogs.mjs
           node --test tests/test_agent_attribution.mjs
 
       - name: Run unit tests
