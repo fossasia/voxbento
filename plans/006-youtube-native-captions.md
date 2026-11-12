@@ -1,5 +1,50 @@
 # Plan 006: Post VoxBento captions to the YouTube broadcast's native caption track
 
+## In plain English
+
+Make VoxBento's finished caption text appear in YouTube's own **CC** button.
+Viewers can stay on YouTube to read one caption language. Translated speech and
+other caption languages remain available through VoxBento's listener page.
+
+**Status on 12 November 2026: IN PROGRESS — part 1 merged, part 2 pending.**
+[#1153](https://github.com/fossasia/voxbento/pull/1153) delivered the text-sending
+engine and the connections that pass it finished captions/translations. It is
+inactive until a caption target is configured. It does not yet give an owner a
+working switch to turn YouTube captions on. Last recorded contributor: @hazelmayank.
+
+### What to do next, in order
+
+1. Finish plan 005 first so the owner can connect a channel and choose a broadcast.
+   Reuse the merged engine and tests; do not recreate its queue or caption hooks.
+2. Add the saved room choice and owner controls: Off, original-language captions,
+   or one translation that is enabled for the room. Choose the database migration
+   number from the actual latest head after plan 005; the old 040 example is obsolete.
+3. Check YouTube's caption settings before activating delivery. Explain unsupported
+   ultra-low latency and finished broadcasts. Set HTTP-post captions before going
+   live; an already-live broadcast can be used only if it was configured that way.
+4. Fetch the private caption-posting address securely and activate the existing
+   engine. Show Waiting, Posting or a useful failure reason on the room page.
+5. Restore delivery after restart without an owner keeping the page open. Stop it
+   on Off, unlink, disconnect or event deletion, and handle changed/revoked access.
+   Preserve other rooms' output and keep private posting addresses out of logs.
+6. Cover the controls, permissions, language checks, recovery and cleanup with tests.
+   Preserve the engine's non-blocking behavior so a YouTube failure cannot slow the
+   main caption/translation path.
+7. Rehearse an unlisted broadcast with real speech and a selected translation. Check
+   the text in YouTube's player and measure the delay. Record results and update
+   the organiser guide before marking the plan complete.
+
+The spike already proved the caption format can work; the remaining evidence must
+show this application's controls and lifecycle work together. See
+[the overall sequence](README.md#remaining-work-step-by-step).
+
+## Technical implementation reference
+
+The following implementation steps and excerpts were written against `250aefde`
+on 1 November 2026. The current status and completion steps above take precedence.
+Run the drift check before reusing an example; refresh stale code against current
+`dev` and the relevant PR. Completed implementation steps are maintenance reference.
+
 > **Executor instructions**: Follow this plan step by step. Run every
 > verification command and confirm the expected result before moving to the
 > next step. If anything in the "STOP conditions" section occurs, stop and
@@ -9,7 +54,7 @@
 >
 > **Drift check (run first)**: `git diff --stat 250aefde..HEAD -- portal/transcription/aggregator.py portal/translations/worker.py portal/transcription/timing.py portal/models.py portal/routers/program_ingest.py alembic/versions`
 > Plan 005 must already be merged: `test -f portal/youtube_account.py && test -f portal/routers/youtube.py` must succeed.
-> If any in-scope file changed beyond plan 005's additions, compare the "Current state"
+> If any in-scope file changed beyond plan 005's additions, compare the "Original implementation baseline"
 > excerpts against the live code; on a mismatch, treat it as a STOP condition.
 
 ## Status
@@ -33,7 +78,7 @@ its final captions, in the floor language or one chosen translation, into YouTub
 own CC button. This is how professional caption services (StreamText, CaptionMaker)
 integrate, and it touches only text, never YouTube media.
 
-## Current state
+## Original implementation baseline (1 November 2026)
 
 - `portal/transcription/aggregator.py`:
   - `CaptionAggregator.__init__(self, broadcast_callback, room_id: int | None = None)`.
@@ -61,7 +106,7 @@ integrate, and it touches only text, never YouTube media.
 
 | Purpose | Command | Expected on success |
 |---|---|---|
-| Migrate | `uv run alembic upgrade head` | exit 0, ends at `040` |
+| Migrate | `uv run alembic upgrade head` | exit 0 at the new single migration head |
 | Focused | `uv run pytest tests/test_youtube_captions.py -q` | all pass |
 | Regression | `uv run pytest tests/test_caption_aggregator.py tests/test_youtube_account.py tests/test_program_ingest.py -q` | all pass |
 | Full | `uv run pytest tests/ -q` | all pass |
@@ -70,16 +115,17 @@ integrate, and it touches only text, never YouTube media.
 ## Scope
 
 **In scope**:
-- `alembic/versions/040_youtube_captions.py` (create), `portal/models.py` (one `Room` column)
-- `portal/youtube_captions.py` (create)
+- `alembic/versions/<next>_youtube_captions.py` (create after the actual head), `portal/models.py` (one `Room` column)
+- `portal/youtube_captions.py` (reuse the engine merged in #1153)
 - `portal/youtube_account.py` (add `enable_http_captions(connection, broadcast)`)
 - `portal/routers/youtube.py` (captions route), `portal/workspace_routing.py` (regex already covers `/youtube/…`? if not, extend)
 - `portal/transcription/aggregator.py` (one non-blocking call in `publish_final`)
 - `portal/translations/worker.py` (one non-blocking call after the translated caption broadcast)
 - `portal/routers/program_ingest.py` (`youtube.captions` health in status)
 - `portal/templates/admin/_youtube_connect.html`, `portal/static/js/youtube-connect.js` (toggle + language select + status)
-- `fastapi_app.py` (cancel caption sender tasks on shutdown, if lifespan pattern requires)
-- `tests/test_youtube_captions.py` (create)
+- `fastapi_app.py` (start/stop background caption-target reconciliation and cancel
+  caption sender tasks on shutdown)
+- `tests/test_youtube_captions.py` (extend the existing coverage)
 - `docs/youtube-connect.md` (captions section)
 
 **Out of scope**:
@@ -97,12 +143,18 @@ integrate, and it touches only text, never YouTube media.
 
 ## Steps
 
+Steps 3 and 5 describe the engine/hooks already merged in #1153. Reuse their live
+implementation and existing tests. Part 2 completes the remaining controls and
+lifecycle integration; it does not recreate those steps.
+
 ### Step 1: Column + migration
 
 `Room.youtube_captions_language: Mapped[str | None] = mapped_column(String(10), nullable=True)`
 (`None` = off; `"floor"` = source-language captions; otherwise a target language code
-that exists in the room's translation languages). Migration `040` (`down_revision = "039"`),
-idempotent, batch-alter for SQLite.
+that exists in the room's translation languages). Choose the next unused revision
+after the merged plan-005 migration and set
+`down_revision` to the actual current head; do not reuse 040. Keep it idempotent
+and use batch-alter for SQLite.
 
 **Verify**: `uv run alembic upgrade head && uv run alembic downgrade -1 && uv run alembic upgrade head` → exit 0.
 
@@ -200,23 +252,48 @@ Rules for `_sender`:
 
 1. Route in `portal/routers/youtube.py`:
    `PUT /admin/events/{event_id}/rooms/{room_id}/youtube/captions`, guard `require_event_owner`,
-   origin check, body `{"language": str | None}`.
+   origin check and current CSRF dependency/token, body `{"language": str | None}`.
    - `None` → set column `None`, `await youtube_captions.deactivate(room_id)`.
    - Else validate: room has `youtube_broadcast_id`; language is `"floor"` or one of the
-     room's translation language codes (422 otherwise); call `enable_http_captions`
+     room's enabled translation language codes with floor translation enabled (use
+     `youtube_captions.unusable_target_reason`, 422 otherwise); call `enable_http_captions`
      (409 with its message on `ValueError`); `get_stream` for `youtube_stream_id`; require
      `captions_url` (409 "YouTube did not provide a caption address for this stream.");
      save the column; `await youtube_captions.activate(room_id, language, url)`.
-2. Re-activation after restart: in `youtube_account.room_status()` (or a small helper
-   called from it), when `room.youtube_captions_language` is set and
-   `youtube_captions.targets` lacks the room, fetch the stream and `activate`. This
-   piggybacks on the room page's status polling and the floor pipeline; additionally
-   call the same helper lazily from `offer`'s first miss via a background task
-   (rate-limited to once per 60 s per room) so captions resume without the page open.
+2. Re-activation and convergence: add a background reconciliation helper started and
+   stopped with the application lifecycle. It reads saved caption choices for active
+   events and checks the current connection, linked broadcast/stream and selected
+   language. Restore eligible targets after restart without a room-page poll or an
+   incoming caption. Replace an existing target when its broadcast, stream or language
+   changes; checking only for a missing target is insufficient. Stop targets whose
+   event, permission, connection or selected translation is no longer eligible.
+   Bound API calls/retries and document the reconciliation interval and revocation
+   detection delay, with tests driven by time rather than real sleeps. Reuse the
+   account client's token/status caching where appropriate. `offer()` remains the
+   merged synchronous no-op when no target exists: no database/network work or
+   recovery task is added to that caption hot path.
 3. Unlinking a broadcast or disconnecting YouTube (plan 005 routes) must call
-   `deactivate` and clear `youtube_captions_language`.
+   `deactivate` and clear `youtube_captions_language`. Deleting the event must stop
+   the sender as well. Replacing a channel/broadcast must stop its obsolete target;
+   permission revocation or a translation being disabled must not leave stale output.
 
 **Verify**: `uv run pytest tests/test_youtube_account.py -q` → still all pass.
+Add part-2 route and lifecycle regressions proving:
+
+- Missing/incorrect CSRF token or insufficient permission refuses a change; valid
+  owner requests activate/deactivate only the intended room.
+- A saved eligible choice resumes after process restart with no room page open
+  and no caption needed to trigger recovery.
+- Off, unlink, disconnect and event deletion stop the sender, clear the appropriate
+  saved state, and leave another room's output running.
+- Replacing the channel/broadcast/stream tears down the old caption target before
+  sending to the new one; no stale destination remains active.
+- Revoked Google access and a disabled translation/floor-translation setting stop
+  ineligible delivery within the documented bound.
+- Application shutdown cancels/reaps the coordinator and sender tasks, leaving no
+  posting tasks alive.
+
+Keep the existing no-target `offer()` test: it must create no queue or task.
 
 ### Step 5: Hot-path hooks (non-blocking only)
 
@@ -287,12 +364,14 @@ in `docs/youtube-connect.md`; captions that never appear, or take longer than 60
 
 ## Done criteria
 
-- [ ] `uv run alembic upgrade head` exits 0 at `040`
+- [ ] `uv run alembic upgrade head` exits 0 at the new single migration head
 - [ ] `uv run pytest tests/ -q` exits 0; `tests/test_youtube_captions.py` ≥ 12 passed
 - [ ] `uv run ruff check .` exits 0
 - [ ] `uv run python -c "import inspect, portal.youtube_captions as m; assert not inspect.iscoroutinefunction(m.offer)"` exits 0 (offer never awaits)
 - [ ] ! grep -rnE "captions_url|closedCaptionsIngestionUrl" portal --include=*.py | grep -i "log" (machine-checkable no-match check confirming caption URLs are never logged)
 - [ ] `git diff --name-only dev...HEAD` lists only in-scope files
+- [ ] Part-2 route/lifecycle regressions above pass, including restart without a
+  room page, target replacement, event deletion, revoked access and shutdown
 - [ ] `plans/README.md` status row updated
 
 ## STOP conditions
@@ -305,8 +384,8 @@ in `docs/youtube-connect.md`; captions that never appear, or take longer than 60
 
 ## Maintenance notes
 
-- Caption URLs are capability URLs held only in memory; a portal restart re-fetches them
-  (Step 4.2). Single-replica assumption, like the rest of program ingest.
+- Caption URLs are capability URLs held only in memory; the background coordinator re-fetches them
+  after a portal restart (Step 4.2). Single-replica assumption, like the rest of program ingest.
 - If YouTube adds multi-language live caption ingestion, `targets` becomes per-language;
   the hooks already pass the language.
 - Reviewers: verify `offer` cannot raise or block, and the URL never appears in logs or JSON.
