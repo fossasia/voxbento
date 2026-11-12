@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from portal.config import settings
 from portal.crypto import decrypt_val
 from portal.models import Event
 from portal.translations.constants import TranslationProviderEnum
@@ -9,8 +10,11 @@ def get_translation_api_key(event: Event, provider: str) -> str | None:
     """Return the decrypted translation API key for ``provider`` on ``event``.
 
     Returns ``None`` when no key is stored for the provider. This is the single
-    source of truth shared by the translation and TTS workers.
+    source of truth shared by the translation and TTS workers. The self-hosted server's
+    key is set by the operator for the whole server, so it never comes from the event.
     """
+    if provider == TranslationProviderEnum.SELF_HOSTED.value:
+        return settings.self_hosted_llm_api_key or None
     key_map = {
         TranslationProviderEnum.OPENAI.value: event.encrypted_translation_openai_api_key,
         TranslationProviderEnum.OPENROUTER.value: event.encrypted_openrouter_api_key,
