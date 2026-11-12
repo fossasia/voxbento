@@ -58,6 +58,8 @@ async def db_data(setup_db):
 
 @pytest.mark.anyio
 async def test_language_independence(db_data, mock_broadcast):
+    from portal.translations import worker as worker_module
+
     worker = TranslationWorker(mock_broadcast)
     synthesized_text = {}
 
@@ -76,7 +78,12 @@ async def test_language_independence(db_data, mock_broadcast):
         synthesized_text[lang_code] = text
         return b"fake_audio"
 
-    with patch.object(worker, "_call_llm", new=fake_call_llm):
+    # The local model runs one translation at a time; with room for two, a slow language
+    # must not hold up the other.
+    with (
+        patch.object(worker_module.ENGINES["local"], "max_concurrency", 2),
+        patch.object(worker, "_call_llm", new=fake_call_llm),
+    ):
         with patch("portal.tts.worker.synthesize", new=fake_synthesize):
             with patch("portal.websockets.manager.tts_manager.has_listeners", return_value=True):
                 with patch(
@@ -280,7 +287,7 @@ async def test_captions_and_tts_share_one_contextual_translation(db_data, mock_b
 
 @pytest.mark.anyio
 async def test_glossary_lookup_does_not_hold_an_inference_slot(db_data, mock_broadcast):
-    """A slow lookup must not occupy one of the two per-language inference slots."""
+    """A slow lookup must not occupy one of the engine's inference slots."""
     from portal.translations import worker as worker_module
 
     worker = TranslationWorker(mock_broadcast)
@@ -292,8 +299,7 @@ async def test_glossary_lookup_does_not_hold_an_inference_slot(db_data, mock_bro
 
     async def slow_lookup(*args, **kwargs):
         # Record how many inference slots are taken while the lookup is in flight.
-        sem = worker_module.LANGUAGE_SEMAPHORES.get("es")
-        held_during_lookup.append(0 if sem is None else 2 - sem._value)
+        held_during_lookup.append(worker_module.scheduler_for("local").running)
         await asyncio.sleep(0.2)
         return []
 
@@ -400,7 +406,7 @@ async def test_source_language_bypass(db_data, mock_broadcast):
 
 @pytest.mark.anyio
 async def test_queue_counter_restored_when_glossary_lookup_cancelled(db_data, mock_broadcast):
-    """Cancelling a task during glossary lookup must not leak the per-language queue slot."""
+    """Cancelling a task during glossary lookup must not leak its place in the language's queue."""
     import asyncio
 
     from portal.translations import worker as worker_module
@@ -408,7 +414,6 @@ async def test_queue_counter_restored_when_glossary_lookup_cancelled(db_data, mo
     worker = TranslationWorker(mock_broadcast)
     lang = "zz-cancel"
     queue_key = f"floor:{lang}"
-    worker_module.LANGUAGE_QUEUES[queue_key] = 0
 
     async with get_session() as s:
         room = await s.get(Room, db_data["room"].id)
@@ -451,7 +456,7 @@ async def test_queue_counter_restored_when_glossary_lookup_cancelled(db_data, mo
         with pytest.raises(asyncio.CancelledError):
             await task
 
-    assert worker_module.LANGUAGE_QUEUES[queue_key] == 0
+    assert worker_module.scheduler_for("local").admitted(room.id, queue_key) == 0
 
     # A subsequent translation for the same language is still accepted.
     with patch.object(worker, "_call_llm", new=fake_call_llm):
@@ -478,7 +483,7 @@ async def test_queue_counter_restored_when_glossary_lookup_cancelled(db_data, mo
                         2,
                     )
     assert bundle.call_count >= 1
-    assert worker_module.LANGUAGE_QUEUES[queue_key] == 0
+    assert worker_module.scheduler_for("local").admitted(room.id, queue_key) == 0
 
 
 @pytest.mark.anyio
@@ -713,7 +718,9 @@ async def test_translate_and_broadcast_queue_full_drops_and_broadcasts_failure(d
 
     worker = TranslationWorker(mock_broadcast)
     queue_key = "floor:fr"
-    worker_module.LANGUAGE_QUEUES[queue_key] = 15
+    scheduler = worker_module.scheduler_for("local")
+    held = [scheduler.admit(db_data["room"].id, queue_key) for _ in range(15)]
+    assert all(held)
 
     try:
         with patch(
@@ -740,9 +747,10 @@ async def test_translate_and_broadcast_queue_full_drops_and_broadcasts_failure(d
         assert args[1] == "fr"
         assert args[5] == 10  # seq
         assert args[8] == "pipeline_failed"  # error status
-        assert worker_module.LANGUAGE_QUEUES[queue_key] == 15  # not incremented
+        assert scheduler.admitted(db_data["room"].id, queue_key) == 15  # not incremented
     finally:
-        worker_module.LANGUAGE_QUEUES[queue_key] = 0
+        for job in held:
+            job.close()
 
 
 def test_accumulate_sentence_combines_fragments_and_punctuation():

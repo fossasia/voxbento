@@ -5,6 +5,7 @@ import logging
 from dataclasses import dataclass
 
 from portal import youtube_captions
+from portal.config import settings
 from portal.database import get_session
 from portal.models import DBBooth, Event, Room, TranscriptTranslation
 from portal.transcription.timing import segment_timing, timing_metadata
@@ -16,10 +17,8 @@ from portal.translations.providers.base import ProviderEngine
 from portal.translations.providers.gemini import GeminiProvider
 from portal.translations.providers.local import LocalProvider
 from portal.translations.providers.openai import OpenAIProvider
+from portal.translations.scheduler import TranslationScheduler
 from portal.translations.vocabulary import resolve_vocabulary_entries
-
-LANGUAGE_SEMAPHORES: dict[str, asyncio.Semaphore] = {}
-LANGUAGE_QUEUES: dict[str, int] = {}
 
 logger = logging.getLogger(__name__)
 
@@ -28,22 +27,75 @@ VOCABULARY_LOOKUP_TIMEOUT = 2.0
 
 openai_provider = OpenAIProvider()
 
+
+def _api_concurrency() -> int:
+    return settings.translation_api_concurrency
+
+
+def _self_hosted_concurrency() -> int:
+    return settings.self_hosted_llm_concurrency
+
+
 #: The engine behind each translation provider a room or booth can select.
 ENGINES: dict[str, TranslationEngine] = {
     TranslationProviderEnum.GEMINI.value: ProviderEngine(
-        TranslationProviderEnum.GEMINI.value, GeminiProvider(), EngineKind.LLM_API
+        TranslationProviderEnum.GEMINI.value, GeminiProvider(), EngineKind.LLM_API, max_concurrency=_api_concurrency
     ),
     TranslationProviderEnum.ANTHROPIC.value: ProviderEngine(
-        TranslationProviderEnum.ANTHROPIC.value, AnthropicProvider(), EngineKind.LLM_API
+        TranslationProviderEnum.ANTHROPIC.value,
+        AnthropicProvider(),
+        EngineKind.LLM_API,
+        max_concurrency=_api_concurrency,
     ),
     TranslationProviderEnum.LOCAL.value: LocalProvider(),
 }
 for p in OPENAI_COMPATIBLE_ENDPOINTS.keys():
-    ENGINES[p] = ProviderEngine(p, openai_provider, EngineKind.OPENAI_COMPATIBLE_LLM)
+    ENGINES[p] = ProviderEngine(p, openai_provider, EngineKind.OPENAI_COMPATIBLE_LLM, max_concurrency=_api_concurrency)
 # The operator's self-hosted server speaks the same protocol; the provider picks its endpoint by name.
 ENGINES[TranslationProviderEnum.SELF_HOSTED.value] = ProviderEngine(
-    TranslationProviderEnum.SELF_HOSTED.value, openai_provider, EngineKind.OPENAI_COMPATIBLE_LLM
+    TranslationProviderEnum.SELF_HOSTED.value,
+    openai_provider,
+    EngineKind.OPENAI_COMPATIBLE_LLM,
+    max_concurrency=_self_hosted_concurrency,
 )
+
+#: One scheduler per provider, made on first use (#1188).
+SCHEDULERS: dict[str, TranslationScheduler] = {}
+
+
+def scheduler_for(provider: str) -> TranslationScheduler:
+    """The scheduler every room shares for ``provider``'s engine.
+
+    Remade when the engine's limit changes (its setting did), so the new limit applies to
+    new segments; jobs already admitted finish under the old one.
+    """
+    engine = ENGINES.get(provider)
+    capacity = engine.max_concurrency if engine is not None else TranslationEngine.max_concurrency
+    scheduler = SCHEDULERS.get(provider)
+    if scheduler is None or scheduler.capacity != capacity:
+        scheduler = SCHEDULERS[provider] = TranslationScheduler(capacity)
+    return scheduler
+
+
+def _inference_timeout(provider: str, model: str) -> float | None:
+    """Seconds an engine call may take, or None while the local model is still downloading."""
+    if provider != TranslationProviderEnum.LOCAL.value:
+        return 12.0
+    # If the local CPU is pegged, NLLB can take 30+ seconds.
+    try:
+        from portal.translations.providers.local import get_download_progress
+
+        prog = get_download_progress(model)
+        if prog and prog.get("status") == "downloading":
+            return None
+    except Exception as exc:
+        # Download status is advisory; inference keeps its normal timeout.
+        logger.warning(
+            "Local model download status unavailable (%s); using standard inference timeout",
+            type(exc).__name__,
+        )
+    return 60.0
+
 
 # Providers that run without a per-event API key.
 KEYLESS_PROVIDERS = {TranslationProviderEnum.LOCAL.value, TranslationProviderEnum.SELF_HOSTED.value}
@@ -384,22 +436,19 @@ class TranslationWorker:
         from portal.websockets.manager import tts_manager
 
         queue_key = f"{booth_id_str}:{lang_code}"
-        sem = LANGUAGE_SEMAPHORES.setdefault(queue_key, asyncio.Semaphore(2))
-        q_depth = LANGUAGE_QUEUES.setdefault(queue_key, 0)
+        # Rooms take turns for the engine, and so do the languages within a room.
+        job = scheduler_for(provider).admit(room.id, queue_key)
 
-        if q_depth >= 15:
+        if job is None:
             logger.warning(f"[{booth_id_str}] Queue full for {lang_code}. Dropping segment {seq}.")
             await tts_manager.broadcast_bundle(
                 room.id, lang_code, booth_id_str, b"", uuid_segment_id, seq, text, "", "pipeline_failed"
             )
             return
 
-        LANGUAGE_QUEUES[queue_key] += 1
-        queue_decremented = False
-
         try:
-            # Resolved before taking an inference slot: the glossary is optional context, and a slow
-            # lookup must not occupy one of the two per-language slots while other rooms wait.
+            # Resolved before waiting for an engine slot: the glossary is optional context, and a
+            # slow lookup must not hold a slot while other rooms wait.
             vocabulary_entries = []
             if room.floor_ai_vocabulary_enabled:
                 try:
@@ -420,26 +469,19 @@ class TranslationWorker:
                     )
                     vocabulary_entries = []
 
-            async with sem:
+            # Enforce a strict timeout on inference (12s for cloud, 60s for local).
+            timeout_val = _inference_timeout(provider, model)
+            if timeout_val is None:
+                # Checked before waiting for a slot, so a download never queues segments behind it.
+                logger.info(f"[{booth_id_str}] Local model {model} is downloading. Dropping segment for {lang_code}.")
+                await tts_manager.broadcast_bundle(
+                    room.id, lang_code, booth_id_str, b"", uuid_segment_id, seq, text, "", "model_downloading"
+                )
+                return
+
+            # The slot covers the engine call only; saving and broadcasting happen after it is free.
+            async with job:
                 try:
-                    # Enforce a strict timeout on LLM inference (12s for cloud, 60s for local).
-                    # If the local CPU is pegged, NLLB can take 30+ seconds.
-                    timeout_val = 12.0
-                    if provider == "local":
-                        timeout_val = 60.0
-                        try:
-                            from portal.translations.providers.local import get_download_progress
-
-                            prog = get_download_progress(model)
-                            if prog and prog.get("status") == "downloading":
-                                timeout_val = 0.1  # Fail fast if downloading
-                        except Exception as exc:
-                            # Download status is advisory; inference keeps its normal timeout.
-                            logger.warning(
-                                "Local model download status unavailable (%s); using standard inference timeout",
-                                type(exc).__name__,
-                            )
-
                     translated_text = await asyncio.wait_for(
                         self._call_llm(
                             provider,
@@ -457,69 +499,54 @@ class TranslationWorker:
                         timeout=timeout_val,
                     )
                 except asyncio.TimeoutError:
-                    if provider == "local" and timeout_val == 0.1:
-                        logger.info(
-                            f"[{booth_id_str}] Local model {model} is downloading. Dropping segment for {lang_code}."
-                        )
-                        await tts_manager.broadcast_bundle(
-                            room.id, lang_code, booth_id_str, b"", uuid_segment_id, seq, text, "", "model_downloading"
-                        )
-                        return
-
                     logger.error(f"[{booth_id_str}] Translation LLM timed out after {timeout_val}s for {lang_code}.")
                     translated_text = None
 
-                if translated_text is None:
-                    await tts_manager.broadcast_bundle(
-                        room.id, lang_code, booth_id_str, b"", uuid_segment_id, seq, text, "", "pipeline_failed"
-                    )
-                    return
-
-                if not translated_text.strip():
-                    # The engine ran and had nothing to say for this segment, which is not a failure.
-                    # Close the segment (no error, no audio to wait for) so listeners move on without
-                    # a message; there is nothing to store or speak.
-                    await tts_manager.broadcast_bundle(
-                        room.id, lang_code, booth_id_str, b"", uuid_segment_id, seq, text, "", None, audio_pending=False
-                    )
-                    return
-
-                # Save to DB using an independent session to avoid concurrent transaction crashes
-                async with get_session() as local_session:
-                    translation = TranscriptTranslation(
-                        segment_id=segment_id, language_code=lang_code, text=translated_text
-                    )
-                    local_session.add(translation)
-                    await local_session.flush()
-
-                # Broadcast Stage 1 (Text Ready) immediately with empty audio
+            if translated_text is None:
                 await tts_manager.broadcast_bundle(
-                    room.id, lang_code, booth_id_str, b"", uuid_segment_id, seq, text, translated_text, None
+                    room.id, lang_code, booth_id_str, b"", uuid_segment_id, seq, text, "", "pipeline_failed"
                 )
-                if target_booth_id:
-                    from portal.websockets.manager import listener_manager
+                return
 
-                    await listener_manager.broadcast(
-                        target_booth_id,
-                        {
-                            "type": "translated_caption",
-                            "status": "final",
-                            "text": translated_text,
-                            "segment_id": uuid_segment_id,
-                            "seq": seq,
-                            **timing_metadata(),
-                        },
-                    )
-                if booth_id_str.endswith("-floor"):
-                    # Non-blocking: queues the translation for the room's YouTube caption track, if it asks for this language.
-                    timing = segment_timing.get()
-                    youtube_captions.offer(
-                        room.id, lang_code, translated_text, timing.source_received_at_ms if timing else None
-                    )
+            if not translated_text.strip():
+                # The engine ran and had nothing to say for this segment, which is not a failure.
+                # Close the segment (no error, no audio to wait for) so listeners move on without
+                # a message; there is nothing to store or speak.
+                await tts_manager.broadcast_bundle(
+                    room.id, lang_code, booth_id_str, b"", uuid_segment_id, seq, text, "", None, audio_pending=False
+                )
+                return
 
-            # Decrement queue early so slow TTS doesn't cause new incoming segments to be dropped
-            LANGUAGE_QUEUES[queue_key] -= 1
-            queue_decremented = True
+            # Save to DB using an independent session to avoid concurrent transaction crashes
+            async with get_session() as local_session:
+                translation = TranscriptTranslation(segment_id=segment_id, language_code=lang_code, text=translated_text)
+                local_session.add(translation)
+                await local_session.flush()
+
+            # Broadcast Stage 1 (Text Ready) immediately with empty audio
+            await tts_manager.broadcast_bundle(
+                room.id, lang_code, booth_id_str, b"", uuid_segment_id, seq, text, translated_text, None
+            )
+            if target_booth_id:
+                from portal.websockets.manager import listener_manager
+
+                await listener_manager.broadcast(
+                    target_booth_id,
+                    {
+                        "type": "translated_caption",
+                        "status": "final",
+                        "text": translated_text,
+                        "segment_id": uuid_segment_id,
+                        "seq": seq,
+                        **timing_metadata(),
+                    },
+                )
+            if booth_id_str.endswith("-floor"):
+                # Non-blocking: queues the translation for the room's YouTube caption track, if it asks for this language.
+                timing = segment_timing.get()
+                youtube_captions.offer(
+                    room.id, lang_code, translated_text, timing.source_received_at_ms if timing else None
+                )
 
             if not synthesize_audio:
                 return
@@ -556,8 +583,8 @@ class TranslationWorker:
                 room.id, lang_code, booth_id_str, b"", uuid_segment_id, seq, text, "", "pipeline_failed"
             )
         finally:
-            if not queue_decremented:
-                LANGUAGE_QUEUES[queue_key] -= 1
+            # A job that never reached the engine (dropped, failed or cancelled) leaves its channel here.
+            job.close()
 
     async def _call_llm(
         self,

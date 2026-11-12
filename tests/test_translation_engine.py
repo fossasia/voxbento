@@ -442,7 +442,7 @@ async def test_the_worker_tells_a_failed_translation_from_an_empty_one(monkeypat
     captions.assert_not_awaited()
     synthesize.assert_not_awaited()
     stored.assert_not_called()
-    assert worker_module.LANGUAGE_QUEUES["floor:fr"] == 0
+    assert worker_module.scheduler_for("fake").admitted(7, "floor:fr") == 0
 
 
 async def test_the_worker_returns_none_when_the_engine_could_not_translate(monkeypatch):

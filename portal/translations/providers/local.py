@@ -151,6 +151,9 @@ class ModelEntry:
     last_used: float
 
 
+#: Translations one loaded model runs at once. The scheduler sends no more than this (#1188).
+CT2_INTER_THREADS = 1
+
 _loaded_models = {}
 _active_translations_per_model = {}
 _model_lock = threading.Lock()
@@ -225,7 +228,7 @@ def get_model_and_tokenizer(model_size: str):
             local_model_path,
             device="cpu",
             compute_type="int8",
-            inter_threads=1,
+            inter_threads=CT2_INTER_THREADS,
             intra_threads=intra_threads,
         )
 
@@ -268,6 +271,8 @@ class LocalProvider(TranslationProvider, TranslationEngine):
     """NLLB through CTranslate2, in the portal process."""
 
     kind = EngineKind.CT2_SEQ2SEQ
+    #: One loaded model per process, and it runs ``CT2_INTER_THREADS`` translations at a time.
+    max_concurrency = CT2_INTER_THREADS
 
     #: Set once the operator has been told the interpretation settings do not apply here.
     _warned_unsupported_settings = False
