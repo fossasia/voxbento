@@ -158,6 +158,53 @@ async def test_update_event_api_keys_only_changes_fields_sent_in_payload(event_a
 
 
 @pytest.mark.anyio
+async def test_update_event_api_keys_persists_rotates_and_clears_the_atlas_cloud_key(event_api_access):
+    """#1162: the Atlas Cloud key is stored like every other provider key, not silently dropped."""
+    access_token, event_id = event_api_access
+    headers = {"Authorization": f"Bearer {access_token}"}
+    url = "/api/v1/events/api-key-test/api_keys"
+
+    async with _client() as client:
+        response = await client.patch(
+            url,
+            json={"openai_api_key": "openai-key", "atlascloud_api_key": "atlas-key"},
+            headers=headers,
+        )
+    assert response.status_code == 200
+
+    async with get_session() as session:
+        event = await session.get(Event, event_id)
+        assert event is not None
+        first_ciphertext = event.encrypted_atlascloud_api_key
+        assert first_ciphertext is not None
+        assert first_ciphertext != "atlas-key"
+        assert decrypt_val(first_ciphertext) == "atlas-key"
+        assert decrypt_val(event.encrypted_openai_api_key) == "openai-key"
+
+    async with _client() as client:
+        response = await client.patch(url, json={"atlascloud_api_key": "rotated-atlas-key"}, headers=headers)
+    assert response.status_code == 200
+
+    async with get_session() as session:
+        event = await session.get(Event, event_id)
+        assert event is not None
+        assert event.encrypted_atlascloud_api_key != first_ciphertext
+        assert decrypt_val(event.encrypted_atlascloud_api_key) == "rotated-atlas-key"
+        # A payload that omits the field must not disturb either stored key.
+        assert decrypt_val(event.encrypted_openai_api_key) == "openai-key"
+
+    async with _client() as client:
+        response = await client.patch(url, json={"atlascloud_api_key": ""}, headers=headers)
+    assert response.status_code == 200
+
+    async with get_session() as session:
+        event = await session.get(Event, event_id)
+        assert event is not None
+        assert event.encrypted_atlascloud_api_key is None
+        assert decrypt_val(event.encrypted_openai_api_key) == "openai-key"
+
+
+@pytest.mark.anyio
 async def test_app_creating_an_event_for_another_organizer_adds_only_the_organizer():
     """#757: the organizer becomes Event owner; the app's developer gets no automatic access.
 
