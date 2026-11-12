@@ -14,7 +14,10 @@ const signInAgain = document.getElementById('youtube-signin-again');
 let connected = false;
 let linkedId = null;
 let pending = false;
-let relayKeyFilled = false;
+// Relay mode as of the last status check: null until the first one. The stream key is filled in only
+// when this page sees relay mode switched on, never because a destination is merely absent: an owner
+// who removed the key, or reloads a room without one, keeps forwarding stopped.
+let relayWasActive = null;
 
 const lifeCycleLabels = {
   created: 'Created',
@@ -124,9 +127,10 @@ function renderRoomStatus(youtube) {
 // switched on after the broadcast was linked, link it once more so the key is filled in then.
 async function fillRelayKey(data) {
   const youtube = data.youtube;
-  if (relayKeyFilled || pending || !youtube || youtube.error || !data.enabled) return;
-  if (data.mode !== 'rtmps_relay' || data.destination?.configured) return;
-  relayKeyFilled = true;
+  const relayActive = Boolean(data.enabled && data.mode === 'rtmps_relay');
+  const switchedOn = relayWasActive === false && relayActive;
+  relayWasActive = relayActive;
+  if (!switchedOn || pending || !youtube || youtube.error || data.destination?.configured) return;
   try {
     const result = await readJson(await request(box.dataset.broadcastUrl, {
       method: 'PUT',

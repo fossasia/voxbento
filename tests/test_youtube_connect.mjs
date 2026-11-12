@@ -110,21 +110,55 @@ const whipStatus = () => [200, { enabled: true, mode: 'whip', destination: { con
   assert.equal(elements['youtube-signin-again'].hidden, true);
 }
 
-// Relay mode switched on after linking: the broadcast is linked again once, so the key is filled in.
+// Relay mode switched on while the page is open: the broadcast is linked again once, so the key is filled in.
+{
+  let status = { enabled: true, mode: 'whip', destination: { configured: false } };
+  const youtube = { broadcast_id: 'LiveVideo01', title: 'Talk', life_cycle_status: 'ready' };
+  const { elements, calls, timers } = await page({
+    'GET /yt': connected, 'GET /yt/broadcasts': broadcasts, 'GET /room/status': () => [200, { ...status, youtube }],
+    'PUT /room/yt': () => [200, { broadcast_id: 'LiveVideo01', title: 'Talk', destination_configured: true }],
+  });
+  const puts = () => calls.filter((call) => call.key === 'PUT /room/yt');
+  assert.equal(puts().length, 0);
+  status = { enabled: true, mode: 'rtmps_relay', destination: { configured: false } };
+  await timers[0]();
+  await flush();
+  assert.deepEqual(puts().map((call) => call.body), [{ broadcast: 'LiveVideo01' }]);
+  assert.match(elements['youtube-message'].textContent, /filled in the stream key/);
+  // Later polls in relay mode do nothing more, even while the key is still missing.
+  await timers[0]();
+  await flush();
+  assert.equal(puts().length, 1);
+}
+
+// A destination the owner removed stays removed: polling never fills the key back in.
+{
+  let status = { enabled: true, mode: 'rtmps_relay', destination: { configured: true } };
+  const youtube = { broadcast_id: 'LiveVideo01', title: 'Talk', life_cycle_status: 'live' };
+  const { calls, timers } = await page({
+    'GET /yt': connected, 'GET /yt/broadcasts': broadcasts, 'GET /room/status': () => [200, { ...status, youtube }],
+    'PUT /room/yt': linked,
+  });
+  status = { enabled: true, mode: 'rtmps_relay', destination: { configured: false } };
+  await timers[0]();
+  await flush();
+  await timers[0]();
+  await flush();
+  assert.equal(calls.filter((call) => !call.key.startsWith('GET ')).length, 0);
+}
+
+// Reloading a relay room without a destination does not fill one in either.
 {
   const relayStatus = () => [200, {
     enabled: true, mode: 'rtmps_relay', destination: { configured: false },
     youtube: { broadcast_id: 'LiveVideo01', title: 'Talk', life_cycle_status: 'ready' },
   }];
-  const { elements, calls, timers } = await page({
-    'GET /yt': connected, 'GET /yt/broadcasts': broadcasts, 'GET /room/status': relayStatus,
-    'PUT /room/yt': () => [200, { broadcast_id: 'LiveVideo01', title: 'Talk', destination_configured: true }],
+  const { calls, timers } = await page({
+    'GET /yt': connected, 'GET /yt/broadcasts': broadcasts, 'GET /room/status': relayStatus, 'PUT /room/yt': linked,
   });
-  assert.deepEqual(calls.filter((call) => call.key === 'PUT /room/yt').map((call) => call.body), [{ broadcast: 'LiveVideo01' }]);
-  assert.match(elements['youtube-message'].textContent, /filled in the stream key/);
   await timers[0]();
   await flush();
-  assert.equal(calls.filter((call) => call.key === 'PUT /room/yt').length, 1);
+  assert.equal(calls.filter((call) => !call.key.startsWith('GET ')).length, 0);
 }
 
 console.log('youtube-connect.js: ok');
