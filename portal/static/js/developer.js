@@ -1,176 +1,124 @@
-/**
- * Developer dashboard client-side utilities.
- * Loaded as an ES module — no jQuery, no inline scripts.
- */
+// Developer dashboard: the create app and new secret dialogs, and the copy buttons.
 
-const COPY_FEEDBACK_MS = 2000;
-const copyFeedbackByElement = new WeakMap();
+import { closeDialog, initDialog, openDialog } from './modal-dialog.js';
 
-/**
- * Copies text synchronously within the click gesture to keep credential writes ordered.
- */
-function copyText(text) {
-  if (typeof document.execCommand !== 'function') {
-    return false;
-  }
+const COPIED_MS = 2000;
+// Per-button feedback state: maps each button to the state object owned by its latest copy attempt.
+// An older attempt that resolves late checks whether it still owns the button before mutating the DOM.
+const copyFeedbackByButton = new WeakMap();
 
-  let textarea;
+// navigator.clipboard is missing on plain http outside localhost, so copy through a hidden textarea.
+// It goes next to the button because the page behind an open modal dialog cannot take focus.
+function copyWithTextarea(button, text) {
+  const textarea = document.createElement('textarea');
+  textarea.value = text;
+  textarea.style.position = 'fixed';
+  textarea.style.opacity = '0';
+  button.after(textarea);
+  textarea.focus();
+  textarea.select();
   try {
-    textarea = document.createElement('textarea');
-    textarea.value = text;
-    textarea.readOnly = true;
-    textarea.style.position = 'fixed';
-    textarea.style.opacity = '0';
-    document.body.appendChild(textarea);
-    textarea.focus();
-    textarea.select();
     return document.execCommand('copy');
-  } catch (error) {
-    console.error('Clipboard copy failed:', error);
-    return false;
   } finally {
-    textarea?.remove();
+    textarea.remove();
+    button.focus();
   }
 }
 
-/**
- * Resets copy feedback only while the same attempt still owns the element.
- */
-function scheduleCopyFeedbackReset(element, tooltip, state) {
-  state.timerId = setTimeout(() => {
-    if (copyFeedbackByElement.get(element) !== state) {
-      return;
+async function writeText(button, text) {
+  if (navigator.clipboard) {
+    try {
+      await navigator.clipboard.writeText(text);
+      return true;
+    } catch (err) {
+      console.error('navigator.clipboard.writeText rejected, trying the textarea fallback', err);
     }
+  }
+  try {
+    if (copyWithTextarea(button, text)) return true;
+    console.error('Could not copy to the clipboard');
+  } catch (err) {
+    console.error('Could not copy to the clipboard', err);
+  }
+  return false;
+}
 
-    element.classList.remove('copied', 'copy-failed');
+export async function copyToClipboard(button) {
+  // Cancel any pending feedback reset for this button so the new attempt starts clean.
+  const previous = copyFeedbackByButton.get(button);
+  if (previous?.timerId) clearTimeout(previous.timerId);
 
+  const state = {};
+  copyFeedbackByButton.set(button, state);
+
+  // Clear both states before setting the new one so a failed copy followed by a
+  // successful one never leaves the button in the wrong colour.
+  // Remove classes individually so test mocks with single-argument .remove() still work.
+  button.classList.remove('copied');
+  button.classList.remove('copy-failed');
+
+  const copied = await writeText(button, button.dataset.copyText);
+
+  // A second click can replace our state entry while writeText was running.
+  // If that happened, let the newer attempt own the DOM.
+  if (copyFeedbackByButton.get(button) !== state) return;
+
+  const outcome = copied ? 'copied' : 'copy-failed';
+  button.classList.add(outcome);
+  const tooltip = button.querySelector('.copy-tooltip');
+  if (tooltip) {
+    tooltip.textContent = copied ? 'Copied!' : 'Copy failed';
+    if (copied) tooltip.classList.add('copied-tooltip');
+  }
+  state.timerId = setTimeout(() => {
+    if (copyFeedbackByButton.get(button) !== state) return;
+    button.classList.remove(outcome);
     if (tooltip) {
       tooltip.textContent = 'Copy to clipboard';
       tooltip.classList.remove('copied-tooltip');
     }
-    copyFeedbackByElement.delete(element);
-  }, COPY_FEEDBACK_MS);
+    copyFeedbackByButton.delete(button);
+  }, COPIED_MS);
 }
 
-/**
- * Copies text to clipboard and updates the UI to show success or failure.
- * Feedback resets after 2 seconds.
- */
-async function copyToClipboard(element, text) {
-  let state;
-  let tooltip;
-  try {
-    const previousState = copyFeedbackByElement.get(element);
-    if (previousState?.timerId) {
-      clearTimeout(previousState.timerId);
-    }
+function wireDialog(dialog) {
+  initDialog(dialog);
+  dialog.querySelector('[data-dialog-close]').addEventListener('click', () => closeDialog(dialog));
+}
 
-    state = { timerId: null };
-    copyFeedbackByElement.set(element, state);
-    element.classList.remove('copied', 'copy-failed');
-    tooltip = element.querySelector('.copy-tooltip');
-    if (tooltip) {
-      tooltip.textContent = 'Copying…';
-      tooltip.classList.remove('copied-tooltip');
-    }
+export function initDeveloperDashboard() {
+  const createDialog = document.getElementById('modal-create-app');
+  const createButton = document.getElementById('btn-create-app');
+  if (createDialog && createButton) {
+    wireDialog(createDialog);
+    createButton.addEventListener('click', () => openDialog(createDialog, document.getElementById('app_name')));
 
-    const copied = copyText(text);
-    if (copyFeedbackByElement.get(element) !== state) {
-      return;
-    }
+    // A second click while the answer is slow would create a second app whose secret nobody sees.
+    const form = createDialog.querySelector('form');
+    let submitting = false;
+    form.addEventListener('submit', (event) => {
+      if (submitting) event.preventDefault();
+      submitting = true;
+    });
+    window.addEventListener('pageshow', (event) => {
+      if (event.persisted) submitting = false;
+    });
+  }
 
-    element.classList.add(copied ? 'copied' : 'copy-failed');
-
-    if (tooltip) {
-      tooltip.textContent = copied ? 'Copied!' : 'Copy failed';
-      if (copied) {
-        tooltip.classList.add('copied-tooltip');
-      } else {
-        tooltip.classList.remove('copied-tooltip');
-      }
-    }
-
-    if (!copied) {
-      console.error('Failed to copy credential with the synchronous clipboard API');
-    }
-
-    scheduleCopyFeedbackReset(element, tooltip, state);
-  } catch (error) {
-    console.error('Unexpected error while copying developer credential:', error);
-    if (state && copyFeedbackByElement.get(element) !== state) {
-      return;
-    }
-
-    try {
-      element.classList.remove('copied');
-      element.classList.add('copy-failed');
-      if (tooltip) {
-        tooltip.textContent = 'Copy failed';
-        tooltip.classList.remove('copied-tooltip');
-      }
-      if (state) {
-        scheduleCopyFeedbackReset(element, tooltip, state);
-      }
-    } catch (feedbackError) {
-      console.error('Could not display clipboard failure feedback:', feedbackError);
+  // Only rendered right after an app is created; the secret is shown this once.
+  // Back/forward can bring the page back from the cache and rerun this script, so it stays closed then.
+  const secretDialog = document.getElementById('modal-new-secret');
+  if (secretDialog) {
+    wireDialog(secretDialog);
+    const [navigation] = performance.getEntriesByType('navigation');
+    if (navigation?.type !== 'back_forward') {
+      openDialog(secretDialog, secretDialog.querySelector('.secret-box-danger'));
     }
   }
-}
 
-/**
- * Initializes copy-to-clipboard functionality using event delegation.
- * Elements with data-copy-text attribute will copy the specified text when clicked.
- */
-function initCopyToClipboard() {
-  document.addEventListener('click', (e) => {
-    const wrapper = e.target.closest('.copy-wrapper[data-copy-text]');
-    if (wrapper) {
-      const text = wrapper.dataset.copyText;
-      return copyToClipboard(wrapper, text);
-    }
+  document.querySelectorAll('[data-copy-text]').forEach((button) => {
+    button.addEventListener('click', () => copyToClipboard(button));
   });
 }
 
-/**
- * Initializes the "Create App" modal toggle.
- */
-function initCreateAppModal() {
-  const btnCreate = document.getElementById('btn-create-app');
-  const modalCreate = document.getElementById('modal-create-app');
-
-  if (btnCreate && modalCreate) {
-    btnCreate.addEventListener('click', () => {
-      modalCreate.classList.add('active');
-    });
-  }
-
-  // Close modal when clicking outside or on cancel button
-  const cancelBtn = modalCreate?.querySelector('button[type="button"]');
-  if (modalCreate && cancelBtn) {
-    cancelBtn.addEventListener('click', () => {
-      modalCreate.classList.remove('active');
-    });
-  }
-
-  if (modalCreate) {
-    modalCreate.addEventListener('click', (e) => {
-      if (e.target === modalCreate) {
-        modalCreate.classList.remove('active');
-      }
-    });
-  }
-
-  // Initialize new secret modal close button if present
-  const modalNewSecret = document.getElementById('modal-new-secret');
-  const secretCloseBtn = modalNewSecret?.querySelector('button[type="button"]');
-  if (modalNewSecret && secretCloseBtn) {
-    secretCloseBtn.addEventListener('click', () => {
-      modalNewSecret.classList.remove('active');
-    });
-  }
-}
-
-document.addEventListener('DOMContentLoaded', () => {
-  initCopyToClipboard();
-  initCreateAppModal();
-});
+if (typeof document !== 'undefined') initDeveloperDashboard();
