@@ -192,6 +192,9 @@ class Settings(BaseSettings):
     # rooms taking turns. The local model's limit comes from its CPU threads instead.
     self_hosted_llm_concurrency: int = Field(default=4, ge=1)
     translation_api_concurrency: int = Field(default=32, ge=1)
+    # Seconds a segment may wait for its translation engine to start. A segment that would wait
+    # longer is dropped as stale, so a backed-up language catches up with the speaker. 0 = never.
+    translation_max_lag_seconds: float = Field(default=4.0, ge=0)
 
     # Supertonic synthesis quality/speed trade-off. Fewer diffusion steps =
     # faster (lower real-time factor) at a small quality cost. 4 keeps CPU

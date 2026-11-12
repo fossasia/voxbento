@@ -88,8 +88,8 @@ Jitsi Meet Floor Conference
 | `portal/transcription/providers/deepgram.py` | `DeepgramProvider` — nova-2 WebSocket streaming |
 | `portal/transcription/providers/nvidia.py` | `NVIDIAProvider` — Parakeet-RNNT/CTC via Riva gRPC |
 | `portal/transcription/providers/elevenlabs.py` | `ElevenLabsProvider` — scribe_v2 |
-| `portal/translations/worker.py` | `TranslationWorker`: per-language translation dispatch, timeouts and delivery; `ENGINES` maps each provider to its `TranslationEngine`; `scheduler_for` gives each provider one shared `TranslationScheduler` |
-| `portal/translations/scheduler.py` | `TranslationScheduler`: at most `max_concurrency` engine calls in flight per engine; rooms take turns, then languages; per-language limits (2 running, 15 admitted in all, waiting or running) |
+| `portal/translations/worker.py` | `TranslationWorker`: per-language translation dispatch, timeouts and delivery; `ENGINES` maps each provider to its `TranslationEngine`; `scheduler_for` gives each provider one shared `TranslationScheduler`; listeners are checked when a segment is queued and again when it gets its engine slot |
+| `portal/translations/scheduler.py` | `TranslationScheduler`: at most `max_concurrency` engine calls in flight per engine; rooms take turns, then languages; per-language limits (2 running, 15 admitted in all, waiting or running); a job that cannot start within the lag budget (`TRANSLATION_MAX_LAG_SECONDS`) raises `StaleTranslationJob` and is dropped as `stale` |
 | `portal/translations/engine.py` | `TranslationEngine` interface (`translate_batch`, `translate_text`), `Language`, `TranslationContext`, `EngineKind`; the worker calls engines only through it |
 | `portal/translations/providers/` | Backends: `LocalProvider` (NLLB, an engine itself) and the prompt-based cloud providers, wrapped by `ProviderEngine` in `base.py` |
 | `portal/translations/constants.py` | Translation providers and the hosted models offered for each; the self-hosted list comes from the registry |

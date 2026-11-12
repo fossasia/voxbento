@@ -121,6 +121,7 @@ These variables control external encoder ingest and YouTube RTMPS forwarding.
 | `SELF_HOSTED_LLM_API_KEY` | _(empty)_ | Optional bearer token, for servers started with an API key (for example vLLM `--api-key`). |
 | `SELF_HOSTED_LLM_CONCURRENCY` | `4` | Most translation requests sent to the self-hosted server at once, across all rooms. Set it to what the server runs in parallel (for Ollama, `OLLAMA_NUM_PARALLEL`). Further requests wait, with rooms taking turns. |
 | `TRANSLATION_API_CONCURRENCY` | `32` | Most translation requests sent at once to each hosted provider (OpenAI, OpenRouter, Groq, Gemini, Anthropic), across all rooms. Further requests wait, with rooms taking turns. The local model needs no setting: it runs one translation at a time. |
+| `TRANSLATION_MAX_LAG_SECONDS` | `4` | Most seconds a segment may wait for the translation engine to start. A segment that would wait longer is skipped for that language, so listeners catch up with the speaker instead of falling further behind. `0` never skips. |
 
 ## Email and Notification Variables
 

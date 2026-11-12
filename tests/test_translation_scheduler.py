@@ -15,7 +15,7 @@ from portal.translations import worker as worker_module
 from portal.translations.engine import EngineKind, TranslationEngine
 from portal.translations.providers.base import ProviderEngine
 from portal.translations.providers.local import CT2_INTER_THREADS, LocalProvider, _in_thread
-from portal.translations.scheduler import PER_CHANNEL, QUEUE_LIMIT, TranslationScheduler
+from portal.translations.scheduler import PER_CHANNEL, QUEUE_LIMIT, StaleTranslationJob, TranslationScheduler
 from portal.translations.worker import TranslationWorker
 
 pytestmark = pytest.mark.anyio
@@ -500,3 +500,143 @@ async def test_a_segment_leaves_its_language_queue_before_its_speech_is_made(mon
     finish_speaking.set()
     await task
     stored.add.assert_called_once()
+
+
+# ── Stale segments and listeners who left (#1189) ──
+
+
+async def test_a_job_that_cannot_start_within_the_lag_budget_is_dropped_without_a_slot():
+    scheduler = TranslationScheduler(1, lag_budget=0.05)
+    recorder = Recorder(scheduler)
+    busy = recorder.start("room-1", "room-1:fr")
+    await settle()
+
+    late = scheduler.admit("room-2", "room-2:de")
+    with pytest.raises(StaleTranslationJob) as dropped:
+        async with late:
+            pytest.fail("a stale job must not start")
+    late.close()
+
+    assert dropped.value.waited >= 0.05
+    assert scheduler.running == 1
+    assert scheduler.waiting() == 0
+    assert scheduler.admitted("room-2", "room-2:de") == 0
+
+    # The busy job still finishes, and the next one gets its slot.
+    scheduler.lag_budget = None
+    after = recorder.start("room-2", "room-2:de")
+    await recorder.finish_all([busy, after])
+    assert recorder.order == [("room-1", "room-1:fr"), ("room-2", "room-2:de")]
+    assert scheduler.running == 0
+
+
+async def test_a_job_already_past_the_lag_budget_is_dropped_even_with_a_free_slot():
+    """The budget counts from admission, so time spent before asking for a slot counts too."""
+    scheduler = TranslationScheduler(1, lag_budget=0.01)
+    job = scheduler.admit("room", "room:fr")
+    await asyncio.sleep(0.02)
+
+    with pytest.raises(StaleTranslationJob):
+        async with job:
+            pytest.fail("a stale job must not start")
+    job.close()
+
+    assert scheduler.running == 0
+    assert scheduler.admitted("room", "room:fr") == 0
+
+
+async def test_a_job_that_starts_within_the_lag_budget_runs():
+    scheduler = TranslationScheduler(1, lag_budget=5.0)
+    recorder = Recorder(scheduler)
+    tasks = [recorder.start("room", "room:fr"), recorder.start("room", "room:de")]
+
+    await recorder.finish_all(tasks)
+    assert len(recorder.order) == 2
+
+
+class HeldEngine(SlowEngine):
+    """Answers (with nothing to say) only when released, so a test decides when its slot frees up."""
+
+    def __init__(self) -> None:
+        super().__init__(max_concurrency=1)
+        self.release = asyncio.Event()
+
+    async def translate_batch(self, source, targets, texts, context, *, model, api_key=None):
+        self.calls.extend(target.code for target in targets)
+        await self.release.wait()
+        return [["" for _ in targets] for _ in texts]
+
+
+async def test_the_worker_drops_a_segment_that_waited_too_long_as_stale(monkeypatch):
+    engine = HeldEngine()
+    monkeypatch.setitem(worker_module.ENGINES, "held", engine)
+    monkeypatch.setattr(settings, "translation_max_lag_seconds", 0.05)
+    bundle = AsyncMock()
+    monkeypatch.setattr("portal.websockets.manager.tts_manager.broadcast_bundle", bundle)
+    worker = TranslationWorker(MagicMock())
+
+    def translate(room_id: int, lang: str):
+        return worker._translate_and_broadcast(
+            SimpleNamespace(id=1), fake_room(room_id), "held", "m", None, lang, lang, "en", "English",
+            1, "Hello", f"event-{room_id}-floor", "uuid", 1,
+        )
+
+    first = asyncio.create_task(translate(1, "fr"))
+    await settle()
+    # The engine is busy with the first segment for longer than the second may wait.
+    await translate(2, "de")
+
+    assert engine.calls == ["fr"]
+    assert bundle.await_count == 1
+    # Reported as stale, not as a failure.
+    assert bundle.await_args.args[2] == "event-2-floor"
+    assert bundle.await_args.args[8] == "stale"
+
+    engine.release.set()
+    await first
+    assert worker_module.scheduler_for("held").running == 0
+    assert worker_module.scheduler_for("held").admitted(2, "event-2-floor:de") == 0
+
+
+@pytest.mark.parametrize("left", [True, False])
+async def test_a_segment_is_skipped_when_its_last_listener_left_while_it_waited(monkeypatch, left):
+    engine = HeldEngine()
+    monkeypatch.setitem(worker_module.ENGINES, "held", engine)
+    monkeypatch.setattr("portal.websockets.manager.tts_manager.broadcast_bundle", AsyncMock())
+    listening = {"fr": True, "de": True}
+    monkeypatch.setattr(
+        "portal.websockets.manager.tts_manager.has_listeners", lambda room_id, lang, booth_id: listening[lang]
+    )
+    monkeypatch.setattr("portal.websockets.manager.listener_manager.has_listeners", lambda booth_id: False)
+    monkeypatch.setattr(worker_module.youtube_captions, "wants", lambda room_id, lang: False)
+    job = worker_module._ResolvedTranslation(
+        event=SimpleNamespace(id=1, slug="event"),
+        room=fake_room(1),
+        provider="held",
+        model="m",
+        api_key=None,
+        enabled_langs=[
+            SimpleNamespace(language_code="fr", language_name="French"),
+            SimpleNamespace(language_code="de", language_name="German"),
+        ],
+        source_lang_code="en",
+        source_lang_name="English",
+    )
+    worker = TranslationWorker(MagicMock())
+
+    tasks = [
+        asyncio.create_task(task)
+        for task in worker._build_language_tasks(job, 1, "Hello", "event-1-floor", "uuid", 1)
+    ]
+    await settle()
+    # German waits for the engine's only slot while French is translated.
+    assert engine.calls == ["fr"]
+    if left:
+        listening["de"] = False
+
+    engine.release.set()
+    await asyncio.gather(*tasks)
+
+    # German's inference runs only if someone still listens when its turn comes.
+    assert engine.calls == (["fr"] if left else ["fr", "de"])
+    assert worker_module.scheduler_for("held").running == 0
