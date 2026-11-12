@@ -87,7 +87,7 @@ The built-in translator (NLLB) runs on the VoxBento server. Its models are large
 1. List the models in `LOCAL_TRANSLATION_MODELS` and restart the portal. The default is `nllb-200-distilled-600M`. The first listed model is the default for new rooms. A name that isn't in the registry is loaded as your own build, from a Hugging Face repository or a folder on the server. Leave the variable empty to turn built-in translation off.
 2. Open **Translation models** in the Admin header (`/admin/translation-models/`). It lists the registry models and your own listed ones, with their size in memory, languages, licence and download status. Press **Download** next to an offered model to fetch it ahead of the event.
 
-Rooms never download a model themselves. Until an Admin downloads an offered model on this page, a room that uses it translates nothing and the server log says the model is not downloaded. This includes the default model on a new server.
+Rooms never download a model themselves. A room can use a model that is already on the server: downloaded on this page, already in the Hugging Face cache, or a folder on the server. Otherwise it translates nothing and the server log says the model is not downloaded. This includes the default model on a new server.
 
 Rooms and booths can only pick a listed model: the room forms fall back to the first listed model, and the booth form and the API v1 room update reject any other. If you take a model off the list, rooms and booths that use it translate nothing until they are saved again, which moves them to a listed model. Turning translation off always works.
 
