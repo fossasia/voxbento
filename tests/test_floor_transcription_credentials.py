@@ -20,7 +20,10 @@ from portal.crypto import decrypt_val, encrypt_val
 from portal.database import configure, dispose, get_session, init_db
 from portal.models import Event, Room, User
 from portal.transcription import worker
-from portal.transcription.providers.base import ProviderConfig
+from portal.transcription.providers.base import ProviderConfig, TranscriptionProvider
+
+# These tests are not about CSRF; their requests carry the token a real page would send.
+pytestmark = pytest.mark.usefixtures("auto_csrf")
 
 OLD_KEY = "old-dummy-provider-key"
 NEW_KEY = "replacement-dummy-provider-key"
@@ -40,7 +43,7 @@ class DummyFfmpeg:
         """Finish the simulated process without external resources."""
 
 
-class RecordingProvider:
+class RecordingProvider(TranscriptionProvider):
     """Capture effective credentials on initial connections and retries."""
 
     def __init__(self) -> None:

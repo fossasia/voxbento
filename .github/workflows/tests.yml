@@ -266,6 +266,9 @@ jobs:
           node --check portal/static/js/subtitle-overlay.js
           node --check portal/static/js/program-sender.js
           node --check portal/static/js/program-sender-source.js
+          node --check portal/static/js/translation-fit.js
+          node --check portal/static/js/modal-dialog.js
+          node --check portal/static/js/developer.js
           node --check .github/scripts/jules-review.mjs
           node --check .github/scripts/agent-attribution-lib.mjs
       - name: run node tests
@@ -285,7 +288,9 @@ jobs:
           node tests/test_room_ai.mjs
           node tests/test_lang_picker.mjs
           node tests/test_tabs.mjs
+          node tests/test_translation_fit.mjs
           node tests/test_program_sender_source.mjs
+          node --test tests/test_modal_dialogs.mjs
           node --test tests/test_agent_attribution.mjs
 
       - name: Run unit tests
@@ -521,8 +526,15 @@ jobs:
           echo "GET /admin/ → $code"
           [ "$code" = "200" ] || { echo "FAIL"; exit 1; }
 
+          # Fetch the CSRF cookie
+          csrf_resp=$(curl -s -D - -o /dev/null -b "user_token=${ADMIN_COOKIE}" "${BASE}/admin/")
+          CSRF_COOKIE=$(echo "$csrf_resp" | grep -i 'set-cookie.*admin_csrf' | sed 's/.*admin_csrf=\([^;]*\).*/\1/')
+          [ -n "$CSRF_COOKIE" ] || { echo "FAIL: no admin_csrf cookie"; exit 1; }
+
           # Create event
-          code=$(curl -s -o /dev/null -w '%{http_code}' -X POST -b "user_token=${ADMIN_COOKIE}" \
+          code=$(curl -s -o /dev/null -w '%{http_code}' -X POST \
+            -b "user_token=${ADMIN_COOKIE}; admin_csrf=${CSRF_COOKIE}" \
+            -H "X-CSRF-Token: ${CSRF_COOKIE}" \
             -d "slug=ci-smoke&display_name=CI+Smoke+Test" "${BASE}/admin/events/")
           echo "POST /admin/events/ → $code"
           [ "$code" = "303" ] || { echo "FAIL"; exit 1; }
@@ -541,6 +553,12 @@ jobs:
           code=$(curl -s -o /dev/null -w '%{http_code}' "${BASE}/admin/")
           echo "GET /admin/ (no cookie) → $code"
           [ "$code" = "403" ] || { echo "FAIL: expected 403"; exit 1; }
+
+          # Legacy admin_token-only authentication must be rejected
+          code=$(curl -s -o /dev/null -w '%{http_code}' \
+            -b "admin_token=legacy-smoke-token" "${BASE}/admin/")
+          echo "GET /admin/ (legacy admin_token only) → $code"
+          [ "$code" = "403" ] || { echo "FAIL: expected 403 for legacy admin_token"; exit 1; }
 
       - name: User registration and login smoke test
         run: |

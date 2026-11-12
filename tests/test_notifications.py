@@ -13,6 +13,9 @@ from portal.database import configure, create_auth_token, create_user, dispose, 
 from portal.models import EmailDelivery, EmailTemplateRevision
 from portal.notifications import _plain_text, process_due_deliveries, publish_draft, queue_notification, save_draft
 
+# These tests are not about CSRF; their requests carry the token a real page would send.
+pytestmark = pytest.mark.usefixtures("auto_csrf")
+
 
 @pytest.fixture(autouse=True)
 async def setup_db():

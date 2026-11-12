@@ -12,6 +12,9 @@
 {% endblock %}
 
 {% block content %}
+{% if error_notice %}
+<div class='alert alert-danger' role='alert'>{{ error_notice }}</div>
+{% endif %}
 <div class="page-header room-header">
   <div>
     <h1>{{ room.display_name }}</h1>
@@ -195,6 +198,7 @@
   <p class="rs-note">More services ({{ catalog.locked | join(', ') }}) appear here once you add their API key on <a href="{{ management_prefix }}/events/{{ event.id }}/api-settings/">API keys</a>.</p>
   {% endif %}
   <form method="post" action="{{ edit_url }}" id="room_ai_form" class="room-ai-form">
+    <input type="hidden" name="csrf_token" value="{{ request.state.admin_csrf_token }}" />
     <input type="hidden" name="form_section" value="ai">
 
     <div class="room-card">
@@ -239,7 +243,8 @@
             {% if room.floor_translation_provider and not catalog.find("translation", room.floor_translation_provider) %}
             <option value="" selected disabled>{{ room.floor_translation_provider | replace('_', '-') | capitalize }} — not available now, choose another</option>
             {% endif %}
-            {% for engine in catalog.translation %}
+            {# A service that cannot translate this room's languages is offered only while it is the saved one. #}
+            {% for engine in catalog.translation if engine.provider not in translation_unfit or engine.provider == room.floor_translation_provider %}
             <option value="{{ engine.provider }}" {% if room.floor_translation_provider == engine.provider %}selected{% endif %}>{{ engine.label }} — {{ engine.note }}</option>
             {% endfor %}
           </select>
@@ -344,6 +349,7 @@
     {% endif %}
 
     <form method="post" action="{{ management_prefix }}/events/{{ event.id }}/rooms/{{ room.id }}/ai-vocabulary/upload" enctype="multipart/form-data" class="room-upload">
+      <input type="hidden" name="csrf_token" value="{{ request.state.admin_csrf_token }}" />
       <div class="field-row">
         <div class="field">
           <label for="vocabulary_file">Glossary file (CSV)</label>
@@ -377,6 +383,7 @@
                 <td>{{ entry.priority }}</td>
                 <td>
                   <form method="post" action="{{ management_prefix }}/events/{{ event.id }}/rooms/{{ room.id }}/ai-vocabulary/delete">
+                    <input type="hidden" name="csrf_token" value="{{ request.state.admin_csrf_token }}" />
                     <input type="hidden" name="entry_id" value="{{ entry.id }}">
                     <button type="submit" class="btn btn-sm btn-outline">Delete</button>
                   </form>
@@ -387,6 +394,7 @@
         </table>
       </div>
       <form method="post" action="{{ management_prefix }}/events/{{ event.id }}/rooms/{{ room.id }}/ai-vocabulary/delete" class="ai-vocabulary-clear">
+        <input type="hidden" name="csrf_token" value="{{ request.state.admin_csrf_token }}" />
         <input type="hidden" name="entry_id" value="all">
         <button type="submit" class="btn btn-sm btn-outline">Delete the whole glossary</button>
       </form>
@@ -400,6 +408,7 @@
 
 <section class="room-panel rs" id="room-panel-settings" role="tabpanel" aria-labelledby="room-tab-settings" data-room-panel="settings">
   <form method="post" action="{{ edit_url }}">
+    <input type="hidden" name="csrf_token" value="{{ request.state.admin_csrf_token }}" />
     <input type="hidden" name="form_section" value="general">
     <div class="room-card">
       <h2>Room details</h2>
@@ -423,6 +432,7 @@
   </form>
 
   <form method="post" action="{{ edit_url }}">
+    <input type="hidden" name="csrf_token" value="{{ request.state.admin_csrf_token }}" />
     <input type="hidden" name="form_section" value="relay">
     <div class="room-card">
       <h2>Relay interpreting</h2>
@@ -444,6 +454,7 @@
     <h3>Delete this room</h3>
     <form method="post" action="{{ management_prefix }}/events/{{ event.id }}/rooms/{{ room.id }}/delete" class="inline-delete"
           data-confirm="Delete room '{{ room.display_name }}'? All booths in this room will be removed.">
+      <input type="hidden" name="csrf_token" value="{{ request.state.admin_csrf_token }}" />
       <button type="submit" class="btn btn-danger">Delete room</button>
       <span class="danger-text">This removes its booths and their invite links. It can't be undone.</span>
     </form>

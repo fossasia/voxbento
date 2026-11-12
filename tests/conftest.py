@@ -53,3 +53,49 @@ def _reset_shared_http_client():
 @pytest.fixture(params=["asyncio"])
 def anyio_backend(request):
     return request.param
+
+
+@pytest.fixture
+def auto_csrf(monkeypatch):
+    """Send a valid CSRF token with every state-changing request made through httpx.
+
+    For test modules about something other than CSRF: their management requests carry the
+    token a real page would, bound to the session cookie in the request. CSRF rejection is
+    covered in tests/test_admin_panel.py, which does not use this fixture.
+    """
+    from http.cookies import SimpleCookie
+
+    import httpx
+    import jwt
+
+    from portal.auth import ADMIN_CSRF_COOKIE, decode_token, generate_admin_csrf_token
+
+    def add_token(request):
+        if request.method in {"GET", "HEAD", "OPTIONS"} or "x-csrf-token" in request.headers:
+            return
+        cookies = SimpleCookie(request.headers.get("cookie", ""))
+        session_id = "anonymous"
+        for name in ("user_token", "session_token"):
+            if name in cookies:
+                try:
+                    session_id = str(decode_token(cookies[name].value).get("jti") or session_id)
+                except jwt.InvalidTokenError:
+                    continue
+                break
+        token = generate_admin_csrf_token(session_id)
+        pairs = [f"{name}={morsel.value}" for name, morsel in cookies.items() if name != ADMIN_CSRF_COOKIE]
+        request.headers["cookie"] = "; ".join([*pairs, f"{ADMIN_CSRF_COOKIE}={token}"])
+        request.headers["x-csrf-token"] = token
+
+    async_send, sync_send = httpx.AsyncClient.send, httpx.Client.send
+
+    async def send_async(self, request, **kwargs):
+        add_token(request)
+        return await async_send(self, request, **kwargs)
+
+    def send_sync(self, request, **kwargs):
+        add_token(request)
+        return sync_send(self, request, **kwargs)
+
+    monkeypatch.setattr(httpx.AsyncClient, "send", send_async)
+    monkeypatch.setattr(httpx.Client, "send", send_sync)

@@ -21,6 +21,9 @@ from portal.database import configure, create_user, dispose, get_session, init_d
 from portal.models import Event, Room
 from portal.transcription.worker import active_workers
 
+# These tests are not about CSRF; their requests carry the token a real page would send.
+pytestmark = pytest.mark.usefixtures("auto_csrf")
+
 RELAY_SECRET = "r" * 64
 YOUTUBE_SERVER = "rtmps://a.rtmps.youtube.com/live2"
 YOUTUBE_KEY = "abcd-efgh-ijkl-mnop-qrst"

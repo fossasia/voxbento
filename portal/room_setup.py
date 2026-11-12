@@ -24,7 +24,8 @@ from portal.database import create_booth, delete_booth, list_booths_for_room
 from portal.models import DBBooth, Event, Room, RoomTranslationLanguage
 from portal.roles import INTERPRETER
 from portal.transcription.constants import ALLOWED_MODELS, ProviderEnum
-from portal.translations.constants import NLLB_LANGUAGE_MAP
+from portal.translations.model_languages import supported_languages, unsupported_languages
+from portal.translations.registry import NLLB_200_DISTILLED_600M
 from portal.tts.constants import DEEPGRAM_VOICE_MAPPING, SUPERTONIC_SUPPORTED_LANGS
 from portal.utils import _make_jitsi_url
 
@@ -135,6 +136,33 @@ class EngineCatalog:
     def voice_support(self) -> dict[str, list[str]]:
         """The languages each available voice service can speak, for the setup form."""
         return {engine.provider: sorted(voice_languages_for(engine.provider)) for engine in self.voice}
+
+    @property
+    def translation_support(self) -> dict[str, list[str]]:
+        """The languages of each translation service that has a fixed list, for the setup form.
+
+        A service that is missing here translates any language.
+        """
+        support = {engine.provider: supported_languages(engine.provider, engine.model) for engine in self.translation}
+        return {provider: codes for provider, codes in support.items() if codes is not None}
+
+    def translation_unfit(self, language_codes: Iterable[str | None]) -> set[str]:
+        """The translation services that cannot handle every one of these languages."""
+        codes = list(language_codes)
+        return {
+            engine.provider
+            for engine in self.translation
+            if unsupported_languages(engine.provider, engine.model, codes)
+        }
+
+    def translation_hidden(self, language_codes: Iterable[str | None]) -> set[str]:
+        """The unfit services a settings page leaves out of its service picker.
+
+        None when no service fits: hiding them all would leave the picker empty, and saving
+        one still explains which language it cannot translate.
+        """
+        unfit = self.translation_unfit(language_codes)
+        return unfit if len(unfit) < len(self.translation) else set()
 
     def find(self, kind: str, provider: str) -> Engine | None:
         return next((e for e in getattr(self, kind) if e.provider == provider), None)
@@ -252,7 +280,7 @@ def engine_catalog(event: Event) -> EngineCatalog:
         else:
             locked.append(_BRANDS[provider])
             locked_translation.append(_BRANDS[provider])
-    translation.append(Engine("local", "nllb-200-distilled-600M", "NLLB (built in)", _SELF_HOSTED))
+    translation.append(Engine("local", NLLB_200_DISTILLED_600M.id, "NLLB (built in)", _SELF_HOSTED))
     # After NLLB so new rooms keep the built-in default; the operator's server may be slow or stopped.
     if settings.self_hosted_llm_enabled:
         translation.append(
@@ -454,12 +482,13 @@ def parse_plan(
             f"AI voice isn't available for {', '.join(language_name(code) for code in plan.voice_languages)}: "
             "no voice service is set up for this event. Choose AI captions, or add a Deepgram key on API keys."
         )
-    if ai_languages and plan.translation_engine == "local":
+    chosen_translation = catalog.find("translation", plan.translation_engine)
+    if ai_languages and chosen_translation:
         unsupported = [
             language_name(code)
-            for code in dict.fromkeys((plan.spoken_language, *plan.ai_languages))
-            if not pycountry.languages.get(alpha_2=code)
-            or pycountry.languages.get(alpha_2=code).name not in NLLB_LANGUAGE_MAP
+            for code in unsupported_languages(
+                chosen_translation.provider, chosen_translation.model, (plan.spoken_language, *plan.ai_languages)
+            )
         ]
         if unsupported:
             errors.append(

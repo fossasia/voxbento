@@ -10,9 +10,11 @@ Covers:
 
 from __future__ import annotations
 
+import asyncio
 import json
 import os
 import re
+from pathlib import Path
 
 os.environ["BOOTH_ACCESS_TOKEN"] = ""
 
@@ -20,8 +22,21 @@ from datetime import datetime, timedelta, timezone
 from html.parser import HTMLParser
 
 import pytest
+from sqlalchemy import Update, func, select
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from portal.auth import create_user_token, decode_token, hash_password
+from portal.database import (
+    configure,
+    dispose,
+    get_session,
+    get_user_by_email,
+    init_db,
+    list_memberships_for_booth,
+    list_memberships_for_event,
+    list_memberships_for_room,
+)
+from portal.models import EventAPIKey, User
 
 # ---------------------------------------------------------------------------
 # Fixtures
@@ -31,12 +46,18 @@ from portal.auth import create_user_token, decode_token, hash_password
 @pytest.fixture(autouse=True)
 async def setup_db():
     """Set up an in-memory database for the FastAPI app."""
-    from portal.database import configure, dispose, init_db
-
     configure("sqlite+aiosqlite://")
     await init_db()
     yield
     await dispose()
+
+
+@pytest.fixture
+async def concurrent_db(setup_db, tmp_path: Path):
+    """Give overlapping requests separate connections and real transaction isolation."""
+    await dispose()
+    configure(f"sqlite+aiosqlite:///{tmp_path / 'concurrent.db'}")
+    await init_db()
 
 
 @pytest.fixture
@@ -146,12 +167,303 @@ def resolve_relay_attr(html: str) -> str:
     return m.group(1)
 
 
-def _client():
+def _raw_client():
     from httpx import ASGITransport, AsyncClient
 
     from fastapi_app import app
 
-    return AsyncClient(transport=ASGITransport(app=app), base_url="http://test")
+    return AsyncClient(
+        transport=ASGITransport(app=app, raise_app_exceptions=False),
+        base_url="http://test",
+    )
+
+
+def _client():
+    from urllib.parse import urlsplit
+
+    class CSRFAsyncClient:
+        def __init__(self, client):
+            self._client = client
+
+        async def __aenter__(self):
+            await self._client.__aenter__()
+            return self
+
+        async def __aexit__(self, *args):
+            return await self._client.__aexit__(*args)
+
+        def __getattr__(self, name):
+            return getattr(self._client, name)
+
+        async def get(self, url, **kwargs):
+            return await self.request("GET", url, **kwargs)
+
+        async def post(self, url, **kwargs):
+            return await self.request("POST", url, **kwargs)
+
+        async def put(self, url, **kwargs):
+            return await self.request("PUT", url, **kwargs)
+
+        async def patch(self, url, **kwargs):
+            return await self.request("PATCH", url, **kwargs)
+
+        async def delete(self, url, **kwargs):
+            return await self.request("DELETE", url, **kwargs)
+
+        async def request(self, method, url, **kwargs):
+            path = urlsplit(str(url)).path
+            is_admin_path = (
+                path == "/admin"
+                or path.startswith("/admin/")
+                or path == "/api/admin"
+                or path.startswith("/api/admin/")
+                or path == "/workspace"
+                or path.startswith("/workspace/")
+                or path == "/api/workspace"
+                or path.startswith("/api/workspace/")
+                or path.startswith("/api/rooms/")
+            )
+            is_mutation = method.upper() in {"POST", "PUT", "PATCH", "DELETE"}
+
+            if is_admin_path and is_mutation:
+                original_cookies = kwargs.get("cookies")
+                bootstrap = await self._client.get(
+                    "/admin/events/",
+                    cookies=original_cookies,
+                )
+                csrf_token = bootstrap.cookies.get("admin_csrf") or self._client.cookies.get("admin_csrf")
+
+                if csrf_token:
+                    cookies = dict(self._client.cookies)
+                    if original_cookies:
+                        cookies.update(dict(original_cookies))
+                    cookies["admin_csrf"] = csrf_token
+                    kwargs["cookies"] = cookies
+
+                    headers = dict(kwargs.get("headers") or {})
+                    headers["X-CSRF-Token"] = csrf_token
+                    kwargs["headers"] = headers
+
+            return await self._client.request(method, url, **kwargs)
+
+    return CSRFAsyncClient(_raw_client())
+
+
+async def _admin_csrf(client, admin_cookie):
+    response = await client.get("/admin/events/", cookies=admin_cookie)
+    assert response.status_code == 200
+
+    csrf_token = response.cookies.get("admin_csrf")
+    assert csrf_token
+
+    cookies = {**admin_cookie, "admin_csrf": csrf_token}
+    return cookies, csrf_token
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize(
+    ("cookie_token", "submitted_token", "transport", "expected_status"),
+    [
+        (None, None, "form", 403),
+        ("cookie-token", None, "form", 403),
+        ("cookie-token", "wrong-token", "form", 403),
+        (None, "submitted-token", "header", 403),
+        ("valid-token", "valid-token", "form", 200),
+        ("valid-token", "valid-token", "header", 200),
+    ],
+)
+async def test_admin_csrf_validation(
+    admin_cookie,
+    seeded_admin,
+    cookie_token,
+    submitted_token,
+    transport,
+    expected_status,
+):
+    cookies = dict(admin_cookie)
+    if cookie_token == "valid-token":
+        from portal.auth import decode_token, generate_admin_csrf_token
+
+        payload = decode_token(cookies["user_token"])
+        session_id = str(payload.get("jti") or "anonymous")
+        cookie_token = generate_admin_csrf_token(session_id)
+        submitted_token = cookie_token
+    if cookie_token is not None:
+        cookies["admin_csrf"] = cookie_token
+
+    headers = {
+        "Origin": "http://test",
+        "Accept": "application/json",
+    }
+    data = {"field": "verified", "value": "true"}
+
+    if transport == "form" and submitted_token is not None:
+        data["csrf_token"] = submitted_token
+    elif transport == "header" and submitted_token is not None:
+        headers["X-CSRF-Token"] = submitted_token
+
+    async with _raw_client() as client:
+        response = await client.post(
+            f"/admin/users/{seeded_admin.id}/access",
+            cookies=cookies,
+            headers=headers,
+            data=data,
+            follow_redirects=False,
+        )
+
+    assert response.status_code == expected_status
+
+
+@pytest.mark.anyio
+async def test_admin_csrf_accepts_session_bound_json_header(seeded_admin):
+    from portal.auth import create_user_token, decode_token, generate_admin_csrf_token
+
+    user_token = create_user_token(
+        user_id=seeded_admin.id,
+        email=seeded_admin.email,
+        is_admin=True,
+    )
+    session_id = decode_token(user_token)["jti"]
+    csrf_token = generate_admin_csrf_token(session_id)
+
+    async with _raw_client() as client:
+        response = await client.post(
+            f"/admin/users/{seeded_admin.id}/access",
+            cookies={
+                "user_token": user_token,
+                "admin_csrf": csrf_token,
+            },
+            headers={
+                "Origin": "http://test",
+                "X-CSRF-Token": csrf_token,
+                "Accept": "application/json",
+            },
+            data={"field": "verified", "value": "true"},
+            follow_redirects=False,
+        )
+
+    assert response.status_code == 200, response.text
+
+
+@pytest.mark.anyio
+async def test_admin_csrf_token_cannot_be_reused_across_sessions(seeded_admin):
+    from portal.auth import (
+        create_user_token,
+        generate_admin_csrf_token,
+    )
+
+    session_a = create_user_token(
+        user_id=seeded_admin.id,
+        email=seeded_admin.email,
+        is_admin=True,
+    )
+    session_b = create_user_token(
+        user_id=seeded_admin.id,
+        email=seeded_admin.email,
+        is_admin=True,
+    )
+
+    csrf_token_a = generate_admin_csrf_token(decode_token(session_a)["jti"])
+
+    async with _raw_client() as client:
+        response = await client.post(
+            f"/admin/users/{seeded_admin.id}/access",
+            cookies={
+                "user_token": session_b,
+                "admin_csrf": csrf_token_a,
+            },
+            headers={
+                "Origin": "http://test",
+                "X-CSRF-Token": csrf_token_a,
+            },
+            data={"field": "verified", "value": "true"},
+            follow_redirects=False,
+        )
+
+    assert response.status_code == 403
+
+
+@pytest.mark.anyio
+async def test_admin_mutation_routes_require_csrf():
+    """Every state-changing management route carries the CSRF check, in whichever router it lives."""
+    import importlib
+    import pkgutil
+
+    from fastapi.routing import APIRoute
+
+    import portal.routers
+    from portal.auth import require_admin_csrf
+
+    management_prefixes = ("/admin/", "/api/admin/", "/api/rooms/", "/account/")
+    mutating_methods = {"POST", "PUT", "PATCH", "DELETE"}
+    checked = 0
+    missing = []
+
+    for module_info in pkgutil.iter_modules(portal.routers.__path__):
+        router = getattr(importlib.import_module(f"portal.routers.{module_info.name}"), "router", None)
+        for route in getattr(router, "routes", []):
+            if not isinstance(route, APIRoute) or not route.path.startswith(management_prefixes):
+                continue
+            if not (route.methods or set()).intersection(mutating_methods):
+                continue
+            checked += 1
+            if not any(dependency.call is require_admin_csrf for dependency in route.dependant.dependencies):
+                missing.append(f"{','.join(sorted(route.methods or set()))} {route.path}")
+
+    assert checked > 60, "The route inventory looks empty; the check would pass without checking anything."
+    assert not missing, "Mutation routes missing route-level CSRF dependency:\n" + "\n".join(missing)
+
+
+@pytest.mark.anyio
+async def test_management_post_forms_carry_the_csrf_field():
+    """A new admin form without the hidden field would only fail in the browser, so check the templates."""
+    import re
+    from pathlib import Path
+
+    templates = Path(__file__).resolve().parents[1] / "portal" / "templates"
+    pages = [*sorted((templates / "admin").rglob("*.html")), *sorted(templates.glob("account*.html"))]
+    forms = 0
+    missing = []
+    for page in pages:
+        text = page.read_text()
+        for match in re.finditer(r"<form\b[^>]*>", text, re.S | re.I):
+            if not re.search(r"method\s*=\s*[\"']?post", match.group(0), re.I):
+                continue
+            forms += 1
+            if 'name="csrf_token"' not in text[match.end() : text.find("</form>", match.end())]:
+                missing.append(f"{page.relative_to(templates)}:{text.count(chr(10), 0, match.start()) + 1}")
+
+    assert forms > 40, "No POST forms found; the check would pass without checking anything."
+    assert not missing, "POST forms without a csrf_token field:\n" + "\n".join(missing)
+
+
+@pytest.mark.anyio
+async def test_reviewer_post_routes_reject_missing_csrf(admin_cookie, seeded_admin):
+    cookies = dict(admin_cookie)
+    cookies.pop("admin_csrf", None)
+
+    paths = [
+        f"/admin/users/{seeded_admin.id}/access",
+        f"/admin/users/{seeded_admin.id}/delete",
+        "/admin/hosting-access/requests/1/grant",
+        "/admin/hosting-access/requests/1/decline",
+        "/account/profile",
+        "/account/hosting-request",
+    ]
+
+    for path in paths:
+        async with _raw_client() as client:
+            response = await client.post(
+                path,
+                cookies=cookies,
+                headers={"Origin": "http://test"},
+                data={},
+                follow_redirects=False,
+            )
+
+        assert response.status_code == 403, (
+            f"Expected 403 for POST {path} without a CSRF token, got {response.status_code}: {response.text}"
+        )
 
 
 class _InlineScripts(HTMLParser):
@@ -390,16 +702,54 @@ class TestAdminLogin:
         assert "user_token" in verbatim.headers.get("set-cookie", "")
 
     @pytest.mark.anyio
-    async def test_logout_clears_current_and_legacy_cookies(self):
-        """Logout must clear both the new user_token and the legacy admin_token."""
-        async with _client() as c:
-            resp = await c.get("/admin/logout", follow_redirects=False)
+    @pytest.mark.parametrize(
+        ("base_url", "headers", "expected_secure"),
+        [
+            ("http://test", {}, False),
+            ("https://test", {}, True),
+            ("http://test", {"x-forwarded-proto": "https"}, True),
+        ],
+    )
+    async def test_admin_csrf_cookie_secure_flag(self, base_url, headers, expected_secure, monkeypatch):
+        from httpx import ASGITransport, AsyncClient
 
-        assert resp.status_code == 303
-        cleared = {header.split("=", 1)[0].strip().lower() for header in resp.headers.get_list("set-cookie")}
-        assert "user_token" in cleared
-        assert "admin_token" in cleared
-        assert "session_token" in cleared
+        from fastapi_app import app
+        from portal.config import settings
+
+        # A plain-HTTP deployment: the flag then follows the request, as it does for user_token.
+        monkeypatch.setattr(settings, "public_base_url", "http://test")
+
+        async with AsyncClient(
+            transport=ASGITransport(app=app),
+            base_url=base_url,
+            headers=headers,
+        ) as client:
+            response = await client.get("/admin/login")
+
+        csrf_cookies = [
+            value for value in response.headers.get_list("set-cookie") if value.lower().startswith("admin_csrf=")
+        ]
+        assert csrf_cookies, "Expected middleware to set admin_csrf"
+        assert ("; secure" in csrf_cookies[0].lower()) is expected_secure
+
+    @pytest.mark.anyio
+    async def test_logout_clears_current_and_legacy_cookies(self):
+        async with _raw_client() as client:
+            response = await client.get("/logout", follow_redirects=False)
+
+        assert response.status_code == 303
+
+        set_cookie_headers = response.headers.get_list("set-cookie")
+        for cookie_name in ("user_token", "session_token", "admin_token", "admin_csrf"):
+            matching_headers = [
+                header
+                for header in set_cookie_headers
+                if header.split("=", 1)[0].strip().lower() == cookie_name.lower()
+            ]
+            assert matching_headers, f"Expected logout to clear {cookie_name}"
+            assert any("max-age=0" in header.lower() or "expires=" in header.lower() for header in matching_headers), (
+                f"Expected {cookie_name} to expire on logout"
+            )
 
     @pytest.mark.anyio
     async def test_logout_clears_cookie(self):
@@ -407,6 +757,50 @@ class TestAdminLogin:
             resp = await c.get("/admin/logout", follow_redirects=False)
         assert resp.status_code == 303
         assert resp.headers["location"] == "/login"
+
+    @pytest.mark.anyio
+    async def test_login_rotates_csrf_token_and_rejects_old_token(self):
+        from portal.database import create_user, get_session
+
+        async with get_session() as session:
+            user = await create_user(
+                session,
+                email="csrf-rotation@example.com",
+                display_name="CSRF Rotation Admin",
+                password_hash=hash_password("test-admin-pass"),
+                email_verified=True,
+                is_admin=True,
+            )
+
+        async with _raw_client() as client:
+            # Obtain the pre-login CSRF token.
+            await client.get("/admin/login", follow_redirects=False)
+            old_token = client.cookies.get("admin_csrf")
+            assert old_token
+
+            # Successful login must replace it.
+            response = await client.post(
+                "/login",
+                data={
+                    "email": "csrf-rotation@example.com",
+                    "password": "test-admin-pass",
+                    "next_url": "/admin/",
+                },
+                follow_redirects=False,
+            )
+            assert response.status_code == 303
+
+            new_token = client.cookies.get("admin_csrf")
+            assert new_token
+            assert new_token != old_token
+
+            # The new cookie must not validate the old submitted token.
+            response = await client.post(
+                f"/admin/users/{user.id}/access",
+                json={},
+                headers={"X-CSRF-Token": old_token},
+            )
+            assert response.status_code == 403
 
 
 class TestStaleAdminToken:
@@ -936,6 +1330,26 @@ class TestEventCRUD:
         assert b"Main Hall" in resp.content
 
     @pytest.mark.anyio
+    async def test_event_api_key_popups_are_labelled_dialogs(self, admin_cookie, seed_event):
+        # A div never matches the dialog-only :not([open]) rule in admin.css, so these must be dialogs (#1243).
+        event, _, _ = seed_event
+        async with _client() as c:
+            resp = await c.get(f"/admin/events/{event.id}/", cookies=admin_cookie)
+        assert resp.status_code == 200
+        for dialog_id, title in (
+            ("api-key-modal", "Generate API Key"),
+            ("api-key-success-modal", "API Key Generated"),
+            ("api-key-revoke-modal", "Revoke API Key"),
+        ):
+            tag = re.search(rf'<(\w+) id="{dialog_id}"[^>]*>', resp.text)
+            assert tag is not None and tag.group(1) == "dialog", dialog_id
+            assert " hidden" not in tag.group(0) and " open" not in tag.group(0)
+            label = re.search(r'aria-labelledby="([^"]+)"', tag.group(0))
+            assert label is not None, dialog_id
+            assert re.search(rf'id="{label.group(1)}"[^>]*>{title}<', resp.text), dialog_id
+        assert 'aria-describedby="api-key-revoke-message"' in resp.text
+
+    @pytest.mark.anyio
     async def test_api_settings_update_and_clear_keys(self, admin_cookie, seed_event):
         from portal.crypto import decrypt_val
         from portal.database import get_event_by_id, get_session
@@ -1340,6 +1754,64 @@ class TestRoomCRUD:
             assert updated.floor_ai_interpreter_persona == "Technical conference interpreter"
             assert updated.floor_ai_interpretation_style == "Formal and concise"
             assert updated.floor_ai_vocabulary_enabled is True
+
+    @pytest.mark.anyio
+    async def test_save_local_translation_settings_with_csrf(self, admin_cookie, seed_event):
+        event, room, _ = seed_event
+        from portal.database import get_room_by_id, get_session
+
+        async with _client() as c:
+            cookies, csrf_token = await _admin_csrf(c, admin_cookie)
+            headers = {"X-CSRF-Token": csrf_token}
+            response = await c.post(
+                f"/admin/events/{event.id}/rooms/{room.id}/edit",
+                data={
+                    "form_section": "translation",
+                    "floor_translation_enabled": "on",
+                    "floor_translation_provider": "local",
+                    "floor_translation_model": "nllb-200-distilled-600M",
+                },
+                cookies=cookies,
+                headers=headers,
+                follow_redirects=False,
+            )
+
+        assert response.status_code == 303
+
+        async with get_session() as session:
+            updated = await get_room_by_id(session, room.id)
+            assert updated.floor_translation_enabled is True
+            assert updated.floor_translation_provider == "local"
+            assert updated.floor_translation_model == "nllb-200-distilled-600M"
+
+    @pytest.mark.anyio
+    async def test_save_supertonic_settings_with_csrf(self, admin_cookie, seed_event):
+        event, room, _ = seed_event
+        from portal.database import get_room_by_id, get_session
+
+        async with _client() as c:
+            cookies, csrf_token = await _admin_csrf(c, admin_cookie)
+            headers = {"X-CSRF-Token": csrf_token}
+            response = await c.post(
+                f"/admin/events/{event.id}/rooms/{room.id}/edit",
+                data={
+                    "form_section": "tts",
+                    "floor_tts_enabled": "on",
+                    "floor_tts_provider": "supertonic",
+                    "floor_tts_voice": "F1",
+                },
+                cookies=cookies,
+                headers=headers,
+                follow_redirects=False,
+            )
+
+        assert response.status_code == 303
+
+        async with get_session() as session:
+            updated = await get_room_by_id(session, room.id)
+            assert updated.floor_tts_enabled is True
+            assert updated.floor_tts_provider == "supertonic"
+            assert updated.floor_tts_voice == "F1"
 
     @pytest.mark.anyio
     async def test_room_vocabulary_upload_preview_and_export(self, admin_cookie, seed_event):
@@ -3047,6 +3519,56 @@ class TestAPIKeyBOLA:
             assert res_delete.status_code == 403
 
 
+@pytest.mark.anyio
+async def test_workspace_api_key_creation_requires_csrf(setup_db):
+    from portal.auth import create_user_token
+    from portal.database import create_event, create_user, get_session, set_event_membership
+
+    async with get_session() as session:
+        event = await create_event(session, slug="csrf-api", display_name="CSRF API")
+        user = await create_user(session, email="csrf-api@example.com", display_name="CSRF API User")
+        await set_event_membership(session, user_id=user.id, event_id=event.id, role="event_owner")
+        event_id = event.id
+        user_id = user.id
+        user_email = user.email
+
+    user_token = create_user_token(user_id=user_id, email=user_email)
+    url = f"/workspace/api/events/{event_id}/api-keys"
+
+    async with _raw_client() as client:
+        # Missing CSRF cookie and header.
+        response = await client.post(
+            url,
+            cookies={"user_token": user_token},
+            json={"name": "Missing Token"},
+        )
+        assert response.status_code == 403
+
+        # Mismatched cookie and header.
+        response = await client.post(
+            url,
+            cookies={"user_token": user_token, "admin_csrf": "cookie-token"},
+            headers={"X-CSRF-Token": "wrong-token"},
+            json={"name": "Wrong Token"},
+        )
+        assert response.status_code == 403
+
+        # Matching, session-bound CSRF cookie and header.
+        from portal.auth import generate_admin_csrf_token
+
+        session_id = decode_token(user_token)["jti"]
+        csrf_token = generate_admin_csrf_token(session_id)
+
+        response = await client.post(
+            url,
+            cookies={"user_token": user_token, "admin_csrf": csrf_token},
+            headers={"X-CSRF-Token": csrf_token},
+            json={"name": "Valid Token"},
+        )
+        assert response.status_code == 200
+        assert response.json()["name"] == "Valid Token"
+
+
 class TestAPIKeyCRUD:
     @pytest.mark.anyio
     async def test_api_key_lifecycle(self, setup_db):
@@ -3121,9 +3643,8 @@ class TestAPIKeyCRUD:
             assert res_remake.json()["name"] == "Integration Key"
 
     @pytest.mark.anyio
-    async def test_concurrent_api_key_revocation(self, setup_db):
-        import asyncio
-
+    async def test_concurrent_api_key_revocation(self, concurrent_db, monkeypatch):
+        """Competing revocations reach the update together and only one succeeds."""
         from portal.auth import create_user_token
         from portal.database import create_event, create_user, get_session, set_event_membership
 
@@ -3145,11 +3666,25 @@ class TestAPIKeyCRUD:
             assert res.status_code == 200
             key_id = res.json()["id"]
 
-            # Overlapping concurrent revoke requests
+            barrier = asyncio.Barrier(2)
+            updates_reached = 0
+            execute = AsyncSession.execute
+
+            async def competing_execute(session, statement, *args, **kwargs):
+                """Hold both revocation writes until both requests reach the database."""
+                nonlocal updates_reached
+                if isinstance(statement, Update) and statement.table.name == EventAPIKey.__tablename__:
+                    updates_reached += 1
+                    await asyncio.wait_for(barrier.wait(), timeout=5)
+                return await execute(session, statement, *args, **kwargs)
+
+            monkeypatch.setattr(AsyncSession, "execute", competing_execute)
+
             req1 = c.delete(f"/workspace/api/events/{event_id}/api-keys/{key_id}")
             req2 = c.delete(f"/workspace/api/events/{event_id}/api-keys/{key_id}")
             res1, res2 = await asyncio.gather(req1, req2)
 
+            assert updates_reached == 2
             status_codes = sorted([res1.status_code, res2.status_code])
             assert status_codes == [200, 404]
 
@@ -3686,3 +4221,64 @@ async def test_developer_accounts_page_has_no_inline_styles(seed_accounts):
     else:
         assert b"No developer applications" in resp.content
     assert not re.search(rb"\sstyle\s*=", resp.content, re.IGNORECASE)
+
+
+MEMBER_FORMS = [
+    ("/admin/events/{event}/setup/invite", "event_owner"),
+    ("/admin/events/{event}/members/", "event_owner"),
+    ("/admin/events/{event}/rooms/{room}/members/", "room_coordinator"),
+    ("/admin/events/{event}/rooms/{room}/booths/{booth}/members/", "interpreter"),
+]
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize(("path", "role"), MEMBER_FORMS)
+@pytest.mark.parametrize(
+    "email",
+    ["testuser", "user@", "a@b", "@example.com", "user@@example.com", "us er@example.com", "x" * 320 + "@example.com"],
+)
+async def test_member_forms_reject_invalid_email(path, role, email, admin_cookie, seed_event):
+    """#1239: a bad address used to reach User._validate_email and return a 500."""
+    event, room, booth = seed_event
+    async with get_session() as s:
+        users_before = await s.scalar(select(func.count(User.id)))
+
+    async with _client() as c:
+        resp = await c.post(
+            path.format(event=event.id, room=room.id, booth=booth.id),
+            data={"email": email, "role": role},
+            cookies=admin_cookie,
+        )
+        if resp.status_code == 303:
+            assert resp.headers["location"].endswith("?error=invalid_email")
+            resp = await c.get(resp.headers["location"], cookies=admin_cookie)
+
+    assert resp.status_code in (200, 400)
+    assert "Enter a valid email address." in resp.text
+    async with get_session() as s:
+        assert await s.scalar(select(func.count(User.id))) == users_before
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize(("path", "role"), MEMBER_FORMS)
+async def test_member_forms_still_add_valid_email(path, role, admin_cookie, seed_event):
+    event, room, booth = seed_event
+    async with _client() as c:
+        resp = await c.post(
+            path.format(event=event.id, room=room.id, booth=booth.id),
+            data={"email": "  New.Person@Example.com ", "role": role},
+            cookies=admin_cookie,
+        )
+
+    assert resp.status_code == 303
+    assert "error=" not in resp.headers["location"]
+    async with get_session() as s:
+        user = await get_user_by_email(s, "new.person@example.com")
+        assert user is not None
+        if "/booths/" in path:
+            memberships = await list_memberships_for_booth(s, booth.id)
+        elif "/rooms/" in path:
+            memberships = await list_memberships_for_room(s, room.id)
+        else:
+            memberships = await list_memberships_for_event(s, event.id)
+        assert any(m.user_id == user.id and m.role == role for m in memberships)

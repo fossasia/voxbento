@@ -21,15 +21,18 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from unilimit.integrations.fastapi import RateLimit
 
 from portal.auth import (
+    ADMIN_CSRF_COOKIE,
     PASSWORD_TOO_LONG_MESSAGE,
     create_participant_token,
     create_token,
     create_user_token,
     decode_token,
+    generate_admin_csrf_token,
     get_current_user,
     hash_password,
     is_cookie_secure,
     password_too_long,
+    require_admin_csrf,
     require_user,
     resolve_request_principal,
     user_session_is_valid,
@@ -138,6 +141,22 @@ def set_auth_cookie(request: Request, response: Response, token: str) -> None:
     )
 
 
+def set_admin_csrf_cookie(response: Response, request: Request, session_token: str) -> None:
+    """Set a CSRF cookie bound to the newly created session."""
+    payload = decode_token(session_token)
+    session_id = payload.get("jti")
+    if not session_id:
+        raise ValueError("Session token is missing its jti claim.")
+
+    response.set_cookie(
+        key=ADMIN_CSRF_COOKIE,
+        value=generate_admin_csrf_token(str(session_id)),
+        httponly=True,
+        secure=is_cookie_secure(request),
+        samesite="lax",
+    )
+
+
 @router.post("/api/auth/token", response_model=TokenResponse)
 async def get_token(body: Annotated[TokenRequest | None, Body()] = None) -> TokenResponse:
     provided = body.token if body is not None else ""
@@ -178,6 +197,7 @@ async def join_via_invite(request: Request, token: str) -> RedirectResponse:
         samesite="lax",
         max_age=settings.jwt_expiry_seconds,
     )
+    set_admin_csrf_cookie(response, request, jwt_token)
     return response
 
 
@@ -325,15 +345,18 @@ async def verify_email_route(request: Request, token: str):
             user = await get_user_by_id(session, auth_token.user_id)
             if user is None or not user.is_active:
                 raise ValueError("Invalid verification link.")
-            user = await update_user(session, auth_token.user_id, email_verified=True, last_sign_in_at=utc_now())
-            await queue_notification(
-                session,
-                "onboarding",
-                user.email,
-                {"display_name": user.display_name},
-                scheduled_at=utc_now() + timedelta(minutes=15),
-                idempotency_key=f"onboarding:{user.id}",
-            )
+            if not user.email_verified:
+                user = await update_user(session, auth_token.user_id, email_verified=True, last_sign_in_at=utc_now())
+                await queue_notification(
+                    session,
+                    "onboarding",
+                    user.email,
+                    {"display_name": user.display_name},
+                    scheduled_at=utc_now() + timedelta(minutes=15),
+                    idempotency_key=f"onboarding:{user.id}",
+                )
+            else:
+                user = await update_user(session, user.id, last_sign_in_at=utc_now())
 
             jwt_token = create_user_token(
                 user_id=user.id, email=user.email, display_name=user.display_name, is_admin=user.is_admin
@@ -347,6 +370,7 @@ async def verify_email_route(request: Request, token: str):
                 samesite="lax",
                 max_age=settings.jwt_expiry_seconds,
             )
+            set_admin_csrf_cookie(response, request, jwt_token)
             return response
         except ValueError as e:
             raise HTTPException(status_code=400, detail=str(e))
@@ -438,6 +462,7 @@ async def user_login_submit(request: Request):
         samesite="lax",
         max_age=settings.jwt_expiry_seconds,
     )
+    set_admin_csrf_cookie(response, request, jwt_token)
     return response
 
 
@@ -554,6 +579,7 @@ async def redeem_magic_link(request: Request, token: str, next: str | None = Non
                 samesite="lax",
                 max_age=settings.jwt_expiry_seconds,
             )
+            set_admin_csrf_cookie(response, request, jwt_token)
             response.set_cookie(
                 key="auth_sync",
                 value="1",
@@ -694,6 +720,7 @@ async def reset_password_submit(request: Request, token: str):
         samesite="lax",
         max_age=settings.jwt_expiry_seconds,
     )
+    set_admin_csrf_cookie(response, request, jwt_token)
     return response
 
 
@@ -704,6 +731,7 @@ async def user_logout(request: Request, next: str = "/"):
     response.delete_cookie("user_token")
     response.delete_cookie("session_token")
     response.delete_cookie("admin_token")
+    response.delete_cookie(ADMIN_CSRF_COOKIE)
     return response
 
 
@@ -741,6 +769,7 @@ async def account_page(request: Request):
         name="account.html",
         context={
             "user": user,
+            "csrf_token": request.state.admin_csrf_token,
             "is_hosting_revoked": user.hosting_revoked_at is not None,
             "open_hosting_request": open_hosting_request,
             "developer_account": developer_account,
@@ -752,7 +781,7 @@ async def account_page(request: Request):
     )
 
 
-@router.post("/account/profile")
+@router.post("/account/profile", dependencies=[Depends(require_admin_csrf)])
 async def update_profile(request: Request):
     """Change the signed-in person's display name."""
     if not verify_same_origin(request):
@@ -816,7 +845,7 @@ async def hosting_request_page(request: Request):
     return render_hosting_request_form(request, user)
 
 
-@router.post(HOSTING_REQUEST_PATH)
+@router.post(HOSTING_REQUEST_PATH, dependencies=[Depends(require_admin_csrf)])
 async def submit_hosting_request(request: Request):
     """Save a hosting access request for the signed-in user and notify the team."""
     if not verify_same_origin(request):
@@ -1138,4 +1167,5 @@ async def invite_accept_submit(request: Request, token: str):
     )
     response = safe_redirect("/workspace/")
     set_auth_cookie(request, response, jwt_token)
+    set_admin_csrf_cookie(response, request, jwt_token)
     return response
