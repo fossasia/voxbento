@@ -2979,11 +2979,13 @@ async def admin_invite_user(request: Request):
 
     form = await request.form()
     raw_email = form.get("email", "").strip().lower()
-    display_name = form.get("display_name", "").strip()
+    raw_display_name = form.get("display_name", "")
 
     if not raw_email or "@" not in raw_email or "." not in raw_email.split("@")[-1]:
         raise HTTPException(status_code=400, detail="Invalid email address.")
-    if display_name and not (display_name := clean_display_name(display_name)):
+    # The name is optional. Check the raw value, so strip() can't remove controls before the check.
+    display_name = ""
+    if str(raw_display_name).strip() and not (display_name := clean_display_name(raw_display_name)):
         raise HTTPException(status_code=400, detail=INVALID_DISPLAY_NAME)
 
     async with get_session() as session:
