@@ -285,17 +285,3 @@ async def delete_webhook(
     )
     db.add(audit)
     await db.flush()
-
-
-@router.get("/debug/dump", include_in_schema=False)
-async def debug_dump(db: AsyncSession = Depends(get_db_session)):
-    from portal.models import WebhookDelivery
-
-    subs_result = await db.execute(select(WebhookSubscription))
-    subs = subs_result.scalars().all()
-    deliv_result = await db.execute(select(WebhookDelivery))
-    delivs = deliv_result.scalars().all()
-    return {
-        "subscriptions": [{"id": s.id, "event_types": s.event_types} for s in subs],
-        "deliveries": [{"id": d.id, "status": d.status, "last_error": d.last_error} for d in delivs],
-    }
