@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+from contextlib import asynccontextmanager
 from unittest.mock import AsyncMock, patch
 
 import pytest
@@ -16,6 +17,7 @@ from portal.models import (
     TranscriptSegment,
     TranscriptTranslation,
 )
+from portal.translations import worker as worker_module
 from portal.translations.worker import TranslationWorker
 
 
@@ -67,8 +69,6 @@ async def db_data(setup_db):
 
 @pytest.mark.anyio
 async def test_language_independence(db_data, mock_broadcast):
-    from portal.translations import worker as worker_module
-
     worker = TranslationWorker(mock_broadcast)
     synthesized_text = {}
 
@@ -840,10 +840,6 @@ async def test_handle_translation_holds_no_connection_while_translating(db_data,
     Each translation opens its own session to save its result. When every waiting segment also
     held one, a busy server ran out of connections and translations timed out saving.
     """
-    from contextlib import asynccontextmanager
-
-    from portal.translations import worker as worker_module
-
     worker = TranslationWorker(mock_broadcast)
     real_get_session = worker_module.get_session
     open_sessions = 0
@@ -872,7 +868,8 @@ async def test_handle_translation_holds_no_connection_while_translating(db_data,
         if translating == 2:
             open_during_inference.append(open_sessions)
             both_translating.set()
-        await both_translating.wait()
+        # Bounded, so a scheduler that grants only one slot fails here instead of hanging.
+        await asyncio.wait_for(both_translating.wait(), timeout=5)
         return f"translated {lang_name}"
 
     with (

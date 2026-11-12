@@ -41,7 +41,7 @@ class TranslationJob:
     comes first, so a job that never reaches the engine must be closed.
     """
 
-    __slots__ = ("_scheduler", "_room", "_channel", "_state")
+    __slots__ = ("_scheduler", "_room", "_channel", "_state", "_busy_until")
 
     def __init__(self, scheduler: TranslationScheduler, room: Hashable, channel: str) -> None:
         self._scheduler = scheduler
@@ -49,6 +49,7 @@ class TranslationJob:
         self._channel = channel
         # "admitted" -> "running" -> "closed", or straight from "admitted" to "closed".
         self._state = "admitted"
+        self._busy_until: asyncio.Future | None = None
 
     async def __aenter__(self) -> TranslationJob:
         if self._state != "admitted":
@@ -60,12 +61,25 @@ class TranslationJob:
     async def __aexit__(self, *exc_info: object) -> None:
         self.close()
 
+    def keep_slot_until(self, call: asyncio.Future) -> None:
+        """Keep the engine slot until ``call`` ends, even after the job itself has moved on.
+
+        For a call the job stopped waiting for (it timed out) that the engine is still working on.
+        """
+        if self._state == "running" and not call.done():
+            self._busy_until = call
+
     def close(self) -> None:
         """Leave the channel, giving back the engine slot if the job holds one. Safe to call twice."""
         if self._state == "closed":
             return
-        self._scheduler._leave(self, running=self._state == "running")
+        running = self._state == "running"
         self._state = "closed"
+        busy = self._busy_until
+        if running and busy is not None and not busy.done():
+            busy.add_done_callback(lambda _: self._scheduler._leave(self, running=True))
+            return
+        self._scheduler._leave(self, running=running)
 
 
 class TranslationScheduler:
@@ -95,6 +109,13 @@ class TranslationScheduler:
             return None
         state.admitted += 1
         return TranslationJob(self, room, channel)
+
+    def set_capacity(self, capacity: int) -> None:
+        """Change how many calls may run at once. Calls already running finish; none are stopped."""
+        if capacity < 1:
+            raise ValueError("capacity must be at least 1")
+        self.capacity = capacity
+        self._dispatch()
 
     def admitted(self, room: Hashable, channel: str) -> int:
         """Jobs ``channel`` holds right now, waiting or running."""

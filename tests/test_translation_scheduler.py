@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import threading
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
@@ -12,7 +13,7 @@ from portal.config import settings
 from portal.translations import worker as worker_module
 from portal.translations.engine import EngineKind, TranslationEngine
 from portal.translations.providers.base import ProviderEngine
-from portal.translations.providers.local import CT2_INTER_THREADS, LocalProvider
+from portal.translations.providers.local import CT2_INTER_THREADS, LocalProvider, _in_thread
 from portal.translations.scheduler import PER_CHANNEL, QUEUE_LIMIT, TranslationScheduler
 from portal.translations.worker import TranslationWorker
 
@@ -220,6 +221,70 @@ async def test_a_job_takes_a_slot_only_once():
             pass
 
 
+async def test_a_changed_limit_counts_the_calls_already_running():
+    scheduler = TranslationScheduler(2)
+    recorder = Recorder(scheduler)
+    running = [recorder.start(f"room-{n}", f"room-{n}:fr") for n in range(2)]
+    await settle()
+    waiting = recorder.start("room-9", "room-9:fr")
+    await settle()
+
+    # Lowered below what is running: nothing new starts until the running calls are down to it.
+    scheduler.set_capacity(1)
+    await settle()
+    assert scheduler.running == 2 and scheduler.waiting() == 1
+
+    # Raised: a waiting job starts straight away.
+    scheduler.set_capacity(3)
+    await settle()
+    assert scheduler.running == 3 and scheduler.waiting() == 0
+
+    await recorder.finish_all([*running, waiting])
+
+
+async def test_a_slot_stays_taken_until_a_call_the_job_gave_up_on_ends():
+    scheduler = TranslationScheduler(1)
+    still_running = asyncio.get_running_loop().create_future()
+    job = scheduler.admit("room", "room:fr")
+    async with job:
+        job.keep_slot_until(still_running)
+    job.close()
+
+    recorder = Recorder(scheduler)
+    next_one = recorder.start("other", "other:fr")
+    await settle()
+    assert scheduler.running == 1 and scheduler.waiting() == 1
+    assert scheduler.admitted("room", "room:fr") == 1
+
+    still_running.set_result(None)
+    await settle()
+    assert recorder.order == [("other", "other:fr")]
+    assert scheduler.admitted("room", "room:fr") == 0
+    await recorder.finish_all([next_one])
+
+
+async def test_a_cancelled_local_call_ends_only_when_its_thread_does():
+    """A thread cannot be stopped, so the call (and with it the engine slot) lasts as long as it."""
+    release = threading.Event()
+    thread_done = threading.Event()
+
+    def inference():
+        release.wait(5)
+        thread_done.set()
+        return "done"
+
+    call = asyncio.ensure_future(_in_thread(inference))
+    await asyncio.sleep(0.05)
+    call.cancel()
+    await asyncio.sleep(0.05)
+    assert not call.done()
+
+    release.set()
+    with pytest.raises(asyncio.CancelledError):
+        await call
+    assert thread_done.is_set()
+
+
 @pytest.mark.parametrize("arguments", [{"capacity": 0}, {"capacity": 1, "per_channel": 0}, {"capacity": 1, "queue_limit": 0}])
 def test_limits_must_be_positive(arguments):
     with pytest.raises(ValueError):
@@ -245,8 +310,11 @@ def test_hosted_and_self_hosted_limits_come_from_the_settings(monkeypatch):
     assert worker_module.scheduler_for("openai") is worker_module.scheduler_for("openai")
     assert worker_module.scheduler_for("openai") is not worker_module.scheduler_for("groq")
 
+    # A changed limit applies to the same scheduler, so calls already running still count.
+    before = worker_module.scheduler_for("openai")
     monkeypatch.setattr(settings, "translation_api_concurrency", 9)
-    assert worker_module.scheduler_for("openai").capacity == 9
+    assert worker_module.scheduler_for("openai") is before
+    assert before.capacity == 9
 
 
 def test_an_engine_without_its_own_limit_gets_the_default():
@@ -313,3 +381,75 @@ async def test_the_worker_shares_one_engine_fairly_across_rooms(monkeypatch):
     # The small room waits for one call of the busy room, not for all of them.
     assert engine.calls.index("th") <= 2
     assert worker_module.scheduler_for("slow").running == 0
+
+
+class StuckEngine(SlowEngine):
+    """Never answers in time; its calls end only when told to, like a local model's thread."""
+
+    def __init__(self) -> None:
+        super().__init__(max_concurrency=1)
+        self.release = asyncio.Event()
+
+    async def translate_batch(self, source, targets, texts, context, *, model, api_key=None):
+        self.in_flight += 1
+        self.peak = max(self.peak, self.in_flight)
+        self.calls.extend(target.code for target in targets)
+        try:
+            await asyncio.shield(self.release.wait())
+        except asyncio.CancelledError:
+            # Like _in_thread: the work goes on after a cancel, and the call ends with it.
+            await self.release.wait()
+            raise
+        finally:
+            self.in_flight -= 1
+        return [["late" for _ in targets] for _ in texts]
+
+
+async def test_a_timed_out_call_keeps_its_slot_until_the_engine_is_done(monkeypatch):
+    engine = StuckEngine()
+    monkeypatch.setitem(worker_module.ENGINES, "stuck", engine)
+    monkeypatch.setattr(worker_module, "_inference_timeout", lambda provider, model: 0.05)
+    bundle = AsyncMock()
+    monkeypatch.setattr("portal.websockets.manager.tts_manager.broadcast_bundle", bundle)
+    worker = TranslationWorker(MagicMock())
+
+    def translate(room_id: int, lang: str):
+        return worker._translate_and_broadcast(
+            SimpleNamespace(id=1), fake_room(room_id), "stuck", "m", None, lang, lang, "en", "English",
+            1, "Hello", f"event-{room_id}-floor", "uuid", 1,
+        )
+
+    # The first call times out: listeners hear of it, but the engine is still busy with it.
+    await translate(1, "fr")
+    assert bundle.await_args.args[8] == "pipeline_failed"
+    assert worker_module.scheduler_for("stuck").running == 1
+
+    second = asyncio.create_task(translate(2, "de"))
+    await settle()
+    assert engine.calls == ["fr"]
+    assert engine.peak == 1
+
+    engine.release.set()
+    await second
+    assert engine.calls == ["fr", "de"]
+    assert engine.peak == 1
+    assert worker_module.scheduler_for("stuck").running == 0
+
+
+async def test_a_segment_waiting_when_the_download_starts_is_dropped_at_its_turn(monkeypatch):
+    engine = SlowEngine(max_concurrency=1)
+    monkeypatch.setitem(worker_module.ENGINES, "slow", engine)
+    # The model is ready when the segment arrives and downloading by the time it gets a slot.
+    answers = iter([60.0, None])
+    monkeypatch.setattr(worker_module, "_inference_timeout", lambda provider, model: next(answers))
+    bundle = AsyncMock()
+    monkeypatch.setattr("portal.websockets.manager.tts_manager.broadcast_bundle", bundle)
+
+    await TranslationWorker(MagicMock())._translate_and_broadcast(
+        SimpleNamespace(id=1), fake_room(1), "slow", "m", None, "fr", "French", "en", "English",
+        1, "Hello", "event-1-floor", "uuid", 1,
+    )
+
+    assert engine.calls == []
+    assert bundle.await_args.args[8] == "model_downloading"
+    assert worker_module.scheduler_for("slow").admitted(1, "event-1-floor:fr") == 0

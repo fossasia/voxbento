@@ -12,6 +12,7 @@ from portal.transcription.timing import segment_timing, timing_metadata
 from portal.translations.constants import OPENAI_COMPATIBLE_ENDPOINTS, TranslationProviderEnum
 from portal.translations.engine import EngineKind, Language, TranslationContext, TranslationEngine
 from portal.translations.keys import get_translation_api_key
+from portal.translations.providers import local as local_provider
 from portal.translations.providers.anthropic import AnthropicProvider
 from portal.translations.providers.base import ProviderEngine
 from portal.translations.providers.gemini import GeminiProvider
@@ -66,14 +67,16 @@ SCHEDULERS: dict[str, TranslationScheduler] = {}
 def scheduler_for(provider: str) -> TranslationScheduler:
     """The scheduler every room shares for ``provider``'s engine.
 
-    Remade when the engine's limit changes (its setting did), so the new limit applies to
-    new segments; jobs already admitted finish under the old one.
+    When the engine's limit changes (its setting did), the same scheduler takes the new limit,
+    so calls already running still count against it.
     """
     engine = ENGINES.get(provider)
     capacity = engine.max_concurrency if engine is not None else TranslationEngine.max_concurrency
     scheduler = SCHEDULERS.get(provider)
-    if scheduler is None or scheduler.capacity != capacity:
+    if scheduler is None:
         scheduler = SCHEDULERS[provider] = TranslationScheduler(capacity)
+    elif scheduler.capacity != capacity:
+        scheduler.set_capacity(capacity)
     return scheduler
 
 
@@ -83,9 +86,7 @@ def _inference_timeout(provider: str, model: str) -> float | None:
         return 12.0
     # If the local CPU is pegged, NLLB can take 30+ seconds.
     try:
-        from portal.translations.providers.local import get_download_progress
-
-        prog = get_download_progress(model)
+        prog = local_provider.get_download_progress(model)
         if prog and prog.get("status") == "downloading":
             return None
     except Exception as exc:
@@ -469,38 +470,47 @@ class TranslationWorker:
                     )
                     vocabulary_entries = []
 
-            # Enforce a strict timeout on inference (12s for cloud, 60s for local).
-            timeout_val = _inference_timeout(provider, model)
-            if timeout_val is None:
-                # Checked before waiting for a slot, so a download never queues segments behind it.
-                logger.info(f"[{booth_id_str}] Local model {model} is downloading. Dropping segment for {lang_code}.")
-                await tts_manager.broadcast_bundle(
-                    room.id, lang_code, booth_id_str, b"", uuid_segment_id, seq, text, "", "model_downloading"
-                )
+            # Enforce a strict timeout on inference (12s for cloud, 60s for local). Checked before
+            # waiting for a slot, so a download never queues segments behind it.
+            if _inference_timeout(provider, model) is None:
+                await self._drop_while_downloading(room.id, lang_code, booth_id_str, model, uuid_segment_id, seq, text)
                 return
 
             # The slot covers the engine call only; saving and broadcasting happen after it is free.
             async with job:
-                try:
-                    translated_text = await asyncio.wait_for(
-                        self._call_llm(
-                            provider,
-                            model,
-                            api_key,
-                            text,
-                            lang_name,
-                            source_lang_name,
-                            target_lang_code=lang_code,
-                            source_language_code=source_lang_code,
-                            persona=room.floor_ai_interpreter_persona,
-                            style=room.floor_ai_interpretation_style,
-                            vocabulary_entries=vocabulary_entries,
-                        ),
-                        timeout=timeout_val,
+                # Checked again: the download may have started while this segment waited.
+                timeout_val = _inference_timeout(provider, model)
+                if timeout_val is None:
+                    await self._drop_while_downloading(
+                        room.id, lang_code, booth_id_str, model, uuid_segment_id, seq, text
                     )
+                    return
+                call = asyncio.ensure_future(
+                    self._call_llm(
+                        provider,
+                        model,
+                        api_key,
+                        text,
+                        lang_name,
+                        source_lang_name,
+                        target_lang_code=lang_code,
+                        source_language_code=source_lang_code,
+                        persona=room.floor_ai_interpreter_persona,
+                        style=room.floor_ai_interpretation_style,
+                        vocabulary_entries=vocabulary_entries,
+                    )
+                )
+                try:
+                    translated_text = await asyncio.wait_for(asyncio.shield(call), timeout=timeout_val)
                 except asyncio.TimeoutError:
                     logger.error(f"[{booth_id_str}] Translation LLM timed out after {timeout_val}s for {lang_code}.")
                     translated_text = None
+                finally:
+                    if not call.done():
+                        # Stop the call, but keep its slot until it has ended: a local model runs in a
+                        # thread that cannot be stopped, and the next call must not start beside it.
+                        call.cancel()
+                        job.keep_slot_until(call)
 
             if translated_text is None:
                 await tts_manager.broadcast_bundle(
@@ -585,6 +595,19 @@ class TranslationWorker:
         finally:
             # A job that never reached the engine (dropped, failed or cancelled) leaves its channel here.
             job.close()
+
+    async def _drop_while_downloading(
+        self, room_id: int, lang_code: str, booth_id_str: str, model: str, uuid_segment_id: str, seq: int, text: str
+    ) -> None:
+        """Drop a segment because its local model is still downloading, and tell listeners why."""
+        from portal.websockets.manager import tts_manager
+
+        logger.info(
+            "[%s] Local model %s is downloading. Dropping segment for %s.", booth_id_str, model, lang_code
+        )
+        await tts_manager.broadcast_bundle(
+            room_id, lang_code, booth_id_str, b"", uuid_segment_id, seq, text, "", "model_downloading"
+        )
 
     async def _call_llm(
         self,

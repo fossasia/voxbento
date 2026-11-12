@@ -267,6 +267,21 @@ def start_eviction_loop():
             pass
 
 
+async def _in_thread(func, /, *args):
+    """Run blocking inference in a thread and return its result.
+
+    A thread cannot be stopped, so when the caller is cancelled (say by a timeout) this waits
+    for the thread to finish before passing the cancellation on. The call then ends only when
+    the model is free again, which keeps the scheduler's slot taken until then (#1188).
+    """
+    work = asyncio.ensure_future(asyncio.to_thread(func, *args))
+    try:
+        return await asyncio.shield(work)
+    except asyncio.CancelledError:
+        await asyncio.wait([work])
+        raise
+
+
 class LocalProvider(TranslationProvider, TranslationEngine):
     """NLLB through CTranslate2, in the portal process."""
 
@@ -359,9 +374,7 @@ class LocalProvider(TranslationProvider, TranslationEngine):
         )
         segment = protect_terms(text, vocabulary_entries)
         if segment.target_terms:
-            translated = await asyncio.to_thread(
-                self._run_inference, segment.text, source_lang_token, target_lang_token, model
-            )
+            translated = await _in_thread(self._run_inference, segment.text, source_lang_token, target_lang_token, model)
             if translated is None:
                 return None
             restored = restore_terms(translated, segment)
@@ -369,7 +382,7 @@ class LocalProvider(TranslationProvider, TranslationEngine):
                 return restored
             # Never show a placeholder to listeners: translate the original segment instead.
             logger.debug("[NLLB] Glossary placeholders did not survive translation; using the plain translation")
-        return await asyncio.to_thread(self._run_inference, text, source_lang_token, target_lang_token, model)
+        return await _in_thread(self._run_inference, text, source_lang_token, target_lang_token, model)
 
     def _run_inference(self, text: str, source_lang_token: str, target_lang_token: str, model_size: str) -> str | None:
         if not text or not text.strip():
