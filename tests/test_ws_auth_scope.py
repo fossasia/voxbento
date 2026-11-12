@@ -141,6 +141,25 @@ def test_the_legacy_access_token_is_unaffected_by_the_role_scope_rule(monkeypatc
 # -- a cookie is held to the same scope, with or without BOOTH_ACCESS_TOKEN ------------------------
 
 
+def test_a_role_cookie_without_its_event_and_language_holds_no_role_without_an_access_token():
+    """The same scope-less role as a cookie: connected, as #810 has it, but granted nothing."""
+    cookies = {"session_token": _forged(role="event_owner")}
+
+    with client.websocket_connect(f"/ws/booth/{BOOTH}", cookies=cookies) as ws:
+        reply = _join(ws)
+
+    assert reply["type"] == "booth:error"
+    assert "No role" in reply["message"]
+
+
+def test_a_role_cookie_without_its_event_and_language_is_refused_when_an_access_token_is_set(monkeypatch):
+    monkeypatch.setattr(settings, "booth_access_token", "legacy-secret")
+
+    code = _refused_with(f"/ws/booth/{BOOTH}", cookies={"session_token": _forged(role="event_owner")})
+
+    assert code == 4003
+
+
 def test_a_cookie_for_another_booth_is_refused_when_an_access_token_is_set(monkeypatch):
     monkeypatch.setattr(settings, "booth_access_token", "legacy-secret")
 
