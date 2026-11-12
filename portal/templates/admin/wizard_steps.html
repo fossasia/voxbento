@@ -4,7 +4,12 @@
   {% for num, label, slug in steps %}
   <div class="step {{ 'is-done' if num < step else ('is-active' if num == step else '') }}">
     {% if num < step and event %}
-      {% set target = management_prefix ~ '/setup' if not slug else management_prefix ~ '/events/' ~ event.id ~ '/setup/' ~ slug %}
+      {% if not slug %}
+        {% set current_url = request.url.path ~ ('?' ~ request.url.query if request.url.query else '') %}
+        {% set target = management_prefix ~ '/setup?eventId=' ~ event.id ~ '&return_to=' ~ current_url %}
+      {% else %}
+        {% set target = management_prefix ~ '/events/' ~ event.id ~ '/setup/' ~ slug %}
+      {% endif %}
       <a class="step-bubble" href="{{ target }}" aria-label="Go to {{ label }}">✓</a>
     {% else %}
       <span class="step-bubble">{{ num }}</span>

@@ -55,7 +55,7 @@
 
     <div class="wizard-actions">
       <a href="{{ management_prefix }}/events/{{ event.id }}/setup/rooms" class="btn">&larr; Back</a>
-      <a href="{{ management_prefix }}/events/{{ event.id }}/" class="btn btn-primary btn-lg">Finish setup ✓</a>
+      <a href="{{ management_prefix }}/events/{{ event.id }}/" data-finish-setup="{{ event.id }}" class="btn btn-primary btn-lg">Finish setup ✓</a>
     </div>
   </div>
 </div>

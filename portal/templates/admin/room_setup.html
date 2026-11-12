@@ -28,6 +28,8 @@
 
 <div class="wizard rs" id="room-setup"
      data-mode="{{ 'edit' if is_edit else 'create' }}"
+     data-event-id="{{ event.id }}"
+     data-from-setup="{{ 'true' if from_setup else 'false' }}"
      data-booth-codes='{{ booth_codes | tojson }}'
      data-live-codes='{{ live_codes | tojson }}'
      data-voice-support='{{ catalog.voice_support | tojson }}'
