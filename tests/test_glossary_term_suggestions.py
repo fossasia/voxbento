@@ -16,6 +16,7 @@ from fastapi import HTTPException
 from httpx import ASGITransport, AsyncClient
 from sqlalchemy import select
 from starlette.datastructures import FormData, UploadFile
+from starlette.requests import Request
 
 from fastapi_app import app
 from portal.auth import create_user_token
@@ -34,7 +35,7 @@ from portal.database import (
     set_room_membership,
 )
 from portal.models import AIVocabularyEntry, Event, RoomTranslationLanguage
-from portal.routers.admin import limited_receive
+from portal.routers.admin import limit_source_upload, limited_receive
 from portal.translations import source_documents, term_suggestions
 from portal.translations.engine import EngineKind, Language
 from portal.translations.providers.base import ProviderEngine
@@ -516,7 +517,8 @@ class CSRFClient(AsyncClient):
     async def post(self, url, *, cookies=None, headers=None, **kwargs):
         if cookies is not None and "admin_csrf" not in cookies:
             bootstrap = await self.get("/admin/events/", cookies=cookies)
-            token = bootstrap.cookies.get("admin_csrf", "")
+            # A still-valid token is not set again, so it may only be in the client's cookie jar.
+            token = bootstrap.cookies.get("admin_csrf") or self.cookies.get("admin_csrf", "")
             cookies = {**cookies, "admin_csrf": token}
             headers = {**(headers or {}), "X-CSRF-Token": token}
         return await super().post(url, cookies=cookies, headers=headers, **kwargs)
@@ -527,7 +529,8 @@ def client() -> CSRFClient:
 
 
 async def csrf_token_for(c: AsyncClient, cookies: dict) -> str:
-    return (await c.get("/admin/events/", cookies=cookies)).cookies.get("admin_csrf", "")
+    response = await c.get("/admin/events/", cookies=cookies)
+    return response.cookies.get("admin_csrf") or c.cookies.get("admin_csrf", "")
 
 
 async def saved_entries(room_id: int) -> list[AIVocabularyEntry]:
@@ -590,6 +593,30 @@ async def test_oversized_upload_is_rejected_with_a_message(setup, monkeypatch):
         response = await post_file(c, setup, "big.txt", b"x" * 11)
     assert response.status_code == 413
     assert b"10 MB or smaller" in response.content
+
+
+@pytest.mark.anyio
+async def test_source_upload_limit_wraps_the_real_stream_without_recursion(monkeypatch):
+    """The dependency swaps a real Starlette request's stream; reading it must reach the client's data."""
+    monkeypatch.setattr("portal.routers.admin.MAX_SOURCE_BYTES", 8)
+    monkeypatch.setattr("portal.routers.admin.MAX_MULTIPART_OVERHEAD_BYTES", 0)
+    chunks = [b"a" * 5, b"b" * 5]
+
+    async def receive() -> dict:
+        return {"type": "http.request", "body": chunks.pop(0), "more_body": bool(chunks)}
+
+    small = Request({"type": "http", "method": "POST", "headers": []}, receive)
+    monkeypatch.setattr("portal.routers.admin.MAX_SOURCE_BYTES", 100)
+    await limit_source_upload(small)
+    assert await small.body() == b"aaaaabbbbb"
+
+    chunks.extend([b"a" * 5, b"b" * 5])
+    monkeypatch.setattr("portal.routers.admin.MAX_SOURCE_BYTES", 8)
+    large = Request({"type": "http", "method": "POST", "headers": []}, receive)
+    await limit_source_upload(large)
+    with pytest.raises(HTTPException) as rejected:
+        await large.body()
+    assert rejected.value.status_code == 413
 
 
 @pytest.mark.anyio

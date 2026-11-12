@@ -1927,7 +1927,8 @@ async def limit_source_upload(request: Request) -> None:
     parse would spool an oversized file in full. Starlette exposes no setter for a request's
     stream, so the private ``_receive`` is replaced; the form parsed through it is cached and reused.
     """
-    request._receive = limited_receive(request.receive, MAX_SOURCE_BYTES + MAX_MULTIPART_OVERHEAD_BYTES)
+    # The original stream is captured before it is replaced, so the wrapper never calls itself.
+    request._receive = limited_receive(request._receive, MAX_SOURCE_BYTES + MAX_MULTIPART_OVERHEAD_BYTES)
 
 
 async def read_suggestion_terms(upload: UploadFile, existing_terms: list[str]) -> list[TermSuggestion]:
