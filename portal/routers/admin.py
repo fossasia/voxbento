@@ -165,8 +165,8 @@ from portal.room_setup import DELIVERY_LABELS as ROOM_DELIVERY_LABELS
 from portal.room_setup import SPEECH_MODELS as ROOM_SPEECH_MODELS
 from portal.room_setup import VOICE_PRESETS as ROOM_VOICE_PRESETS
 from portal.room_setup import language_name as room_language_name
+from portal.team import INVALID_EMAIL, TeamError, clean_email, load_team
 from portal.team import ROLE_CHOICES as TEAM_ROLE_CHOICES
-from portal.team import TeamError, load_team
 from portal.team import add_member as add_team_member
 from portal.team import create_invite_link as create_team_invite_link
 from portal.team import parse_place as parse_team_place
@@ -1144,6 +1144,8 @@ async def admin_setup_add_invite(request: Request, event_id: int):
     role = form.get("role", EVENT_OWNER).strip() or EVENT_OWNER
     if role and assignment_error(role, "event"):
         return invalid_role_redirect(request, f"events/{event_id}/setup/invite", role)
+    if email and not (email := clean_email(email)):
+        return invalid_email_redirect(request, f"events/{event_id}/setup/invite")
     if email:
         async with get_session() as session:
             user = await get_user_by_email(session, email)
@@ -1502,7 +1504,8 @@ async def admin_room_detail(request: Request, event_id: int, room_id: int):
             },
             "room_overlay_channels": overlay_channels([room], db_booths),
             "floor_overlay_url": _overlay_url(event, room.id, "floor") if room.has_floor_captions else None,
-            "error_notice": getattr(request.state, "translation_error", None),
+            "error_notice": getattr(request.state, "translation_error", None)
+            or (INVALID_EMAIL if request.query_params.get("error") == "invalid_email" else None),
             "just_created": request.query_params.get("created") == "1",
             "just_updated": request.query_params.get("updated") == "1",
             "kept_live_languages": kept_live,
@@ -2168,6 +2171,7 @@ BOOTH_WORKER_NOTICES = {
     "failed": "The caption worker could not be started, so there are no live captions right now. Try saving again in a moment.",
 }
 BOOTH_ERROR_NOTICES = {
+    "invalid_email": INVALID_EMAIL,
     "model": "That caption model is no longer supported. Pick another model and save again; nothing was changed.",
     "server": "That service is not available on this server. Pick another service and save again; nothing was changed.",
     "api_off": "External transcription is turned off for this event. Turn it on under API keys, or pick Local; nothing was changed.",
@@ -2325,6 +2329,8 @@ async def admin_add_room_member(request: Request, event_id: int, room_id: int):
     role = form.get("role", "").strip()
     if role and assignment_error(role, "room"):
         return invalid_role_redirect(request, f"events/{event_id}/rooms/{room_id}/", role)
+    if email and not (email := clean_email(email)):
+        return invalid_email_redirect(request, f"events/{event_id}/rooms/{room_id}/")
     if email:
         async with get_session() as session:
             room = await room_in_event(session, event_id, room_id)
@@ -2422,6 +2428,8 @@ async def admin_add_booth_member(request: Request, event_id: int, room_id: int, 
     role = form.get("role", "").strip()
     if role and assignment_error(role, "booth"):
         return invalid_role_redirect(request, f"events/{event_id}/rooms/{room_id}/booths/{booth_id}/", role)
+    if email and not (email := clean_email(email)):
+        return invalid_email_redirect(request, f"events/{event_id}/rooms/{room_id}/booths/{booth_id}/")
     if email:
         async with get_session() as session:
             booth = await booth_in_room(session, event_id, room_id, booth_id)
@@ -2849,6 +2857,11 @@ def invalid_role_redirect(request: Request, path: str, role: str) -> RedirectRes
         url=management_url(request, f"{path}?error=invalid_role&role={urllib.parse.quote(role)}"),
         status_code=status.HTTP_303_SEE_OTHER,
     )
+
+
+def invalid_email_redirect(request: Request, path: str) -> RedirectResponse:
+    """Back to the form when the email can't be used, instead of failing in User._validate_email."""
+    return safe_redirect(url=management_url(request, f"{path}?error=invalid_email"), status_code=status.HTTP_303_SEE_OTHER)
 
 
 def user_notice(request: Request) -> tuple[str, str] | None:
@@ -3633,6 +3646,9 @@ async def admin_add_event_member(request: Request, event_id: int):
     role = form.get("role", "").strip()
     if role and assignment_error(role, "event"):
         return invalid_role_redirect(request, f"events/{event_id}/members/", role)
+    if email and not (email := clean_email(email)):
+        # The Members page now redirects to Team, so show the error there.
+        return await render_team(request, event_id, error=INVALID_EMAIL, form={"email": form.get("email", "")}, status_code=400)
     if email:
         async with get_session() as session:
             event = await get_event_by_id(session, event_id)
