@@ -299,7 +299,7 @@ def test_production_requires_both_client_settings():
     base = {
         "_env_file": None,
         "debug": False,
-        "secret_key": "s" * 64,
+        "secret_key": "test-secret-key-0123456789abcdefghijklmnop",
         "mediamtx_auth_hook_secret": "m" * 32,
         "booth_access_token": "b" * 32,
         "api_key_encryption_key": "k" * 32,
@@ -888,6 +888,24 @@ async def test_failed_channel_lookup_revokes_the_new_grant(yt_env):
     assert await stored_connection(yt_env) is None
     # Google granted access but VoxBento stored nothing, so the grant is given back.
     assert yt_env["google"]["revoked"] == [REFRESH_TOKEN]
+
+
+@pytest.mark.anyio
+async def test_failed_channel_lookup_on_reconnect_keeps_the_working_connection(yt_env):
+    client, google = yt_env["client"], yt_env["google"]
+    await connect(yt_env)
+    stored = (await stored_connection(yt_env)).refresh_token_enc
+    # A passing Google error while signing in again: the channel is unknown, and the grant may be
+    # the one the stored connection uses, so it must not be revoked.
+    google["channel_error"] = True
+    state = await start_connect(yt_env)
+    response = await client.get("/youtube/oauth/callback", params={"state": state, "code": AUTH_CODE})
+    assert response.status_code == 303
+    assert "youtube=error" in response.headers["location"]
+    assert google["revoked"] == []
+    assert (await stored_connection(yt_env)).refresh_token_enc == stored
+    google["channel_error"] = False
+    assert (await client.get(event_url(yt_env, "/broadcasts"))).status_code == 200
 
 
 @pytest.mark.anyio

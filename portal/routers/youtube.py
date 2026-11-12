@@ -167,11 +167,13 @@ async def youtube_oauth_callback(request: Request, state: str = "", code: str = 
         return await _store_connection(event_id, room_id, owner, sub, code, verifier)
 
 
-async def _give_back(event_id: int, channel_id: str, refresh_token: str) -> None:
+async def _give_back(event_id: int, channel_id: str | None, refresh_token: str) -> None:
     """Revoke a new grant that was not stored, unless a stored connection still relies on it.
 
     Google keeps one grant per channel owner and client, so revoking it would also cut off a
     connection already stored for this channel (this event's earlier sign-in or another event's).
+    ``channel_id`` is None when Google failed before naming the channel; the grant is then kept
+    whenever any connection is stored, so a passing Google error never breaks a working one.
     """
     try:
         async with get_session() as session:
@@ -192,8 +194,9 @@ async def _store_connection(event_id: int, room_id: int, owner: bool, sub: str, 
     except (yt.YouTubeAuthError, yt.YouTubeAPIError) as exc:
         logger.warning("youtube event_id=%s action=connect_failed reason=%s", event_id, type(exc).__name__)
         if tokens:
-            # The grant exists at Google but will not be stored; give it back.
-            await yt.revoke(tokens["refresh_token"])
+            # The grant exists at Google but will not be stored; give it back unless a stored
+            # connection may rely on it (the channel is unknown here).
+            await _give_back(event_id, None, tokens["refresh_token"])
         return _finish(_room_page(event_id, room_id, "error", owner))
     if channel is None:
         await yt.revoke(tokens["refresh_token"])

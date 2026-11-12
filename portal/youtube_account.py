@@ -271,11 +271,16 @@ async def channel_shared(session: AsyncSession, connection: YouTubeConnection) -
     return result.first() is not None
 
 
-async def channel_connected(session: AsyncSession, channel_id: str) -> bool:
-    """True when any event has a stored connection to ``channel_id`` (and so relies on its grant)."""
-    result = await session.execute(
-        select(YouTubeConnection.id).where(YouTubeConnection.channel_id == channel_id).limit(1)
-    )
+async def channel_connected(session: AsyncSession, channel_id: str | None) -> bool:
+    """True when any event has a stored connection to ``channel_id`` (and so relies on its grant).
+
+    ``None`` means the channel is unknown (Google failed before reporting it): then any stored
+    connection might rely on the grant.
+    """
+    query = select(YouTubeConnection.id)
+    if channel_id is not None:
+        query = query.where(YouTubeConnection.channel_id == channel_id)
+    result = await session.execute(query.limit(1))
     return result.first() is not None
 
 
