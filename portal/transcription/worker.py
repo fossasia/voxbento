@@ -35,6 +35,26 @@ class State(Enum):
     STOPPED = "STOPPED"
 
 
+class TranscriptionStartResult:
+    def __init__(
+        self,
+        status: str,
+        provider: str,
+        model: str,
+        error: str | None = None,
+    ):
+        self.status = status  # "started", "already_running", "failed"
+        self.provider = provider
+        self.model = model
+        self.error = error
+
+    def __bool__(self) -> bool:
+        return self.status in ("started", "already_running")
+
+    def __repr__(self) -> str:
+        return f"<TranscriptionStartResult status={self.status!r} provider={self.provider!r} model={self.model!r} error={self.error!r}>"
+
+
 class TranscriptionWorkerSession:
     def __init__(
         self,
@@ -61,6 +81,8 @@ class TranscriptionWorkerSession:
 
         self.state = State.STARTING
         self.stop_event = asyncio.Event()
+        self.ready_event = asyncio.Event()
+        self.start_error: str | None = None
         self.task: asyncio.Task | None = None
         self.loop_entered = False
 
@@ -68,7 +90,7 @@ class TranscriptionWorkerSession:
 
         channel_path = make_mediamtx_path(self.event_slug, self.room_id, self.language_code)
         self.rtsp_url = f"{settings.mediamtx_rtsp_base}/{channel_path}"
-        self.provider = PROVIDERS.get(self.provider_name, PROVIDERS["local"])
+        self.provider = PROVIDERS.get(self.provider_name) or PROVIDERS.get("local")
         self.sample_rate = "24000" if self.provider_name == "openai" else "16000"
 
     def start(self):
@@ -104,14 +126,16 @@ class TranscriptionWorkerSession:
                 if self.state == State.STOPPING:
                     break
 
-                self.state = State.RUNNING
-                await _wh_worker.enqueue_webhook(
-                    "booth.transcription.started", {"booth_id": self.booth_id, "session_id": self.session_id, "event_slug": self.event_slug}
-                )
+                try:
+                    # The context manager entirely encapsulates ffmpeg process lifecycle and cleanup.
+                    async with FfmpegProcess(self.rtsp_url, self.sample_rate, self.booth_id) as process:
+                        self.state = State.RUNNING
+                        if not self.ready_event.is_set():
+                            self.ready_event.set()
+                        await _wh_worker.enqueue_webhook(
+                            "booth.transcription.started", {"booth_id": self.booth_id, "session_id": self.session_id, "event_slug": self.event_slug}
+                        )
 
-                # The context manager entirely encapsulates ffmpeg process lifecycle and cleanup.
-                async with FfmpegProcess(self.rtsp_url, self.sample_rate, self.booth_id) as process:
-                    try:
                         actual_language = self.transcription_language or self.language_code
                         if actual_language == "floor":
                             actual_language = ""
@@ -149,13 +173,18 @@ class TranscriptionWorkerSession:
                                 self.booth_id,
                                 self.room_id,
                             )
-                    except asyncio.IncompleteReadError:
-                        logger.error(f"[{self.booth_id}][{self.session_id}] ffmpeg stream ended abruptly. Retrying...")
-                    except asyncio.CancelledError:
-                        logger.info(f"[{self.booth_id}][{self.session_id}] Transcription worker cancelled.")
-                        raise
-                    except Exception as e:
-                        logger.error(f"[{self.booth_id}][{self.session_id}] Transcription error: {e}. Retrying...")
+                except asyncio.IncompleteReadError:
+                    logger.error(f"[{self.booth_id}][{self.session_id}] ffmpeg stream ended abruptly. Retrying...")
+                except asyncio.CancelledError:
+                    logger.info(f"[{self.booth_id}][{self.session_id}] Transcription worker cancelled.")
+                    raise
+                except Exception as e:
+                    if not self.ready_event.is_set():
+                        self.start_error = str(e) or e.__class__.__name__
+                        self.ready_event.set()
+                        logger.error(f"[{self.booth_id}][{self.session_id}] Worker startup failed: {e}")
+                        break
+                    logger.error(f"[{self.booth_id}][{self.session_id}] Transcription error: {e}. Retrying...")
 
                 if self.state == State.STOPPING:
                     break
@@ -170,6 +199,13 @@ class TranscriptionWorkerSession:
                     pass
         finally:
             self.state = State.STOPPED
+            if not self.ready_event.is_set():
+                if not self.start_error:
+                    self.start_error = "Worker stopped before becoming ready"
+                self.ready_event.set()
+            async with active_workers_lock:
+                if active_workers.get(self.booth_id) is self:
+                    active_workers.pop(self.booth_id, None)
             await _wh_worker.enqueue_webhook(
                 "booth.transcription.stopped", {"booth_id": self.booth_id, "session_id": self.session_id, "event_slug": self.event_slug}
             )
@@ -183,6 +219,26 @@ class TranscriptionWorkerSession:
 active_workers: Dict[str, TranscriptionWorkerSession] = {}
 
 
+def _worker_config_matches(
+    session: TranscriptionWorkerSession,
+    provider: str,
+    model_size: str,
+    config: ProviderConfig,
+    transcription_language: str | None = None,
+) -> bool:
+    if session.provider_name != provider:
+        return False
+    if session.model_size != model_size:
+        return False
+    if (session.transcription_language or None) != (transcription_language or None):
+        return False
+    existing_key = getattr(session.config, "api_key", None) if session.config else None
+    new_key = getattr(config, "api_key", None) if config else None
+    if existing_key != new_key:
+        return False
+    return True
+
+
 async def start_transcription_worker(
     event_slug: str,
     language_code: str,
@@ -193,7 +249,8 @@ async def start_transcription_worker(
     config: ProviderConfig,
     transcription_language: str | None = None,
     room_id: int | None = None,
-):
+    wait_for_ready: bool = False,
+) -> TranscriptionStartResult:
     while True:
         async with active_workers_lock:
             existing_session = active_workers.get(booth_id)
@@ -222,25 +279,65 @@ async def start_transcription_worker(
                 )
                 active_workers[booth_id] = new_session
                 new_session.start()
-                return
+                break
 
             if existing_session.state in (State.STOPPING, State.STOPPED):
                 if existing_session.state == State.STOPPED:
                     # It's fully dead. Pop it and let the loop recreate it immediately.
-                    active_workers.pop(booth_id)
+                    active_workers.pop(booth_id, None)
                     continue
                 # Session is tearing down in the background. We must strictly serialize.
                 # Drop lock, actively await the old session's death, then loop around and re-check registry.
                 pass
             else:
-                logger.info(f"Transcription worker for {booth_id} is already running.")
-                return
+                if _worker_config_matches(existing_session, provider, model_size, config, transcription_language):
+                    logger.info(f"Transcription worker for {booth_id} is already running with matching config.")
+                    return TranscriptionStartResult(
+                        status="already_running",
+                        provider=existing_session.provider_name,
+                        model=existing_session.model_size,
+                    )
+
+                logger.info(f"[{booth_id}] Configuration changed for running worker; restarting with new settings.")
+                existing_session.stop()
+                pass
 
         # We dropped the lock and the session is STOPPING. Wait for it to die completely.
         logger.info(
             f"[{booth_id}] start_transcription_worker actively waiting for old session [{existing_session.session_id}] to STOP."
         )
         await existing_session.wait_until_stopped()
+
+    if wait_for_ready:
+        startup_timeout = getattr(settings, "transcription_startup_timeout_secs", 5.0)
+        try:
+            await asyncio.wait_for(new_session.ready_event.wait(), timeout=startup_timeout)
+        except TimeoutError:
+            new_session.start_error = "Startup timed out waiting for audio process"
+            new_session.stop()
+            async with active_workers_lock:
+                if active_workers.get(booth_id) is new_session:
+                    active_workers.pop(booth_id, None)
+            return TranscriptionStartResult(
+                status="failed",
+                provider=provider,
+                model=model_size,
+                error=new_session.start_error,
+            )
+
+        if new_session.start_error:
+            return TranscriptionStartResult(
+                status="failed",
+                provider=provider,
+                model=model_size,
+                error=new_session.start_error,
+            )
+
+    return TranscriptionStartResult(
+        status="started",
+        provider=provider,
+        model=model_size,
+    )
 
 
 async def stop_transcription_worker(booth_id: str):

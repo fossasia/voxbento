@@ -39,7 +39,11 @@ from portal.rate_limit import check_rate_limit
 from portal.roles import INTERPRETER, Permission, can_set_active, has_permission
 from portal.schemas.booth import CreateBoothRequest
 from portal.transcription import ProviderConfig, ProviderEnum, get_api_key
-from portal.transcription.worker import start_transcription_worker, stop_transcription_worker
+from portal.transcription.worker import (
+    TranscriptionStartResult,
+    start_transcription_worker,
+    stop_transcription_worker,
+)
 from portal.utils import (
     _check_mediamtx,
     _ensure_mediamtx_path,
@@ -871,13 +875,28 @@ async def api_transcription_start(
             return {"status": "disabled", "message": "Transcription is not enabled for this booth."}
         provider, model_size, config = resolve_transcription_config(db_booth)
     try:
-        await start_transcription_worker(
-            event_slug, language_code, booth_id, broadcast_transcription, provider, model_size, config, room_id=room_id
+        result = await start_transcription_worker(
+            event_slug, language_code, booth_id, broadcast_transcription, provider, model_size, config, room_id=room_id, wait_for_ready=True
         )
     except ValueError as e:
         raise HTTPException(status_code=429, detail=str(e))
+
+    if isinstance(result, TranscriptionStartResult):
+        if result.status == "failed":
+            raise HTTPException(
+                status_code=500,
+                detail=f"Transcription worker failed to start: {result.error or 'Unknown error'}",
+            )
+        result_status = result.status
+        res_provider = result.provider
+        res_model = result.model
+    else:
+        result_status = "started"
+        res_provider = provider
+        res_model = model_size
+
     print("API START: Successfully started worker for booth", booth_id)
-    return {"status": "started", "provider": provider, "model": model_size}
+    return {"status": result_status, "provider": res_provider, "model": res_model}
 
 
 @router.post("/events/{event_slug}/rooms/{room_id}/booths/{language_code}/transcription/stop")

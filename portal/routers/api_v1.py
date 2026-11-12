@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import logging
 from datetime import datetime, timezone
 from typing import Annotated, Any
@@ -30,7 +31,13 @@ from portal.rate_limit import auth_rate_limiter
 from portal.roles import EVENT_OWNER
 from portal.routers.api import broadcast_transcription, resolve_transcription_config
 from portal.transcription.constants import ProviderEnum
-from portal.transcription.worker import active_workers, start_transcription_worker, stop_transcription_worker
+from portal.transcription.worker import (
+    State,
+    TranscriptionStartResult,
+    active_workers,
+    start_transcription_worker,
+    stop_transcription_worker,
+)
 from portal.websockets.revocation import revoke_booths_for_deleted_entity
 
 logger = logging.getLogger(__name__)
@@ -937,8 +944,14 @@ async def start_transcription(
 
     provider, model_size, config = resolve_transcription_config(db_booth, event=event)
 
+    # Release database write lock before waiting on worker startup
+    if hasattr(db, "commit"):
+        res = db.commit()
+        if asyncio.iscoroutine(res) or hasattr(res, "__await__"):
+            await res
+
     try:
-        await start_transcription_worker(
+        result = await start_transcription_worker(
             event_slug,
             canonical_language,
             booth_id,
@@ -947,11 +960,26 @@ async def start_transcription(
             model_size,
             config,
             room_id=target_room_id,
+            wait_for_ready=True,
         )
     except ValueError as e:
         raise HTTPException(status_code=429, detail=str(e))
 
-    return {"status": "started", "booth_id": booth_id, "provider": provider, "model": model_size}
+    if isinstance(result, TranscriptionStartResult):
+        if result.status == "failed":
+            raise HTTPException(
+                status_code=500,
+                detail=f"Transcription worker failed to start: {result.error or 'Unknown error'}",
+            )
+        result_status = result.status
+        res_provider = result.provider
+        res_model = result.model
+    else:
+        result_status = "started"
+        res_provider = provider
+        res_model = model_size
+
+    return {"status": result_status, "booth_id": booth_id, "provider": res_provider, "model": res_model}
 
 
 @router.post("/events/{event_slug}/rooms/{room_id}/booths/{language_code}/transcription/stop")
@@ -996,11 +1024,16 @@ async def get_transcription_status(
     statuses = {}
     for b in booths_list:
         bid = make_booth_id(event_slug, target_room_id, b.language_code)
+        worker = active_workers.get(bid)
+        is_running = (
+            worker is not None
+            and getattr(worker, "state", None) not in (State.STOPPING, State.STOPPED)
+        )
         statuses[b.language_code] = {
             "is_active": booths.get_booth_sync(bid) is not None,
             # Running transcription is tracked by the worker registry, not on the
             # in-memory Booth, which has no transcription_task attribute.
-            "transcription_running": bid in active_workers,
+            "transcription_running": is_running,
         }
 
     return {"room_id": target_room_id, "statuses": statuses}

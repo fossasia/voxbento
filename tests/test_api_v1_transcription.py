@@ -34,6 +34,7 @@ def _result(first=None, all_=()):
 def _db(*results):
     db = MagicMock()
     db.execute = AsyncMock(side_effect=list(results))
+    db.commit = AsyncMock()
     return db
 
 
@@ -639,3 +640,181 @@ async def test_start_transcription_scope_checker_rejects_missing_scope():
 
     assert exc_info.value.status_code == 403
     assert "missing required scope" in exc_info.value.detail.lower()
+
+
+@pytest.mark.anyio
+async def test_start_ffmpeg_launch_failure_returns_500_and_not_counted_running(event):
+    """When FFmpeg fails to launch, route returns 500 and worker is not counted as running."""
+    booth_id = "pycon2026-3-en"
+    mock_booth = MagicMock()
+    db_booth = SimpleNamespace(
+        transcription_enabled=True,
+        transcription_provider="local",
+        transcription_model="tiny",
+        event=event,
+    )
+    db = _db(_result(first=event), _result(first=db_booth))
+
+    with patch.object(api_v1.booths, "get_booth_sync", return_value=mock_booth), \
+         patch("portal.transcription.worker.FfmpegProcess.__aenter__", side_effect=FileNotFoundError("ffmpeg binary not found")):
+        with pytest.raises(api_v1.HTTPException) as exc_info:
+            await api_v1.start_transcription(
+                EVENT_SLUG, ROOM_ID, "en", db=db, token=object()
+            )
+        assert exc_info.value.status_code == 500
+        assert "ffmpeg binary not found" in exc_info.value.detail
+
+    assert booth_id not in active_workers
+    status_db = _db(_result(first=event), _result(all_=[SimpleNamespace(language_code="en")]))
+    status_resp = await api_v1.get_transcription_status(EVENT_SLUG, ROOM_ID, db=status_db, token=object())
+    assert status_resp["statuses"]["en"]["transcription_running"] is False
+
+
+@pytest.mark.anyio
+async def test_start_already_running_same_config_returns_already_running(event):
+    """When a worker is already running with identical config, route returns already_running status."""
+    from portal.transcription.providers.base import ProviderConfig
+
+    booth_id = "pycon2026-3-en"
+    mock_booth = MagicMock()
+    db_booth = SimpleNamespace(
+        transcription_enabled=True,
+        transcription_provider="local",
+        transcription_model="tiny",
+        event=event,
+    )
+    db = _db(_result(first=event), _result(first=db_booth))
+
+    existing_session = SimpleNamespace(
+        provider_name="local",
+        model_size="tiny",
+        transcription_language=None,
+        config=ProviderConfig(api_key=None),
+        state=api_v1.State.RUNNING,
+    )
+    active_workers[booth_id] = existing_session
+
+    try:
+        with patch.object(api_v1.booths, "get_booth_sync", return_value=mock_booth):
+            response = await api_v1.start_transcription(
+                EVENT_SLUG, ROOM_ID, "en", db=db, token=object()
+            )
+
+        assert response == {
+            "status": "already_running",
+            "booth_id": booth_id,
+            "provider": "local",
+            "model": "tiny",
+        }
+    finally:
+        active_workers.pop(booth_id, None)
+
+
+@pytest.mark.anyio
+async def test_start_already_running_rotated_api_key_restarts_worker(event):
+    """When a worker is running but API key is rotated, worker is restarted with new settings."""
+    from portal.transcription.providers.base import ProviderConfig
+
+    booth_id = "pycon2026-3-en"
+    event.transcription_api_enabled = True
+    mock_booth = MagicMock()
+    db_booth = SimpleNamespace(
+        transcription_enabled=True,
+        transcription_provider="openai",
+        transcription_model="whisper-1",
+        event=event,
+    )
+    db = _db(_result(first=event), _result(first=db_booth))
+
+    stopped_called = False
+
+    class OldSession:
+        def __init__(self):
+            self.provider_name = "openai"
+            self.model_size = "whisper-1"
+            self.transcription_language = None
+            self.config = ProviderConfig(api_key="old-key")
+            self.state = api_v1.State.RUNNING
+            self.session_id = "old-session-123"
+
+        def stop(self):
+            nonlocal stopped_called
+            stopped_called = True
+            self.state = api_v1.State.STOPPED
+
+        async def wait_until_stopped(self):
+            pass
+
+    old_session = OldSession()
+    active_workers[booth_id] = old_session
+
+    async def dummy_aenter(self):
+        self.process = MagicMock(pid=9999)
+        self.stderr_task = MagicMock(done=MagicMock(return_value=True))
+        return self.process
+
+    try:
+        with patch.object(api_v1.booths, "get_booth_sync", return_value=mock_booth), \
+             patch("portal.routers.api.get_api_key", return_value="new-rotated-key"), \
+             patch("portal.transcription.worker.FfmpegProcess.__aenter__", dummy_aenter), \
+             patch("portal.transcription.worker.PROVIDERS", {"openai": MagicMock()}):
+            response = await api_v1.start_transcription(
+                EVENT_SLUG, ROOM_ID, "en", db=db, token=object()
+            )
+
+        assert stopped_called is True
+        assert response == {
+            "status": "started",
+            "booth_id": booth_id,
+            "provider": "openai",
+            "model": "whisper-1",
+        }
+        new_session = active_workers[booth_id]
+        assert new_session is not old_session
+        assert new_session.config.api_key == "new-rotated-key"
+    finally:
+        active_workers.pop(booth_id, None)
+
+
+@pytest.mark.anyio
+async def test_start_normal_success_with_real_worker_lifecycle(event):
+    """Normal successful start waits for worker to become ready and registers running status."""
+    booth_id = "pycon2026-3-en"
+    mock_booth = MagicMock()
+    db_booth = SimpleNamespace(
+        transcription_enabled=True,
+        transcription_provider="local",
+        transcription_model="tiny",
+        event=event,
+    )
+    db = _db(_result(first=event), _result(first=db_booth))
+
+    async def dummy_aenter(self):
+        self.process = MagicMock(pid=1234)
+        self.stderr_task = MagicMock(done=MagicMock(return_value=True))
+        return self.process
+
+    try:
+        with patch.object(api_v1.booths, "get_booth_sync", return_value=mock_booth), \
+             patch("portal.transcription.worker.FfmpegProcess.__aenter__", dummy_aenter), \
+             patch("portal.transcription.worker.PROVIDERS", {"local": MagicMock()}):
+            response = await api_v1.start_transcription(
+                EVENT_SLUG, ROOM_ID, "en", db=db, token=object()
+            )
+
+        assert response == {
+            "status": "started",
+            "booth_id": booth_id,
+            "provider": "local",
+            "model": "tiny",
+        }
+        assert booth_id in active_workers
+        session = active_workers[booth_id]
+        assert session.state == api_v1.State.RUNNING
+
+        status_db = _db(_result(first=event), _result(all_=[SimpleNamespace(language_code="en")]))
+        status_resp = await api_v1.get_transcription_status(EVENT_SLUG, ROOM_ID, db=status_db, token=object())
+        assert status_resp["statuses"]["en"]["transcription_running"] is True
+    finally:
+        active_workers.pop(booth_id, None)
+
