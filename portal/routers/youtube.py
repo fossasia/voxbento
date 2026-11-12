@@ -174,9 +174,8 @@ async def _store_connection(event_id: int, room_id: int, owner: bool, sub: str, 
         channel = await yt.my_channel(tokens["access_token"])
     except (yt.YouTubeAuthError, yt.YouTubeAPIError) as exc:
         logger.warning("youtube event_id=%s action=connect_failed reason=%s", event_id, type(exc).__name__)
-        if tokens:
-            # The grant exists at Google but will not be stored; give it back.
-            await yt.revoke(tokens["refresh_token"])
+        # The grant exists at Google but will not be stored; give it back unless it may be in use.
+        await _give_back(tokens["refresh_token"] if tokens else getattr(exc, "refresh_token", None))
         return _finish(_room_page(event_id, room_id, "error", owner))
     if channel is None:
         await yt.revoke(tokens["refresh_token"])
@@ -212,14 +211,28 @@ async def _store_connection(event_id: int, room_id: int, owner: bool, sub: str, 
             connection.last_error = None
             connection.connected_at = datetime.now(timezone.utc)
     except RuntimeError:
-        # No API_KEY_ENCRYPTION_KEY: the token cannot be stored, so give it back.
-        await yt.revoke(tokens["refresh_token"])
+        # No API_KEY_ENCRYPTION_KEY: the token cannot be stored, so give it back unless it may be in use.
+        await _give_back(tokens["refresh_token"], channel_id)
         logger.warning("youtube event_id=%s action=connect_failed reason=encryption_key", event_id)
         return _finish(_room_page(event_id, room_id, "error", owner))
     yt.forget_event(event_id, room_ids)
     await yt.revoke(old_token)
     logger.info("youtube event_id=%s action=connected", event_id)
     return _finish(_room_page(event_id, room_id, "connected", owner))
+
+
+async def _give_back(refresh_token: str | None, channel_id: str | None = None) -> None:
+    """Revoke a grant that was not stored, unless a stored connection may share it.
+
+    Google keeps one grant per account and app: revoking a failed reconnect's token would also cut off the
+    connection already stored for this or another event. Without a channel, any stored connection might share it.
+    """
+    if not refresh_token:
+        return
+    async with get_session() as session:
+        if await yt.grant_may_be_stored(session, channel_id):
+            return
+    await yt.revoke(refresh_token)
 
 
 @router.get(f"{EVENT_PATH}/broadcasts", dependencies=[Depends(require_event_owner)])

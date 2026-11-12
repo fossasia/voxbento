@@ -294,7 +294,7 @@ def test_production_requires_both_client_settings():
     base = {
         "_env_file": None,
         "debug": False,
-        "secret_key": "s" * 64,
+        "secret_key": "0123456789abcdef" * 4,
         "mediamtx_auth_hook_secret": "m" * 32,
         "booth_access_token": "b" * 32,
         "api_key_encryption_key": "k" * 32,
@@ -857,6 +857,64 @@ async def test_failed_channel_lookup_revokes_the_new_grant(yt_env):
     assert await stored_connection(yt_env) is None
     # Google granted access but VoxBento stored nothing, so the grant is given back.
     assert yt_env["google"]["revoked"] == [REFRESH_TOKEN]
+
+
+async def second_event(env):
+    async with get_session() as session:
+        second = Event(slug="yt-second", display_name="Second")
+        session.add(second)
+        await session.flush()
+        await set_event_membership(session, user_id=env["owner"].id, event_id=second.id, role=EVENT_OWNER)
+        second_room = Room(event_id=second.id, display_name="Second room")
+        session.add(second_room)
+    return second, second_room
+
+
+async def callback_for(env, event_id, room_id):
+    client = env["client"]
+    response = await client.get(f"/workspace/events/{event_id}/youtube/connect", params={"room_id": room_id})
+    query = parse_qs(urlsplit(response.headers["location"]).query)
+    env["google"]["challenges"].add(query["code_challenge"][0])
+    client.cookies.set("vb_yt_oauth", response.cookies["vb_yt_oauth"])
+    callback = await client.get("/youtube/oauth/callback", params={"state": query["state"][0], "code": AUTH_CODE})
+    client.cookies.delete("vb_yt_oauth")
+    return callback
+
+
+@pytest.mark.anyio
+async def test_failed_reconnect_keeps_the_stored_grant(yt_env):
+    await connect(yt_env)
+    yt_env["google"]["channel_error"] = True
+    state = await start_connect(yt_env)
+    response = await yt_env["client"].get("/youtube/oauth/callback", params={"state": state, "code": AUTH_CODE})
+    assert "youtube=error" in response.headers["location"]
+    # The stored connection may share the new grant, so revoking it would disconnect the event.
+    assert await stored_connection(yt_env) is not None
+    assert yt_env["google"]["revoked"] == []
+
+
+@pytest.mark.anyio
+async def test_failed_sign_in_keeps_another_events_grant(yt_env):
+    await connect(yt_env)
+    second, second_room = await second_event(yt_env)
+    yt_env["google"]["channel_error"] = True
+    response = await callback_for(yt_env, second.id, second_room.id)
+    assert "youtube=error" in response.headers["location"]
+    assert yt_env["google"]["revoked"] == []
+    async with get_session() as session:
+        assert await yt.get_connection(session, second.id) is None
+    assert await stored_connection(yt_env) is not None
+
+
+@pytest.mark.anyio
+async def test_refused_scope_on_reconnect_keeps_the_stored_grant(yt_env):
+    await connect(yt_env)
+    yt_env["google"]["grant_scope"] = "openid"
+    state = await start_connect(yt_env)
+    response = await yt_env["client"].get("/youtube/oauth/callback", params={"state": state, "code": AUTH_CODE})
+    assert "youtube=error" in response.headers["location"]
+    assert await stored_connection(yt_env) is not None
+    assert yt_env["google"]["revoked"] == []
 
 
 @pytest.mark.anyio

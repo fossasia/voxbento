@@ -271,6 +271,18 @@ async def channel_shared(session: AsyncSession, connection: YouTubeConnection) -
     return result.first() is not None
 
 
+async def grant_may_be_stored(session: AsyncSession, channel_id: str | None = None) -> bool:
+    """True when a stored connection may hold the same Google grant as a sign-in that is not being stored.
+
+    Google keeps one grant per account and app, and revoking it cuts off every connection using it. With the
+    channel unknown (its lookup failed), any stored connection might share the grant.
+    """
+    query = select(YouTubeConnection.id)
+    if channel_id is not None:
+        query = query.where(YouTubeConnection.channel_id == channel_id)
+    return (await session.execute(query.limit(1))).first() is not None
+
+
 async def room_ids_for_event(session: AsyncSession, event_id: int) -> list[int]:
     result = await session.execute(select(Room.id).where(Room.event_id == event_id))
     return list(result.scalars())
@@ -382,9 +394,11 @@ async def exchange_code(code: str, verifier: str) -> dict:
     if not tokens["refresh_token"]:
         raise YouTubeAuthError("Google did not grant offline access. Sign in with YouTube again and allow access.")
     if SCOPE not in tokens["scope"].split():
-        # The owner unticked YouTube on Google's consent screen: the grant is unusable, so give it back.
-        await revoke(tokens["refresh_token"])
-        raise YouTubeAuthError("Allow VoxBento to manage your YouTube account on Google's consent screen.")
+        # The owner unticked YouTube on Google's consent screen: the grant is unusable. The caller decides
+        # whether it can be given back, because a stored connection may share it.
+        exc = YouTubeAuthError("Allow VoxBento to manage your YouTube account on Google's consent screen.")
+        exc.refresh_token = tokens["refresh_token"]
+        raise exc
     return tokens
 
 
