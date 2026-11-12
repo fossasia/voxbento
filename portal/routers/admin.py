@@ -182,6 +182,7 @@ from portal.transcription.worker import (
     wait_for_worker_start,
 )
 from portal.translations.constants import TRANSLATION_MODELS, TranslationProviderEnum
+from portal.translations.model_languages import language_support_error
 from portal.translations.vocabulary import (
     VocabularyOverlapIndex,
     VocabularyScopeError,
@@ -1454,6 +1455,7 @@ async def admin_redirect_room_by_eventyay_id(request: Request, event_slug: str, 
 
 @router.get("/admin/events/{event_id}/rooms/{room_id}/", dependencies=[Depends(require_owner_or_coordinator)])
 async def admin_room_detail(request: Request, event_id: int, room_id: int):
+    """Render room settings and any translation validation error."""
     admin_flags = await get_access_flags(request, event_id=event_id, room_id=room_id)
     async with get_session() as session:
         event = await get_event_by_id(session, event_id)
@@ -1500,11 +1502,14 @@ async def admin_room_detail(request: Request, event_id: int, room_id: int):
             },
             "room_overlay_channels": overlay_channels([room], db_booths),
             "floor_overlay_url": _overlay_url(event, room.id, "floor") if room.has_floor_captions else None,
+            "error_notice": getattr(request.state, "translation_error", None),
             "just_created": request.query_params.get("created") == "1",
             "just_updated": request.query_params.get("updated") == "1",
             "kept_live_languages": kept_live,
             "fallback_jitsi_url": fallback_jitsi_url,
             "catalog": catalog,
+            # Services that cannot translate this room's languages are not offered.
+            "translation_unfit": catalog.translation_hidden((room.floor_language_code, *snapshot.plan.ai_languages)),
             "audio_choice": room_audio_choice(room),
             "speech_models": ROOM_SPEECH_MODELS,
             "voice_presets": ROOM_VOICE_PRESETS,
@@ -1564,6 +1569,37 @@ async def admin_room_transcripts(request: Request, event_id: int, room_id: int):
     )
 
 
+class TranslationLanguageError(HTTPException):
+    """A translation-language validation error that can be shown on its settings form."""
+
+
+async def _translation_form_response(
+    request: Request, error: TranslationLanguageError, event_id: int, room_id: int, booth_id: int | None = None
+):
+    """Re-render browser settings after rollback, retaining JSON errors for other clients."""
+    if "text/html" not in request.headers.get("accept", ""):
+        raise error
+    request.state.translation_error = error.detail
+    if booth_id is None:
+        response = await admin_room_detail(request, event_id, room_id)
+    else:
+        response = await admin_booth_detail(request, event_id, room_id, booth_id)
+    response.status_code = error.status_code
+    return response
+
+
+def _require_translatable(provider: str | None, model: str | None, language_codes: Iterable[str | None]) -> None:
+    """Refuse a translation model that cannot handle the language spoken or a language translated into."""
+    error = language_support_error(provider, model, language_codes)
+    if error:
+        raise TranslationLanguageError(status_code=400, detail=error)
+
+
+def _enabled_codes(translation_languages) -> list[str]:
+    """The ISO codes of enabled target languages for a room."""
+    return [lang.language_code for lang in translation_languages if lang.enabled]
+
+
 def _apply_ai_settings(room: Room, form: FormData, catalog: EngineCatalog) -> None:
     """Save the room page's AI settings: services, models, voice and translator instructions.
 
@@ -1583,8 +1619,15 @@ def _apply_ai_settings(room: Room, form: FormData, catalog: EngineCatalog) -> No
         model = str(form.get("floor_translation_model", "")).strip()[:100]
         if translation.provider == TranslationProviderEnum.SELF_HOSTED.value:
             model = settings.self_hosted_llm_model_or_default(model) or ""
+        model = model or translation.model
+        # Only a changed choice is checked, so a room saved before this rule can still save its other settings.
+        changed = (translation.provider, model) != (room.floor_translation_provider, room.floor_translation_model)
+        if changed and room.floor_translation_enabled:
+            _require_translatable(
+                translation.provider, model, (room.floor_language_code, *_enabled_codes(room.translation_languages))
+            )
         room.floor_translation_provider = translation.provider
-        room.floor_translation_model = model or translation.model
+        room.floor_translation_model = model
     if "floor_ai_interpreter_persona" in form:
         room.floor_ai_interpreter_persona = str(form.get("floor_ai_interpreter_persona", "")).strip() or None
         room.floor_ai_interpretation_style = str(form.get("floor_ai_interpretation_style", "")).strip() or None
@@ -1598,20 +1641,38 @@ def _apply_ai_settings(room: Room, form: FormData, catalog: EngineCatalog) -> No
             room.floor_tts_voice = preset
 
 
-@router.post("/admin/events/{event_id}/rooms/{room_id}/edit", dependencies=[Depends(require_event_owner), Depends(require_admin_csrf)])
-async def admin_edit_room(request: Request, event_id: int, room_id: int):
-    """Update settings and configuration for an event room."""
-    form = await request.form()
-    form_section = form.get("form_section", "").strip()
+def _process_room_general_section(room: Room, form: FormData) -> None:
     display_name = form.get("display_name", "").strip()
     jitsi_url = form.get("jitsi_url", "").strip()
+    audio_delay_ms = parse_audio_delay_ms(form.get("audio_delay_ms", "0"))
+    if display_name:
+        room.display_name = display_name
+    room.jitsi_url = jitsi_url if jitsi_url else None
+    room.audio_delay_ms = audio_delay_ms
+
+
+async def _process_room_relay_section(session: AsyncSession, room: Room, event_id: int, form: FormData) -> None:
     relay_booth_id_str = form.get("relay_booth_id", "").strip()
     relay_booth_id = int(relay_booth_id_str) if relay_booth_id_str and relay_booth_id_str.lower() != "none" else None
-    audio_delay_ms = parse_audio_delay_ms(form.get("audio_delay_ms", "0"))
-    floor_transcription_enabled = form.get("floor_transcription_enabled") == "on"
-    floor_transcription_provider = form.get("floor_transcription_provider", "local").strip().lower() or "none"
-    floor_transcription_model = form.get("floor_transcription_model", "tiny").strip()
-    floor_language_code = form.get("floor_language_code", "").strip() or None
+    if relay_booth_id is not None:
+        relay_booth = await get_booth_by_id(session, relay_booth_id)
+        if relay_booth is None or relay_booth.event_id != event_id:
+            raise HTTPException(status_code=404, detail="Booth not found.")
+        relay_room = await get_room_by_id(session, relay_booth.room_id)
+        if relay_room is None or relay_room.event_id != event_id:
+            raise HTTPException(status_code=404, detail="Booth not found.")
+    room.relay_booth_id = relay_booth_id
+
+
+def _process_room_transcription_section(room: Room, form: FormData) -> None:
+    room.floor_transcription_enabled = form.get("floor_transcription_enabled") == "on"
+    room.floor_transcription_provider = form.get("floor_transcription_provider", "local").strip().lower() or "none"
+    room.floor_transcription_model = form.get("floor_transcription_model", "tiny").strip()
+    room.floor_language_code = form.get("floor_language_code", "").strip() or None
+
+
+def _room_translation_choice(form: FormData, form_section: str) -> tuple[bool, str | None, str | None]:
+    """The translation switch, provider and model the form asks for."""
     floor_translation_enabled = form.get("floor_translation_enabled") == "on"
     floor_translation_provider = form.get("floor_translation_provider", "").strip() or None
     floor_translation_model = form.get("floor_translation_model", "").strip() or None
@@ -1620,79 +1681,120 @@ async def admin_edit_room(request: Request, event_id: int, room_id: int):
         if floor_translation_enabled and form_section in ("", "translation") and not settings.self_hosted_llm_enabled:
             raise HTTPException(status_code=400, detail="Self-hosted translation is not configured on this server")
         floor_translation_model = settings.self_hosted_llm_model_or_default(floor_translation_model)
+    return floor_translation_enabled, floor_translation_provider, floor_translation_model
+
+
+def _require_room_form_translatable(room: Room, form: FormData, form_section: str) -> None:
+    """Refuse the form when the translation it would leave the room with cannot handle its languages.
+
+    Called before any section is applied, and it only checks when the form changes the
+    translation setup, so a room saved before this rule can still save its other settings
+    and can always turn translation off.
+    """
+    saves_translation = form_section in ("", "translation")
+    saves_source = form_section in ("", "transcription")
+    before = (
+        room.floor_translation_enabled,
+        room.floor_translation_provider,
+        room.floor_translation_model,
+        room.floor_language_code,
+        sorted(_enabled_codes(room.translation_languages)),
+    )
+    after = before
+    if saves_translation:
+        enabled, provider, model = _room_translation_choice(form, form_section)
+        after = (enabled, provider, model, before[3], sorted(set(form.getlist("floor_translation_languages"))))
+    if saves_source:
+        after = (*after[:3], form.get("floor_language_code", "").strip() or None, after[4])
+    if after != before and after[0]:
+        _require_translatable(after[1], after[2], (after[3], *after[4]))
+
+
+def _process_room_translation_section(session: AsyncSession, room: Room, form: FormData, form_section: str) -> None:
+    floor_translation_enabled, floor_translation_provider, floor_translation_model = _room_translation_choice(
+        form, form_section
+    )
+
+    room.floor_translation_enabled = floor_translation_enabled
+    room.floor_translation_provider = floor_translation_provider
+    room.floor_translation_model = floor_translation_model
+    room.floor_ai_interpreter_persona = form.get("floor_ai_interpreter_persona", "").strip() or None
+    room.floor_ai_interpretation_style = form.get("floor_ai_interpretation_style", "").strip() or None
+    room.floor_ai_vocabulary_enabled = form.get("floor_ai_vocabulary_enabled") == "on"
+
     floor_translation_languages = form.getlist("floor_translation_languages")
-    floor_ai_interpreter_persona = form.get("floor_ai_interpreter_persona", "").strip() or None
-    floor_ai_interpretation_style = form.get("floor_ai_interpretation_style", "").strip() or None
-    floor_ai_vocabulary_enabled = form.get("floor_ai_vocabulary_enabled") == "on"
-    floor_tts_enabled = form.get("floor_tts_enabled") == "on"
+    existing_langs = {lang.language_code: lang for lang in room.translation_languages}
+    requested_codes = set(floor_translation_languages)
+    for code, lang in existing_langs.items():
+        if code not in requested_codes:
+            lang.enabled = False
+    for code in requested_codes:
+        if code in existing_langs:
+            existing_langs[code].enabled = True
+        else:
+            lang_obj = pycountry.languages.get(alpha_2=code)
+            lang_name = lang_obj.name if lang_obj else code
+            new_lang = RoomTranslationLanguage(
+                room_id=room.id, language_code=code, language_name=lang_name, enabled=True
+            )
+            session.add(new_lang)
+
+
+def _process_room_tts_section(room: Room, form: FormData) -> None:
+    room.floor_tts_enabled = form.get("floor_tts_enabled") == "on"
     floor_tts_provider = (form.get("floor_tts_provider", "deepgram") or "deepgram").strip().lower() or "deepgram"
     if floor_tts_provider not in {"deepgram", "supertonic"}:
         floor_tts_provider = "deepgram"
+    room.floor_tts_provider = floor_tts_provider
+
     floor_tts_voice = (form.get("floor_tts_voice", "M1") or "M1").strip().upper() or "M1"
     if floor_tts_voice not in {"M1", "M2", "M3", "M4", "M5", "F1", "F2", "F3", "F4", "F5"}:
         floor_tts_voice = "M1"
-    async with get_session() as session:
-        room = await get_room_by_id(session, room_id)
-        if room is None or room.event_id != event_id:
-            raise HTTPException(status_code=404, detail="Room not found.")
+    room.floor_tts_voice = floor_tts_voice
 
-        if not form_section or form_section == "general":
-            if display_name:
-                room.display_name = display_name
-            room.jitsi_url = jitsi_url if jitsi_url else None
-            room.audio_delay_ms = audio_delay_ms
 
-        if not form_section or form_section == "relay":
-            if relay_booth_id is not None:
-                relay_booth = await get_booth_by_id(session, relay_booth_id)
-                if relay_booth is None or relay_booth.event_id != event_id:
-                    raise HTTPException(status_code=404, detail="Booth not found.")
-                relay_room = await get_room_by_id(session, relay_booth.room_id)
-                if relay_room is None or relay_room.event_id != event_id:
-                    raise HTTPException(status_code=404, detail="Booth not found.")
-            room.relay_booth_id = relay_booth_id
+async def _process_room_ai_section(session: AsyncSession, room: Room, event_id: int, form: FormData) -> None:
+    event = await get_event_by_id(session, event_id)
+    if event is None:
+        raise HTTPException(status_code=404, detail="Event not found.")
+    _apply_ai_settings(room, form, engine_catalog(event))
 
-        if not form_section or form_section == "transcription":
-            room.floor_transcription_enabled = floor_transcription_enabled
-            room.floor_transcription_provider = floor_transcription_provider
-            room.floor_transcription_model = floor_transcription_model
-            room.floor_language_code = floor_language_code
 
-        if not form_section or form_section == "translation":
-            room.floor_translation_enabled = floor_translation_enabled
-            room.floor_translation_provider = floor_translation_provider
-            room.floor_translation_model = floor_translation_model
-            room.floor_ai_interpreter_persona = floor_ai_interpreter_persona
-            room.floor_ai_interpretation_style = floor_ai_interpretation_style
-            room.floor_ai_vocabulary_enabled = floor_ai_vocabulary_enabled
+@router.post("/admin/events/{event_id}/rooms/{room_id}/edit", dependencies=[Depends(require_event_owner), Depends(require_admin_csrf)])
+async def admin_edit_room(request: Request, event_id: int, room_id: int):
+    """Update settings and configuration for an event room."""
+    form = await request.form()
+    form_section = form.get("form_section", "").strip()
 
-            existing_langs = {lang.language_code: lang for lang in room.translation_languages}
-            requested_codes = set(floor_translation_languages)
-            for code, lang in existing_langs.items():
-                if code not in requested_codes:
-                    lang.enabled = False
-            for code in requested_codes:
-                if code in existing_langs:
-                    existing_langs[code].enabled = True
-                else:
-                    lang_obj = pycountry.languages.get(alpha_2=code)
-                    lang_name = lang_obj.name if lang_obj else code
-                    new_lang = RoomTranslationLanguage(
-                        room_id=room_id, language_code=code, language_name=lang_name, enabled=True
-                    )
-                    session.add(new_lang)
+    try:
+        async with get_session() as session:
+            room = await get_room_by_id(session, room_id)
+            if room is None or room.event_id != event_id:
+                raise HTTPException(status_code=404, detail="Room not found.")
 
-        if not form_section or form_section == "tts":
-            room.floor_tts_enabled = floor_tts_enabled
-            room.floor_tts_provider = floor_tts_provider
-            room.floor_tts_voice = floor_tts_voice
+            _require_room_form_translatable(room, form, form_section)
 
-        if form_section == "ai":
-            event = await get_event_by_id(session, event_id)
-            if event is None:
-                raise HTTPException(status_code=404, detail="Event not found.")
-            _apply_ai_settings(room, form, engine_catalog(event))
-        await session.flush()
+            if not form_section or form_section == "general":
+                _process_room_general_section(room, form)
+
+            if not form_section or form_section == "relay":
+                await _process_room_relay_section(session, room, event_id, form)
+
+            if not form_section or form_section == "transcription":
+                _process_room_transcription_section(room, form)
+
+            if not form_section or form_section == "translation":
+                _process_room_translation_section(session, room, form, form_section)
+
+            if not form_section or form_section == "tts":
+                _process_room_tts_section(room, form)
+
+            if form_section == "ai":
+                await _process_room_ai_section(session, room, event_id, form)
+
+            await session.flush()
+    except TranslationLanguageError as error:
+        return await _translation_form_response(request, error, event_id, room_id)
     return safe_redirect(
         url=management_url(request, f"events/{event_id}/rooms/{room_id}/"),
         status_code=status.HTTP_303_SEE_OTHER,
@@ -2115,6 +2217,7 @@ def _booth_saved_url(
 
 @router.get("/admin/events/{event_id}/rooms/{room_id}/booths/{booth_id}/", dependencies=[Depends(require_owner_or_coordinator)])
 async def admin_booth_detail(request: Request, event_id: int, room_id: int, booth_id: int):
+    """Render booth settings and any translation validation error."""
     admin_flags = await get_access_flags(request, event_id=event_id, room_id=room_id)
     async with get_session() as session:
         event = await get_event_by_id(session, event_id)
@@ -2182,12 +2285,17 @@ async def admin_booth_detail(request: Request, event_id: int, room_id: int, boot
             "room": room,
             "booth": db_booth,
             "catalog": catalog,
+            "translation_unfit": (
+                catalog.translation_hidden((db_booth.language_code, *enabled_translation_language_codes))
+                if catalog
+                else set()
+            ),
             "kept_speech_hint": kept_speech_hint,
             "speech_models": speech_models,
             "saved_speech_model": saved_speech_model,
             "translation_models": translation_models,
             "saved_notice": _booth_saved_notice(request),
-            "error_notice": _booth_error_notice(request),
+            "error_notice": getattr(request.state, "translation_error", None) or _booth_error_notice(request),
             "show_next_steps": not (db_booth.transcription_enabled or db_booth.translation_enabled),
             "booth_id": bid,
             "mediamtx_path": mediamtx_path,
@@ -2434,40 +2542,50 @@ async def admin_booth_translation_settings(
     translation_model: str = Form("gpt-4o-mini"),
     translation_languages: list[str] = Form([]),
 ):
-    async with get_session() as session:
-        db_booth = await booth_in_room(session, event_id, room_id, booth_id)
-        event = await get_event_by_id(session, event_id)
-        if event is None:
-            raise HTTPException(status_code=404, detail="Event not found.")
-        try:
-            TranslationProviderEnum(translation_provider)
-        except ValueError:
-            raise HTTPException(status_code=400, detail="Invalid translation provider")
-        # Checked only when translation is on, so a booth left on a removed server can still turn it off.
-        if translation_enabled and translation_provider == TranslationProviderEnum.SELF_HOSTED.value:
-            if not settings.self_hosted_llm_enabled:
-                raise HTTPException(status_code=400, detail="Self-hosted translation is not configured on this server")
-            if not settings.self_hosted_llm_allows(translation_model):
-                raise HTTPException(status_code=400, detail="That model is not allowed for self-hosted translation")
-        db_booth.translation_enabled = translation_enabled
-        db_booth.translation_provider = translation_provider
-        db_booth.translation_model = translation_model
-        current_langs = {lang.language_code: lang for lang in db_booth.translation_languages}
-        for code in translation_languages:
-            if code in current_langs:
-                current_langs[code].enabled = True
-            else:
-                lang_obj = pycountry.languages.get(alpha_2=code)
-                lang_name = lang_obj.name if lang_obj else code
-                db_booth.translation_languages.append(
-                    BoothTranslationLanguage(
-                        booth_id=db_booth.id, language_code=code, language_name=lang_name, enabled=True
+    """Save supported translation settings or return the validation error to the form."""
+    try:
+        async with get_session() as session:
+            db_booth = await booth_in_room(session, event_id, room_id, booth_id)
+            event = await get_event_by_id(session, event_id)
+            if event is None:
+                raise HTTPException(status_code=404, detail="Event not found.")
+            try:
+                TranslationProviderEnum(translation_provider)
+            except ValueError:
+                raise HTTPException(status_code=400, detail="Invalid translation provider")
+            # Checked only when translation is on, so a booth left on a removed server can still turn it off.
+            if translation_enabled and translation_provider == TranslationProviderEnum.SELF_HOSTED.value:
+                if not settings.self_hosted_llm_enabled:
+                    raise HTTPException(
+                        status_code=400, detail="Self-hosted translation is not configured on this server"
                     )
+                if not settings.self_hosted_llm_allows(translation_model):
+                    raise HTTPException(status_code=400, detail="That model is not allowed for self-hosted translation")
+            if translation_enabled:
+                _require_translatable(
+                    translation_provider, translation_model, (db_booth.language_code, *translation_languages)
                 )
-        for code, lang_model in current_langs.items():
-            if code not in translation_languages:
-                lang_model.enabled = False
-        await session.flush()
+            db_booth.translation_enabled = translation_enabled
+            db_booth.translation_provider = translation_provider
+            db_booth.translation_model = translation_model
+            current_langs = {lang.language_code: lang for lang in db_booth.translation_languages}
+            for code in translation_languages:
+                if code in current_langs:
+                    current_langs[code].enabled = True
+                else:
+                    lang_obj = pycountry.languages.get(alpha_2=code)
+                    lang_name = lang_obj.name if lang_obj else code
+                    db_booth.translation_languages.append(
+                        BoothTranslationLanguage(
+                            booth_id=db_booth.id, language_code=code, language_name=lang_name, enabled=True
+                        )
+                    )
+            for code, lang_model in current_langs.items():
+                if code not in translation_languages:
+                    lang_model.enabled = False
+            await session.flush()
+    except TranslationLanguageError as error:
+        return await _translation_form_response(request, error, event_id, room_id, booth_id)
     return safe_redirect(
         url=_booth_saved_url(request, event_id, room_id, booth_id, "translations"),
         status_code=status.HTTP_303_SEE_OTHER,
@@ -2476,19 +2594,31 @@ async def admin_booth_translation_settings(
 
 @router.post("/admin/events/{event_id}/rooms/{room_id}/booths/{booth_id}/edit", dependencies=[Depends(require_event_owner), Depends(require_admin_csrf)])
 async def admin_edit_booth(request: Request, event_id: int, room_id: int, booth_id: int):
+    """Update booth identity only when its translation model supports the new language."""
     form = await request.form()
     language_name = form.get("language_name", "").strip()
     language_code_raw = form.get("language_code", "").strip()
-    async with get_session() as session:
-        booth = await booth_in_room(session, event_id, room_id, booth_id)
-        if language_name:
-            booth.language_name = language_name
-        if language_code_raw:
-            try:
-                booth.language_code = validate_language_code(language_code_raw)
-            except ValueError as e:
-                raise HTTPException(status_code=400, detail=str(e))
-        await session.flush()
+    try:
+        async with get_session() as session:
+            booth = await booth_in_room(session, event_id, room_id, booth_id)
+            if language_name:
+                booth.language_name = language_name
+            if language_code_raw:
+                try:
+                    language_code = validate_language_code(language_code_raw)
+                except ValueError as e:
+                    raise HTTPException(status_code=400, detail=str(e))
+                # The booth's language is what its translation model translates from.
+                if language_code != booth.language_code and booth.translation_enabled:
+                    _require_translatable(
+                        booth.translation_provider,
+                        booth.translation_model,
+                        (language_code, *_enabled_codes(booth.translation_languages)),
+                    )
+                booth.language_code = language_code
+            await session.flush()
+    except TranslationLanguageError as error:
+        return await _translation_form_response(request, error, event_id, room_id, booth_id)
     return safe_redirect(
         url=_booth_saved_url(request, event_id, room_id, booth_id, "settings"),
         status_code=status.HTTP_303_SEE_OTHER,

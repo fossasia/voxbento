@@ -275,7 +275,8 @@
             {% elif booth.translation_provider and not catalog.find("translation", booth.translation_provider) %}
             <option value="{{ booth.translation_provider }}" selected>{{ brand_name(booth.translation_provider) }} — {% if catalog.unavailable_reasons.get(booth.translation_provider) %}not available on this server{% else %}add its API key to keep using it{% endif %}</option>
             {% endif %}
-            {% for engine in catalog.translation %}
+            {# A service that cannot translate this booth's languages is offered only while it is the saved one. #}
+            {% for engine in catalog.translation if engine.provider not in translation_unfit or engine.provider == booth.translation_provider %}
             <option value="{{ engine.provider }}" {% if booth.translation_provider == engine.provider %}selected{% endif %}>{{ engine.label }} — {{ engine.note }}</option>
             {% endfor %}
           </select>

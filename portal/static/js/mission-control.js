@@ -131,7 +131,7 @@ function renderFloorCaptions(room) {
       const [text, tone] = CAPTION_STATES[data.state] || [String(data.state || 'Unknown').replace(/_/g, ' '), 'is-busy'];
       status.textContent = text;
       status.className = `mc-pill ${tone}`;
-      reason.textContent = data.state === 'stopped' ? '' : data.reason || '';
+      reason.textContent = data.reason || '';
       start.hidden = data.enabled;
       stop.hidden = !data.enabled;
     } catch (err) {
