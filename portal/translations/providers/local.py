@@ -198,33 +198,12 @@ def get_model_and_tokenizer(model_size: str):
         import transformers
         from huggingface_hub import snapshot_download
 
-        if not os.path.exists(model_size):
-            try:
-                logger.info(f"Starting download of {model_size} from HuggingFace. This may take a few minutes...")
-
-                class ScopedTqdm(ModelDownloadTqdm):
-                    def __init__(self, *args, **kwargs):
-                        super().__init__(*args, **kwargs)
-                        self._custom_model_id = model_size
-
-                with _progress_lock:
-                    _download_progress[model_size] = {"n": 0, "total": 100, "rate": 0, "status": "downloading"}
-
-                hf_repo_id, rev = _hf_source(model_size)
-
-                local_model_path = snapshot_download(repo_id=hf_repo_id, revision=rev, tqdm_class=ScopedTqdm)
-                with _progress_lock:
-                    _download_progress[model_size]["status"] = "completed"
-                logger.info(f"Successfully downloaded {model_size} to {local_model_path}")
-            except Exception as e:
-                logger.error(f"Failed to download {model_size} from HuggingFace: {e}")
-                with _progress_lock:
-                    _download_progress[model_size] = {"status": "error"}
-                local_model_path = model_size
-        else:
+        if os.path.exists(model_size):
             local_model_path = model_size
-            with _progress_lock:
-                _download_progress[model_size] = {"status": "completed"}
+        else:
+            # Only an Admin downloads a model (#1191), so a room translating never fetches one.
+            hf_repo_id, rev = _hf_source(model_size)
+            local_model_path = snapshot_download(repo_id=hf_repo_id, revision=rev, local_files_only=True)
 
         tokenizer = transformers.AutoTokenizer.from_pretrained(local_model_path, src_lang="eng_Latn", revision="main")  # nosec
         cpu_count = os.cpu_count() or 4
@@ -336,7 +315,7 @@ class LocalProvider(TranslationProvider, TranslationEngine):
             f"[NLLB] translate called: source='{source_lang_name}' -> target='{target_lang_name}' "
             f"model='{model}' text_len={len(text)}"
         )
-        # Loading a model downloads it, so a room left on a model the operator no longer offers stops here.
+        # A room left on a model the operator no longer offers stops here.
         if not settings.local_translation_allows(model):
             logger.error("[NLLB] Model %r is not offered on this server (LOCAL_TRANSLATION_MODELS)", model)
             return None
@@ -407,6 +386,12 @@ class LocalProvider(TranslationProvider, TranslationEngine):
             translated_text = tokenizer.decode(tokenizer.convert_tokens_to_ids(target))
             return translated_text.strip()
 
+        except LocalEntryNotFoundError:
+            logger.error(
+                "[NLLB] Model %r is not downloaded. An Admin must download it on the Translation models page.",
+                model_size,
+            )
+            return None
         except Exception as e:
             import traceback
 

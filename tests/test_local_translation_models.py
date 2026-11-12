@@ -8,6 +8,7 @@ from unittest.mock import patch
 
 import pytest
 from httpx import ASGITransport, AsyncClient
+from huggingface_hub.utils import LocalEntryNotFoundError
 from sqlalchemy import select
 
 import portal.translations.providers.local as local
@@ -140,6 +141,38 @@ async def test_an_offered_model_still_loads(offered):
     with patch.object(local, "get_model_and_tokenizer", side_effect=RuntimeError("load attempted")) as load:
         assert await _translate(OWN_BUILD) is None
     load.assert_called_once_with(OWN_BUILD)
+
+
+@pytest.mark.anyio
+async def test_an_offered_model_that_is_not_downloaded_is_never_downloaded_by_a_room(offered, caplog):
+    def cache_only(**kwargs):
+        if kwargs.get("local_files_only"):
+            raise LocalEntryNotFoundError("not in the cache")
+        return "/downloaded"
+
+    with (
+        patch("huggingface_hub.snapshot_download", side_effect=cache_only) as hub,
+        caplog.at_level(logging.ERROR),
+    ):
+        assert await _translate(OWN_BUILD) is None
+    assert hub.call_args_list, "the cache was never checked"
+    assert all(call.kwargs.get("local_files_only") for call in hub.call_args_list)
+    assert OWN_BUILD not in local._loaded_models
+    assert f"{OWN_BUILD!r} is not downloaded. An Admin must download it" in caplog.text
+
+
+def test_a_model_folder_on_the_server_loads_without_the_hub(tmp_path, monkeypatch):
+    folder = str(tmp_path)
+    monkeypatch.delitem(local._loaded_models, folder, raising=False)
+    with (
+        patch("huggingface_hub.snapshot_download") as hub,
+        patch("ctranslate2.Translator") as translator,
+        patch("transformers.AutoTokenizer.from_pretrained"),
+    ):
+        local.get_model_and_tokenizer(folder)
+    local._loaded_models.pop(folder)
+    hub.assert_not_called()
+    assert translator.call_args.args == (folder,)
 
 
 def test_a_second_download_of_the_same_model_starts_nothing(monkeypatch):
