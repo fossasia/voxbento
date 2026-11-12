@@ -722,12 +722,24 @@ async function run() {
   assert(statusText() === 'Live (French TTS)', 'the AI voice shows as live, got "' + statusText() + '"');
   const voice = feedSockets().pop();
   voice.onopen();
+  runTimers(500);
   voice.onclose({ code: 1006 });
   assert(statusText() === 'Reconnecting...', 'a dropped AI voice feed shows Reconnecting, got "' + statusText() + '"');
+  whepOpts.onState({ peerConnection: 'connected', ice: 'connected', audioActive: true });
+  assert(statusText() === 'Reconnecting...', 'a WebRTC update does not replace Reconnecting, got "' + statusText() + '"');
   runTimers(1000);
+  // The server accepts a throttled socket before refusing it: that must never show Live.
+  const refused = feedSockets().pop();
+  refused.onopen();
+  assert(statusText() === 'Reconnecting...', 'a socket that just opened is not called live yet');
+  refused.onclose({ code: 1008 });
+  runTimers(500);
+  assert(statusText() === 'Reconnecting...', 'a socket refused right after opening never shows Live, got "' + statusText() + '"');
+  runTimers(2000);
   const voiceBack = feedSockets().pop();
   voiceBack.onopen();
-  assert(statusText() === 'Live (French TTS)', 'the AI voice shows as live again once the feed reopens');
+  runTimers(500);
+  assert(statusText() === 'Live (French TTS)', 'the AI voice shows as live again once the feed stays open');
 
   voiceBack.onclose({ code: 4003 });
   whepOpts.onState({ peerConnection: 'connected', ice: 'connected', audioActive: true });

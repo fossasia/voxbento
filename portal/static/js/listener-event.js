@@ -210,8 +210,9 @@ var ttsRetryDelayMs = 1000;
 // The badge the AI voice shows while it is what the listener hears, so it can
 // come back after a reconnect. Null when the badge belongs to WebRTC.
 var ttsLiveStatus = null;
-// Set when the server refused the feed, so WebRTC updates don't hide why it went silent.
-var ttsAccessEnded = false;
+// Set while the badge says the AI voice is reconnecting or was refused, so
+// WebRTC updates don't replace it with a Live the listener can't hear.
+var ttsStatusHeld = false;
 var audioCtx = null;
 var nextStartTime = 0;
 var currentAudioDelayMs = 0;
@@ -269,7 +270,7 @@ function onState(s) {
   whepPlaybackBlocked = Boolean(s.playbackBlocked) && s.peerConnection === "connected";
   updateTapToListen();
   whepAudioLive = s.peerConnection === "connected" && s.audioActive && !whepPlaybackBlocked;
-  if (ttsAccessEnded) {
+  if (ttsStatusHeld) {
     return;
   }
   if (whepPlaybackBlocked) {
@@ -484,7 +485,12 @@ function openTtsWs(roomId, langCode, boothId) {
   };
 
   ws.onopen = function () {
-    if (ttsLiveStatus) setStatus(ttsLiveStatus, "live");
+    // A refused socket opens and closes at once, so wait before calling it live.
+    setTimeout(function () {
+      if (ttsWs !== ws || !ttsLiveStatus) return;
+      ttsStatusHeld = false;
+      setStatus(ttsLiveStatus, "live");
+    }, 500);
   };
   ws.onclose = function (event) {
     // stopTtsWs() clears ttsWs before the close event fires, so this only
@@ -494,11 +500,14 @@ function openTtsWs(roomId, langCode, boothId) {
     ttsWs = null;
     updateTapToListen();
     if (event.code === 4001 || event.code === 4003) {
-      ttsAccessEnded = true;
+      ttsStatusHeld = true;
       setStatus("Access ended. Reload the page to join again.", "error");
       return;
     }
-    if (ttsLiveStatus) setStatus("Reconnecting...", "recovering");
+    if (ttsLiveStatus) {
+      ttsStatusHeld = true;
+      setStatus("Reconnecting...", "recovering");
+    }
     ttsRetryTimer = setTimeout(function () {
       ttsRetryTimer = null;
       // Segments sent while the socket was down never arrive, and a restarted
@@ -528,7 +537,7 @@ function resetSegmentQueue() {
 
 function stopTtsWs() {
   ttsLiveStatus = null;
-  ttsAccessEnded = false;
+  ttsStatusHeld = false;
   if (ttsRetryTimer) {
     clearTimeout(ttsRetryTimer);
     ttsRetryTimer = null;
