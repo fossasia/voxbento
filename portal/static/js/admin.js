@@ -519,7 +519,35 @@ window.adminAPIKeys = {
   }
 };
 
+function initSetupDraftCleanup() {
+  const clearEl = document.querySelector('[data-clear-room-draft]');
+  if (clearEl?.dataset.clearRoomDraft) {
+    try {
+      sessionStorage.removeItem(`voxbento_setup_room_draft_${clearEl.dataset.clearRoomDraft}`);
+    } catch (_) {}
+  }
+
+  const match = document.cookie.match(/(?:^|;\s*)room_created=([^;]+)/);
+  if (match) {
+    const eventId = match[1];
+    try {
+      sessionStorage.removeItem(`voxbento_setup_room_draft_${eventId}`);
+    } catch (_) {}
+    document.cookie = 'room_created=; Path=/; Max-Age=0; SameSite=Lax';
+  }
+
+  document.addEventListener('click', (e) => {
+    const btn = e.target.closest('[data-finish-setup]');
+    if (btn?.dataset.finishSetup) {
+      try {
+        sessionStorage.removeItem(`voxbento_setup_room_draft_${btn.dataset.finishSetup}`);
+      } catch (_) {}
+    }
+  });
+}
+
 document.addEventListener('DOMContentLoaded', () => {
+  initSetupDraftCleanup();
   if (window.adminAPIKeys) {
     window.adminAPIKeys.init();
   }
