@@ -18,7 +18,7 @@ Active interpreter Go Live
         │
         ▼
    ffmpeg (spawned by transcription worker)
-   -rtsp_transport tcp → PCM s16le 16kHz mono → stdout pipe
+   -rtsp_transport tcp → PCM s16le mono at provider.sample_rate (16kHz, 24kHz for OpenAI) → stdout pipe
 ```
 
 ### 2. Floor Audio Pipeline
@@ -91,7 +91,8 @@ Jitsi Meet Floor Conference
 | `portal/translations/worker.py` | `TranslationWorker`: per-language translation dispatch, timeouts and delivery; `ENGINES` maps each provider to its `TranslationEngine` |
 | `portal/translations/engine.py` | `TranslationEngine` interface (`translate_batch`, `translate_text`), `Language`, `TranslationContext`, `EngineKind`; the worker calls engines only through it |
 | `portal/translations/providers/` | Backends: `LocalProvider` (NLLB, an engine itself) and the prompt-based cloud providers, wrapped by `ProviderEngine` in `base.py` |
-| `portal/translations/constants.py` | Translation models enum mapped to Anthropic, OpenAI, Groq, Gemini, etc. |
+| `portal/translations/constants.py` | Translation providers and the hosted models offered for each; the self-hosted list comes from the registry |
+| `portal/translations/registry.py` | `TranslationModel`: one entry per self-hosted model (engine kind, pinned Hugging Face repo and revision, ISO 639-1 to model language codes, memory, capabilities, licence); `get_translation_model()` |
 | `portal/translations/prompts.py` | Contextual prompt construction incorporating room AI persona and style instructions |
 | `portal/translations/vocabulary.py` | AI interpretation vocabulary & glossary resolution, CSV import/export, and matching |
 | `portal/tts/worker.py` | `TTSWorker`, buffers punctuation, chunks text, routes to a TTS provider, pushes raw PCM binary to `tts_manager` |
@@ -131,7 +132,7 @@ External provider use requires `event.transcription_api_enabled = True`.
 ### `transcription_worker(...)` (internal)
 
 1. Builds the canonical MediaMTX path with `make_mediamtx_path(event_slug, room_id, language_code)` and prefixes it with `settings.mediamtx_rtsp_base`, producing `rtsp://mediamtx:8554/{event_slug}/{room_id}/{language_code}`.
-2. Spawns ffmpeg: PCM s16le 16kHz mono via subprocess pipe.
+2. Spawns ffmpeg: PCM s16le mono at `provider.sample_rate` (16kHz, 24kHz for OpenAI) via subprocess pipe.
 3. Starts `stderr_task` to drain ffmpeg stderr (debug log only).
 4. Calls `provider.run_stream(process, ...)` — blocks until stream ends.
 5. `finally`: kills ffmpeg, removes from `active_workers`/`active_processes`.
@@ -144,7 +145,7 @@ Cancels the asyncio Task and awaits it; removes from state dicts.
 
 ## Audio Chunking (default `run_stream` in `base.py`)
 
-- Chunk size: `16000 * 2 * 3 = 96000 bytes` = 3 seconds of PCM.
+- Chunk size: `self.sample_rate * 2 * 3` bytes = 3 seconds of PCM (96000 bytes at 16kHz).
 - Reader queues chunks into `asyncio.Queue(maxsize=2)`.
 - Queue full → oldest chunk dropped; `booth_state.chunks_dropped_total` incremented.
 - `consecutive_drops >= 3` → sends `[Server overloaded…]` error.
