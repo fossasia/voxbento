@@ -226,9 +226,15 @@ INVALID_EMAIL = "Enter a valid email address."
 
 
 def clean_email(email: str | None) -> str | None:
-    """Lowercased *email*, or None if it isn't a usable address (same rule as User._validate_email, plus a length cap)."""
+    """Lowercased *email*, or None if it isn't a usable address.
+
+    One "@" with something before it, a dotted domain after it, no spaces, at most 320 characters.
+    """
     email = (email or "").strip().lower()
-    if "@" not in email or "." not in email.split("@")[-1] or len(email) > 320:
+    local, _, domain = email.rpartition("@")
+    if not local or "@" in local or len(email) > 320 or any(c.isspace() for c in email):
+        return None
+    if "." not in domain or domain.startswith(".") or domain.endswith("."):
         return None
     return email
 
