@@ -24,6 +24,7 @@ from portal.auth import (
 )
 from portal.database import get_booth_language_name, get_session, get_user_by_id
 from portal.globals import booths
+from portal.join_code_limit import JoinCodeThrottled
 from portal.websockets.manager import (
     REASON_ACCOUNT_DEACTIVATED,
     REASON_AUTH_REVOKED,
@@ -484,8 +485,6 @@ async def _authorize_tts(
 @router.websocket("/ws/tts/{room_id}/{language_code}/{booth_id}")
 async def ws_tts(websocket: WebSocket, room_id: int, language_code: str, booth_id: str) -> None:
     """TTS WebSocket endpoint with pre-accept authorization."""
-    from portal.join_code_limit import JoinCodeThrottled
-
     try:
         await _authorize_tts(websocket, room_id, language_code, booth_id)
     except WSAuthError as exc:

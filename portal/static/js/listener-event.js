@@ -207,6 +207,11 @@ var captionsRetryDelayMs = 1000;
 var ttsWs = null;
 var ttsRetryTimer = null;
 var ttsRetryDelayMs = 1000;
+// The badge the AI voice shows while it is what the listener hears, so it can
+// come back after a reconnect. Null when the badge belongs to WebRTC.
+var ttsLiveStatus = null;
+// Set when the server refused the feed, so WebRTC updates don't hide why it went silent.
+var ttsAccessEnded = false;
 var audioCtx = null;
 var nextStartTime = 0;
 var currentAudioDelayMs = 0;
@@ -264,6 +269,9 @@ function onState(s) {
   whepPlaybackBlocked = Boolean(s.playbackBlocked) && s.peerConnection === "connected";
   updateTapToListen();
   whepAudioLive = s.peerConnection === "connected" && s.audioActive && !whepPlaybackBlocked;
+  if (ttsAccessEnded) {
+    return;
+  }
   if (whepPlaybackBlocked) {
     setStatus("Ready — tap to listen", "waiting");
   } else if (whepAudioLive) {
@@ -398,6 +406,8 @@ function openTtsWs(roomId, langCode, boothId) {
   updateTapToListen();
 
   ws.onmessage = function (event) {
+    // Reset on data rather than on open: a refused socket opens before it closes.
+    ttsRetryDelayMs = 1000;
     if (event.data instanceof ArrayBuffer) {
       try {
         var frame = window.TTSParser.parseFrame(event.data);
@@ -474,7 +484,7 @@ function openTtsWs(roomId, langCode, boothId) {
   };
 
   ws.onopen = function () {
-    ttsRetryDelayMs = 1000;
+    if (ttsLiveStatus) setStatus(ttsLiveStatus, "live");
   };
   ws.onclose = function (event) {
     // stopTtsWs() clears ttsWs before the close event fires, so this only
@@ -484,9 +494,11 @@ function openTtsWs(roomId, langCode, boothId) {
     ttsWs = null;
     updateTapToListen();
     if (event.code === 4001 || event.code === 4003) {
-      setStatus("Access ended. Reload the page and enter the new join code.", "error");
+      ttsAccessEnded = true;
+      setStatus("Access ended. Reload the page to join again.", "error");
       return;
     }
+    if (ttsLiveStatus) setStatus("Reconnecting...", "recovering");
     ttsRetryTimer = setTimeout(function () {
       ttsRetryTimer = null;
       // Segments sent while the socket was down never arrive, and a restarted
@@ -515,6 +527,8 @@ function resetSegmentQueue() {
 }
 
 function stopTtsWs() {
+  ttsLiveStatus = null;
+  ttsAccessEnded = false;
   if (ttsRetryTimer) {
     clearTimeout(ttsRetryTimer);
     ttsRetryTimer = null;
@@ -1267,7 +1281,8 @@ function applyTtsOverlay() {
       var selOpt =
         translationLangSelect.options[translationLangSelect.selectedIndex];
       var langName = selOpt ? selOpt.text : "Translation";
-      setStatus("Live (" + langName + " TTS)", "live");
+      ttsLiveStatus = "Live (" + langName + " TTS)";
+      setStatus(ttsLiveStatus, "live");
     } else {
       audioEl.muted = false;
       if (whepAudioLive) {

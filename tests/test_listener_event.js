@@ -265,7 +265,7 @@ const listenerData = make('script', 'listener-data');
 listenerData.textContent = JSON.stringify({
   eventSlug: 'demo',
   shareUrl: 'https://example.test/listener/demo',
-  rooms: [{ id: 1, floor_tts_enabled: false }],
+  rooms: [{ id: 1, floor_tts_enabled: true }],
   booths: [
     { id: 'floor_1', room_id: 1, language_code: 'floor', language_name: 'Floor Audio', whep_url: 'http://mtx/floor/whep', audio_delay_ms: 0 },
     { id: 2, room_id: 1, language_code: 'es', language_name: 'Spanish', whep_url: 'http://mtx/es/whep', audio_delay_ms: 0 },
@@ -379,6 +379,12 @@ function useFakeTimers() {
 }
 function pendingTimers(ms) {
   return [...fakeTimers].filter((t) => t.ms === ms).length;
+}
+function runAllTimers() {
+  for (const timer of [...fakeTimers]) {
+    fakeTimers.delete(timer);
+    timer.fn();
+  }
 }
 function runTimers(ms) {
   for (const timer of [...fakeTimers]) {
@@ -565,6 +571,7 @@ async function run() {
   // Count new audio contexts and schedulers from here on, and keep the page's context.
   let audioContexts = 0;
   let schedulerCreates = 0;
+  let schedulerResets = 0;
   let pageContext = null;
   const BaseAudioContext = window.AudioContext;
   window.AudioContext = class extends BaseAudioContext {
@@ -577,7 +584,11 @@ async function run() {
   window.AudioScheduler.create = (context, options) => {
     schedulerCreates++;
     pageContext = context;
-    return baseCreate(context, options);
+    const scheduler = baseCreate(context, options);
+    scheduler.reset = () => {
+      schedulerResets++;
+    };
+    return scheduler;
   };
   choose(translationSelect, 'fr');
   pageContext.resume = () => Promise.resolve();
@@ -603,7 +614,7 @@ async function run() {
   const first = feedSockets().pop();
   assert(feedSockets().length === socketsBefore + 1 && first.url === feedUrl, 'a dropped translation feed reopens the same feed');
   assert(
-    audioContexts === contextsBefore && schedulerCreates === schedulersBefore,
+    audioContexts === contextsBefore && schedulerCreates === schedulersBefore && schedulerResets === 0,
     'reconnecting keeps the audio context and the speech already scheduled on it',
   );
 
@@ -624,10 +635,10 @@ async function run() {
   assert(pendingTimers(65000) === 1, 'the queue waits for the missing segment 2');
 
   first.onclose({ code: 1006 });
-  assert(pendingTimers(2000) === 1 && pendingTimers(1000) === 0, 'a feed that drops again before opening waits twice as long');
-  runTimers(2000);
+  assert(pendingTimers(1000) === 1, 'a feed that sent data before it dropped retries after 1s again');
+  runTimers(1000);
   const second = feedSockets().pop();
-  assert(second !== first && second.url === feedUrl, 'the feed reopens after the longer wait');
+  assert(second !== first && second.url === feedUrl, 'the feed reopens again');
   assert(pendingTimers(65000) === 0, 'reconnecting drops the wait for a segment the old feed never sent');
   second.onopen();
 
@@ -638,23 +649,39 @@ async function run() {
   assert(historyBox.textContent.includes('Five'), 'after a gap the queue moves on to the first new segment');
 
   second.onclose({ code: 1006 });
-  assert(pendingTimers(1000) === 1 && pendingTimers(2000) === 0, 'a feed that opened again resets the wait to 1s');
-  assert(!statusText().includes('Access ended'), 'a dropped feed does not say access ended');
+  assert(pendingTimers(1000) === 1, 'the wait is back at 1s');
   runTimers(1000);
+  // A feed that opens but drops before any data counts as a failed try.
+  const quiet = feedSockets().pop();
+  quiet.onopen();
+  quiet.onclose({ code: 1006 });
+  assert(pendingTimers(2000) === 1 && pendingTimers(1000) === 0, 'a feed that drops again before any data waits twice as long');
+  assert(!statusText().includes('Access ended'), 'a dropped feed does not say access ended');
+  runTimers(2000);
 
   // 1008 is a throttled join code, which clears on its own, so the feed keeps retrying.
-  feedSockets().pop().onclose({ code: 1008 });
-  assert(pendingTimers(2000) === 1, 'a feed closed with 1008 (throttled) retries');
+  // The server accepts before it closes, so the socket opens first; that must not reset the wait.
+  const throttled = feedSockets().pop();
+  throttled.onopen();
+  throttled.onclose({ code: 1008 });
+  assert(pendingTimers(4000) === 1, 'a feed closed with 1008 (throttled) retries');
   assert(!statusText().includes('Access ended'), 'a throttled feed does not say access ended');
-  runTimers(2000);
+  runTimers(4000);
+  const throttledAgain = feedSockets().pop();
+  throttledAgain.onopen();
+  throttledAgain.onclose({ code: 1008 });
+  assert(pendingTimers(8000) === 1 && pendingTimers(1000) === 0, 'a feed refused again with 1008 keeps backing off');
+  runTimers(8000);
+  assert(schedulerResets === 0, 'none of the reconnects reset the speech already scheduled');
 
   for (const code of [4001, 4003]) {
     const socket = feedSockets().pop();
     const count = feedSockets().length;
+    const timers = fakeTimers.size;
     socket.onclose({ code: code });
-    assert(pendingTimers(1000) === 0 && pendingTimers(2000) === 0, 'a feed closed with ' + code + ' does not reconnect');
-    assert(statusText() === 'Access ended. Reload the page and enter the new join code.', 'a ' + code + ' close tells the listener access ended');
-    runTimers(1000);
+    assert(fakeTimers.size === timers, 'a feed closed with ' + code + ' schedules no reconnect');
+    assert(statusText() === 'Access ended. Reload the page to join again.', 'a ' + code + ' close tells the listener access ended');
+    runAllTimers();
     assert(feedSockets().length === count, 'no new feed opens after a ' + code + ' close');
     choose(translationSelect, 'fr');
   }
@@ -683,6 +710,43 @@ async function run() {
   const afterStop = feedSockets().length;
   runTimers(1000);
   assert(feedSockets().length === afterStop, 'no feed opens after the stream was stopped');
+
+  console.log('\n── AI voice status while the feed reconnects ──');
+
+  choose(languageSelect, 'http://mtx/floor/whep');
+  const voiceToggle = document.getElementById('tts-sync-toggle');
+  voiceToggle.checked = true;
+  voiceToggle.dispatchEvent(new Event('change'));
+  translationSelect.innerHTML = '<option value="fr">French</option>';
+  choose(translationSelect, 'fr');
+  assert(statusText() === 'Live (French TTS)', 'the AI voice shows as live, got "' + statusText() + '"');
+  const voice = feedSockets().pop();
+  voice.onopen();
+  voice.onclose({ code: 1006 });
+  assert(statusText() === 'Reconnecting...', 'a dropped AI voice feed shows Reconnecting, got "' + statusText() + '"');
+  runTimers(1000);
+  const voiceBack = feedSockets().pop();
+  voiceBack.onopen();
+  assert(statusText() === 'Live (French TTS)', 'the AI voice shows as live again once the feed reopens');
+
+  voiceBack.onclose({ code: 4003 });
+  whepOpts.onState({ peerConnection: 'connected', ice: 'connected', audioActive: true });
+  assert(
+    statusText() === 'Access ended. Reload the page to join again.',
+    'a WebRTC update does not hide that access ended, got "' + statusText() + '"',
+  );
+  choose(translationSelect, 'fr');
+  assert(statusText() === 'Live (French TTS)', 'choosing the voice again starts a new feed');
+  whepOpts.onState({ peerConnection: 'connected', ice: 'connected', audioActive: true });
+  assert(statusText() === 'Live (WebRTC)', 'WebRTC updates the badge again once a new feed starts');
+
+  // Without the AI voice the badge is WebRTC's, so a translation feed drop leaves it alone.
+  voiceToggle.checked = false;
+  voiceToggle.dispatchEvent(new Event('change'));
+  assert(statusText() === 'Live (WebRTC + Translation)', 'without the AI voice the badge is WebRTC with translation');
+  feedSockets().pop().onclose({ code: 1006 });
+  assert(pendingTimers(1000) === 1, 'the translation-only feed still reconnects');
+  assert(statusText() === 'Live (WebRTC + Translation)', 'a translation-only feed drop leaves the WebRTC badge alone, got "' + statusText() + '"');
 
   console.log('\n' + passed + ' passed, ' + failed + ' failed');
   process.exit(failed > 0 ? 1 : 0);
