@@ -147,6 +147,7 @@ async def listen_event_page(request: Request, event_slug: str, code: str | None 
                     "id": f"floor_{r.id}",
                     "room_id": r.id,
                     "language_code": "floor",
+                    "caption_language_code": r.floor_language_code,
                     "language_name": "Floor Audio (Original)",
                     "channel_id": channel_id,
                     "whep_url": f"{settings.mediamtx_whip_base}/{channel_id}/whep",
@@ -168,7 +169,7 @@ async def listen_event_page(request: Request, event_slug: str, code: str | None 
             "event": ev,
             "rooms": rooms,
             "rooms_json": json.dumps(rooms_data),
-            "booths_json": json.dumps(booths_data),
+            "booths": booths_data,
             "js_version": _JS_CACHE_BUST,
             # Same canonical-base-URL pattern as email.py / admin.py invite links, without the
             # join code so sharing the link doesn't hand out access to the event.

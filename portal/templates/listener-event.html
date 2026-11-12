@@ -109,7 +109,7 @@
 {
   "eventSlug": "{{ event.slug }}",
   "shareUrl": {{ share_url | tojson }},
-  "booths": {{ booths_json | safe }},
+  "booths": {{ booths | tojson }},
   "rooms": {{ rooms_json | safe }}
 }
 </script>
