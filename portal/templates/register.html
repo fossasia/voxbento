@@ -32,7 +32,7 @@
       <input type="email" id="email" name="email" placeholder="you@example.com" value="{{ email|default(request.query_params.get('email', ''), true) }}" required autofocus />
 
       <label for="display_name">Display Name</label>
-      <input type="text" id="display_name" name="display_name" placeholder="Your name" maxlength="{{ display_name_max|default(200) }}" value="{{ display_name|default('', true) }}" required />
+      <input type="text" id="display_name" name="display_name" placeholder="Your name" maxlength="{{ display_name_max|default(200) * 2 }}" value="{{ display_name|default('', true) }}" required />
 
       <label for="password">Password <span class="field-hint-optional">(Optional)</span></label>
       <input type="password" id="password" name="password" placeholder="Leave blank for passwordless sign-in" minlength="8" autocomplete="new-password" />

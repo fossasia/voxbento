@@ -3,7 +3,6 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import logging
-import re
 import secrets
 import urllib.parse
 from datetime import timedelta
@@ -22,7 +21,10 @@ from unilimit.integrations.fastapi import RateLimit
 
 from portal.auth import (
     ADMIN_CSRF_COOKIE,
+    DISPLAY_NAME_MAX,
+    INVALID_DISPLAY_NAME,
     PASSWORD_TOO_LONG_MESSAGE,
+    clean_display_name,
     create_participant_token,
     create_token,
     create_user_token,
@@ -747,17 +749,6 @@ ACCOUNT_NOTICES = {
     "password_set": "Your password was set. You can now sign in with it or with an email link.",
     "password_removed": "Your password was removed. Sign in with a link sent to your email from now on.",  # nosec B105 # UI notice
 }
-DISPLAY_NAME_MAX = 200
-_CONTROL_CHARS = re.compile(r"[\x00-\x1f\x7f]")
-INVALID_DISPLAY_NAME = f"Enter a display name of up to {DISPLAY_NAME_MAX} characters, without control characters."
-
-
-def clean_display_name(raw) -> str | None:
-    """Collapse whitespace and check the name. Returns None if it is empty, too long or has control characters."""
-    name = " ".join(raw.split()) if isinstance(raw, str) else ""
-    if not name or len(name) > DISPLAY_NAME_MAX or _CONTROL_CHARS.search(name):
-        return None
-    return name
 
 
 @router.get("/account")

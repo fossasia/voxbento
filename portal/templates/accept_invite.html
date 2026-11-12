@@ -57,7 +57,7 @@
     </div>
     <form method="post" action="/invite/accept/{{ token }}" class="login-form">
       <label for="display_name">Display Name (optional)</label>
-      <input type="text" id="display_name" name="display_name" value="{{ display_name|default('', true) }}" placeholder="Your Name" maxlength="200" />
+      <input type="text" id="display_name" name="display_name" value="{{ display_name|default('', true) }}" placeholder="Your Name" maxlength="400" />
 
       <label for="password">Choose Password (min. 8 characters)</label>
       <input type="password" id="password" name="password" minlength="8" required placeholder="••••••••" />

@@ -2016,6 +2016,27 @@ async def test_get_access_flags_room_coordinator_on_event_page():
 
 
 @pytest.mark.anyio
+@pytest.mark.parametrize("name", ["x" * 201, "bell\x07name", "c1\x85name"])
+async def test_admin_invite_rejects_invalid_display_name(name):
+    async with get_session() as session:
+        admin = await create_user(session, email="admin@example.com", display_name="Admin", is_admin=True)
+
+    admin_token = create_user_token(user_id=admin.id, email=admin.email, is_admin=True)
+    csrf = generate_admin_csrf_token(str(decode_token(admin_token)["jti"]))
+    async with client() as http:
+        res = await http.post(
+            "/admin/users/invite",
+            data={"email": "new.host@example.com", "display_name": name, "csrf_token": csrf},
+            cookies={"user_token": admin_token, "admin_csrf": csrf},
+            headers={"Origin": "http://test"},
+        )
+    assert res.status_code == 400
+    assert "without control characters" in res.text
+    async with get_session() as session:
+        assert (await session.execute(select(User).where(User.email == "new.host@example.com"))).scalar_one_or_none() is None
+
+
+@pytest.mark.anyio
 @pytest.mark.parametrize("name", ["x" * 201, "bell\x07name"])
 async def test_invite_acceptance_rejects_invalid_display_name(name):
     async with get_session() as session:
