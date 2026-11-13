@@ -1,9 +1,8 @@
 from __future__ import annotations
 
+import asyncio
 import logging
 import time
-import uuid
-from dataclasses import dataclass, field
 
 from sqlalchemy import select, update
 
@@ -11,55 +10,92 @@ from portal import youtube_captions
 from portal.database import get_session
 from portal.models import Room
 from portal.tasks import track_task
+from portal.transcription.caption_stream import (
+    CaptionEvent,
+    CaptionState,
+    CaptionStream,
+    ClearCaption,
+    FinalCaption,
+    PartialCaption,
+)
 from portal.transcription.timing import SegmentTiming, segment_timing, timing_metadata
 
 logger = logging.getLogger(__name__)
 
-
-@dataclass
-class CaptionState:
-    booth_id: str
-    current_utterance: str = ""
-    utterance_start_time: float = 0.0
-    current_word_count: int = 0
-    segment_id: str = field(default_factory=lambda: str(uuid.uuid4()))
+__all__ = ["CaptionAggregator", "CaptionState"]
 
 
 class CaptionAggregator:
+    """Applies the side effects a `CaptionStream` event implies.
+
+    The stream owns the buffering rules and stays pure; this class is the seam
+    where a settled caption reaches the database, the translation worker and
+    the TTS queue.
+    """
+
     def __init__(self, broadcast_callback, room_id: int | None = None):
-        logger.info(f"CaptionAggregator initialized with room_id={room_id}")
+        logger.info("CaptionAggregator initialized with room_id=%s", room_id)
         self.broadcast_callback = broadcast_callback
         self.room_id = room_id
-        self.states: dict[str, CaptionState] = {}
-        self._seq_counter = 0
+        self.stream = CaptionStream()
+
+    @property
+    def states(self) -> dict[str, CaptionState]:
+        """Per-booth buffers, kept on the stream."""
+        return self.stream.states
 
     def _get_state(self, booth_id: str) -> CaptionState:
-        if booth_id not in self.states:
-            self.states[booth_id] = CaptionState(booth_id=booth_id)
-        return self.states[booth_id]
+        return self.stream.state_for(booth_id)
+
+    async def _dispatch(self, events: list[CaptionEvent]) -> None:
+        for i, event in enumerate(events):
+            if isinstance(event, PartialCaption):
+                await self.broadcast_callback(
+                    event.booth_id,
+                    {
+                        "type": "caption",
+                        "status": "partial",
+                        "text": event.text,
+                        "segment_id": event.segment_id,
+                        **await self.partial_timing(event.booth_id),
+                    },
+                )
+            elif isinstance(event, FinalCaption):
+                try:
+                    await self._emit_final(event)
+                except (Exception, asyncio.CancelledError):
+                    # The buffer was cleared when the event was produced, so
+                    # put this one back. Any later FinalCaption in the same
+                    # batch (a chunk that split one sentence off and then
+                    # force-finalised a long remainder) has also been cleared
+                    # from the buffer by its own _finalise and would be lost if
+                    # the loop simply terminated — restore the pending ones in
+                    # reverse order, so prepend chains preserve chronological
+                    # order on the next publish.
+                    # CancelledError is caught alongside Exception because an
+                    # ElevenLabs sender failure can cancel the receiver mid-
+                    # publish; the aggregator survives the reconnect, so the
+                    # buffered text must too.
+                    for pending in reversed([e for e in events[i + 1 :] if isinstance(e, FinalCaption)]):
+                        self.stream.restore(pending)
+                    self.stream.restore(event)
+                    raise
+            elif isinstance(event, ClearCaption):
+                await self.broadcast_callback(event.booth_id, {"type": "caption", "status": "clear", "text": ""})
 
     async def handle_partial(self, booth_id: str, text: str):
-        if not text.strip():
-            return
+        await self._dispatch(self.stream.partial(booth_id, text))
 
-        state = self._get_state(booth_id)
+    async def handle_chunk(self, booth_id: str, text: str):
+        """Used by Local Whisper. Appends finalized chunks and splits on punctuation."""
+        await self._dispatch(self.stream.chunk(booth_id, text))
 
-        if not state.current_utterance:
-            state.utterance_start_time = time.time()
+    async def handle_final(self, booth_id: str, text: str):
+        await self._dispatch(self.stream.final(booth_id, text))
 
-        state.current_utterance = text
-        state.current_word_count = len(text.split())
-
-        # Check forced finalization rules (15s or 50 words)
-        if state.current_word_count >= 50 or (time.time() - state.utterance_start_time) >= 15.0:
-            logger.info(f"[{booth_id}] Forced utterance finalization triggered (words: {state.current_word_count})")
-            await self.handle_final(booth_id, text)
-            return
-
-        await self.broadcast_callback(
-            booth_id, {"type": "caption", "status": "partial", "text": state.current_utterance,
-                       "segment_id": state.segment_id, **await self.partial_timing(booth_id)}
-        )
+    async def handle_clear(self, booth_id: str):
+        """Called when silence is explicitly detected or a turn ends."""
+        await self._dispatch(self.stream.clear(booth_id))
 
     async def partial_timing(self, booth_id: str) -> dict:
         if self.room_id is None or not booth_id.endswith("-floor"):
@@ -72,96 +108,29 @@ class CaptionAggregator:
                         "sync_offset_ms": room.program_sync_offset_ms, "timestamp_basis": "stt_receive_wall_clock"}
         return {}
 
-    async def handle_chunk(self, booth_id: str, text: str):
-        """Used by Local Whisper. Appends finalized chunks and splits on punctuation."""
-        if not text.strip():
-            return
+    async def _emit_final(self, event: FinalCaption) -> None:
+        """Publish a settled caption, taking the floor sequence from the room.
 
-        state = self._get_state(booth_id)
-
-        if not state.current_utterance:
-            state.utterance_start_time = time.time()
-
-        if state.current_utterance:
-            state.current_utterance += " " + text.strip()
-        else:
-            state.current_utterance = text.strip()
-
-        import re
-
-        has_finalized = False
-
-        # Find ALL sentence boundaries in the current utterance
-        matches = list(re.finditer(r"([^.?!]*[.?!]+)(?:\s+|$)", state.current_utterance))
-        if matches:
-            split_point = None
-            for match in matches:
-                candidate_text = state.current_utterance[: match.end()].strip()
-                if len(candidate_text.split()) >= 5:
-                    split_point = match.end()
-                    break
-
-            if split_point is not None:
-                sentence = state.current_utterance[:split_point].strip()
-                remainder = state.current_utterance[split_point:].strip()
-
-                if sentence:
-                    await self.handle_final(booth_id, sentence)
-                    has_finalized = True
-
-                state.current_utterance = remainder
-                state.utterance_start_time = time.time()
-
-        state.current_word_count = len(state.current_utterance.split()) if state.current_utterance else 0
-
-        if state.current_utterance:
-            if state.current_word_count >= 50 or (time.time() - state.utterance_start_time) >= 15.0:
-                logger.info(f"[{booth_id}] Forced chunk finalization triggered (words: {state.current_word_count})")
-                await self.handle_final(booth_id, state.current_utterance)
-                return
-
-            await self.broadcast_callback(
-                booth_id, {"type": "caption", "status": "partial", "text": state.current_utterance,
-                           "segment_id": state.segment_id, **await self.partial_timing(booth_id)}
-            )
-        elif has_finalized:
-            # Only send clear if we just finalized something and have nothing left,
-            # ensuring the frontend's partial box is cleared out.
-            await self.broadcast_callback(booth_id, {"type": "caption", "status": "clear", "text": ""})
-
-    async def handle_final(self, booth_id: str, text: str):
+        A program-ingest floor caption is numbered from `rooms.floor_caption_seq`
+        so the sequence survives a worker restart; every other booth uses the
+        stream's process-local counter.
         """
-        Finalizes an utterance, triggers database save, and initiates translation.
-        Called automatically on punctuation split, timeout, or explicit clear.
-        """
-        state = self._get_state(booth_id)
-        final_text = text.strip() or state.current_utterance
-
-        if not final_text:
-            return
-
-        self._seq_counter += 1
-        seq = self._seq_counter
-        segment_id = state.segment_id
+        seq = event.seq
         timing = None
-        if self.room_id is not None and booth_id.endswith("-floor"):
+        if self.room_id is not None and event.booth_id.endswith("-floor"):
             async with get_session() as session:
                 room = await session.scalar(select(Room).where(Room.id == self.room_id))
                 if room and room.floor_source == "program_ingest":
                     seq = await session.scalar(update(Room).where(Room.id == room.id).values(
                         floor_caption_seq=Room.floor_caption_seq + 1,
                     ).returning(Room.floor_caption_seq))
-                    timing = SegmentTiming(int((state.utterance_start_time or time.time()) * 1000), room.program_sync_offset_ms)
-        context_token = segment_timing.set(timing)
+                    timing = SegmentTiming(int(event.utterance_start_time * 1000), room.program_sync_offset_ms)
 
+        context_token = segment_timing.set(timing)
         try:
-            await self.publish_final(booth_id, final_text, segment_id, seq)
+            await self.publish_final(event.booth_id, event.text, event.segment_id, seq)
         finally:
             segment_timing.reset(context_token)
-        state.current_utterance = ""
-        state.utterance_start_time = 0.0
-        state.current_word_count = 0
-        state.segment_id = str(uuid.uuid4())
 
     async def publish_final(self, booth_id: str, final_text: str, segment_id: str, seq: int):
 
@@ -194,12 +163,3 @@ class CaptionAggregator:
                     logger.error(f"[{booth_id}] _save_and_translate failed: {e}", exc_info=True)
 
             track_task(asyncio.create_task(_save_and_translate()))
-
-    async def handle_clear(self, booth_id: str):
-        """Called when silence is explicitly detected or a turn ends."""
-        state = self._get_state(booth_id)
-        if state.current_utterance:
-            # If we have a pending partial, finalize it instead of losing it.
-            await self.handle_final(booth_id, state.current_utterance)
-        else:
-            await self.broadcast_callback(booth_id, {"type": "caption", "status": "clear", "text": ""})

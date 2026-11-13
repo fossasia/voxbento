@@ -79,6 +79,7 @@ VoxBento is a production-grade **browser-first interpretation booth console** fo
 | `portal/roles.py` | `Permission` enum, `ROLE_PERMISSIONS` dict, `ALL_ROLES` set, `_ROLE_RANK` |
 | `portal/crypto.py` | `encrypt_val` / `decrypt_val` (Fernet, SHA-256 key derivation) |
 | `portal/transcription/` | Transcription subsystem — see `TRANSCRIPTION_MAP.md` |
+| `portal/transcription/caption_stream.py` | `CaptionStream` — pure caption buffering and split rules; no I/O. Side effects belong in `aggregator.py` |
 | `portal/translations/` | Translation subsystem — LLM workers, contextual prompts (`prompts.py`), glossaries (`vocabulary.py`) |
 | `portal/tts/` | Text-to-speech subsystem — direct-push Deepgram Aura and Supertonic ONNX |
 | `portal/meeting_source.py` | Managed Jitsi floor agent lifecycle reconciler |
