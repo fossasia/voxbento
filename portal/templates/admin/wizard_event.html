@@ -24,7 +24,7 @@
       <input type="hidden" name="csrf_token" value="{{ request.state.admin_csrf_token }}" />
       {% if event %}
       <input type="hidden" name="event_id" value="{{ event.id }}" />
-      <input type="hidden" name="original_display_name" value="{{ display_name|default('', true) }}" />
+      <input type="hidden" name="original_display_name" value="{{ event.display_name }}" />
       {% endif %}
       {% if return_to %}<input type="hidden" name="return_to" value="{{ return_to }}" />{% endif %}
       <div class="field">

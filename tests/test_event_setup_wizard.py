@@ -319,6 +319,34 @@ async def test_setup_edit_event_rejects_stale_concurrent_edit(organizer):
 
 
 @pytest.mark.anyio
+async def test_update_event_atomic_conditional_update(organizer):
+    from portal.database import update_event
+
+    event_id = organizer["event_id"]
+
+    async with get_session() as s:
+        # Atomic update with matching expected_display_name succeeds
+        updated = await update_event(
+            s,
+            event_id=event_id,
+            display_name="First Atomic Update",
+            expected_display_name="Organizer Event",
+        )
+        assert updated is not None
+        assert updated.display_name == "First Atomic Update"
+
+    async with get_session() as s:
+        # Atomic update with mismatched expected_display_name raises ValueError
+        with pytest.raises(ValueError, match="modified by another organizer"):
+            await update_event(
+                s,
+                event_id=event_id,
+                display_name="Second Atomic Update",
+                expected_display_name="Organizer Event",  # Outdated expected name
+            )
+
+
+@pytest.mark.anyio
 async def test_untrusted_return_to_falls_back_to_safe_destination(admin_cookie):
     async with get_session() as s:
         ev = await create_event(s, slug="return-test", display_name="Return Test")
@@ -472,6 +500,7 @@ async def test_duplicate_room_submission_is_prevented(admin_cookie):
             follow_redirects=False,
         )
         assert resp2.status_code == 303
+        assert resp2.cookies.get("room_created") == str(event_id)
 
     # Verify only ONE room was created in the database
     async with get_session() as s:
@@ -501,6 +530,46 @@ async def test_setup_edit_event_rejects_empty_name_or_invalid_slug(organizer):
         )
         assert resp2.status_code == 400
         assert "Use lowercase letters, numbers and hyphens" in resp2.text
+
+
+@pytest.mark.anyio
+async def test_setup_edit_event_corrects_rejected_name_and_resubmits_successfully(organizer):
+    event_id = organizer["event_id"]
+    async with _client() as client:
+        # 1. Submit an invalid empty/whitespace name
+        resp_reject = await client.post(
+            f"/workspace/setup?eventId={event_id}",
+            data={"event_id": str(event_id), "display_name": "   ", "slug": "org-event"},
+            cookies=organizer["cookies"],
+        )
+        assert resp_reject.status_code == 400
+        assert "Please enter an event name" in resp_reject.text
+
+        # 2. Extract original_display_name from the returned form HTML
+        match = re.search(r'name="original_display_name"\s+value="([^"]*)"', resp_reject.text)
+        assert match is not None
+        preserved_original = match.group(1)
+        # Must preserve the saved event name as the concurrency baseline, NOT the empty attempted name
+        assert preserved_original == "Organizer Event"
+
+        # 3. Resubmit the form with a corrected valid name
+        resp_resubmit = await client.post(
+            f"/workspace/setup?eventId={event_id}",
+            data={
+                "event_id": str(event_id),
+                "display_name": "Properly Corrected Event",
+                "slug": "org-event",
+                "original_display_name": preserved_original,
+            },
+            cookies=organizer["cookies"],
+            follow_redirects=False,
+        )
+        assert resp_resubmit.status_code == 303
+
+    async with get_session() as s:
+        updated = await get_event_by_id(s, event_id)
+        assert updated is not None
+        assert updated.display_name == "Properly Corrected Event"
 
 
 @pytest.mark.anyio
@@ -546,9 +615,19 @@ async def test_successful_room_creation_sets_cleanup_cookie(admin_cookie):
             follow_redirects=False,
         )
     assert resp.status_code == 303
-    assert resp.headers["location"].endswith(f"/events/{event_id}/setup/rooms")
+    assert f"/events/{event_id}/setup/rooms" in resp.headers["location"]
+    assert "clear_token=token-12345" in resp.headers["location"]
     assert resp.cookies.get("room_created") == str(event_id)
     assert resp.cookies.get("room_created_token") == f"{event_id}:token-12345"
+
+    # When visiting /admin/events/{event_id}/setup/rooms with the query param clear_token
+    async with _client() as client:
+        rooms_page_query = await client.get(
+            f"/admin/events/{event_id}/setup/rooms?clear_token=token-12345",
+            cookies=admin_cookie,
+        )
+    assert f'data-clear-room-draft="{event_id}"' in rooms_page_query.text
+    assert 'data-clear-room-draft-token="token-12345"' in rooms_page_query.text
 
     # When visiting /admin/events/{event_id}/setup/rooms with the cookie, page renders data-clear-room-draft
     async with _client() as client:

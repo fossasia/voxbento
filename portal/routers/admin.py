@@ -824,7 +824,7 @@ async def admin_setup_start(
                 if not principal.get("can_host"):
                     if "application/json" in request.headers.get("accept", "") or request.url.path.startswith("/api/"):
                         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Hosting access required.")
-                    raise RedirectRequired("/account?error=hosting_required")
+                    raise RedirectRequired("/account?error=hosting_access_required")
 
     admin_flags = await get_access_flags(request, event_id=event_id)
     if not getattr(request.state, "is_workspace", False) and not admin_flags.get("is_admin"):
@@ -886,7 +886,7 @@ async def admin_setup_create_event(
                 if not principal.get("can_host"):
                     if "application/json" in request.headers.get("accept", "") or request.url.path.startswith("/api/"):
                         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Hosting access required.")
-                    raise RedirectRequired("/account?error=hosting_required")
+                    raise RedirectRequired("/account?error=hosting_access_required")
 
     if not display_name:
         return templates.TemplateResponse(
@@ -970,7 +970,7 @@ async def admin_setup_create_event(
                     request=request,
                     name="admin/wizard_event.html",
                     context={
-                        "error": "That URL slug is already taken. Please choose another.",
+                        "error": f"That URL slug is already taken. An event with the slug '{slug}' already exists. Please choose another.",
                         "display_name": display_name,
                         "slug": slug,
                         "event": None,
@@ -1010,7 +1010,7 @@ async def admin_setup_create_event(
                     request=request,
                     name="admin/wizard_event.html",
                     context={
-                        "error": "That URL slug is already taken. Please choose another.",
+                        "error": f"That URL slug is already taken. An event with the slug '{slug}' already exists. Please choose another.",
                         "display_name": display_name,
                         "slug": slug,
                         "event": None,
@@ -1046,12 +1046,18 @@ async def _room_summaries(session: AsyncSession, event: Event, rooms: Sequence[R
 @router.get("/admin/events/{event_id}/setup/rooms", dependencies=[Depends(require_event_owner)])
 async def admin_setup_rooms(request: Request, event_id: int):
     admin_flags = await get_access_flags(request, event_id=event_id)
-    cookie_token = request.cookies.get("room_created_token") or request.cookies.get("room_created") or ""
     clear_token = None
-    if cookie_token:
-        parts = cookie_token.split(":", 1)
-        if parts[0] == str(event_id):
-            clear_token = parts[1] if len(parts) > 1 else ""
+    raw_query_token = request.query_params.get("clear_token")
+    if raw_query_token:
+        clear_token = _sanitize_draft_token(raw_query_token)
+
+    if clear_token is None:
+        cookie_token = request.cookies.get("room_created_token") or request.cookies.get("room_created") or ""
+        if cookie_token:
+            parts = cookie_token.split(":", 1)
+            if parts[0] == str(event_id):
+                clear_token = parts[1] if len(parts) > 1 else ""
+
     room_created = clear_token is not None
     async with get_session() as session:
         event = await get_event_by_id(session, event_id)
@@ -1233,6 +1239,42 @@ async def admin_room_setup_new(request: Request, event_id: int, source: str | No
     )
 
 
+_SAFE_DRAFT_TOKEN_RE = re.compile(r"^[a-zA-Z0-9_-]{1,64}$")
+
+
+def _sanitize_draft_token(raw_token: str | None) -> str:
+    if not raw_token or not isinstance(raw_token, str):
+        return ""
+    token = raw_token.strip()
+    if _SAFE_DRAFT_TOKEN_RE.fullmatch(token):
+        return token
+    return ""
+
+
+def _room_creation_success_response(
+    request: Request,
+    event_id: int,
+    room_id: int,
+    from_setup: bool,
+    setup_draft_token: str = "",
+) -> Response:
+    sanitized_token = _sanitize_draft_token(setup_draft_token)
+    if from_setup:
+        target = f"events/{event_id}/setup/rooms"
+        if sanitized_token:
+            target += f"?clear_token={urllib.parse.quote(sanitized_token, safe='')}"
+    else:
+        target = f"events/{event_id}/rooms/{room_id}/?created=1"
+
+    response = safe_redirect(url=management_url(request, target), status_code=status.HTTP_303_SEE_OTHER)
+    if from_setup:
+        quoted_token = urllib.parse.quote(sanitized_token, safe="")
+        cookie_val = f"{event_id}:{quoted_token}" if quoted_token else str(event_id)
+        response.set_cookie("room_created_token", cookie_val, max_age=60, path="/", httponly=False, samesite="lax")
+        response.set_cookie("room_created", str(event_id), max_age=60, path="/", httponly=False, samesite="lax")
+    return response
+
+
 @router.post("/admin/events/{event_id}/rooms/new", dependencies=[Depends(require_event_owner), Depends(require_admin_csrf)])
 async def admin_room_setup_create(request: Request, event_id: int):
     if not verify_same_origin(request):
@@ -1240,11 +1282,17 @@ async def admin_room_setup_create(request: Request, event_id: int):
     form = await request.form()
     from_setup = form.get("from") == "setup"
     submission_id = str(form.get("submission_id", "")).strip()
+    setup_draft_token = _sanitize_draft_token(form.get("setup_draft_token"))
 
     if submission_id and (event_id, submission_id) in _recent_room_creations:
         existing_room_id = _recent_room_creations[(event_id, submission_id)]
-        target = f"events/{event_id}/setup/rooms" if from_setup else f"events/{event_id}/rooms/{existing_room_id}/?created=1"
-        return safe_redirect(url=management_url(request, target), status_code=status.HTTP_303_SEE_OTHER)
+        return _room_creation_success_response(
+            request,
+            event_id=event_id,
+            room_id=existing_room_id,
+            from_setup=from_setup,
+            setup_draft_token=setup_draft_token,
+        )
 
     async with get_session() as session:
         event = await get_event_by_id(session, event_id)
@@ -1274,20 +1322,20 @@ async def admin_room_setup_create(request: Request, event_id: int):
         )
         await apply_plan(session, event, room, plan, catalog)
         room_id = room.id
-        if submission_id:
-            _recent_room_creations[(event_id, submission_id)] = room_id
-            if len(_recent_room_creations) > 500:
-                for k in list(_recent_room_creations.keys())[:100]:
-                    _recent_room_creations.pop(k, None)
 
-    target = f"events/{event_id}/setup/rooms" if from_setup else f"events/{event_id}/rooms/{room_id}/?created=1"
-    response = safe_redirect(url=management_url(request, target), status_code=status.HTTP_303_SEE_OTHER)
-    if from_setup:
-        setup_draft_token = str(form.get("setup_draft_token", "")).strip()
-        cookie_val = f"{event_id}:{setup_draft_token}" if setup_draft_token else str(event_id)
-        response.set_cookie("room_created_token", cookie_val, max_age=60, path="/", httponly=False, samesite="lax")
-        response.set_cookie("room_created", str(event_id), max_age=60, path="/", httponly=False, samesite="lax")
-    return response
+    if submission_id:
+        _recent_room_creations[(event_id, submission_id)] = room_id
+        if len(_recent_room_creations) > 500:
+            for k in list(_recent_room_creations.keys())[:100]:
+                _recent_room_creations.pop(k, None)
+
+    return _room_creation_success_response(
+        request,
+        event_id=event_id,
+        room_id=room_id,
+        from_setup=from_setup,
+        setup_draft_token=setup_draft_token,
+    )
 
 
 @router.get("/admin/events/{event_id}/rooms/{room_id}/setup", dependencies=[Depends(require_event_owner)])
