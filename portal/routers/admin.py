@@ -181,7 +181,7 @@ from portal.transcription.worker import (
     stop_transcription_worker,
     wait_for_worker_start,
 )
-from portal.translations.constants import TRANSLATION_MODELS, TranslationProviderEnum
+from portal.translations.constants import RETIRED_TRANSLATION_MODELS, TRANSLATION_MODELS, TranslationProviderEnum
 from portal.translations.model_languages import language_support_error
 from portal.translations.vocabulary import (
     VocabularyOverlapIndex,
@@ -1593,6 +1593,10 @@ async def _translation_form_response(
 
 def _require_translatable(provider: str | None, model: str | None, language_codes: Iterable[str | None]) -> None:
     """Refuse a translation model that cannot handle the language spoken or a language translated into."""
+    if model in RETIRED_TRANSLATION_MODELS:
+        raise TranslationLanguageError(
+            status_code=400, detail=f"{model} has been retired and no longer translates. Choose another model."
+        )
     error = language_support_error(provider, model, language_codes)
     if error:
         raise TranslationLanguageError(status_code=400, detail=error)
@@ -2265,15 +2269,15 @@ async def admin_booth_detail(request: Request, event_id: int, room_id: int, boot
         saved_speech_model = db_booth.transcription_model
         if saved_speech_model == "scribe_v2":
             saved_speech_model = "scribe_v2_realtime"
-        for models, saved_provider, saved_model in (
-            (speech_models, db_booth.transcription_provider, saved_speech_model),
-            (translation_models, db_booth.translation_provider, db_booth.translation_model),
+        for models, saved_provider, saved_model, retired in (
+            (speech_models, db_booth.transcription_provider, saved_speech_model, frozenset()),
+            (translation_models, db_booth.translation_provider, db_booth.translation_model, RETIRED_TRANSLATION_MODELS),
         ):
             if not saved_provider:  # a new booth has no translation service saved yet
                 continue
             offered = models.setdefault(saved_provider, [])
             if saved_model and saved_model not in {value for value, _ in offered}:
-                offered.append((saved_model, f"{saved_model} (current)"))
+                offered.append((saved_model, f"{saved_model} ({'retired' if saved_model in retired else 'current'})"))
         if settings.self_hosted_llm_enabled:
             # Set after the step above: a self-hosted model the server no longer lists can't be saved, so it isn't offered.
             translation_models[TranslationProviderEnum.SELF_HOSTED.value] = [
@@ -2301,6 +2305,9 @@ async def admin_booth_detail(request: Request, event_id: int, room_id: int, boot
             "saved_notice": _booth_saved_notice(request),
             "error_notice": getattr(request.state, "translation_error", None) or _booth_error_notice(request),
             "show_next_steps": not (db_booth.transcription_enabled or db_booth.translation_enabled),
+            "retired_translation_model": (
+                db_booth.translation_model if db_booth.translation_model in RETIRED_TRANSLATION_MODELS else ""
+            ),
             "booth_id": bid,
             "mediamtx_path": mediamtx_path,
             "whep_url": whep_url,
