@@ -189,6 +189,7 @@ with `?error=invalid_role&role=…` and the page explains why.
 | `portal/routers/listener.py` | WHEP listener UI route |
 | `portal/routers/api.py` | Booth state REST API, WHIP URL generation |
 | `portal/routers/admin.py` | Shared event-management handlers and system-admin routes |
+| `portal/routers/meeting_analysis.py` | Room meeting reports page, report generation, Markdown download and status API |
 | `portal/room_setup.py` | Room plan parsing, available AI services, booth/translation-language reconciliation, and room summaries; uses existing tables |
 | `portal/workspace_routing.py` | `/workspace` handler mapping, legacy organizer redirects, and template URL context |
 | `portal/websockets/manager.py` | `ws_booth` and `ws_captions` endpoints |
@@ -237,6 +238,25 @@ with `?error=invalid_role&role=…` and the page explains why.
 - `program-relay` service (private, `Authorization: Bearer $PROGRAM_RELAY_CONTROL_SECRET`):
   `GET /relays`, `PUT /relays/{room_id}` `{source, destination, fingerprint}`,
   `DELETE /relays/{room_id}`, unauthenticated `GET /healthz`.
+
+## Meeting report routes (#1080)
+
+- `GET /workspace/events/{event_id}/rooms/{room_id}/analysis/`: owners and room
+  coordinators; lists the room's reports (no-store). Also marks reports left
+  in progress for 30 minutes as failed.
+- `POST /workspace/events/{event_id}/rooms/{room_id}/analysis/`: event owners,
+  origin-checked. Form `session` (`{channel}:{first segment id}`, one of the
+  channel's sessions as listed on the page), or `channel` alone for its latest
+  session; `channel` is `floor` or a booth language code with stored segments. Redirects with `?error=disabled|busy|channel`; one report per room
+  is written at a time, in a tracked background task.
+- `GET /workspace/events/{event_id}/rooms/{room_id}/analysis/{report_id}/`:
+  owners and coordinators; one report with Summary and Transcript tabs. The
+  transcript shows the segments of the report's session up to `covered_until`.
+- `GET /workspace/events/{event_id}/rooms/{room_id}/analysis/{report_id}.md`:
+  owners and coordinators; Markdown download of a finished report.
+- `GET /api/workspace/events/{event_id}/rooms/{room_id}/analysis/{report_id}`:
+  `{id, status, error}` for the page's polling. All five map to shared
+  `/admin/...` handlers in `portal/routers/meeting_analysis.py`.
 
 ## Meeting source routes (#747)
 
