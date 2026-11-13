@@ -712,6 +712,36 @@ class TestUserLogin:
             assert limited_resp.status_code == 429
             assert b"Too many attempts. Try again later." in limited_resp.content
 
+    @pytest.mark.anyio
+    @pytest.mark.parametrize("path", ["/api/auth/magic-link", "/api/auth/forgot-password"])
+    async def test_email_sending_routes_are_limited_per_ip(self, setup_db, monkeypatch, path):
+        """Rotating the email must not get around the limit on routes that send mail."""
+        import portal.rate_limit
+        from portal.routers.auth import EMAIL_REQUESTS_PER_IP
+
+        monkeypatch.setattr(portal.rate_limit, "_rates", {})
+        async with _client() as c:
+            for i in range(EMAIL_REQUESTS_PER_IP):
+                resp = await c.post(path, json={"email": f"rotating-{i}@example.com"})
+                assert resp.status_code == 200
+
+            limited = await c.post(path, json={"email": "one-more@example.com"})
+        assert limited.status_code == 429
+        assert limited.headers["Retry-After"] == "600"
+
+    @pytest.mark.anyio
+    async def test_email_sending_ip_limit_is_per_route(self, setup_db, monkeypatch):
+        """Using up the magic link budget does not block password reset requests."""
+        import portal.rate_limit
+        from portal.routers.auth import EMAIL_REQUESTS_PER_IP
+
+        monkeypatch.setattr(portal.rate_limit, "_rates", {})
+        async with _client() as c:
+            for i in range(EMAIL_REQUESTS_PER_IP):
+                await c.post("/api/auth/magic-link", json={"email": f"rotating-{i}@example.com"})
+            assert (await c.post("/api/auth/magic-link", json={"email": "x@example.com"})).status_code == 429
+            assert (await c.post("/api/auth/forgot-password", json={"email": "x@example.com"})).status_code == 200
+
 
 class TestEmailVerification:
     @pytest.mark.anyio
