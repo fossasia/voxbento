@@ -191,6 +191,7 @@ with `?error=invalid_role&role=…` and the page explains why.
 | `portal/routers/admin.py` | Shared event-management handlers and system-admin routes |
 | `portal/room_setup.py` | Room plan parsing, available AI services, booth/translation-language reconciliation, and room summaries; uses existing tables |
 | `portal/workspace_routing.py` | `/workspace` handler mapping, legacy organizer redirects, and template URL context |
+| `portal/routers/webhooks.py` | Webhook subscription management API and available events |
 | `portal/websockets/manager.py` | `ws_booth` and `ws_captions` endpoints |
 | `portal/websockets/handlers.py` | Specific `_handle_*` logic for WS messages |
 | `fastapi_app.py` | Application lifespan, router include aggregation |

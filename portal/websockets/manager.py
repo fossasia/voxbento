@@ -20,6 +20,7 @@ from portal.booth_identity import booth_id_to_mediamtx_path, parse_booth_id
 from portal.booth_publish import TICKET_TTL_SECS, issue_ticket
 from portal.globals import booths
 from portal.roles import ALL_ROLES, INTERPRETER, can_set_active
+from portal.webhooks.events import BOOTH_INTERPRETER_JOINED
 
 
 def utc_now() -> datetime:
@@ -789,7 +790,7 @@ async def _handle_join(ws: WebSocket, session: Session, data: dict) -> None:
 
     if role == INTERPRETER:
         await _wh_worker.enqueue_webhook(
-            "booth.interpreter.joined",
+            BOOTH_INTERPRETER_JOINED,
             {
                 "booth_id": session.booth_id,
                 "participant_id": participant.participant_id,
