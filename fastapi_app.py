@@ -44,6 +44,7 @@ from portal.routers.oauth import router as oauth_router
 from portal.routers.program_ingest import router as program_ingest_router
 from portal.routers.public import router as public_router
 from portal.routers.webhooks import router as webhooks_router
+from portal.routers.youtube import router as youtube_router
 from portal.security_headers import SecurityHeadersMiddleware, apply_security_headers, forwarded_https
 from portal.websockets.handlers import router as ws_router
 from portal.workspace_routing import WorkspaceRoutingMiddleware
@@ -390,6 +391,7 @@ app.include_router(api_v1_router)
 
 app.include_router(admin_router)
 app.include_router(program_ingest_router)
+app.include_router(youtube_router)
 app.include_router(meeting_source_router)
 app.include_router(attendance_router)
 

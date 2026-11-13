@@ -60,6 +60,18 @@ class Settings(BaseSettings):
     program_relay_control_secret: str = ""
     program_relay_max: int = 4
     program_relay_allowed_hosts: str = "a.rtmps.youtube.com,b.rtmps.youtube.com"
+    # "Sign in with YouTube" (Google OAuth web client). Off unless both are set.
+    youtube_oauth_client_id: str = ""
+    youtube_oauth_client_secret: str = Field(default="", repr=False)
+    youtube_status_cache_secs: float = 60.0  # Two list calls per refresh per open linked room.
+
+    @property
+    def youtube_connect_enabled(self) -> bool:
+        return bool(self.youtube_oauth_client_id and self.youtube_oauth_client_secret)
+
+    @property
+    def youtube_redirect_uri(self) -> str:
+        return f"{self.public_base_url.rstrip('/')}/youtube/oauth/callback"
 
     @property
     def rtmps_ingest_enabled(self) -> bool:
@@ -165,6 +177,8 @@ class Settings(BaseSettings):
                 "PROGRAM_RELAY_ENABLED requires PROGRAM_RELAY_CONTROL_SECRET (at least 32 characters), "
                 "shared with the program-relay service. Generate one with: openssl rand -hex 32"
             )
+        if bool(self.youtube_oauth_client_id) != bool(self.youtube_oauth_client_secret):
+            raise RuntimeError("Set both YOUTUBE_OAUTH_CLIENT_ID and YOUTUBE_OAUTH_CLIENT_SECRET, or neither.")
         # Every outgoing email is encrypted at rest in the outbox, so sign-in links,
         # invitations and password resets cannot be sent without this key.
         encryption_keys = [
@@ -225,6 +239,12 @@ class Settings(BaseSettings):
         if parsed.query or parsed.fragment:
             raise ValueError("public_base_url must not include a query string or fragment")
         return value
+
+    @field_validator("youtube_oauth_client_id", "youtube_oauth_client_secret")
+    @classmethod
+    def strip_youtube_oauth_client(cls, value: str) -> str:
+        """Trim pasted OAuth credentials so a whitespace-only value counts as unset."""
+        return value.strip()
 
     @field_validator("self_hosted_llm_base_url")
     @classmethod

@@ -283,6 +283,7 @@ Tracks which languages the translation worker should generate for a given room o
 | 039 | `039_add_atlascloud_api_key.py` | AtlasCloud API key setting |
 | 040 | `040_add_last_sign_in_at_to_users.py` | Nullable `users.last_sign_in_at` |
 | 041 | `041_add_interpreter_attendance.py` | `interpreter_attendance` table (#1215) |
+| 042 | `042_youtube_connections.py` | `youtube_connections` table, `rooms.youtube_broadcast_id`, `rooms.youtube_stream_id` |
 
 Run migrations: `uv run alembic upgrade head`
 
@@ -346,6 +347,17 @@ no migration needed) | `rtmps_relay`; binds the program key to its transport), n
 URL), `program_relay_key_enc` (Fernet ciphertext of the YouTube stream key; write-only,
 never serialize or log) and `program_relay_updated_at`. Helpers live in
 `portal/program_relay.py` (`store_destination`, `clear_destination`, `destination`).
+
+## Migration 042 — Sign in with YouTube (#1087)
+
+Table `youtube_connections` (model `YouTubeConnection`), one row per event (unique
+`event_id`, cascade on event delete): `channel_id` (String(64)), `channel_title`
+(String(200)), `refresh_token_enc` (Text, Fernet ciphertext of the Google refresh token;
+write-only, never serialize or log), `scope` (String(500)), nullable
+`connected_by_user_id` (→ `users.id`, SET NULL), nullable `last_error` (String(300), the
+"sign in again" message), `connected_at` (sign-in time), `created_at`, `updated_at`. Room fields: nullable
+`youtube_broadcast_id` (String(32)) and `youtube_stream_id` (String(64)). Helpers live in
+`portal/youtube_account.py` (`get_connection`, `link_broadcast`, `unlink_event_rooms`).
 
 ## Migration 035 — per-language AI voice (#1005)
 
