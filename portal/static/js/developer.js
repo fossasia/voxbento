@@ -53,7 +53,6 @@ export async function copyToClipboard(button) {
 
   // Clear both states before setting the new one so a failed copy followed by a
   // successful one never leaves the button in the wrong colour.
-  // Remove classes individually so test mocks with single-argument .remove() still work.
   button.classList.remove('copied');
   button.classList.remove('copy-failed');
 
@@ -71,7 +70,6 @@ export async function copyToClipboard(button) {
     if (copied) tooltip.classList.add('copied-tooltip');
   }
   state.timerId = setTimeout(() => {
-    if (copyFeedbackByButton.get(button) !== state) return;
     button.classList.remove(outcome);
     if (tooltip) {
       tooltip.textContent = 'Copy to clipboard';
