@@ -814,3 +814,23 @@ async def test_process_delivery_handles_failed_refresh_gracefully(db, monkeypatc
     await process_delivery(mock_client, db, delivery)
     assert delivery.status == "succeeded"
     assert delivery.last_error is None
+
+
+@pytest.mark.anyio
+async def test_webhook_debug_dump_endpoint_removed():
+    """Ensure the unauthenticated debug dump endpoint is not present or accessible."""
+    from httpx import ASGITransport, AsyncClient
+
+    from fastapi_app import app
+
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        # Unauthenticated request
+        response = await client.get("/api/v1/webhooks/debug/dump")
+        assert response.status_code == 404
+
+        # Request with arbitrary Bearer token
+        response_with_auth = await client.get(
+            "/api/v1/webhooks/debug/dump",
+            headers={"Authorization": "Bearer test_token"},
+        )
+        assert response_with_auth.status_code == 404
