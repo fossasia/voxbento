@@ -519,20 +519,30 @@ window.adminAPIKeys = {
   }
 };
 
-export function initSetupDraftCleanup(storage = (typeof sessionStorage !== 'undefined' ? sessionStorage : null)) {
+function getSafeSessionStorage() {
+  try {
+    return typeof sessionStorage !== 'undefined' ? sessionStorage : null;
+  } catch (err) {
+    console.warn('sessionStorage is not accessible', err);
+    return null;
+  }
+}
+
+export function initSetupDraftCleanup(customStorage) {
+  const storage = customStorage !== undefined ? customStorage : getSafeSessionStorage();
   if (!storage) return;
   const clearEl = document.querySelector('[data-clear-room-draft]');
   if (clearEl?.dataset.clearRoomDraft) {
     const eventId = clearEl.dataset.clearRoomDraft;
     const token = clearEl.dataset.clearRoomDraftToken;
-    const storedToken = storage.getItem(`voxbento_setup_room_draft_token_${eventId}`);
-    if (!token || !storedToken || token === storedToken) {
-      try {
+    try {
+      const storedToken = storage.getItem(`voxbento_setup_room_draft_token_${eventId}`);
+      if (!token || !storedToken || token === storedToken) {
         storage.removeItem(`voxbento_setup_room_draft_${eventId}`);
         storage.removeItem(`voxbento_setup_room_draft_token_${eventId}`);
-      } catch (err) {
-        console.warn('Failed to clear room draft via element attribute for event ' + eventId, err);
       }
+    } catch (err) {
+      console.warn('Failed to clear room draft via element attribute for event ' + eventId, err);
     }
   }
 
@@ -545,16 +555,16 @@ export function initSetupDraftCleanup(storage = (typeof sessionStorage !== 'unde
       val = match[1];
     }
     const [eventId, token] = val.split(':');
-    const storedToken = storage.getItem(`voxbento_setup_room_draft_token_${eventId}`);
-    if (!token || !storedToken || token === storedToken) {
-      try {
+    try {
+      const storedToken = storage.getItem(`voxbento_setup_room_draft_token_${eventId}`);
+      if (!token || !storedToken || token === storedToken) {
         storage.removeItem(`voxbento_setup_room_draft_${eventId}`);
         storage.removeItem(`voxbento_setup_room_draft_token_${eventId}`);
         document.cookie = 'room_created_token=; Path=/; Max-Age=0; SameSite=Lax';
         document.cookie = 'room_created=; Path=/; Max-Age=0; SameSite=Lax';
-      } catch (err) {
-        console.warn('Failed to remove room draft from storage for event ' + eventId + '; retaining cleanup cookie for retry', err);
       }
+    } catch (err) {
+      console.warn('Failed to remove room draft from storage for event ' + eventId + '; retaining cleanup cookie for retry', err);
     }
   }
 

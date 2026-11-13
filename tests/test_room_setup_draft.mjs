@@ -265,4 +265,22 @@ assert.doesNotThrow(() => {
   initSetupDraftCleanup(malformedStorage);
 });
 
+// 9. Storage getItem failure retaining cookie without throwing
+const failingGetItemStorage = {
+  getItem() {
+    throw new Error('Access denied to storage item');
+  },
+  removeItem() {},
+};
+globalThis.document.cookie = 'room_created_token=7%3Afail-token';
+assert.doesNotThrow(() => {
+  initSetupDraftCleanup(failingGetItemStorage);
+});
+assert.equal(globalThis.document.cookie.includes('room_created_token'), true, 'Cookie must be retained when getItem throws');
+
+// 10. Unguarded global invocation without storage argument
+assert.doesNotThrow(() => {
+  initSetupDraftCleanup();
+});
+
 console.log('All DOM-based room draft persistence and cleanup assertions passed successfully!');
