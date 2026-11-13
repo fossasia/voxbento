@@ -42,6 +42,7 @@ from portal.rate_limit import check_rate_limit
 from portal.roles import INTERPRETER, Permission, can_set_active, has_permission
 from portal.schemas.booth import CreateBoothRequest
 from portal.transcription import ProviderConfig, ProviderEnum, get_api_key
+from portal.transcription.providers.sarvam import is_supported_sarvam_language
 from portal.transcription.worker import start_transcription_worker, stop_transcription_worker
 from portal.utils import (
     _check_mediamtx,
@@ -863,6 +864,11 @@ async def api_transcription_start(
             )
         if provider_enum != ProviderEnum.LOCAL and (not api_key):
             raise HTTPException(status_code=400, detail=f"{provider} API key missing. Cannot start transcription.")
+        if provider_enum == ProviderEnum.SARVAM and not is_supported_sarvam_language(language_code):
+            raise HTTPException(
+                status_code=400,
+                detail=f"Sarvam AI does not support language '{language_code}'.",
+            )
         config = ProviderConfig(api_key=api_key)
     try:
         await start_transcription_worker(

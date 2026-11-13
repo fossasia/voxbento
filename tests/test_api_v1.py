@@ -158,6 +158,177 @@ async def test_update_event_api_keys_only_changes_fields_sent_in_payload(event_a
 
 
 @pytest.mark.anyio
+async def test_update_event_api_keys_sarvam_encrypts_preserves_and_clears(event_api_access):
+    """PATCH /api_keys encrypts sarvam_api_key, preserves omitted fields, and clears on empty string."""
+    access_token, event_id = event_api_access
+    headers = {"Authorization": f"Bearer {access_token}"}
+
+    async with get_session() as session:
+        event = await session.get(Event, event_id)
+        assert event is not None
+        event.encrypted_deepgram_api_key = encrypt_val("keep-deepgram-key")
+        await session.commit()
+        deepgram_ciphertext = event.encrypted_deepgram_api_key
+
+    async with _client() as client:
+        set_resp = await client.patch(
+            "/api/v1/events/api-key-test/api_keys",
+            json={"sarvam_api_key": "sarvam-v1-key"},
+            headers=headers,
+        )
+    assert set_resp.status_code == 200
+
+    async with get_session() as session:
+        event = await session.get(Event, event_id)
+        assert event is not None
+        assert event.encrypted_sarvam_api_key is not None
+        assert event.encrypted_sarvam_api_key != "sarvam-v1-key"
+        assert decrypt_val(event.encrypted_sarvam_api_key) == "sarvam-v1-key"
+        assert event.encrypted_deepgram_api_key == deepgram_ciphertext
+        sarvam_ciphertext = event.encrypted_sarvam_api_key
+
+    # Omitting sarvam_api_key preserves it byte-for-byte.
+    async with _client() as client:
+        omit_resp = await client.patch(
+            "/api/v1/events/api-key-test/api_keys",
+            json={"openai_api_key": "other-key"},
+            headers=headers,
+        )
+    assert omit_resp.status_code == 200
+
+    async with get_session() as session:
+        event = await session.get(Event, event_id)
+        assert event is not None
+        assert event.encrypted_sarvam_api_key == sarvam_ciphertext
+
+    # Empty string clears sarvam_api_key without touching other keys.
+    async with _client() as client:
+        clear_resp = await client.patch(
+            "/api/v1/events/api-key-test/api_keys",
+            json={"sarvam_api_key": ""},
+            headers=headers,
+        )
+    assert clear_resp.status_code == 200
+
+    async with get_session() as session:
+        event = await session.get(Event, event_id)
+        assert event is not None
+        assert event.encrypted_sarvam_api_key is None
+        assert event.encrypted_deepgram_api_key == deepgram_ciphertext
+
+
+@pytest.mark.anyio
+async def test_update_event_api_keys_sarvam_strips_padded_and_clears_whitespace(event_api_access):
+    """PATCH /api_keys strips padding before encrypting and treats whitespace-only as cleared."""
+    access_token, event_id = event_api_access
+    headers = {"Authorization": f"Bearer {access_token}"}
+
+    async with _client() as client:
+        padded_resp = await client.patch(
+            "/api/v1/events/api-key-test/api_keys",
+            json={"sarvam_api_key": "  sarvam-padded-key  "},
+            headers=headers,
+        )
+    assert padded_resp.status_code == 200
+
+    async with get_session() as session:
+        event = await session.get(Event, event_id)
+        assert event is not None
+        assert decrypt_val(event.encrypted_sarvam_api_key) == "sarvam-padded-key"
+
+    async with _client() as client:
+        ws_resp = await client.patch(
+            "/api/v1/events/api-key-test/api_keys",
+            json={"sarvam_api_key": "   \t  "},
+            headers=headers,
+        )
+    assert ws_resp.status_code == 200
+
+    async with get_session() as session:
+        event = await session.get(Event, event_id)
+        assert event is not None
+        assert event.encrypted_sarvam_api_key is None
+
+
+@pytest.mark.anyio
+async def test_upsert_room_rejects_sarvam_with_unsupported_source_language(event_api_access):
+    """PUT /rooms rejects enabling or keeping Sarvam transcription with an unsupported source_language."""
+    from sqlalchemy import select
+
+    access_token, event_id = event_api_access
+    async with get_session() as session:
+        token = (await session.execute(select(OAuthToken))).scalar_one()
+        token.scopes = ["events:write", "rooms:write"]
+        await session.commit()
+
+    headers = {"Authorization": f"Bearer {access_token}"}
+    async with _client() as client:
+        bad_create = await client.put(
+            "/api/v1/events/api-key-test/rooms/ext-room-1",
+            json={
+                "name": "Sarvam Room",
+                "enable_transcription": True,
+                "transcription_provider": "sarvam",
+                "source_language": "fr",
+            },
+            headers=headers,
+        )
+        ok_create = await client.put(
+            "/api/v1/events/api-key-test/rooms/ext-room-1",
+            json={
+                "name": "Sarvam Room",
+                "enable_transcription": True,
+                "transcription_provider": "sarvam",
+                "source_language": "hi",
+            },
+            headers=headers,
+        )
+        bad_update = await client.put(
+            "/api/v1/events/api-key-test/rooms/ext-room-1",
+            json={"source_language": "es"},
+            headers=headers,
+        )
+        explicit_null_enabled_bad = await client.put(
+            "/api/v1/events/api-key-test/rooms/ext-room-1",
+            json={"enable_transcription": None, "source_language": "fr"},
+            headers=headers,
+        )
+        explicit_null_new_room = await client.put(
+            "/api/v1/events/api-key-test/rooms/ext-room-null-create",
+            json={
+                "name": "Disabled By Null Default",
+                "enable_transcription": None,
+                "transcription_provider": "sarvam",
+                "source_language": "fr",
+            },
+            headers=headers,
+        )
+    assert bad_create.status_code == 422
+    assert "Sarvam AI does not support transcription language 'fr'" in bad_create.json()["detail"]
+    assert ok_create.status_code == 200
+    assert bad_update.status_code == 422
+    assert "Sarvam AI does not support transcription language 'es'" in bad_update.json()["detail"]
+    assert explicit_null_enabled_bad.status_code == 422
+    assert "Sarvam AI does not support transcription language 'fr'" in explicit_null_enabled_bad.json()["detail"]
+    assert explicit_null_new_room.status_code == 200
+
+    async with get_session() as session:
+        room = (
+            await session.execute(
+                select(Room).where(Room.event_id == event_id, Room.eventyay_room_id == "ext-room-1")
+            )
+        ).scalar_one()
+        assert room.floor_language_code == "hi"
+        assert room.floor_transcription_provider == "sarvam"
+        null_room = (
+            await session.execute(
+                select(Room).where(Room.event_id == event_id, Room.eventyay_room_id == "ext-room-null-create")
+            )
+        ).scalar_one()
+        assert null_room.floor_transcription_enabled is False
+
+
+@pytest.mark.anyio
 async def test_app_creating_an_event_for_another_organizer_adds_only_the_organizer():
     """#757: the organizer becomes Event owner; the app's developer gets no automatic access.
 

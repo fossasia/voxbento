@@ -31,7 +31,7 @@ from portal.outage_log import OutageLog
 from portal.program_ingest import MediaPath, configure_source, media_paths, pipeline_problem, room_lock
 from portal.transcription.process import audio_progress
 from portal.transcription.providers.base import ProviderConfig, ProviderEnum, get_api_key
-from portal.transcription.worker import start_transcription_worker, stop_transcription_worker
+from portal.transcription.worker import permanent_worker_failure, start_transcription_worker, stop_transcription_worker
 from portal.websockets.manager import broadcast_transcription
 
 logger = logging.getLogger(__name__)
@@ -446,6 +446,9 @@ async def reconcile_room(
     if started is True or current.worker_started_at is None:
         # Read the clock again: replacing the old worker can take a while, and the grace period starts now.
         current.worker_started_at = monotonic()
+    if fatal_reason := permanent_worker_failure(booth_id):
+        current.state, current.reason = "degraded", fatal_reason
+        return
     last_audio = audio_progress.get(booth_id)
     if now - (last_audio or current.worker_started_at) > settings.program_ingest_stall_secs:
         await _stop_worker(current, booth_id)

@@ -10,12 +10,13 @@ import portal.webhooks.worker as _wh_worker
 from portal.config import settings
 from portal.transcription.process import FfmpegProcess
 from portal.transcription.providers.atlascloud import AtlasCloudProvider
-from portal.transcription.providers.base import ProviderConfig
+from portal.transcription.providers.base import FatalTranscriptionError, ProviderConfig
 from portal.transcription.providers.deepgram import DeepgramProvider
 from portal.transcription.providers.elevenlabs import ElevenLabsProvider
 from portal.transcription.providers.local import LocalProvider
 from portal.transcription.providers.nvidia import NVIDIAProvider
 from portal.transcription.providers.openai import OpenAIProvider
+from portal.transcription.providers.sarvam import SarvamProvider
 
 logger = logging.getLogger(__name__)
 
@@ -26,6 +27,7 @@ PROVIDERS = {
     "deepgram": DeepgramProvider(),
     "nvidia": NVIDIAProvider(),
     "elevenlabs": ElevenLabsProvider(),
+    "sarvam": SarvamProvider(),
 }
 
 active_workers_lock = asyncio.Lock()
@@ -74,6 +76,8 @@ class TranscriptionWorkerSession:
         # Set once the first ffmpeg process is up, or once the loop ends without ever getting one.
         self.ready = asyncio.Event()
         self.start_error: BaseException | None = None
+        self.permanent_failure = False
+        self.fatal_error: str | None = None
 
         from portal.booth_identity import make_mediamtx_path
 
@@ -127,6 +131,7 @@ class TranscriptionWorkerSession:
                 )
 
                 # The context manager entirely encapsulates ffmpeg process lifecycle and cleanup.
+                terminal_failure = False
                 async with FfmpegProcess(self.rtsp_url, self.sample_rate, self.booth_id) as process:
                     self.ready.set()
                     try:
@@ -172,10 +177,20 @@ class TranscriptionWorkerSession:
                     except asyncio.CancelledError:
                         logger.info(f"[{self.booth_id}][{self.session_id}] Transcription worker cancelled.")
                         raise
+                    except FatalTranscriptionError as e:
+                        logger.error(
+                            "[%s][%s] Fatal transcription failure; stopping worker: %s",
+                            self.booth_id,
+                            self.session_id,
+                            e,
+                        )
+                        terminal_failure = True
+                        self.permanent_failure = bool(getattr(e, "permanent", True))
+                        self.fatal_error = str(e) or type(e).__name__
                     except Exception as e:
                         logger.error(f"[{self.booth_id}][{self.session_id}] Transcription error: {e}. Retrying...")
 
-                if self.state == State.STOPPING:
+                if terminal_failure or self.state == State.STOPPING:
                     break
 
                 retry_count += 1
@@ -208,6 +223,53 @@ class TranscriptionWorkerSession:
 active_workers: Dict[str, TranscriptionWorkerSession] = {}
 
 
+def is_worker_running(session: object | None) -> bool:
+    """Return True when a worker registry entry is actively starting or running."""
+    if session is None:
+        return False
+    state = getattr(session, "state", None)
+    if isinstance(state, State):
+        return state in (State.STARTING, State.RUNNING)
+    return True
+
+
+def is_worker_occupying_slot(session: object | None) -> bool:
+    """Return True when a worker entry holds a capacity slot (anything except STOPPED)."""
+    if session is None:
+        return False
+    state = getattr(session, "state", None)
+    if isinstance(state, State):
+        return state != State.STOPPED
+    return True
+
+
+def permanent_worker_failure(booth_id: str) -> str | None:
+    """Return the fatal reason when a stopped worker requires credential/setting changes before retry."""
+    session = active_workers.get(booth_id)
+    if session is None:
+        return None
+    if getattr(session, "state", None) == State.STOPPED and getattr(session, "permanent_failure", False):
+        return getattr(session, "fatal_error", None) or "Permanent transcription provider or configuration error."
+    return None
+
+
+def _same_credentials_and_settings(
+    session: TranscriptionWorkerSession,
+    provider: str,
+    model_size: str,
+    config: ProviderConfig | None,
+    transcription_language: str | None,
+) -> bool:
+    old_key = session.config.get_key() if session.config is not None else None
+    new_key = config.get_key() if config is not None else None
+    return (
+        session.provider_name == provider
+        and session.model_size == model_size
+        and session.transcription_language == transcription_language
+        and old_key == new_key
+    )
+
+
 async def start_transcription_worker(
     event_slug: str,
     language_code: str,
@@ -226,7 +288,8 @@ async def start_transcription_worker(
         async with active_workers_lock:
             existing_session = active_workers.get(booth_id)
             if not existing_session:
-                if len(active_workers) >= MAX_TOTAL_WORKERS:
+                active_count = sum(1 for session in active_workers.values() if is_worker_occupying_slot(session))
+                if active_count >= MAX_TOTAL_WORKERS:
                     raise WorkerCapacityError(
                         f"System at maximum capacity ({MAX_TOTAL_WORKERS} concurrent transcription booths)."
                     )
@@ -256,6 +319,18 @@ async def start_transcription_worker(
                 if existing_session.state == State.STOPPED and (
                     existing_session.task is None or existing_session.task.done()
                 ):
+                    if existing_session.permanent_failure and _same_credentials_and_settings(
+                        existing_session,
+                        provider,
+                        model_size,
+                        config,
+                        transcription_language,
+                    ):
+                        logger.debug(
+                            "[%s] Skipping restart after permanent failure until credentials or settings change.",
+                            booth_id,
+                        )
+                        return False
                     # STOPPED precedes async cleanup; remove only after the task finishes.
                     active_workers.pop(booth_id)
                     continue

@@ -115,6 +115,33 @@ async def test_status_reports_transcription_running_from_the_worker_registry(eve
 
 
 @pytest.mark.anyio
+async def test_status_reports_stopped_and_stopping_worker_as_not_running(event):
+    """A fatally stopped (State.STOPPED) or stopping worker in active_workers must not report as running."""
+    from portal.transcription.worker import State
+
+    active_workers["pycon2026-3-en"] = SimpleNamespace(state=State.STOPPED)
+    active_workers["pycon2026-3-fr"] = SimpleNamespace(state=State.STOPPING)
+    active_workers["pycon2026-3-hi"] = SimpleNamespace(state=State.RUNNING)
+    try:
+        booths_in_room = [
+            SimpleNamespace(language_code="en"),
+            SimpleNamespace(language_code="fr"),
+            SimpleNamespace(language_code="hi"),
+        ]
+        db = _db(_result(first=event), _result(all_=booths_in_room))
+
+        response = await api_v1.get_transcription_status(EVENT_SLUG, ROOM_ID, db=db, token=object())
+
+        assert response["statuses"]["en"]["transcription_running"] is False
+        assert response["statuses"]["fr"]["transcription_running"] is False
+        assert response["statuses"]["hi"]["transcription_running"] is True
+    finally:
+        active_workers.pop("pycon2026-3-en", None)
+        active_workers.pop("pycon2026-3-fr", None)
+        active_workers.pop("pycon2026-3-hi", None)
+
+
+@pytest.mark.anyio
 async def test_status_does_not_count_a_worker_in_another_room(event, running_worker):
     running_worker("pycon2026-4-en")
     db = _db(_result(first=event), _result(all_=[SimpleNamespace(language_code="en")]))

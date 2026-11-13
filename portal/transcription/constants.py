@@ -13,6 +13,7 @@ class ProviderEnum(str, Enum):
     ELEVENLABS = "elevenlabs"
     NONE = "none"
     ATLASCLOUD = "atlascloud"
+    SARVAM = "sarvam"
 
 
 ALLOWED_MODELS: Dict[ProviderEnum, Set[str]] = {
@@ -23,4 +24,5 @@ ALLOWED_MODELS: Dict[ProviderEnum, Set[str]] = {
     ProviderEnum.ELEVENLABS: {"scribe_v2_realtime"},
     ProviderEnum.NONE: {"none"},
     ProviderEnum.ATLASCLOUD: {"bytedance/seed-asr-2.0"},
+    ProviderEnum.SARVAM: {"saaras:v3-realtime"},
 }

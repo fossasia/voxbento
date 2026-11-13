@@ -35,7 +35,13 @@ from portal.models import Event, Room
 from portal.outage_log import OutageLog
 from portal.transcription.process import audio_progress
 from portal.transcription.providers.base import ProviderConfig, ProviderEnum, get_api_key
-from portal.transcription.worker import active_workers, start_transcription_worker, stop_transcription_worker
+from portal.transcription.providers.sarvam import is_supported_sarvam_language
+from portal.transcription.worker import (
+    active_workers,
+    permanent_worker_failure,
+    start_transcription_worker,
+    stop_transcription_worker,
+)
 from portal.websockets.manager import broadcast_transcription
 
 logger = logging.getLogger(__name__)
@@ -347,6 +353,8 @@ def pipeline_problem(room: Room, event: Event) -> str | None:
     provider = ProviderEnum(room.floor_transcription_provider)
     if provider != ProviderEnum.LOCAL and (not event.transcription_api_enabled or not get_api_key(event, provider)):
         return "Enable the event transcription API and configure its provider key."
+    if provider == ProviderEnum.SARVAM and not is_supported_sarvam_language(room.floor_language_code):
+        return f"Sarvam AI does not support language '{room.floor_language_code}'."
     return None
 
 
@@ -725,6 +733,10 @@ async def reconcile_processing(
     if started is True or current.worker_started_at is None:
         # Read the clock again: replacing the old worker can take a while, and the grace period starts now.
         current.worker_started_at = time.monotonic()
+    if fatal_reason := permanent_worker_failure(booth_id):
+        current.state, current.reason = "degraded", fatal_reason
+        current.processing_state, current.processing_reason = "degraded", fatal_reason
+        return
     last_audio = audio_progress.get(booth_id)
     if now - (last_audio or current.worker_started_at) > settings.program_ingest_stall_secs:
         current.state, current.reason = "degraded", "Audio decoder stalled or failed; restarting the processing worker."

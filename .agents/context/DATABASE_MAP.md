@@ -39,6 +39,7 @@ users (1)
 | `deepgram_api_key` | Text nullable | Fernet-encrypted |
 | `nvidia_api_key` | Text nullable | Fernet-encrypted |
 | `elevenlabs_api_key` | Text nullable | Fernet-encrypted |
+| `sarvam_api_key` | Text nullable | Fernet-encrypted |
 | `translation_openai_api_key` | Text nullable | Fernet-encrypted |
 | `openrouter_api_key` | Text nullable | Fernet-encrypted |
 | `gemini_api_key` | Text nullable | Fernet-encrypted |
@@ -411,3 +412,9 @@ transaction; the MediaMTX auth callback reserves a session before negotiation.
 Final floor sequence increments atomically and survives worker/portal restarts.
 Raw credentials are only returned at create/rotate. YouTube keys exist only in
 relay mode, encrypted (migration 028).
+
+## Migration 042 — Sarvam AI API key (#1173)
+
+Adds nullable `events.sarvam_api_key` (`Text`, mapped as `encrypted_sarvam_api_key`)
+stored Fernet-encrypted via `portal.crypto.encrypt_val` and read through
+`portal.transcription.providers.base.get_api_key`.

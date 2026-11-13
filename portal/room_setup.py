@@ -24,6 +24,8 @@ from portal.database import create_booth, delete_booth, list_booths_for_room
 from portal.models import DBBooth, Event, Room, RoomTranslationLanguage
 from portal.roles import INTERPRETER
 from portal.transcription.constants import ALLOWED_MODELS, ProviderEnum
+from portal.transcription.providers.base import get_api_key
+from portal.transcription.providers.sarvam import is_supported_sarvam_language
 from portal.translations.model_languages import supported_languages, unsupported_languages
 from portal.translations.registry import NLLB_200_DISTILLED_600M
 from portal.tts.constants import DEEPGRAM_VOICE_MAPPING, SUPERTONIC_SUPPORTED_LANGS
@@ -184,6 +186,7 @@ _SPEECH_ENGINES = (
     ("openai", "whisper-1", "OpenAI Whisper", "encrypted_openai_api_key"),
     ("atlascloud", "bytedance/seed-asr-2.0", "Atlas Cloud Seed ASR", "encrypted_atlascloud_api_key"),
     ("nvidia", "parakeet-rnnt", "NVIDIA Parakeet", "encrypted_nvidia_api_key"),
+    ("sarvam", "saaras:v3-realtime", "Sarvam AI", "encrypted_sarvam_api_key"),
 )
 _TRANSLATION_ENGINES = (
     ("openai", "gpt-4o-mini", "OpenAI", "encrypted_translation_openai_api_key"),
@@ -206,6 +209,7 @@ SPEECH_MODELS: dict[str, tuple[tuple[str, str], ...]] = {
     ),
     "atlascloud": (("bytedance/seed-asr-2.0", "Seed ASR 2.0"),),
     "nvidia": (("parakeet-rnnt", "Parakeet RNNT"), ("parakeet-ctc", "Parakeet CTC")),
+    "sarvam": (("saaras:v3-realtime", "Saaras v3 Realtime"),),
     "local": (
         ("tiny", "Tiny, fastest"),
         ("base", "Base, more accurate but slower"),
@@ -230,6 +234,7 @@ _BRANDS = {
     "openai": "OpenAI",
     "atlascloud": "Atlas Cloud",
     "nvidia": "NVIDIA",
+    "sarvam": "Sarvam AI",
     "anthropic": "Anthropic",
     "gemini": "Google Gemini",
     "groq": "Groq",
@@ -267,7 +272,14 @@ def engine_catalog(event: Event) -> EngineCatalog:
             unavailable_reasons[provider] = reason
             continue
         # Cloud speech recognition also needs the event's switch (see program_ingest.pipeline_problem).
-        if getattr(event, key_attr) and event.transcription_api_enabled:
+        raw_key = getattr(event, key_attr)
+        has_key = bool(raw_key)
+        if has_key and provider == "sarvam":
+            try:
+                has_key = bool(get_api_key(event, ProviderEnum.SARVAM))
+            except ValueError:
+                has_key = False
+        if has_key and event.transcription_api_enabled:
             speech.append(Engine(provider, model, label, _KEY_ADDED))
         else:
             locked.append(_BRANDS[provider])
@@ -474,6 +486,15 @@ def parse_plan(
 
     if plan.uses_speech_recognition and catalog.find("speech", plan.speech_engine) is None:
         errors.append("Choose a service to make the captions.")
+    if (
+        plan.uses_speech_recognition
+        and plan.speech_engine == "sarvam"
+        and not is_supported_sarvam_language(plan.spoken_language)
+    ):
+        errors.append(
+            f"Sarvam AI doesn't support {language_name(plan.spoken_language)} for speech recognition. "
+            "Choose another caption service or change the spoken language."
+        )
     if ai_languages and catalog.find("translation", plan.translation_engine) is None:
         errors.append("Choose a service to translate the AI languages.")
     voice = catalog.find("voice", plan.voice_engine)

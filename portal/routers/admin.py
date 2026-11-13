@@ -173,10 +173,11 @@ from portal.team import parse_place as parse_team_place
 from portal.team import remove_assignment as remove_team_assignment
 from portal.team import revoke_invite_link as revoke_team_invite_link
 from portal.transcription import ALLOWED_MODELS, ProviderConfig, ProviderEnum, get_api_key
+from portal.transcription.providers.sarvam import is_supported_sarvam_language
 from portal.transcription.worker import (
-    State,
     WorkerCapacityError,
     active_workers,
+    is_worker_running,
     start_transcription_worker,
     stop_transcription_worker,
     wait_for_worker_start,
@@ -1258,11 +1259,13 @@ async def admin_event_api_settings_post(
     nvidia_api_key: str | None = Form(None),
     elevenlabs_api_key: str | None = Form(None),
     atlascloud_api_key: str | None = Form(None),
+    sarvam_api_key: str | None = Form(None),
     clear_openai_api_key: bool | None = Form(False),
     clear_deepgram_api_key: bool | None = Form(False),
     clear_nvidia_api_key: bool | None = Form(False),
     clear_elevenlabs_api_key: bool | None = Form(False),
     clear_atlascloud_api_key: bool | None = Form(False),
+    clear_sarvam_api_key: bool | None = Form(False),
     translation_openai_api_key: str | None = Form(None),
     openrouter_api_key: str | None = Form(None),
     gemini_api_key: str | None = Form(None),
@@ -1288,6 +1291,7 @@ async def admin_event_api_settings_post(
                     ("encrypted_nvidia_api_key", nvidia_api_key, clear_nvidia_api_key),
                     ("encrypted_elevenlabs_api_key", elevenlabs_api_key, clear_elevenlabs_api_key),
                     ("encrypted_atlascloud_api_key", atlascloud_api_key, clear_atlascloud_api_key),
+                    ("encrypted_sarvam_api_key", sarvam_api_key, clear_sarvam_api_key),
                     (
                         "encrypted_translation_openai_api_key",
                         translation_openai_api_key,
@@ -1612,6 +1616,15 @@ def _apply_ai_settings(room: Room, form: FormData, catalog: EngineCatalog) -> No
     """
     speech = catalog.find("speech", str(form.get("floor_transcription_provider", "")))
     if speech:
+        if (
+            room.floor_transcription_enabled
+            and speech.provider == ProviderEnum.SARVAM.value
+            and not is_supported_sarvam_language(room.floor_language_code)
+        ):
+            raise HTTPException(
+                status_code=400,
+                detail=f"Sarvam AI does not support language '{room.floor_language_code}'.",
+            )
         model = str(form.get("floor_transcription_model", ""))
         allowed = {value for value, _ in ROOM_SPEECH_MODELS.get(speech.provider, ())}
         room.floor_transcription_provider = speech.provider
@@ -1668,10 +1681,23 @@ async def _process_room_relay_section(session: AsyncSession, room: Room, event_i
 
 
 def _process_room_transcription_section(room: Room, form: FormData) -> None:
-    room.floor_transcription_enabled = form.get("floor_transcription_enabled") == "on"
-    room.floor_transcription_provider = form.get("floor_transcription_provider", "local").strip().lower() or "none"
-    room.floor_transcription_model = form.get("floor_transcription_model", "tiny").strip()
-    room.floor_language_code = form.get("floor_language_code", "").strip() or None
+    floor_transcription_enabled = form.get("floor_transcription_enabled") == "on"
+    floor_transcription_provider = form.get("floor_transcription_provider", "local").strip().lower() or "none"
+    floor_transcription_model = form.get("floor_transcription_model", "tiny").strip()
+    floor_language_code = form.get("floor_language_code", "").strip() or None
+    if (
+        floor_transcription_enabled
+        and floor_transcription_provider == ProviderEnum.SARVAM.value
+        and not is_supported_sarvam_language(floor_language_code)
+    ):
+        raise HTTPException(
+            status_code=400,
+            detail=f"Sarvam AI does not support language '{floor_language_code}'.",
+        )
+    room.floor_transcription_enabled = floor_transcription_enabled
+    room.floor_transcription_provider = floor_transcription_provider
+    room.floor_transcription_model = floor_transcription_model
+    room.floor_language_code = floor_language_code
 
 
 def _room_translation_choice(form: FormData, form_section: str) -> tuple[bool, str | None, str | None]:
@@ -2692,6 +2718,11 @@ async def admin_transcription_settings(
                     url=_booth_saved_url(request, event_id, room_id, booth_id, "captions", error=missing),
                     status_code=status.HTTP_303_SEE_OTHER,
                 )
+            if provider_enum == ProviderEnum.SARVAM and not is_supported_sarvam_language(db_booth.language_code):
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"Sarvam AI does not support language '{db_booth.language_code}'.",
+                )
         old_enabled = db_booth.transcription_enabled
         old_provider = db_booth.transcription_provider
         old_model = db_booth.transcription_model
@@ -2718,8 +2749,7 @@ async def admin_transcription_settings(
                 # A start that failed earlier left the settings saved but no worker (or a dead one still in the
                 # registry): saving again retries it. One that is shutting down is about to disappear, so it is
                 # replaced too: stop_transcription_worker waits for it to finish, then a new one starts.
-                or bid not in active_workers
-                or active_workers[bid].state in (State.STOPPING, State.STOPPED)
+                or not is_worker_running(active_workers.get(bid))
             ):
                 await stop_transcription_worker(bid)
                 await broadcast_transcription(bid, "")
