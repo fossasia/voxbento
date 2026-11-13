@@ -788,6 +788,7 @@ def _sanitize_setup_return_to(return_to: str | None, event_id: int | None = None
 
 
 _recent_room_creations: dict[tuple[int, str], int] = {}
+_in_flight_room_creations: dict[tuple[int, str], asyncio.Future[int]] = {}
 
 
 @router.get("/admin/setup")
@@ -1049,7 +1050,9 @@ async def admin_setup_rooms(request: Request, event_id: int):
     clear_token = None
     raw_query_token = request.query_params.get("clear_token")
     if raw_query_token:
-        clear_token = _sanitize_draft_token(raw_query_token)
+        sanitized = _sanitize_draft_token(raw_query_token)
+        if sanitized:
+            clear_token = sanitized
 
     if clear_token is None:
         cookie_token = request.cookies.get("room_created_token") or request.cookies.get("room_created") or ""
@@ -1256,7 +1259,7 @@ def _room_creation_success_response(
     event_id: int,
     room_id: int,
     from_setup: bool,
-    setup_draft_token: str = "",
+    setup_draft_token: str | None = None,
 ) -> Response:
     sanitized_token = _sanitize_draft_token(setup_draft_token)
     if from_setup:
@@ -1284,50 +1287,80 @@ async def admin_room_setup_create(request: Request, event_id: int):
     submission_id = str(form.get("submission_id", "")).strip()
     setup_draft_token = _sanitize_draft_token(form.get("setup_draft_token"))
 
-    if submission_id and (event_id, submission_id) in _recent_room_creations:
-        existing_room_id = _recent_room_creations[(event_id, submission_id)]
-        return _room_creation_success_response(
-            request,
-            event_id=event_id,
-            room_id=existing_room_id,
-            from_setup=from_setup,
-            setup_draft_token=setup_draft_token,
-        )
-
-    async with get_session() as session:
-        event = await get_event_by_id(session, event_id)
-        if event is None:
-            raise HTTPException(status_code=404, detail="Event not found.")
-        catalog = engine_catalog(event)
-        plan, errors = parse_plan(form, catalog)
-        if errors:
-            admin_flags = await get_access_flags(request, event_id=event_id)
-            return _room_setup_response(
+    claim_key = (event_id, submission_id) if submission_id else None
+    if claim_key:
+        if claim_key in _recent_room_creations:
+            existing_room_id = _recent_room_creations[claim_key]
+            return _room_creation_success_response(
                 request,
-                event=event,
-                room=None,
-                plan=plan,
-                catalog=catalog,
-                admin_flags=admin_flags,
-                errors=errors,
+                event_id=event_id,
+                room_id=existing_room_id,
                 from_setup=from_setup,
-                submission_id=submission_id,
-                status_code=status.HTTP_400_BAD_REQUEST,
+                setup_draft_token=setup_draft_token,
             )
-        room = await create_room(
-            session,
-            event_id=event_id,
-            display_name=plan.display_name,
-            jitsi_url=default_jitsi_url(event.slug, plan.display_name),
-        )
-        await apply_plan(session, event, room, plan, catalog)
-        room_id = room.id
+        if claim_key in _in_flight_room_creations:
+            existing_room_id = await _in_flight_room_creations[claim_key]
+            return _room_creation_success_response(
+                request,
+                event_id=event_id,
+                room_id=existing_room_id,
+                from_setup=from_setup,
+                setup_draft_token=setup_draft_token,
+            )
 
-    if submission_id:
-        _recent_room_creations[(event_id, submission_id)] = room_id
-        if len(_recent_room_creations) > 500:
-            for k in list(_recent_room_creations.keys())[:100]:
-                _recent_room_creations.pop(k, None)
+    fut = None
+    if claim_key:
+        loop = asyncio.get_running_loop()
+        fut = loop.create_future()
+        _in_flight_room_creations[claim_key] = fut
+
+    try:
+        async with get_session() as session:
+            event = await get_event_by_id(session, event_id)
+            if event is None:
+                raise HTTPException(status_code=404, detail="Event not found.")
+            catalog = engine_catalog(event)
+            plan, errors = parse_plan(form, catalog)
+            if errors:
+                if fut and not fut.done():
+                    fut.set_exception(ValueError("Room validation error"))
+                admin_flags = await get_access_flags(request, event_id=event_id)
+                return _room_setup_response(
+                    request,
+                    event=event,
+                    room=None,
+                    plan=plan,
+                    catalog=catalog,
+                    admin_flags=admin_flags,
+                    errors=errors,
+                    from_setup=from_setup,
+                    submission_id=submission_id,
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                )
+            room = await create_room(
+                session,
+                event_id=event_id,
+                display_name=plan.display_name,
+                jitsi_url=default_jitsi_url(event.slug, plan.display_name),
+            )
+            await apply_plan(session, event, room, plan, catalog)
+            room_id = room.id
+
+        if claim_key:
+            _recent_room_creations[claim_key] = room_id
+            if len(_recent_room_creations) > 500:
+                for k in list(_recent_room_creations.keys())[:100]:
+                    _recent_room_creations.pop(k, None)
+            if fut and not fut.done():
+                fut.set_result(room_id)
+
+    except BaseException as exc:
+        if fut and not fut.done():
+            fut.set_exception(exc)
+        raise
+    finally:
+        if claim_key:
+            _in_flight_room_creations.pop(claim_key, None)
 
     return _room_creation_success_response(
         request,

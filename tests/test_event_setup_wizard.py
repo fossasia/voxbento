@@ -510,6 +510,51 @@ async def test_duplicate_room_submission_is_prevented(admin_cookie):
 
 
 @pytest.mark.anyio
+async def test_concurrent_overlapping_room_submissions_create_only_one_room(admin_cookie):
+    import asyncio
+
+    async with get_session() as s:
+        ev = await create_event(s, slug="concurrent-room-test", display_name="Concurrent Room Test")
+        event_id = ev.id
+
+    data = {
+        "from": "setup",
+        "display_name": "Concurrent Room",
+        "spoken_language": "en",
+        "languages": ["es"],
+        "delivery_es": "interpreter",
+        "submission_id": "concurrent-sub-99999",
+    }
+
+    async with _client() as client:
+        # Launch two overlapping requests concurrently with asyncio.gather
+        task1 = client.post(
+            f"/admin/events/{event_id}/rooms/new",
+            data=data,
+            headers={"origin": "http://test"},
+            cookies=admin_cookie,
+            follow_redirects=False,
+        )
+        task2 = client.post(
+            f"/admin/events/{event_id}/rooms/new",
+            data=data,
+            headers={"origin": "http://test"},
+            cookies=admin_cookie,
+            follow_redirects=False,
+        )
+        resp1, resp2 = await asyncio.gather(task1, task2)
+
+        assert resp1.status_code == 303
+        assert resp2.status_code == 303
+        assert resp1.headers["location"] == resp2.headers["location"]
+
+    async with get_session() as s:
+        rooms = await list_rooms_for_event(s, event_id)
+        assert len(rooms) == 1
+        assert rooms[0].display_name == "Concurrent Room"
+
+
+@pytest.mark.anyio
 async def test_setup_edit_event_rejects_empty_name_or_invalid_slug(organizer):
     event_id = organizer["event_id"]
     async with _client() as client:
@@ -637,6 +682,23 @@ async def test_successful_room_creation_sets_cleanup_cookie(admin_cookie):
         )
     assert f'data-clear-room-draft="{event_id}"' in rooms_page.text
     assert 'data-clear-room-draft-token="token-12345"' in rooms_page.text
+
+
+@pytest.mark.anyio
+async def test_setup_rooms_invalid_query_clear_token_does_not_clear_draft(admin_cookie):
+    async with get_session() as s:
+        ev = await create_event(s, slug="invalid-token-test", display_name="Invalid Token Test")
+        event_id = ev.id
+
+    async with _client() as client:
+        # Malformed / rejected token (%21 = !)
+        resp = await client.get(
+            f"/admin/events/{event_id}/setup/rooms?clear_token=%21",
+            cookies=admin_cookie,
+        )
+        assert resp.status_code == 200
+        # Must not emit cleanup marker
+        assert "data-clear-room-draft" not in resp.text
 
 
 @pytest.mark.anyio
