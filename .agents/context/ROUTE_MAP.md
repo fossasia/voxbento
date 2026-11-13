@@ -148,6 +148,8 @@ with `?error=invalid_role&role=…` and the page explains why.
 | POST | `/admin/events/{event_id}/rooms/{room_id}/ai-vocabulary/upload` | — | Upload CSV glossary entries for room AI interpretation |
 | GET | `/admin/events/{event_id}/rooms/{room_id}/ai-vocabulary/export` | — | Export room AI interpretation glossary as CSV |
 | POST | `/admin/events/{event_id}/rooms/{room_id}/ai-vocabulary/delete` | — | Delete specific entry or clear all room glossary entries |
+| POST | `/admin/events/{event_id}/rooms/{room_id}/ai-vocabulary/suggest` | — | Render suggested glossary terms from an uploaded text, Markdown or PDF file (file not stored, event owner) |
+| POST | `/admin/events/{event_id}/rooms/{room_id}/ai-vocabulary/accept` | — | Save the reviewed suggestions the owner ticked through normal glossary validation |
 | POST | `/admin/events/{event_id}/rooms/{room_id}/delete` | — | Deletes room and dependent data only if room belongs to path event; 404 on missing/mismatched room |
 | GET | `/admin/events/{event_id}/rooms/{room_id}/booths/` | `admin/booth_list.html` | — |
 | POST | `/admin/events/{event_id}/rooms/{room_id}/booths/` | — | Creates DBBooth |
