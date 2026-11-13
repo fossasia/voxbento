@@ -160,9 +160,65 @@ Cancels the asyncio Task and awaits it; removes from state dicts.
 | Method | Input | Behavior |
 |---|---|---|
 | `handle_partial(booth_id, text)` | streaming partial | Broadcasts `{type:"caption", status:"partial", text}`. Force-finalizes if ≥50 words or ≥15 seconds in same utterance |
-| `handle_final(booth_id, text)` | completed utterance | Broadcasts `{type:"caption", status:"final", text}`; resets state |
+| `handle_final(booth_id, text, complete_turn=True)` | completed utterance | Drops the text if `hallucination_reason()` returns a category; otherwise broadcasts `{type:"caption", status:"final", text}`; resets state |
 | `handle_chunk(booth_id, text)` | Whisper text chunk | Appends to buffer; splits on sentence boundary (`[.?!]+`); broadcasts `final` for each sentence, `partial` for remainder |
 | `handle_clear(booth_id)` | silence/endpoint | Broadcasts `{type:"caption", status:"clear"}` |
+
+---
+
+## Transcript Validation (`portal/transcript_processing.py`)
+
+`handle_final` is the funnel for **final** captions — the one point at which
+settled text reaches the stored transcript, the translation LLM and TTS — so
+`hallucination_reason(text, complete_turn=...)` is checked there. That is the
+call to change or instrument, not `is_hallucination()`, which is only the
+boolean wrapper around it. Partial captions reach listeners earlier, straight
+from `handle_partial`, and are **not** validated: a rejected final may have
+already been seen on the way as a partial, and the `clear` broadcast that
+follows the rejection is what retracts it. A rejected utterance consumes no
+caption sequence number, so listeners see no gap.
+
+Three empty cases are distinct and easy to conflate:
+
+- The classifier returns **`"empty"`** when the stripped text is blank — nothing
+  to publish.
+- It returns **`"no printable content"`** when the text is present but carries
+  no printable characters once normalised: punctuation only, whitespace with
+  invisible marks, and so on.
+- Separately, **before the classifier runs**, `handle_final` falls back to the
+  pending partial when the text it was handed is blank
+  (`text.strip() or state.current_utterance`). The fallback text is then
+  validated like any other, so a buffered `"thank you"` on a complete turn is
+  dropped and broadcast as `clear` rather than published. With no pending
+  partial either, `handle_final` returns immediately and broadcasts nothing at
+  all, leaving any existing caption on screen for `handle_clear` to deal with.
+
+Rejected: blank text (`"empty"`), text with no printable content, any word
+longer than `MAX_WORD_LENGTH` (40), a single token repeated with nothing else
+("Click click click"), and known subtitle-training phrases
+("Thanks for watching", "[Music]", bare fillers like "uh"). A phrase is only
+rejected when it is the whole utterance, so the same words inside real speech
+survive. Comparison case-folds and strips punctuation but keeps digits and
+combining marks, so "room 1 room 2" is not read as one repeated word and
+Devanagari, Thai and Arabic are not mangled into fragments.
+
+The length cap skips tokens containing characters from scripts written without
+spaces (CJK, kana, Thai, Lao, Khmer, Myanmar, Tibetan), where a whole sentence
+is one whitespace-delimited token.
+
+`handle_final` takes `complete_turn` (default `True`). Deepgram passes
+`complete_turn=speech_final`, because a bare `is_final` finalises part of a
+longer turn and may legitimately be one short word; such a fragment gets only
+the structural checks, not the phrase, filler or repetition rules. The other
+providers finalise complete turns and use the default.
+
+`hallucination_reason()` returns the category ("subtitle phrase",
+"repeated word", …) and is what gets logged. The transcript itself is never
+logged: it may be private speech, and the classifier can be wrong about it.
+
+This is the text-level pass. The decoder-level guards
+(`compression_ratio_threshold`, `no_speech_threshold`, `log_prob_threshold`,
+`vad_filter`) stay in `providers/local.py`.
 
 ---
 

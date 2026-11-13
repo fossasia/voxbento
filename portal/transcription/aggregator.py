@@ -11,6 +11,7 @@ from portal import youtube_captions
 from portal.database import get_session
 from portal.models import Room
 from portal.tasks import track_task
+from portal.transcript_processing import hallucination_reason
 from portal.transcription.timing import SegmentTiming, segment_timing, timing_metadata
 
 logger = logging.getLogger(__name__)
@@ -22,6 +23,7 @@ class CaptionState:
     current_utterance: str = ""
     utterance_start_time: float = 0.0
     current_word_count: int = 0
+    had_partial: bool = False
     segment_id: str = field(default_factory=lambda: str(uuid.uuid4()))
 
 
@@ -48,12 +50,16 @@ class CaptionAggregator:
             state.utterance_start_time = time.time()
 
         state.current_utterance = text
+        state.had_partial = True
         state.current_word_count = len(text.split())
 
         # Check forced finalization rules (15s or 50 words)
         if state.current_word_count >= 50 or (time.time() - state.utterance_start_time) >= 15.0:
             logger.info(f"[{booth_id}] Forced utterance finalization triggered (words: {state.current_word_count})")
-            await self.handle_final(booth_id, text)
+            # The speaker has not stopped — we are cutting a long turn, so the
+            # whole-utterance rules must not apply. A fragment that happens to
+            # read like a subtitle phrase ("thank you") is still real speech here.
+            await self.handle_final(booth_id, text, complete_turn=False)
             return
 
         await self.broadcast_callback(
@@ -129,15 +135,26 @@ class CaptionAggregator:
             # ensuring the frontend's partial box is cleared out.
             await self.broadcast_callback(booth_id, {"type": "caption", "status": "clear", "text": ""})
 
-    async def handle_final(self, booth_id: str, text: str):
-        """
-        Finalizes an utterance, triggers database save, and initiates translation.
-        Called automatically on punctuation split, timeout, or explicit clear.
-        """
+    async def handle_final(self, booth_id: str, text: str, complete_turn: bool = True):
         state = self._get_state(booth_id)
         final_text = text.strip() or state.current_utterance
 
         if not final_text:
+            return
+
+        # Dropped before it reaches listeners, the stored transcript, the
+        # translation LLM and TTS, so an invented phrase costs none of them.
+        # Only the reason is logged: the text may be private speech, and the
+        # classifier can be wrong about it.
+        reason = hallucination_reason(final_text, complete_turn=complete_turn, had_partial=state.had_partial)
+        if reason is not None:
+            logger.info("[%s] Discarded transcript (%s, %d chars)", booth_id, reason, len(final_text))
+            state.current_utterance = ""
+            state.had_partial = False
+            state.utterance_start_time = 0.0
+            state.current_word_count = 0
+            state.segment_id = str(uuid.uuid4())
+            await self.broadcast_callback(booth_id, {"type": "caption", "status": "clear", "text": ""})
             return
 
         self._seq_counter += 1
@@ -159,6 +176,7 @@ class CaptionAggregator:
         finally:
             segment_timing.reset(context_token)
         state.current_utterance = ""
+        state.had_partial = False
         state.utterance_start_time = 0.0
         state.current_word_count = 0
         state.segment_id = str(uuid.uuid4())
