@@ -14,6 +14,7 @@ from portal.translations.keys import get_translation_api_key
 from portal.translations.providers.anthropic import AnthropicProvider
 from portal.translations.providers.base import ProviderEngine
 from portal.translations.providers.gemini import GeminiProvider
+from portal.translations.providers.google_translate import GoogleTranslateEngine
 from portal.translations.providers.local import LocalProvider
 from portal.translations.providers.openai import OpenAIProvider
 from portal.translations.vocabulary import resolve_vocabulary_entries
@@ -36,6 +37,7 @@ ENGINES: dict[str, TranslationEngine] = {
     TranslationProviderEnum.ANTHROPIC.value: ProviderEngine(
         TranslationProviderEnum.ANTHROPIC.value, AnthropicProvider(), EngineKind.LLM_API
     ),
+    TranslationProviderEnum.GOOGLE_TRANSLATE.value: GoogleTranslateEngine(),
     TranslationProviderEnum.LOCAL.value: LocalProvider(),
 }
 for p in OPENAI_COMPATIBLE_ENDPOINTS.keys():

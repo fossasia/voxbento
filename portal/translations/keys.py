@@ -21,6 +21,7 @@ def get_translation_api_key(event: Event, provider: str) -> str | None:
         TranslationProviderEnum.GEMINI.value: event.encrypted_gemini_api_key,
         TranslationProviderEnum.ANTHROPIC.value: event.encrypted_anthropic_api_key,
         TranslationProviderEnum.GROQ.value: event.encrypted_groq_api_key,
+        TranslationProviderEnum.GOOGLE_TRANSLATE.value: event.encrypted_google_translate_api_key,
     }
     encrypted = key_map.get(provider)
     return decrypt_val(encrypted) if encrypted else None

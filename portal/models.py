@@ -90,6 +90,9 @@ class Event(Base):
         "anthropic_api_key", Text, nullable=True, default=None
     )
     encrypted_groq_api_key: Mapped[str | None] = mapped_column("groq_api_key", Text, nullable=True, default=None)
+    encrypted_google_translate_api_key: Mapped[str | None] = mapped_column(
+        "google_translate_api_key", Text, nullable=True, default=None
+    )
     listener_join_code: Mapped[str | None] = mapped_column(String(64), nullable=True, default=None)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
     deleted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True, default=None)
