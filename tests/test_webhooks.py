@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import ipaddress
 import json
+import socket
 from datetime import datetime, timedelta, timezone
 from unittest.mock import AsyncMock, MagicMock
 
@@ -48,33 +50,118 @@ def test_sign_payload():
     assert isinstance(signature, str)
 
 
-def test_validate_ssrf():
+@pytest.fixture(autouse=True)
+def dns(monkeypatch):
+    """Replace DNS with a hostname -> IP list mapping; IP literals resolve to themselves."""
+    records = {"example.com": ["93.184.216.34"], "webhook.site": ["178.63.67.106"]}
+
+    def fake_getaddrinfo(host, port, *args, **kwargs):
+        try:
+            ips = [str(ipaddress.ip_address(host))]
+        except ValueError:
+            if host not in records:
+                raise socket.gaierror(socket.EAI_NONAME, "Name or service not known")
+            ips = records[host]
+        return [(socket.AF_INET6 if ":" in ip else socket.AF_INET, socket.SOCK_STREAM, 6, "", (ip, port)) for ip in ips]
+
+    monkeypatch.setattr(socket, "getaddrinfo", fake_getaddrinfo)
+    return records
+
+
+@pytest.mark.anyio
+async def test_validate_ssrf():
     # Valid HTTPS external URL
-    validate_ssrf("https://webhook.site/123")
+    assert await validate_ssrf("https://webhook.site/123") == ["178.63.67.106"]
+
+    # NAT64 is checked by the IPv4 address it embeds
+    assert await validate_ssrf("https://[64:ff9b::5db8:d822]/hook") == ["64:ff9b::5db8:d822"]
 
     # HTTP is rejected (must use HTTPS)
     with pytest.raises(HTTPException) as exc:
-        validate_ssrf("http://example.com/api/webhooks")
+        await validate_ssrf("http://example.com/api/webhooks")
     assert exc.value.status_code == 400
 
     # Internal IPs (should fail)
 
     with pytest.raises(HTTPException) as exc:
-        validate_ssrf("https://192.168.1.5")
+        await validate_ssrf("https://192.168.1.5")
     assert exc.value.status_code == 400
 
     with pytest.raises(HTTPException) as exc:
-        validate_ssrf("https://10.0.0.1")
+        await validate_ssrf("https://10.0.0.1")
     assert exc.value.status_code == 400
 
     # Invalid URL structures
     with pytest.raises(HTTPException) as exc:
-        validate_ssrf("not_a_url")
+        await validate_ssrf("not_a_url")
     assert exc.value.status_code == 400
 
     with pytest.raises(HTTPException) as exc:
-        validate_ssrf("ftp://example.com")
+        await validate_ssrf("ftp://example.com")
     assert exc.value.status_code == 400
+
+    # Inputs urllib and httpx parse differently must be rejected, not delivered
+    for url in (
+        " https://example.com/hook",
+        "https://0135.0270.0330.042/hook",
+        "https://example.com:99999/hook",
+        "https://example.com:x/hook",
+    ):
+        with pytest.raises(HTTPException) as exc:
+            await validate_ssrf(url)
+        assert exc.value.status_code == 400
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize(
+    "ips",
+    [
+        ["::1"],
+        ["fd00::1"],
+        ["fe80::1"],
+        ["93.184.216.34", "10.0.0.5"],
+        ["93.184.216.34", "::1"],
+        ["0.0.0.0"],
+        ["::"],
+        ["::ffff:127.0.0.1"],
+        ["::127.0.0.1"],
+        ["::10.0.0.1"],
+        ["::169.254.169.254"],
+        ["::93.184.216.34"],
+        ["64:ff9b::a00:1"],
+        ["2002:a00:1::1"],
+        ["240.0.0.1"],
+        ["100.64.0.1"],
+        ["224.0.0.1"],
+    ],
+)
+async def test_validate_ssrf_rejects_any_internal_record(dns, ips):
+    dns["hooks.attacker.test"] = ips
+    with pytest.raises(HTTPException) as exc:
+        await validate_ssrf("https://hooks.attacker.test/hook")
+    assert exc.value.status_code == 400
+    assert "forbidden internal IP" in exc.value.detail
+
+
+@pytest.mark.anyio
+async def test_validate_ssrf_rejects_unresolvable_host():
+    with pytest.raises(HTTPException) as exc:
+        await validate_ssrf("https://missing.attacker.test/hook")
+    assert exc.value.status_code == 400
+
+
+@pytest.mark.anyio
+async def test_validate_ssrf_development_bypass_matches_exact_hostname(dns, monkeypatch):
+    monkeypatch.setenv("ENVIRONMENT", "development")
+    dns["localhost.attacker.com"] = ["127.0.0.1"]
+
+    assert await validate_ssrf("http://localhost:8000/hook") is None
+    assert await validate_ssrf("https://127.0.0.1/hook") is None
+    assert await validate_ssrf("http://[::1]:8000/hook") is None
+
+    for url in ("https://localhost.attacker.com/hook", "https://10.0.0.1/?next=localhost"):
+        with pytest.raises(HTTPException):
+            await validate_ssrf(url)
 
 
 # ---------------------------------------------------------------------------
@@ -118,7 +205,9 @@ async def test_process_delivery_success(db):
     # Assert client was called correctly
     mock_client.post.assert_called_once()
     args, kwargs = mock_client.post.call_args
-    assert args[0] == "https://example.com/webhook"
+    assert str(args[0]) == "https://93.184.216.34/webhook"
+    assert kwargs["headers"]["Host"] == "example.com"
+    assert kwargs["extensions"] == {"sni_hostname": "example.com"}
 
     # Signature header embeds the timestamp: "t=<epoch>,v1=<hmac>"
     sig_header = kwargs["headers"]["X-VoxBento-Signature"]
@@ -130,6 +219,127 @@ async def test_process_delivery_success(db):
     assert posted_payload["event_type"] == "session.status_changed"
     assert posted_payload["payload_version"] == "1"
     assert posted_payload["data"] == {"is_active": True}
+
+
+async def _make_delivery(db, target_url: str) -> WebhookDelivery:
+    sub = WebhookSubscription(
+        developer_account_id=1,
+        target_url=target_url,
+        event_types=["session.status_changed"],
+        secret_key="secret",
+        is_active=True,
+    )
+    db.add(sub)
+    await db.flush()
+    delivery = WebhookDelivery(
+        subscription_id=sub.id, event_type="session.status_changed", payload={"is_active": True}, status="delivering"
+    )
+    db.add(delivery)
+    await db.flush()
+    return delivery
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("dns_errno", [socket.EAI_AGAIN, socket.EAI_NONAME])
+@pytest.mark.parametrize("recovered_ip, expected_status", [("93.184.216.34", "succeeded"), ("127.0.0.1", "dead")])
+async def test_process_delivery_revalidates_after_dns_failure(
+    db, dns, monkeypatch, dns_errno, recovered_ip, expected_status
+):
+    delivery = await _make_delivery(db, "https://recovery.example.test/hook")
+    mock_client = AsyncMock(spec=httpx.AsyncClient)
+    mock_client.post.return_value = MagicMock()
+    before = datetime.now(timezone.utc)
+
+    with monkeypatch.context() as resolver:
+        resolver.setattr(
+            socket, "getaddrinfo", MagicMock(side_effect=socket.gaierror(dns_errno, "resolver unavailable"))
+        )
+        await process_delivery(mock_client, db, delivery)
+
+    assert delivery.status == "failed"
+    assert delivery.attempt_count == 1
+    assert (
+        before + timedelta(seconds=2) <= delivery.next_attempt_at <= datetime.now(timezone.utc) + timedelta(seconds=2)
+    )
+    assert "resolver unavailable" in delivery.last_error
+    mock_client.post.assert_not_called()
+
+    dns["recovery.example.test"] = [recovered_ip]
+    await process_delivery(mock_client, db, delivery)
+
+    assert delivery.status == expected_status
+    if expected_status == "succeeded":
+        assert delivery.attempt_count == 2
+        assert delivery.last_error is None
+        assert str(mock_client.post.call_args.args[0]) == "https://93.184.216.34/hook"
+    else:
+        assert "forbidden internal IP" in delivery.last_error
+        mock_client.post.assert_not_called()
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize(
+    "attempt_count, expected_status, backoff", [(1, "failed", 4), (2, "failed", 8), (3, "dead", None)]
+)
+async def test_process_delivery_dns_failures_use_retry_limit(db, monkeypatch, attempt_count, expected_status, backoff):
+    delivery = await _make_delivery(db, "https://outage.example.test/hook")
+    delivery.attempt_count = attempt_count
+    sub = await db.get(WebhookSubscription, delivery.subscription_id)
+    sub.consecutive_failures = 4
+    mock_client = AsyncMock(spec=httpx.AsyncClient)
+    monkeypatch.setattr(
+        socket, "getaddrinfo", MagicMock(side_effect=socket.gaierror(socket.EAI_AGAIN, "resolver unavailable"))
+    )
+    before = datetime.now(timezone.utc)
+
+    await process_delivery(mock_client, db, delivery)
+
+    assert delivery.status == expected_status
+    assert delivery.attempt_count == attempt_count + 1
+    mock_client.post.assert_not_called()
+    if backoff is not None:
+        assert (
+            before + timedelta(seconds=backoff)
+            <= delivery.next_attempt_at
+            <= datetime.now(timezone.utc) + timedelta(seconds=backoff)
+        )
+        assert sub.consecutive_failures == 4
+        assert sub.is_active
+    else:
+        assert sub.consecutive_failures == 5
+        assert not sub.is_active
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("rebound_ip", ["127.0.0.1", "::7f00:1", "::a00:1"])
+async def test_process_delivery_rejects_rebound_dns(db, dns, rebound_ip):
+    dns["rebind.attacker.test"] = ["93.184.216.34"]
+    await validate_ssrf("https://rebind.attacker.test:9443/hook")
+    delivery = await _make_delivery(db, "https://rebind.attacker.test:9443/hook")
+
+    dns["rebind.attacker.test"] = [rebound_ip]
+    mock_client = AsyncMock(spec=httpx.AsyncClient)
+    await process_delivery(mock_client, db, delivery)
+
+    mock_client.post.assert_not_called()
+    assert delivery.status == "dead"
+    assert rebound_ip in delivery.last_error
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("connect_failure", [httpx.ConnectError, httpx.ConnectTimeout])
+async def test_process_delivery_keeps_port_and_tries_next_vetted_ip(db, dns, connect_failure):
+    dns["dual.example.org"] = ["2606:2800:220:1::1", "2606:2800:220:1::2", "93.184.216.34"]
+    delivery = await _make_delivery(db, "https://dual.example.org:8443/hook?a=1")
+
+    mock_client = AsyncMock(spec=httpx.AsyncClient)
+    mock_client.post.side_effect = [connect_failure("IPv6 unreachable"), MagicMock()]
+    await process_delivery(mock_client, db, delivery)
+
+    assert delivery.status == "succeeded"
+    urls = [str(call.args[0]) for call in mock_client.post.call_args_list]
+    assert urls == ["https://[2606:2800:220:1::1]:8443/hook?a=1", "https://93.184.216.34:8443/hook?a=1"]
+    assert mock_client.post.call_args.kwargs["headers"]["Host"] == "dual.example.org:8443"
 
 
 @pytest.mark.anyio
@@ -327,7 +537,7 @@ async def test_create_webhook_idempotency_and_deduplication(db, monkeypatch):
     from portal.models import DeveloperAccount, Event, OAuthClient, OAuthToken, User
     from portal.routers.webhooks import WebhookCreate, create_webhook
 
-    monkeypatch.setattr("portal.routers.webhooks.validate_ssrf", lambda url: None)
+    monkeypatch.setattr("portal.routers.webhooks.validate_ssrf", AsyncMock(return_value=None))
 
     user = User(email="dev@example.com", display_name="Dev User", is_active=True)
     db.add(user)
@@ -436,7 +646,7 @@ async def test_create_webhook_quota_limit(db, monkeypatch):
     from portal.models import DeveloperAccount, Event, OAuthClient, OAuthToken, User
     from portal.routers.webhooks import WebhookCreate, create_webhook
 
-    monkeypatch.setattr("portal.routers.webhooks.validate_ssrf", lambda url: None)
+    monkeypatch.setattr("portal.routers.webhooks.validate_ssrf", AsyncMock(return_value=None))
     monkeypatch.setattr(settings, "max_webhook_subscriptions", 3)
 
     user = User(email="quota@example.com", display_name="Quota User", is_active=True)
@@ -604,3 +814,23 @@ async def test_process_delivery_handles_failed_refresh_gracefully(db, monkeypatc
     await process_delivery(mock_client, db, delivery)
     assert delivery.status == "succeeded"
     assert delivery.last_error is None
+
+
+@pytest.mark.anyio
+async def test_webhook_debug_dump_endpoint_removed():
+    """Ensure the unauthenticated debug dump endpoint is not present or accessible."""
+    from httpx import ASGITransport, AsyncClient
+
+    from fastapi_app import app
+
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        # Unauthenticated request
+        response = await client.get("/api/v1/webhooks/debug/dump")
+        assert response.status_code == 404
+
+        # Request with arbitrary Bearer token
+        response_with_auth = await client.get(
+            "/api/v1/webhooks/debug/dump",
+            headers={"Authorization": "Bearer test_token"},
+        )
+        assert response_with_auth.status_code == 404

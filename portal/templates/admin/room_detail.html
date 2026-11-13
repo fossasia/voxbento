@@ -12,6 +12,9 @@
 {% endblock %}
 
 {% block content %}
+{% if error_notice %}
+<div class='alert alert-danger' role='alert'>{{ error_notice }}</div>
+{% endif %}
 <div class="page-header room-header">
   <div>
     <h1>{{ room.display_name }}</h1>
@@ -104,6 +107,9 @@
         <a href="/interpreter/{{ event.slug }}/{{ bs.db.room_id }}/{{ bs.db.language_code }}" target="_blank" rel="noopener">Open booth ↗</a>
         <a href="{{ management_prefix }}/events/{{ event.id }}/rooms/{{ room.id }}/booths/{{ bs.db.id }}/">Booth settings</a>
         {% endif %}
+        {% if overlay_urls.get(line.code) %}
+        <a href="{{ overlay_urls[line.code] }}" target="_blank" rel="noopener">Captions overlay ↗</a>
+        {% endif %}
       </div>
     </li>
     {% endfor %}
@@ -116,8 +122,23 @@
     <span class="room-caption-label">Captions in {{ summary.spoken_language or 'the room language' }}</span>
     <strong>{{ 'On' if summary.captions else 'Off' }}</strong>
     {% if summary.captions and uses_ai %}<span class="muted">· needed for the AI languages</span>{% endif %}
+    {% if floor_overlay_url %}<a href="{{ floor_overlay_url }}" target="_blank" rel="noopener">Captions overlay ↗</a>{% endif %}
   </div>
 </div>
+
+{% if event.listener_join_code and room_overlay_channels %}
+<details class="room-card">
+  <summary>All caption overlay URLs (OBS / vMix)</summary>
+  <p>Use one 1920×1080 browser input per language. Enable transcription or translation and connect its audio source first.</p>
+  {% for channel in room_overlay_channels %}
+  <label for="room-overlay-{{ channel.code }}">{{ channel.name }} · {{ channel.source }}</label>
+  <div class="copy-field">
+    <input id="room-overlay-{{ channel.code }}" type="text" readonly value="{{ overlay_urls[channel.code] }}" />
+    <button type="button" class="btn btn-sm btn-copy" data-copy-target="room-overlay-{{ channel.code }}">Copy URL</button>
+  </div>
+  {% endfor %}
+</details>
+{% endif %}
 
 {% if is_event_owner %}
 <div class="room-card room-card--row">
@@ -177,6 +198,7 @@
   <p class="rs-note">More services ({{ catalog.locked | join(', ') }}) appear here once you add their API key on <a href="{{ management_prefix }}/events/{{ event.id }}/api-settings/">API keys</a>.</p>
   {% endif %}
   <form method="post" action="{{ edit_url }}" id="room_ai_form" class="room-ai-form">
+    <input type="hidden" name="csrf_token" value="{{ request.state.admin_csrf_token }}" />
     <input type="hidden" name="form_section" value="ai">
 
     <div class="room-card">
@@ -219,9 +241,10 @@
           <label for="floor_translation_provider">Service</label>
           <select id="floor_translation_provider" name="floor_translation_provider">
             {% if room.floor_translation_provider and not catalog.find("translation", room.floor_translation_provider) %}
-            <option value="" selected disabled>{{ room.floor_translation_provider | capitalize }} — not available now, choose another</option>
+            <option value="" selected disabled>{{ room.floor_translation_provider | replace('_', '-') | capitalize }} — not available now, choose another</option>
             {% endif %}
-            {% for engine in catalog.translation %}
+            {# A service that cannot translate this room's languages is offered only while it is the saved one. #}
+            {% for engine in catalog.translation if engine.provider not in translation_unfit or engine.provider == room.floor_translation_provider %}
             <option value="{{ engine.provider }}" {% if room.floor_translation_provider == engine.provider %}selected{% endif %}>{{ engine.label }} — {{ engine.note }}</option>
             {% endfor %}
           </select>
@@ -244,7 +267,7 @@
 
       <details class="room-more" data-translation-instructions {% if room.floor_ai_interpreter_persona or room.floor_ai_interpretation_style %}open{% endif %}>
         <summary>Instructions for the AI translator <span class="rs-label-note">optional</span></summary>
-        <p class="hint" data-local-translation-note>The built-in translator (NLLB) doesn't read instructions or the glossary. Choose another service to use them.</p>
+        <p class="hint" data-local-translation-note>The built-in translator (NLLB) uses the glossary but doesn't read these instructions. Choose another service to use them.</p>
         <div class="field">
           <label for="floor_ai_interpreter_persona">What is this event about?</label>
           <textarea id="floor_ai_interpreter_persona" name="floor_ai_interpreter_persona" rows="3" placeholder="Example: An open source developer conference. Talks are technical.">{{ room.floor_ai_interpreter_persona or '' }}</textarea>
@@ -326,6 +349,7 @@
     {% endif %}
 
     <form method="post" action="{{ management_prefix }}/events/{{ event.id }}/rooms/{{ room.id }}/ai-vocabulary/upload" enctype="multipart/form-data" class="room-upload">
+      <input type="hidden" name="csrf_token" value="{{ request.state.admin_csrf_token }}" />
       <div class="field-row">
         <div class="field">
           <label for="vocabulary_file">Glossary file (CSV)</label>
@@ -359,6 +383,7 @@
                 <td>{{ entry.priority }}</td>
                 <td>
                   <form method="post" action="{{ management_prefix }}/events/{{ event.id }}/rooms/{{ room.id }}/ai-vocabulary/delete">
+                    <input type="hidden" name="csrf_token" value="{{ request.state.admin_csrf_token }}" />
                     <input type="hidden" name="entry_id" value="{{ entry.id }}">
                     <button type="submit" class="btn btn-sm btn-outline">Delete</button>
                   </form>
@@ -369,6 +394,7 @@
         </table>
       </div>
       <form method="post" action="{{ management_prefix }}/events/{{ event.id }}/rooms/{{ room.id }}/ai-vocabulary/delete" class="ai-vocabulary-clear">
+        <input type="hidden" name="csrf_token" value="{{ request.state.admin_csrf_token }}" />
         <input type="hidden" name="entry_id" value="all">
         <button type="submit" class="btn btn-sm btn-outline">Delete the whole glossary</button>
       </form>
@@ -382,6 +408,7 @@
 
 <section class="room-panel rs" id="room-panel-settings" role="tabpanel" aria-labelledby="room-tab-settings" data-room-panel="settings">
   <form method="post" action="{{ edit_url }}">
+    <input type="hidden" name="csrf_token" value="{{ request.state.admin_csrf_token }}" />
     <input type="hidden" name="form_section" value="general">
     <div class="room-card">
       <h2>Room details</h2>
@@ -405,6 +432,7 @@
   </form>
 
   <form method="post" action="{{ edit_url }}">
+    <input type="hidden" name="csrf_token" value="{{ request.state.admin_csrf_token }}" />
     <input type="hidden" name="form_section" value="relay">
     <div class="room-card">
       <h2>Relay interpreting</h2>
@@ -426,6 +454,7 @@
     <h3>Delete this room</h3>
     <form method="post" action="{{ management_prefix }}/events/{{ event.id }}/rooms/{{ room.id }}/delete" class="inline-delete"
           data-confirm="Delete room '{{ room.display_name }}'? All booths in this room will be removed.">
+      <input type="hidden" name="csrf_token" value="{{ request.state.admin_csrf_token }}" />
       <button type="submit" class="btn btn-danger">Delete room</button>
       <span class="danger-text">This removes its booths and their invite links. It can't be undone.</span>
     </form>
