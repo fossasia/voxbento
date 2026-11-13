@@ -4,9 +4,11 @@ import asyncio
 import hashlib
 import logging
 import math
+import posixpath
 import re
 import secrets
 import urllib.parse
+import uuid
 from collections.abc import Iterable, Sequence
 from dataclasses import dataclass
 from datetime import timedelta
@@ -67,6 +69,7 @@ from portal.database import (
     get_developer_account,
     get_event_by_id,
     get_event_by_slug,
+    get_event_by_slug_any,
     get_hosting_request,
     get_invite_token,
     get_open_hosting_request,
@@ -98,6 +101,7 @@ from portal.database import (
     set_room_membership,
     update_event,
 )
+from portal.exceptions import RedirectRequired
 from portal.globals import _JS_CACHE_BUST, asset_version_context, booths
 from portal.hosting_requests import DECLINE_REASON_MAX, format_event_dates, multi_line
 from portal.models import (
@@ -752,26 +756,75 @@ async def admin_create_event(request: Request, principal: dict = Depends(require
 # ---------------------------------------------------------------------------
 
 
-@router.get("/admin/setup", dependencies=[Depends(require_hosting_access)])
+def _sanitize_setup_return_to(return_to: str | None, event_id: int | None = None) -> str | None:
+    if not return_to or not isinstance(return_to, str) or event_id is None:
+        return None
+    cleaned = return_to.strip().replace("\\", "")
+    try:
+        parsed = urllib.parse.urlsplit(cleaned)
+    except ValueError:
+        return None
+    if parsed.scheme or parsed.netloc:
+        return None
+    if not cleaned.startswith("/") or cleaned.startswith("//"):
+        return None
+    lower_val = cleaned.lower()
+    if lower_val.startswith(("/javascript:", "/data:")) or "javascript:" in lower_val:
+        return None
+    norm_path = posixpath.normpath(parsed.path)
+    unquoted_norm = posixpath.normpath(urllib.parse.unquote(parsed.path))
+    if ".." in parsed.path.split("/") or ".." in unquoted_norm.split("/"):
+        return None
+    valid_prefixes = (f"/admin/events/{event_id}/", f"/workspace/events/{event_id}/")
+    if not any(
+        norm_path.startswith(prefix) or norm_path == prefix.rstrip("/")
+        for prefix in valid_prefixes
+    ) or not any(
+        unquoted_norm.startswith(prefix) or unquoted_norm == prefix.rstrip("/")
+        for prefix in valid_prefixes
+    ):
+        return None
+    return cleaned
+
+
+_recent_room_creations: dict[tuple[int, str], int] = {}
+
+
+@router.get("/admin/setup")
 async def admin_setup_start(
     request: Request,
     event_id: int | None = Query(None, alias="eventId"),
     return_to: str | None = Query(None),
-    principal: dict = Depends(require_hosting_access),
 ):
     if event_id is None:
         raw_id = request.query_params.get("event_id")
         if raw_id and raw_id.isdigit():
             event_id = int(raw_id)
 
-    event = None
-    if event_id is not None:
-        if not principal.get("is_admin") and event_id not in principal.get("owned_event_ids", []):
-            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Event owner access required.")
-        async with get_session() as session:
+    async with get_session() as session:
+        principal = await resolve_request_principal(request, session)
+        if principal["user"] is None:
+            if "application/json" in request.headers.get("accept", "") or request.url.path.startswith("/api/"):
+                raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Authentication required.")
+            raise RedirectRequired(f"/login?next={request.url.path}")
+
+        event = None
+        if event_id is not None:
+            if not principal.get("is_admin") and event_id not in principal.get("owned_event_ids", set()):
+                raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Event owner access required.")
             event = await get_event_by_id(session, event_id)
             if event is None:
                 raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Event not found.")
+        else:
+            if not principal.get("is_admin"):
+                if principal.get("hosting_revoked_at") is not None:
+                    if "application/json" in request.headers.get("accept", "") or request.url.path.startswith("/api/"):
+                        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Hosting access revoked.")
+                    raise RedirectRequired("/account?error=hosting_revoked")
+                if not principal.get("can_host"):
+                    if "application/json" in request.headers.get("accept", "") or request.url.path.startswith("/api/"):
+                        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Hosting access required.")
+                    raise RedirectRequired("/account?error=hosting_required")
 
     admin_flags = await get_access_flags(request, event_id=event_id)
     if not getattr(request.state, "is_workspace", False) and not admin_flags.get("is_admin"):
@@ -780,21 +833,21 @@ async def admin_setup_start(
             target_path += f"?{request.url.query}"
         return safe_redirect(target_path)
 
+    sanitized_return_to = _sanitize_setup_return_to(return_to, event_id)
     context = {
         **admin_flags,
         "event": event,
         "display_name": event.display_name if event else "",
         "slug": event.slug if event else "",
-        "return_to": return_to or "",
+        "return_to": sanitized_return_to or "",
     }
     return templates.TemplateResponse(request=request, name="admin/wizard_event.html", context=context)
 
 
-@router.post("/admin/setup", dependencies=[Depends(require_hosting_access), Depends(require_admin_csrf)])
+@router.post("/admin/setup", dependencies=[Depends(require_admin_csrf)])
 async def admin_setup_create_event(
     request: Request,
     event_id_query: int | None = Query(None, alias="eventId"),
-    principal: dict = Depends(require_hosting_access),
 ):
     form = await request.form()
     raw_event_id = form.get("event_id") or form.get("eventId") or request.query_params.get("event_id")
@@ -802,19 +855,38 @@ async def admin_setup_create_event(
     if event_id is None and raw_event_id and str(raw_event_id).isdigit():
         event_id = int(raw_event_id)
 
-    return_to = str(form.get("return_to", "")).strip() or str(request.query_params.get("return_to", "")).strip()
+    raw_return_to = str(form.get("return_to", "")).strip() or str(request.query_params.get("return_to", "")).strip()
+    sanitized_return_to = _sanitize_setup_return_to(raw_return_to, event_id)
     display_name = form.get("display_name", "").strip()
     raw_slug = form.get("slug", "").strip()
+    original_display_name = form.get("original_display_name")
 
     admin_flags = await get_access_flags(request, event_id=event_id)
-    event = None
-    if event_id is not None:
-        if not principal.get("is_admin") and event_id not in principal.get("owned_event_ids", []):
-            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Event owner access required.")
-        async with get_session() as session:
+
+    async with get_session() as session:
+        principal = await resolve_request_principal(request, session)
+        if principal["user"] is None:
+            if "application/json" in request.headers.get("accept", "") or request.url.path.startswith("/api/"):
+                raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Authentication required.")
+            raise RedirectRequired(f"/login?next={request.url.path}")
+
+        event = None
+        if event_id is not None:
+            if not principal.get("is_admin") and event_id not in principal.get("owned_event_ids", set()):
+                raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Event owner access required.")
             event = await get_event_by_id(session, event_id)
             if event is None:
                 raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Event not found.")
+        else:
+            if not principal.get("is_admin"):
+                if principal.get("hosting_revoked_at") is not None:
+                    if "application/json" in request.headers.get("accept", "") or request.url.path.startswith("/api/"):
+                        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Hosting access revoked.")
+                    raise RedirectRequired("/account?error=hosting_revoked")
+                if not principal.get("can_host"):
+                    if "application/json" in request.headers.get("accept", "") or request.url.path.startswith("/api/"):
+                        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Hosting access required.")
+                    raise RedirectRequired("/account?error=hosting_required")
 
     if not display_name:
         return templates.TemplateResponse(
@@ -823,53 +895,91 @@ async def admin_setup_create_event(
             context={
                 "error": "Please enter an event name.",
                 "display_name": display_name,
-                "slug": raw_slug,
+                "slug": event.slug if event else raw_slug,
                 "event": event,
-                "return_to": return_to,
+                "return_to": sanitized_return_to or "",
                 **admin_flags,
             },
             status_code=status.HTTP_400_BAD_REQUEST,
         )
 
-    candidate = raw_slug or _slugify(display_name)
-    try:
-        slug = validate_event_slug(candidate)
-    except ValueError:
-        return templates.TemplateResponse(
-            request=request,
-            name="admin/wizard_event.html",
-            context={
-                "error": "That URL slug isn't valid. Use lowercase letters, numbers and hyphens.",
-                "display_name": display_name,
-                "slug": candidate,
-                "event": event,
-                "return_to": return_to,
-                **admin_flags,
-            },
-            status_code=status.HTTP_400_BAD_REQUEST,
-        )
-
-    async with get_session() as session:
-        existing = await get_event_by_slug(session, slug)
-        if existing is not None and (event_id is None or existing.id != event_id):
+    if event_id is not None and event is not None:
+        if raw_slug and raw_slug != event.slug:
             return templates.TemplateResponse(
                 request=request,
                 name="admin/wizard_event.html",
                 context={
-                    "error": f"An event with the slug '{slug}' already exists. Choose another.",
+                    "error": "The URL slug cannot be changed once the event is created.",
                     "display_name": display_name,
-                    "slug": slug,
+                    "slug": event.slug,
                     "event": event,
-                    "return_to": return_to,
+                    "return_to": sanitized_return_to or "",
+                    **admin_flags,
+                },
+                status_code=status.HTTP_400_BAD_REQUEST,
+            )
+        slug = event.slug
+    else:
+        candidate = raw_slug or _slugify(display_name)
+        try:
+            slug = validate_event_slug(candidate)
+        except ValueError:
+            return templates.TemplateResponse(
+                request=request,
+                name="admin/wizard_event.html",
+                context={
+                    "error": "That URL slug isn't valid. Use lowercase letters, numbers and hyphens.",
+                    "display_name": display_name,
+                    "slug": candidate,
+                    "event": None,
+                    "return_to": sanitized_return_to or "",
                     **admin_flags,
                 },
                 status_code=status.HTTP_400_BAD_REQUEST,
             )
 
+    async with get_session() as session:
         if event_id is not None:
-            await update_event(session, event_id=event_id, display_name=display_name, slug=slug)
-            target_id = event_id
+            try:
+                await update_event(
+                    session,
+                    event_id=event_id,
+                    display_name=display_name,
+                    slug=slug,
+                    expected_display_name=original_display_name,
+                )
+                target_id = event_id
+            except ValueError as exc:
+                return templates.TemplateResponse(
+                    request=request,
+                    name="admin/wizard_event.html",
+                    context={
+                        "error": str(exc),
+                        "display_name": display_name,
+                        "slug": slug,
+                        "event": event,
+                        "return_to": sanitized_return_to or "",
+                        **admin_flags,
+                    },
+                    status_code=status.HTTP_409_CONFLICT,
+                )
         else:
+            existing = await get_event_by_slug_any(session, slug)
+            if existing is not None:
+                return templates.TemplateResponse(
+                    request=request,
+                    name="admin/wizard_event.html",
+                    context={
+                        "error": "That URL slug is already taken. Please choose another.",
+                        "display_name": display_name,
+                        "slug": slug,
+                        "event": None,
+                        "return_to": sanitized_return_to or "",
+                        **admin_flags,
+                    },
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                )
+
             client_ip = get_client_ip(request)
             if not check_rate_limit("event_create", client_ip, max_requests=10, window_seconds=60):
                 return templates.TemplateResponse(
@@ -880,31 +990,39 @@ async def admin_setup_create_event(
                         "display_name": display_name,
                         "slug": slug,
                         "event": None,
-                        "return_to": return_to,
+                        "return_to": sanitized_return_to or "",
                         **admin_flags,
                     },
                     status_code=status.HTTP_429_TOO_MANY_REQUESTS,
                 )
 
-            new_event = await create_event_with_owner(
-                session,
-                slug=slug,
-                display_name=display_name,
-                owner_user_id=principal["user_id"],
-            )
-            target_id = new_event.id
+            try:
+                new_event = await create_event_with_owner(
+                    session,
+                    slug=slug,
+                    display_name=display_name,
+                    owner_user_id=principal["user_id"],
+                )
+                target_id = new_event.id
+            except IntegrityError:
+                await session.rollback()
+                return templates.TemplateResponse(
+                    request=request,
+                    name="admin/wizard_event.html",
+                    context={
+                        "error": "That URL slug is already taken. Please choose another.",
+                        "display_name": display_name,
+                        "slug": slug,
+                        "event": None,
+                        "return_to": sanitized_return_to or "",
+                        **admin_flags,
+                    },
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                )
 
     default_target = management_url(request, f"events/{target_id}/setup/rooms")
-    redirect_target = default_target
-    if return_to:
-        parsed = urllib.parse.urlsplit(return_to)
-        path = parsed.path
-        if not parsed.netloc and (
-            path.startswith(f"/admin/events/{target_id}/")
-            or path.startswith(f"/workspace/events/{target_id}/")
-        ):
-            redirect_target = return_to
-
+    valid_return = _sanitize_setup_return_to(sanitized_return_to, target_id)
+    redirect_target = valid_return if valid_return else default_target
     return safe_redirect(
         url=redirect_target,
         status_code=status.HTTP_303_SEE_OTHER,
@@ -928,7 +1046,13 @@ async def _room_summaries(session: AsyncSession, event: Event, rooms: Sequence[R
 @router.get("/admin/events/{event_id}/setup/rooms", dependencies=[Depends(require_event_owner)])
 async def admin_setup_rooms(request: Request, event_id: int):
     admin_flags = await get_access_flags(request, event_id=event_id)
-    room_created = request.cookies.get("room_created") == str(event_id)
+    cookie_token = request.cookies.get("room_created_token") or request.cookies.get("room_created") or ""
+    clear_token = None
+    if cookie_token:
+        parts = cookie_token.split(":", 1)
+        if parts[0] == str(event_id):
+            clear_token = parts[1] if len(parts) > 1 else ""
+    room_created = clear_token is not None
     async with get_session() as session:
         event = await get_event_by_id(session, event_id)
         if event is None:
@@ -938,9 +1062,17 @@ async def admin_setup_rooms(request: Request, event_id: int):
     response = templates.TemplateResponse(
         request=request,
         name="admin/wizard_rooms.html",
-        context={"event": event, "rooms": rooms, "summaries": summaries, "room_created": room_created, **admin_flags},
+        context={
+            "event": event,
+            "rooms": rooms,
+            "summaries": summaries,
+            "room_created": room_created,
+            "clear_token": clear_token or "",
+            **admin_flags,
+        },
     )
     if room_created:
+        response.delete_cookie("room_created_token", path="/")
         response.delete_cookie("room_created", path="/")
     return response
 
@@ -1048,10 +1180,13 @@ def _room_setup_response(
     booth_codes: Sequence[str] = (),
     live_codes: frozenset[str] = frozenset(),
     from_setup: bool = False,
+    submission_id: str | None = None,
     status_code: int = status.HTTP_200_OK,
 ) -> Response:
     chosen = [code for code, _ in plan.languages]
     chip_codes = list(dict.fromkeys([code for code, _ in ROOM_COMMON_LANGUAGES] + chosen))
+    if not submission_id:
+        submission_id = uuid.uuid4().hex
     return templates.TemplateResponse(
         request=request,
         name="admin/room_setup.html",
@@ -1072,6 +1207,7 @@ def _room_setup_response(
             "booth_codes": list(booth_codes),
             "live_codes": sorted(live_codes),
             "from_setup": from_setup,
+            "submission_id": submission_id,
             **admin_flags,
         },
         status_code=status_code,
@@ -1103,6 +1239,13 @@ async def admin_room_setup_create(request: Request, event_id: int):
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Invalid request origin.")
     form = await request.form()
     from_setup = form.get("from") == "setup"
+    submission_id = str(form.get("submission_id", "")).strip()
+
+    if submission_id and (event_id, submission_id) in _recent_room_creations:
+        existing_room_id = _recent_room_creations[(event_id, submission_id)]
+        target = f"events/{event_id}/setup/rooms" if from_setup else f"events/{event_id}/rooms/{existing_room_id}/?created=1"
+        return safe_redirect(url=management_url(request, target), status_code=status.HTTP_303_SEE_OTHER)
+
     async with get_session() as session:
         event = await get_event_by_id(session, event_id)
         if event is None:
@@ -1120,6 +1263,7 @@ async def admin_room_setup_create(request: Request, event_id: int):
                 admin_flags=admin_flags,
                 errors=errors,
                 from_setup=from_setup,
+                submission_id=submission_id,
                 status_code=status.HTTP_400_BAD_REQUEST,
             )
         room = await create_room(
@@ -1130,9 +1274,18 @@ async def admin_room_setup_create(request: Request, event_id: int):
         )
         await apply_plan(session, event, room, plan, catalog)
         room_id = room.id
+        if submission_id:
+            _recent_room_creations[(event_id, submission_id)] = room_id
+            if len(_recent_room_creations) > 500:
+                for k in list(_recent_room_creations.keys())[:100]:
+                    _recent_room_creations.pop(k, None)
+
     target = f"events/{event_id}/setup/rooms" if from_setup else f"events/{event_id}/rooms/{room_id}/?created=1"
     response = safe_redirect(url=management_url(request, target), status_code=status.HTTP_303_SEE_OTHER)
     if from_setup:
+        setup_draft_token = str(form.get("setup_draft_token", "")).strip()
+        cookie_val = f"{event_id}:{setup_draft_token}" if setup_draft_token else str(event_id)
+        response.set_cookie("room_created_token", cookie_val, max_age=60, path="/", httponly=False, samesite="lax")
         response.set_cookie("room_created", str(event_id), max_age=60, path="/", httponly=False, samesite="lax")
     return response
 
@@ -1293,6 +1446,7 @@ async def admin_event_detail(request: Request, event_id: int):
         mem_booth = booths.get_booth_sync(bid)
         is_live = mem_booth is not None and mem_booth.ingest_status == "connected"
         booth_statuses.append({"db": b, "booth_id": bid, "is_live": is_live})
+    setup_finished = bool(request.query_params.get("setup_finished"))
     return templates.TemplateResponse(
         request=request,
         name="admin/event_detail.html",
@@ -1301,6 +1455,7 @@ async def admin_event_detail(request: Request, event_id: int):
             "rooms": rooms,
             "summaries": summaries,
             "booths": booth_statuses,
+            "setup_finished": setup_finished,
             "live_count": sum((1 for bs in booth_statuses if bs["is_live"])),
             **admin_flags,
         },
