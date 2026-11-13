@@ -211,10 +211,31 @@ async def update_event(
     event = await get_event_by_id(session, event_id)
     if event is None:
         return None
-    if expected_display_name is not None and event.display_name != expected_display_name:
-        raise ValueError("This event was modified by another organizer.")
     if slug is not None and slug != event.slug:
         raise ValueError("The URL slug cannot be changed once the event is created.")
+
+    if expected_display_name is not None:
+        if event.display_name != expected_display_name:
+            raise ValueError("This event was modified by another organizer.")
+        stmt = (
+            update(Event)
+            .where(
+                Event.id == event_id,
+                Event.deleted_at.is_(None),
+                Event.display_name == expected_display_name,
+            )
+            .values(display_name=display_name)
+        )
+        result = await session.execute(stmt)
+        if result.rowcount == 0:
+            current = await get_event_by_id(session, event_id)
+            if current is None:
+                return None
+            raise ValueError("This event was modified by another organizer.")
+        await session.flush()
+        await session.refresh(event)
+        return event
+
     event.display_name = display_name
     session.add(event)
     await session.flush()
