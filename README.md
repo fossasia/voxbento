@@ -44,6 +44,7 @@ Interpreters monitor the floor session and broadcast high-fidelity translation d
 - **📡 Program Stream Ingest & YouTube Relay:** Send conference floor audio from an encoder or browser, with optional RTMPS forwarding to YouTube.
 - **🎛️ Mission Control & Coordination:** Real-time booth status monitoring, live audio meters, in-booth team chat, and coordinator controls via FastAPI WebSockets.
 - **💻 VoxBento Local:** Sovereign, 100% offline desktop application for private AI meeting intelligence and minutes on macOS, Windows, and Linux.
+- **🔐 OAuth 2.0 & Token Security:** Secure authorization code and access token lifecycle management with portable UTC-normalized timezone expiration handling across SQLite and PostgreSQL backends.
 
 ---
 
