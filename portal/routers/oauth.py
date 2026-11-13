@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import base64
 import hashlib
+import hmac
 import logging
 import secrets
 import urllib.parse
@@ -83,6 +84,19 @@ def verify_pkce(code_verifier: str, code_challenge: str, method: str) -> bool:
         encoded = base64.urlsafe_b64encode(hashed).decode().rstrip("=")
         return encoded == code_challenge
     return False
+
+
+def _event_binding_mac(event_id: int, client_id: str, user_sub: str) -> str:
+    """Tie the consent form's event to the client and the signed-in user (#925).
+
+    The event_id travels through the browser as a hidden field, so without this the
+    person consenting can swap it for an event they do not own and the token exchange
+    would make them its owner.
+    """
+    from portal.config import settings
+
+    msg = f"{event_id}:{client_id}:{user_sub}".encode()
+    return hmac.new(settings.effective_jwt_secret.encode(), msg, hashlib.sha256).hexdigest()
 
 
 # What a Room coordinator may let an app do: run live sessions and read, never manage rooms or
@@ -193,6 +207,8 @@ async def authorize_get(
 
     # For now, require explicit consent (can auto-approve if consent exists and covers scopes)
 
+    event_binding = _event_binding_mac(evt.id, client_id, str(user["sub"]))
+
     return templates.TemplateResponse(
         request=request,
         name="oauth/consent.html",
@@ -205,6 +221,7 @@ async def authorize_get(
             "code_challenge": code_challenge,
             "code_challenge_method": code_challenge_method,
             "scope_string": " ".join(effective_scopes),
+            "event_binding": event_binding,
             "current_user_email": user.get("email", "") if user else "",
             "switch_url": f"/login?switch=1&next={next_url}"
             + (f"&email={urllib.parse.quote(login_hint)}" if login_hint else ""),
@@ -222,6 +239,7 @@ async def authorize_post(
     event_id: Annotated[int, Form()],
     scope: Annotated[str, Form()],
     action: Annotated[str, Form()],
+    event_binding: Annotated[str, Form()] = "",
     user: dict = Depends(require_user),
     db: AsyncSession = Depends(get_db_session),
 ):
@@ -243,6 +261,22 @@ async def authorize_post(
         error_query = urllib.parse.urlencode(existing_query)
         error_url = urllib.parse.urlunparse(parsed_redirect._replace(query=error_query))
         return RedirectResponse(url=error_url, status_code=303)
+
+    expected_mac = _event_binding_mac(event_id, client_id, str(user["sub"]))
+    if not hmac.compare_digest(event_binding.encode(), expected_mac.encode()):
+        # Rejected consent: swap attempt or stale form. Logged so repeated attempts
+        # are visible to operators, without storing the submitted binding itself.
+        db.add(
+            OAuthAuditLog(
+                client_id=client.id,
+                event_id=event_id,
+                action="authorize_binding_rejected",
+                request_path="/oauth/authorize",
+                status_code=400,
+            )
+        )
+        await db.flush()
+        raise HTTPException(status_code=400, detail="Event binding verification failed.")
 
     # Ensure event exists
     event_result = await db.execute(select(Event).where(Event.id == event_id))
@@ -344,10 +378,37 @@ async def _handle_authorization_code_grant(
             status_code=400, content={"error": "invalid_grant", "error_description": "PKCE verification failed"}
         )
 
-    # The event on the code was chosen in the browser (#925). A client that sends the event it
-    # started the flow for gets the code rejected when they differ, before any membership changes.
     code_event = await db.get(Event, auth_code.event_id)
-    if code_event is None or (event is not None and event != code_event.slug):
+    if code_event is None:
+        return JSONResponse(status_code=400, content={"error": "invalid_grant"})
+
+    if client.is_confidential and not event:
+        db.add(
+            OAuthAuditLog(
+                client_id=client.id,
+                event_id=code_event.id,
+                action="token_exchange_event_missing",
+                request_path="/oauth/token",
+                status_code=400,
+            )
+        )
+        await db.flush()
+        return JSONResponse(
+            status_code=400,
+            content={"error": "invalid_request", "error_description": "Confidential clients must supply 'event'"},
+        )
+
+    if event is not None and event != code_event.slug:
+        db.add(
+            OAuthAuditLog(
+                client_id=client.id,
+                event_id=code_event.id,
+                action="token_exchange_event_mismatch",
+                request_path="/oauth/token",
+                status_code=400,
+            )
+        )
+        await db.flush()
         return JSONResponse(
             status_code=400,
             content={"error": "invalid_grant", "error_description": "Code was issued for another event"},
