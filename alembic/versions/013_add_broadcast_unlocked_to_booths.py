@@ -26,7 +26,7 @@ def upgrade() -> None:
         batch_op.alter_column("created_at", existing_type=sa.DATETIME(), nullable=False)
 
     with op.batch_alter_table("booths", schema=None) as batch_op:
-        batch_op.add_column(sa.Column("broadcast_unlocked", sa.Boolean(), server_default="0", nullable=False))
+        batch_op.add_column(sa.Column("broadcast_unlocked", sa.Boolean(), server_default=sa.false(), nullable=False))
 
     with op.batch_alter_table("event_memberships", schema=None) as batch_op:
         batch_op.alter_column("created_at", existing_type=sa.DATETIME(), nullable=False)
