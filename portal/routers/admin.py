@@ -825,15 +825,6 @@ async def admin_setup_create_event(request: Request, principal: dict = Depends(r
     )
 
 
-def _live_booth_codes(event_slug: str, room_id: int, codes: Iterable[str]) -> frozenset[str]:
-    live = set()
-    for code in codes:
-        mem_booth = booths.get_booth_sync(make_booth_id(event_slug, room_id, code))
-        if mem_booth is not None and mem_booth.ingest_status == "connected":
-            live.add(code)
-    return frozenset(live)
-
-
 async def _room_summaries(session: AsyncSession, event: Event, rooms: Sequence[Room]) -> dict[int, RoomSummary]:
     catalog = engine_catalog(event)
     return {room.id: summarize(room, await load_snapshot(session, room, catalog)) for room in rooms}
@@ -956,10 +947,10 @@ def _room_setup_response(
     admin_flags: dict,
     errors: Sequence[str] = (),
     booth_codes: Sequence[str] = (),
-    live_codes: frozenset[str] = frozenset(),
     from_setup: bool = False,
     status_code: int = status.HTTP_200_OK,
 ) -> Response:
+    """Render the room setup form with its current plan and validation state."""
     chosen = [code for code, _ in plan.languages]
     chip_codes = list(dict.fromkeys([code for code, _ in ROOM_COMMON_LANGUAGES] + chosen))
     return templates.TemplateResponse(
@@ -980,7 +971,6 @@ def _room_setup_response(
             "delivery_hints": ROOM_DELIVERY_HINTS,
             "delivery_explanations": ROOM_DELIVERY_EXPLANATIONS,
             "booth_codes": list(booth_codes),
-            "live_codes": sorted(live_codes),
             "from_setup": from_setup,
             **admin_flags,
         },
@@ -1046,6 +1036,7 @@ async def admin_room_setup_create(request: Request, event_id: int):
 
 @router.get("/admin/events/{event_id}/rooms/{room_id}/setup", dependencies=[Depends(require_event_owner)])
 async def admin_room_setup_edit(request: Request, event_id: int, room_id: int):
+    """Render an existing room's setup form."""
     source = request.query_params.get("from")
     admin_flags = await get_access_flags(request, event_id=event_id, room_id=room_id)
     async with get_session() as session:
@@ -1055,7 +1046,6 @@ async def admin_room_setup_edit(request: Request, event_id: int, room_id: int):
         room = await room_in_event(session, event_id, room_id)
         catalog = engine_catalog(event)
         snapshot = await load_snapshot(session, room, catalog)
-    live = _live_booth_codes(event.slug, room_id, snapshot.booth_codes)
     return _room_setup_response(
         request,
         event=event,
@@ -1064,13 +1054,13 @@ async def admin_room_setup_edit(request: Request, event_id: int, room_id: int):
         catalog=catalog,
         admin_flags=admin_flags,
         booth_codes=snapshot.booth_codes,
-        live_codes=live,
         from_setup=source == "setup",
     )
 
 
 @router.post("/admin/events/{event_id}/rooms/{room_id}/setup", dependencies=[Depends(require_event_owner), Depends(require_admin_csrf)])
 async def admin_room_setup_save(request: Request, event_id: int, room_id: int):
+    """Validate and save an existing room's setup without deleting its booths."""
     if not verify_same_origin(request):
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Invalid request origin.")
     form = await request.form()
@@ -1083,7 +1073,6 @@ async def admin_room_setup_save(request: Request, event_id: int, room_id: int):
         catalog = engine_catalog(event)
         booth_codes = [b.language_code for b in await list_booths_for_room(session, room_id)]
         plan, errors = parse_plan(form, catalog, existing_booth_codes=booth_codes)
-        live = _live_booth_codes(event.slug, room_id, booth_codes)
         if errors:
             admin_flags = await get_access_flags(request, event_id=event_id, room_id=room_id)
             return _room_setup_response(
@@ -1095,16 +1084,13 @@ async def admin_room_setup_save(request: Request, event_id: int, room_id: int):
                 admin_flags=admin_flags,
                 errors=errors,
                 booth_codes=booth_codes,
-                live_codes=live,
                 from_setup=from_setup,
                 status_code=status.HTTP_400_BAD_REQUEST,
             )
-        result = await apply_plan(session, event, room, plan, catalog, live_booth_codes=live)
+        await apply_plan(session, event, room, plan, catalog)
     # The session has committed: drop the old voice settings so AI text languages stop speaking now.
     invalidate_tts_config(room_id)
     query = {"updated": "1"}
-    if result.kept_live_booths:
-        query["kept_live"] = ",".join(result.kept_live_booths)
     target = f"events/{event_id}/setup/rooms" if from_setup else f"events/{event_id}/rooms/{room_id}/?{urllib.parse.urlencode(query)}"
     return safe_redirect(
         url=management_url(request, target),
@@ -1487,9 +1473,6 @@ async def admin_room_detail(request: Request, event_id: int, room_id: int):
     fallback_jitsi_url = _make_jitsi_url(settings.effective_jitsi_base_url, room_id_str)
     async with get_session() as session:
         memberships = await list_memberships_for_room(session, room_id)
-    kept_live = [
-        room_language_name(code) for code in request.query_params.get("kept_live", "").split(",") if code.strip()
-    ]
     return templates.TemplateResponse(
         request=request,
         name="admin/room_detail.html",
@@ -1508,7 +1491,6 @@ async def admin_room_detail(request: Request, event_id: int, room_id: int):
             or (INVALID_EMAIL if request.query_params.get("error") == "invalid_email" else None),
             "just_created": request.query_params.get("created") == "1",
             "just_updated": request.query_params.get("updated") == "1",
-            "kept_live_languages": kept_live,
             "fallback_jitsi_url": fallback_jitsi_url,
             "catalog": catalog,
             # Services that cannot translate this room's languages are not offered.

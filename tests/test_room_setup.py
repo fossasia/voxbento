@@ -615,11 +615,10 @@ async def test_editing_opens_with_the_rooms_current_setup(admin_cookie, event_ro
 
 
 @pytest.mark.anyio
-async def test_editing_changes_booths_but_keeps_live_ones(admin_cookie, event_room, monkeypatch):
+async def test_editing_keeps_existing_booths_and_adds_requested_ones(admin_cookie, event_room):
     event, room = event_room
     async with get_session() as s:
         await create_booth(s, event_id=event.id, room_id=room.id, language_code="de", language_name="German")
-    monkeypatch.setattr(admin, "_live_booth_codes", lambda slug, room_id, codes: frozenset({"de"}))
     data = {"display_name": "Main Hall", "spoken_language": "en", "languages": ["es"], "delivery_es": INTERPRETER}
     async with _client() as c:
         resp = await c.post(
@@ -630,10 +629,49 @@ async def test_editing_changes_booths_but_keeps_live_ones(admin_cookie, event_ro
             follow_redirects=False,
         )
         assert resp.status_code == 303
-        assert "updated=1" in resp.headers["location"] and "kept_live=de" in resp.headers["location"]
+        assert "updated=1" in resp.headers["location"]
         page = await c.get(resp.headers["location"], cookies=admin_cookie)
-    assert await _booth_codes(room.id) == ["de", "es"]
-    assert "German booth is live right now" in page.text
+    assert await _booth_codes(room.id) == ["de", "es", "fr"]
+    assert "German booth is live right now" not in page.text
+
+
+@pytest.mark.anyio
+async def test_listener_sources_survive_repeated_room_setup_and_page_visits(admin_cookie, event_room):
+    event, room = event_room
+    async with get_session() as s:
+        await create_booth(s, event_id=event.id, room_id=room.id, language_code="de", language_name="German")
+        db_event = await s.get(Event, event.id)
+        db_event.listener_join_code = "ROOM42"
+
+    data = {
+        "display_name": "Main Hall",
+        "spoken_language": "en",
+        "languages": ["es"],
+        "delivery_es": INTERPRETER,
+    }
+    async with _client() as c:
+        save = await c.post(
+            f"/admin/events/{event.id}/rooms/{room.id}/setup",
+            data=data,
+            headers=ORIGIN,
+            cookies=admin_cookie,
+            follow_redirects=False,
+        )
+        assert save.status_code == 303
+        pages = [
+            await c.get(f"/listener/{event.slug}?code=ROOM42"),
+            await c.get(f"/listener/{event.slug}"),
+            await c.get(f"/listener/{event.slug}"),
+        ]
+
+    assert all(page.status_code == 200 for page in pages)
+    assert all('"language_code": "fr"' in page.text for page in pages)
+    assert all('"language_code": "de"' in page.text for page in pages)
+    assert all('"language_code": "es"' in page.text for page in pages)
+    async with get_session() as s:
+        saved_booths = await list_booths_for_room(s, room.id)
+    assert {booth.language_code for booth in saved_booths} == {"de", "es", "fr"}
+    assert all(booth.room_id == room.id and booth.event_id == event.id for booth in saved_booths)
 
 
 @pytest.mark.anyio
@@ -656,7 +694,7 @@ async def test_editing_keeps_a_fine_tuned_model_for_the_same_provider(admin_cook
     db_room = await _room(room.id)
     assert db_room.floor_translation_model == "custom-local-model"
     assert db_room.floor_translation_enabled and not db_room.floor_tts_enabled
-    assert await _booth_codes(room.id) == []
+    assert await _booth_codes(room.id) == ["fr"]
     assert await _ai_codes(room.id) == {"es"}
 
 
@@ -750,10 +788,11 @@ async def test_one_room_can_mix_ai_voice_and_ai_text(admin_cookie, event_room):
     assert db_room.floor_translation_enabled and db_room.floor_tts_enabled
     assert await _ai_codes(room.id) == {"de", "fr"}
     assert await _voice_codes(room.id) == {"fr"}
-    assert await _booth_codes(room.id) == []
+    assert await _booth_codes(room.id) == ["fr"]
     # Reopening the setup shows each language as it was saved.
     assert re.search(r'name="delivery_de" value="ai_text" required\s+checked', page.text)
-    assert re.search(r'name="delivery_fr" value="ai_voice" required\s+checked', page.text)
+    assert "French used to offer both an interpreter and AI." in page.text
+    assert not re.search(r'name="delivery_fr" value="[a-z_]+" required\s+checked', page.text)
 
     # Switching French to text only stops its voice without touching German.
     data["delivery_fr"] = AI_TEXT

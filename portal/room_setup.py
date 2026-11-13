@@ -20,7 +20,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from starlette.datastructures import FormData
 
 from portal.config import settings
-from portal.database import create_booth, delete_booth, list_booths_for_room
+from portal.database import create_booth, list_booths_for_room
 from portal.models import DBBooth, Event, Room, RoomTranslationLanguage
 from portal.roles import INTERPRETER
 from portal.transcription.constants import ALLOWED_MODELS, ProviderEnum
@@ -350,11 +350,10 @@ class RoomPlan:
 
 @dataclass(frozen=True)
 class RoomSnapshot:
-    """What a room has now: its plan and which human booths are live."""
+    """What a room has now: its plan and configured human booths."""
 
     plan: RoomPlan
     booth_codes: tuple[str, ...]
-    live_booth_codes: frozenset[str] = field(default_factory=frozenset)
 
 
 def room_mode(languages: Sequence[tuple[str, str]]) -> str:
@@ -389,7 +388,7 @@ def _available_or_first(engines: Sequence[Engine], current: str | None) -> str:
 
 
 async def load_snapshot(
-    session: AsyncSession, room: Room, catalog: EngineCatalog, live_codes: Iterable[str] = ()
+    session: AsyncSession, room: Room, catalog: EngineCatalog
 ) -> RoomSnapshot:
     """Describe an existing room as a plan, so the setup form opens with what it has today."""
     booths = await list_booths_for_room(session, room.id)
@@ -418,7 +417,7 @@ async def load_snapshot(
         translation_engine=_available_or_first(catalog.translation, room.floor_translation_provider),
         voice_engine=_available_or_first(catalog.voice, room.floor_tts_provider),
     )
-    return RoomSnapshot(plan, booth_codes, frozenset(live_codes))
+    return RoomSnapshot(plan, booth_codes)
 
 
 def parse_plan(
@@ -510,13 +509,6 @@ def parse_plan(
 # ── Applying a plan ──────────────────────────────────────────────────────
 
 
-@dataclass(frozen=True)
-class ApplyResult:
-    added_booths: tuple[str, ...]
-    removed_booths: tuple[str, ...]
-    kept_live_booths: tuple[str, ...]
-
-
 def default_jitsi_url(event_slug: str, display_name: str) -> str:
     clean_name = re.sub("[^a-zA-Z0-9]+", "", display_name)
     return _make_jitsi_url(settings.effective_jitsi_base_url, f"Voxbento-{event_slug}-{clean_name}")
@@ -528,27 +520,14 @@ async def apply_plan(
     room: Room,
     plan: RoomPlan,
     catalog: EngineCatalog,
-    live_booth_codes: Iterable[str] = (),
-) -> ApplyResult:
-    """Make the room match the plan. Booths that are live right now are never removed."""
+) -> None:
+    """Apply room settings and add requested booths without removing configured sources."""
     room.display_name = plan.display_name
     room.floor_language_code = plan.spoken_language
 
-    live = set(live_booth_codes)
-    wanted = set(plan.interpreter_languages)
     existing: list[DBBooth] = await list_booths_for_room(session, room.id)
     existing_codes = {b.language_code for b in existing}
     added = [code for code in plan.interpreter_languages if code not in existing_codes]
-    removed: list[str] = []
-    kept_live: list[str] = []
-    for booth in existing:
-        if booth.language_code in wanted:
-            continue
-        if booth.language_code in live:
-            kept_live.append(booth.language_code)
-        else:
-            await delete_booth(session, booth.id)
-            removed.append(booth.language_code)
     for code in added:
         await create_booth(
             session, event_id=event.id, room_id=room.id, language_code=code, language_name=language_name(code)
@@ -561,7 +540,7 @@ async def apply_plan(
             room.floor_transcription_provider = speech.provider
             room.floor_transcription_model = speech.model
 
-    ai_codes = tuple(code for code in plan.ai_languages if code not in kept_live)
+    ai_codes = plan.ai_languages
     room.floor_translation_enabled = bool(ai_codes)
     if ai_codes:
         translation = catalog.find("translation", plan.translation_engine)
@@ -586,7 +565,6 @@ async def apply_plan(
             room.floor_tts_provider = voice.provider
 
     await session.flush()
-    return ApplyResult(tuple(added), tuple(removed), tuple(kept_live))
 
 
 def _nllb_language_name(code: str) -> str:
