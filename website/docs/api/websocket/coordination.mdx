@@ -19,6 +19,7 @@ When establishing the WebSocket connection, `resolve_ws_auth` resolves credentia
 - The **`?token=` query parameter** containing a JWT (either a participant token or a user JWT). Note that if an invalid `?token=` parameter is provided, it takes precedence and immediately closes the socket with close code `4001`, even if a valid session cookie exists.
 - **HTTP cookies** (`session_token` or `user_token`), checked as fallback when `?token=` is not provided.
 - If credentials are missing altogether, the connection handshake is still permitted when `BOOTH_ACCESS_TOKEN` is unset (local development). When `BOOTH_ACCESS_TOKEN` is configured, missing credentials immediately close the socket with code `4001`.
+- A credential that names an event, a language or a room must be valid for the booth being joined, and a role claim that carries no event and language is never granted, because it would otherwise apply to every booth. A `?token=` that fails either rule closes the socket with code `4003`, and so does a cookie when `BOOTH_ACCESS_TOKEN` is configured. When it is unset, such a cookie leaves the socket connected without a role, as described under authorization changes below.
 
 The server decodes verified credentials to determine the user's role (`interpreter`, `room_coordinator`, etc.) and identity. **The client cannot assert its own role; the server solely trusts the server-verified JWT claims.**
 
