@@ -615,14 +615,12 @@ def test_ws_join_rejects_invalid_fields(field, value, error):
         "language": "French",
         "channel_id": "join-validation-audio",
     }
-    # A configured booth language, so a falsy language can't fail on the missing-language check instead.
     with patch("portal.websockets.handlers.get_booth_language_name", new=AsyncMock(return_value="French")):
         with client.websocket_connect(f"/ws/booth/{booth_id}", cookies=_ws_auth()) as ws:
             ws.send_text(json.dumps({**join, field: value}))
             msg = json.loads(ws.receive_text())
             assert msg == {"type": "booth:error", "message": error}
 
-            # The socket stays usable after the rejected join.
             ws.send_text(json.dumps(join))
             types = {json.loads(ws.receive_text())["type"], json.loads(ws.receive_text())["type"]}
             assert types == {"booth:joined", "booth:state"}
@@ -639,6 +637,41 @@ def test_ws_join_without_language_uses_booth_language():
     joined = msg1 if msg1["type"] == "booth:joined" else msg2
     assert joined["type"] == "booth:joined"
     assert joined["state"]["language"] == "French"
+
+
+def test_ws_role_less_connection_receives_no_broadcasts():
+    """An unauthorized (role-less) socket must not receive private booth broadcasts (#809)."""
+    with client.websocket_connect("/ws/booth/leak-test-booth") as anon:
+        with client.websocket_connect("/ws/booth/leak-test-booth", cookies=_ws_auth()) as auth:
+            auth.send_text(
+                json.dumps(
+                    {
+                        "type": "booth:join",
+                        "display_name": "Interpreter",
+                        "role": "interpreter",
+                        "language": "English",
+                        "channel_id": "leak-test-booth-audio",
+                    }
+                )
+            )
+            auth.receive_text()  # booth:joined
+            auth.receive_text()  # booth:state broadcast
+
+            anon.send_text(
+                json.dumps(
+                    {
+                        "type": "booth:join",
+                        "display_name": "Hacker",
+                        "role": "interpreter",
+                        "language": "English",
+                        "channel_id": "leak-test-booth-audio",
+                    }
+                )
+            )
+            msg = json.loads(anon.receive_text())
+
+    assert msg["type"] == "booth:error"
+    assert "No role" in msg["message"]
 
 
 def test_ws_join_then_leave_broadcasts_state():
