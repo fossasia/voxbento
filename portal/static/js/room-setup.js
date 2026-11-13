@@ -8,8 +8,8 @@
 
 import { syncTranslationOptions } from './translation-fit.js';
 
-const root = document.getElementById('room-setup');
-const form = document.getElementById('room-setup-form');
+const root = typeof document !== 'undefined' ? document.getElementById('room-setup') : null;
+const form = typeof document !== 'undefined' ? document.getElementById('room-setup-form') : null;
 
 function readJson(value, fallback) {
   try {
@@ -20,11 +20,118 @@ function readJson(value, fallback) {
   }
 }
 
+export function getDraftStorageKey(isCreate, fromSetup, eventId) {
+  return (isCreate && fromSetup && eventId) ? `voxbento_setup_room_draft_${eventId}` : null;
+}
+
+export function saveRoomDraft(storage, key, draft) {
+  if (!key || !storage) return false;
+  storage.setItem(key, JSON.stringify(draft));
+  return true;
+}
+
+export function loadRoomDraft(storage, key) {
+  if (!key || !storage) return null;
+  try {
+    const raw = storage.getItem(key);
+    if (!raw) return null;
+    return JSON.parse(raw);
+  } catch (_) {
+    return null;
+  }
+}
+
+export function clearRoomDraft(storage, key) {
+  if (!key || !storage) return;
+  try {
+    storage.removeItem(key);
+  } catch (_) {}
+}
+
+export function buildDraftFromForm({
+  form,
+  spokenSelect,
+  chosenCodes = [],
+  deliveryOf = () => '',
+  captionsWanted = false,
+  currentStep = 0,
+}) {
+  const deliveries = {};
+  chosenCodes.forEach((code) => {
+    const d = deliveryOf(code);
+    if (d) deliveries[code] = d;
+  });
+  return {
+    roomName: form?.querySelector('#rs-name')?.value || '',
+    spokenLanguage: spokenSelect?.value || '',
+    listenerLanguages: chosenCodes,
+    deliveries,
+    captionsWanted,
+    speechEngine: form?.querySelector('#rs-speech')?.value || '',
+    translationEngine: form?.querySelector('#rs-translation')?.value || '',
+    voiceEngine: form?.querySelector('#rs-voice')?.value || '',
+    currentStep,
+  };
+}
+
+export function applyDraftToForm({
+  form,
+  draft,
+  chipsBox,
+  moreSelect,
+  spokenSelect,
+  addChip = () => {},
+}) {
+  if (!draft || typeof draft !== 'object') return;
+  const nameInput = form?.querySelector('#rs-name');
+  if (nameInput && typeof draft.roomName === 'string') {
+    nameInput.value = draft.roomName;
+  }
+  if (spokenSelect && draft.spokenLanguage && spokenSelect.querySelector(`option[value="${draft.spokenLanguage}"]`)) {
+    spokenSelect.value = draft.spokenLanguage;
+  }
+  if (Array.isArray(draft.listenerLanguages) && chipsBox) {
+    chipsBox.querySelectorAll('input').forEach((input) => { input.checked = false; });
+    draft.listenerLanguages.forEach((code) => {
+      let input = chipsBox.querySelector(`[data-rs-chip="${code}"] input`);
+      if (!input) {
+        const opt = moreSelect?.querySelector(`option[value="${code}"]`);
+        if (opt) {
+          addChip(code, opt.textContent.trim());
+          input = chipsBox.querySelector(`[data-rs-chip="${code}"] input`);
+        }
+      }
+      if (input) input.checked = true;
+    });
+  }
+  ['speech', 'translation', 'voice'].forEach((kind) => {
+    const select = form?.querySelector(`#rs-${kind}`);
+    const val = draft[`${kind}Engine`];
+    if (select && val && select.querySelector(`option[value="${val}"]`)) {
+      select.value = val;
+    }
+  });
+}
+
 if (root && form) {
   const isCreate = root.dataset.mode === 'create';
   const fromSetup = root.dataset.fromSetup === 'true';
   const eventId = root.dataset.eventId || '';
-  const draftKey = (isCreate && fromSetup && eventId) ? `voxbento_setup_room_draft_${eventId}` : null;
+  const draftKey = getDraftStorageKey(isCreate, fromSetup, eventId);
+  if (draftKey) {
+    let draftToken = '';
+    try {
+      draftToken = sessionStorage.getItem(`voxbento_setup_room_draft_token_${eventId}`) || '';
+      if (!draftToken) {
+        draftToken = (typeof crypto !== 'undefined' && crypto.randomUUID)
+          ? crypto.randomUUID()
+          : 'draft-' + Date.now() + '-' + Math.random().toString(36).slice(2);
+        sessionStorage.setItem(`voxbento_setup_room_draft_token_${eventId}`, draftToken);
+      }
+    } catch (_) {}
+    const tokenInput = form.querySelector('#rs-draft-token');
+    if (tokenInput && draftToken) tokenInput.value = draftToken;
+  }
   const boothCodes = readJson(root.dataset.boothCodes || '[]', []);
   const liveCodes = new Set(readJson(root.dataset.liveCodes || '[]', []));
   const deliveryLabels = readJson(root.dataset.deliveryLabels || '{}', {});
@@ -413,28 +520,41 @@ if (root && form) {
     saveDraft();
   }
 
+  function showStorageWarning() {
+    let warn = root.querySelector('#rs-storage-warning');
+    if (!warn) {
+      warn = document.createElement('div');
+      warn.id = 'rs-storage-warning';
+      warn.className = 'alert alert-warning';
+      warn.setAttribute('role', 'alert');
+      warn.textContent = 'Storage is unavailable or full. Your in-progress room setup cannot be saved as a draft if you navigate away.';
+      const card = root.querySelector('.wizard-card') || root;
+      card.insertBefore(warn, card.firstChild);
+    }
+    warn.hidden = false;
+  }
+
+  function hideStorageWarning() {
+    const warn = root.querySelector('#rs-storage-warning');
+    if (warn) warn.hidden = true;
+  }
+
   function saveDraft() {
     if (!draftKey) return;
     try {
-      const deliveries = {};
-      chosenCodes().forEach((code) => {
-        const d = deliveryOf(code);
-        if (d) deliveries[code] = d;
-      });
-      const draft = {
-        roomName: form.querySelector('#rs-name')?.value || '',
-        spokenLanguage: spokenSelect?.value || '',
-        listenerLanguages: chosenCodes(),
-        deliveries,
+      const draft = buildDraftFromForm({
+        form,
+        spokenSelect,
+        chosenCodes: chosenCodes(),
+        deliveryOf,
         captionsWanted,
-        speechEngine: form.querySelector('#rs-speech')?.value || '',
-        translationEngine: form.querySelector('#rs-translation')?.value || '',
-        voiceEngine: form.querySelector('#rs-voice')?.value || '',
         currentStep: current,
-      };
-      sessionStorage.setItem(draftKey, JSON.stringify(draft));
+      });
+      saveRoomDraft(sessionStorage, draftKey, draft);
+      hideStorageWarning();
     } catch (err) {
-      console.debug('Room setup draft not saved', err);
+      console.warn('Room setup draft not saved', err);
+      showStorageWarning();
     }
   }
 
@@ -442,9 +562,7 @@ if (root && form) {
     if (!draftKey) return false;
     if (root.querySelector('.alert-danger')) return false;
     try {
-      const raw = sessionStorage.getItem(draftKey);
-      if (!raw) return false;
-      const draft = JSON.parse(raw);
+      const draft = loadRoomDraft(sessionStorage, draftKey);
       if (!draft || typeof draft !== 'object') return false;
 
       const nameInput = form.querySelector('#rs-name');
@@ -461,8 +579,10 @@ if (root && form) {
           let input = chipsBox.querySelector(`[data-rs-chip="${code}"] input`);
           if (!input) {
             const opt = moreSelect?.querySelector(`option[value="${code}"]`);
-            addChip(code, opt?.textContent.trim() || code);
-            input = chipsBox.querySelector(`[data-rs-chip="${code}"] input`);
+            if (opt) {
+              addChip(code, opt.textContent.trim());
+              input = chipsBox.querySelector(`[data-rs-chip="${code}"] input`);
+            }
           }
           if (input) input.checked = true;
         });
@@ -603,6 +723,11 @@ if (root && form) {
       }
     }
     captionsValueForSubmit();
+    const submitBtn = form.querySelector('button[type="submit"]');
+    if (submitBtn) {
+      submitBtn.disabled = true;
+      setTimeout(() => { submitBtn.disabled = false; }, 4000);
+    }
   });
 
   form.querySelectorAll(isCreate ? '[data-rs-nav]' : '[data-rs-edit-nav]').forEach((el) => { el.hidden = false; });

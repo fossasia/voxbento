@@ -2,7 +2,7 @@
 {% block title %}Rooms & languages — Setup{% endblock %}
 
 {% block content %}
-<div class="wizard" {% if room_created %}data-clear-room-draft="{{ event.id }}"{% endif %}>
+<div class="wizard" {% if room_created %}data-clear-room-draft="{{ event.id }}" data-clear-room-draft-token="{{ clear_token }}"{% endif %}>
   {% set step = 2 %}
   {% include "admin/wizard_steps.html" %}
 

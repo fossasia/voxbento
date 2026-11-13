@@ -10,6 +10,7 @@
 {% endblock %}
 
 {% block content %}
+{% if setup_finished %}<div data-clear-setup-draft="{{ event.id }}" hidden></div>{% endif %}
 <div class="page-header">
   <div>
     <h1>{{ event.display_name }}</h1>

@@ -519,31 +519,55 @@ window.adminAPIKeys = {
   }
 };
 
-function initSetupDraftCleanup() {
+export function initSetupDraftCleanup(storage = (typeof sessionStorage !== 'undefined' ? sessionStorage : null)) {
+  if (!storage) return;
   const clearEl = document.querySelector('[data-clear-room-draft]');
   if (clearEl?.dataset.clearRoomDraft) {
-    try {
-      sessionStorage.removeItem(`voxbento_setup_room_draft_${clearEl.dataset.clearRoomDraft}`);
-    } catch (_) {}
-  }
-
-  const match = document.cookie.match(/(?:^|;\s*)room_created=([^;]+)/);
-  if (match) {
-    const eventId = match[1];
-    try {
-      sessionStorage.removeItem(`voxbento_setup_room_draft_${eventId}`);
-    } catch (_) {}
-    document.cookie = 'room_created=; Path=/; Max-Age=0; SameSite=Lax';
-  }
-
-  document.addEventListener('click', (e) => {
-    const btn = e.target.closest('[data-finish-setup]');
-    if (btn?.dataset.finishSetup) {
+    const eventId = clearEl.dataset.clearRoomDraft;
+    const token = clearEl.dataset.clearRoomDraftToken;
+    const storedToken = storage.getItem(`voxbento_setup_room_draft_token_${eventId}`);
+    if (!token || !storedToken || token === storedToken) {
       try {
-        sessionStorage.removeItem(`voxbento_setup_room_draft_${btn.dataset.finishSetup}`);
-      } catch (_) {}
+        storage.removeItem(`voxbento_setup_room_draft_${eventId}`);
+        storage.removeItem(`voxbento_setup_room_draft_token_${eventId}`);
+      } catch (err) {
+        console.warn('Failed to clear room draft via element attribute for event ' + eventId, err);
+      }
     }
-  });
+  }
+
+  const match = typeof document !== 'undefined' && document.cookie ? document.cookie.match(/(?:^|;\s*)room_created_token=([^;]+)/) : null;
+  if (match) {
+    let val = '';
+    try {
+      val = decodeURIComponent(match[1]);
+    } catch (_) {
+      val = match[1];
+    }
+    const [eventId, token] = val.split(':');
+    const storedToken = storage.getItem(`voxbento_setup_room_draft_token_${eventId}`);
+    if (!token || !storedToken || token === storedToken) {
+      try {
+        storage.removeItem(`voxbento_setup_room_draft_${eventId}`);
+        storage.removeItem(`voxbento_setup_room_draft_token_${eventId}`);
+        document.cookie = 'room_created_token=; Path=/; Max-Age=0; SameSite=Lax';
+        document.cookie = 'room_created=; Path=/; Max-Age=0; SameSite=Lax';
+      } catch (err) {
+        console.warn('Failed to remove room draft from storage for event ' + eventId + '; retaining cleanup cookie for retry', err);
+      }
+    }
+  }
+
+  const finishEl = document.querySelector('[data-clear-setup-draft]');
+  if (finishEl?.dataset.clearSetupDraft) {
+    const eventId = finishEl.dataset.clearSetupDraft;
+    try {
+      storage.removeItem(`voxbento_setup_room_draft_${eventId}`);
+      storage.removeItem(`voxbento_setup_room_draft_token_${eventId}`);
+    } catch (err) {
+      console.warn('Failed to clear setup draft on finish for event ' + eventId, err);
+    }
+  }
 }
 
 document.addEventListener('DOMContentLoaded', () => {

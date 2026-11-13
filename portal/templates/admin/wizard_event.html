@@ -22,7 +22,10 @@
     {% set form_action = (management_prefix ~ '/setup?eventId=' ~ event.id) if event else (management_prefix ~ '/setup') %}
     <form method="post" action="{{ form_action }}">
       <input type="hidden" name="csrf_token" value="{{ request.state.admin_csrf_token }}" />
-      {% if event %}<input type="hidden" name="event_id" value="{{ event.id }}" />{% endif %}
+      {% if event %}
+      <input type="hidden" name="event_id" value="{{ event.id }}" />
+      <input type="hidden" name="original_display_name" value="{{ display_name|default('', true) }}" />
+      {% endif %}
       {% if return_to %}<input type="hidden" name="return_to" value="{{ return_to }}" />{% endif %}
       <div class="field">
         <label for="display_name">Event name</label>
@@ -37,8 +40,15 @@
           <div class="field field--flush">
             <label for="slug">URL slug</label>
             <input type="text" id="slug" name="slug" placeholder="auto-generated from the name"
-                   value="{{ slug|default('', true) }}" pattern="^[a-z0-9]+(-[a-z0-9]+)*$" />
-            <span class="hint">Used in links like <code>/listener/your-slug</code>. Lowercase letters, numbers and hyphens only. Leave blank to auto-generate.</span>
+                   value="{{ slug|default('', true) }}" pattern="^[a-z0-9]+(-[a-z0-9]+)*$"
+                   {% if event %}readonly{% endif %} />
+            <span class="hint">
+              {% if event %}
+              The URL slug cannot be changed once the event is created.
+              {% else %}
+              Used in links like <code>/listener/your-slug</code>. Lowercase letters, numbers and hyphens only. Leave blank to auto-generate.
+              {% endif %}
+            </span>
           </div>
         </div>
       </details>
