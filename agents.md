@@ -86,6 +86,8 @@ VoxBento is a production-grade **browser-first interpretation booth console** fo
 | `portal/program_relay.py` | YouTube RTMPS destination management and relay health convergence |
 | `portal/outage_log.py` | `OutageLog` — reconcile loops log a repeating failure once per outage, not per tick |
 | `portal/attendance.py` | `AttendanceTracker` — interpreter visits and interpreting time from booth state, batched writes to `interpreter_attendance` (#1215) |
+| `portal/logging_config.py` | `configure_logging()`, redaction policy, JSON/text formatters, correlation-id context |
+| `portal/request_logging.py` | `RequestLoggingMiddleware` — per-request correlation id, `X-Request-ID`, request outcome logs |
 | `portal/user_admin.py` | Administrative access rules, user flags (`can_host`, `is_admin`, `is_active`, `email_verified`) |
 | `portal/templates/` | Jinja2 HTML — `base.html`, `interpreter_booth.html`, `listener-event.html`, `admin/` |
 | `portal/static/css/tokens.css` | Shared design tokens (`--vb-*` colours, radii, shadows, fonts), linked first on every page; new CSS uses these instead of new hex values |
@@ -111,7 +113,11 @@ VoxBento is a production-grade **browser-first interpretation booth console** fo
 9. **`portal.*` imports for all new Python code.**
 10. **Role is never trusted from client data.** WS handler reads `Session.granted_role` (derived from cookies at connect time).
 11. **No open redirects.** All redirects use `safe_redirect()` which validates path starts with `/` and has no netloc.
-12. **Management namespaces reflect privilege.** Event owners use `/workspace/*`; room coordinators use the room-scoped `/mission-control/*` surface. `/admin/*` is reserved for Admins, apart from legacy room-scoped coordinator handlers retained for compatibility. Legacy event-owner URLs redirect without changing OAuth routes or token behavior.
+12. **Logs carry no secrets or PII.** Log opaque ids (`user_id`, `booth_id`, `room_id`), never
+    email addresses, tokens, API keys, webhook secrets, join codes, the Jitsi meeting URL or the
+    relay destination. `portal/logging_config.py` redacts centrally as a safety net, not a licence.
+    Prefer `logger.info("...%s", value)` over f-strings. Read `docs/logging.md` first.
+13. **Management namespaces reflect privilege.** Event owners use `/workspace/*`; room coordinators use the room-scoped `/mission-control/*` surface. `/admin/*` is reserved for Admins, apart from legacy room-scoped coordinator handlers retained for compatibility. Legacy event-owner URLs redirect without changing OAuth routes or token behavior.
 
 ---
 

@@ -1163,7 +1163,7 @@ async def admin_setup_add_invite(request: Request, event_id: int):
                 try:
                     await _send_admin_invite(session, user, role, f"event {event.display_name}", "/account")
                 except Exception as e:
-                    logger.warning(f"Failed to send setup invite email to {email}: {e}")
+                    logger.warning("Failed to send setup invite email to user %s: %s", user.id, e)
     return safe_redirect(
         url=management_url(request, f"events/{event_id}/setup/invite?success=invite_sent"),
         status_code=status.HTTP_303_SEE_OTHER,
@@ -3546,7 +3546,7 @@ async def admin_team_add(request: Request, event_id: int):
                         session, user, role_label(data["role"]), f"{place.label} at {event.display_name}", "/workspace/"
                     )
                 except Exception as e:
-                    logger.warning(f"Failed to send team invite email to {user.email}: {e}")
+                    logger.warning("Failed to send team invite email to user %s: %s", user.id, e)
     except TeamError as exc:
         return await render_team(request, event_id, error=str(exc), form=data, status_code=400)
     return team_redirect(request, event_id, "added" if changed else "already")
@@ -3588,7 +3588,7 @@ async def admin_team_resend(request: Request, event_id: int):
                 session, member.user, role_label(first.role), f"{first.place.label} at {event.display_name}", "/workspace/"
             )
         except Exception as e:
-            logger.warning(f"Failed to resend team invite email to {member.user.email}: {e}")
+            logger.warning("Failed to resend team invite email to user %s: %s", member.user.id, e)
     return team_redirect(request, event_id, "resent")
 
 
