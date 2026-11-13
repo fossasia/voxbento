@@ -79,15 +79,26 @@ Notes:
 
 ## Step 2: Third-party "Custom RTMP" -> VoxBento RTMPS
 
-Instance: PENDING (relay mode on, room in relay mode, no YouTube key saved; needs a public host with a TLS certificate on TCP 1936).
+**Status checked 12 November 2026: still PENDING.** The report was merged in
+[#1133](https://github.com/fossasia/voxbento/pull/1133); code for independent RTMPS
+arrived in #1102, with cleanup follow-up #1152. A test endpoint was reported ready
+on 7 November, but that is not a platform-test result. Obtain a test room and
+confirm endpoint availability before running a follow-up. Use the independent
+`rtmps` mode and keep the tool's YouTube output separate. Record tool/version,
+credential acceptance, usable captions and YouTube continuity after revoking the
+VoxBento key. Keep unavailable tools pending; do not invent passes.
+
+
+Instance for the new measurement: PENDING confirmation (RTMPS enabled, room in
+independent `rtmps` mode; public host with a valid TLS certificate on TCP 1936).
 Server `rtmps://<host>:1936/<event>/<room>`, stream key `floor?key=<redacted>`.
 
-| Platform | rtmps ok | key format ok | path ready | captions ok | Notes |
-|---|---|---|---|---|---|
-| StreamYard | PENDING | PENDING | PENDING | PENDING | |
-| Restream | PENDING | PENDING | PENDING | PENDING | |
-| OBS + Multiple RTMP outputs | PENDING | PENDING | PENDING | PENDING | |
-| vMix | PENDING | PENDING | PENDING | PENDING | |
+| Platform | Version / plan | rtmps ok | key format ok | path ready | captions ok | YouTube continues after VoxBento key revoke | Notes |
+|---|---|---|---|---|---|---|---|
+| StreamYard | PENDING | PENDING | PENDING | PENDING | PENDING | PENDING | |
+| Restream | PENDING | PENDING | PENDING | PENDING | PENDING | PENDING | |
+| OBS + Multiple RTMP outputs | PENDING | PENDING | PENDING | PENDING | PENDING | PENDING | |
+| vMix | PENDING | PENDING | PENDING | PENDING | PENDING | PENDING | |
 
 What the server does with a rewritten key, from reading `portal/program_ingest.py`
 (@SanketKokate712, #1091; code reading only, the error text a platform shows is still to be observed):
