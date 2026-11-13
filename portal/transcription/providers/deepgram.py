@@ -7,6 +7,7 @@ from urllib.parse import urlencode
 
 import websockets
 from sqlalchemy.exc import SQLAlchemyError
+from websockets.exceptions import InvalidStatus
 
 from portal.database import get_session
 from portal.transcription.aggregator import CaptionAggregator
@@ -28,6 +29,8 @@ KEYTERM_MODEL_PREFIXES = ("nova-3",)
 KEYWORD_BOOST = 2
 # Terms are optional: a slow glossary lookup must not hold up captions.
 GLOSSARY_LOOKUP_TIMEOUT = 2.0
+RECONNECT_DELAY_SECONDS = 2.0
+MAX_CONSECUTIVE_ERRORS = 5
 
 
 def supports_keyterms(model: str) -> bool:
@@ -85,7 +88,10 @@ async def handle_message(aggregator: CaptionAggregator, booth_id: str, data: dic
     aggregator, which publishes whole sentences, so translation never gets half a sentence.
     """
     if data.get("type") == "UtteranceEnd":
-        await aggregator.handle_clear(booth_id)
+        # -1 means the phrase was already finalized; Deepgram says to ignore the stale notice, which
+        # would otherwise clear the preview of the next phrase.
+        if data.get("last_word_end") != -1:
+            await aggregator.handle_clear(booth_id)
         return
     try:
         transcript = data["channel"]["alternatives"][0]["transcript"].strip()
@@ -197,9 +203,22 @@ class DeepgramProvider(TranscriptionProvider):
                         task.cancel()
 
             except (OSError, asyncio.TimeoutError, websockets.exceptions.WebSocketException) as e:
+                if keyterms and isinstance(e, InvalidStatus) and e.response.status_code == 400:
+                    # Deepgram counts keyterm tokens with its own tokenizer, so a glossary inside the
+                    # estimated budget can still be refused. Captions without the glossary beat none.
+                    logger.warning(
+                        "[%s] Deepgram refused the glossary terms (HTTP 400); continuing without them", booth_id
+                    )
+                    keyterms = []
+                    url = build_listen_url(model_variant, language_code)
+                    continue
                 consecutive_errors += 1
                 logger.error("[%s] Deepgram connection failed (%d): %s", booth_id, consecutive_errors, e)
-                if consecutive_errors >= 5:
+                if consecutive_errors >= MAX_CONSECUTIVE_ERRORS:
                     logger.error("[%s] Deepgram Realtime connection repeatedly failed. Giving up.", booth_id)
                     break
-                await asyncio.sleep(2)
+                await asyncio.sleep(RECONNECT_DELAY_SECONDS)
+
+        # The stream ended without a clean end of audio (connection given up, ffmpeg gone): publish
+        # the settled words still waiting for the end of their sentence, so they are not lost.
+        await aggregator.handle_clear(booth_id)

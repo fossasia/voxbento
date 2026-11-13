@@ -115,6 +115,140 @@ async def test_utterance_end_closes_a_phrase_endpointing_missed(recorder):
 
 
 @pytest.mark.anyio
+async def test_stale_utterance_end_does_not_clear_the_next_phrase(recorder):
+    aggregator, messages = recorder
+    booth = "conf-1-floor"
+    await stt.handle_message(aggregator, booth, _result("Hello all.", is_final=True, speech_final=True))
+    await stt.handle_message(aggregator, booth, _result("Next we"))
+    # Deepgram's -1 marks a phrase that was already finalized; the preview of "Next we" must stay.
+    await stt.handle_message(aggregator, booth, {"type": "UtteranceEnd", "last_word_end": -1})
+    assert messages[-1]["status"] == "partial"
+    assert messages[-1]["text"] == "Next we"
+    assert _finals(messages) == ["Hello all."]
+
+
+class _FakeStdout:
+    def __init__(self, chunks: list[bytes]):
+        self._chunks = list(chunks)
+
+    async def read(self, size: int) -> bytes:
+        return self._chunks.pop(0) if self._chunks else b""
+
+
+class _FakeProcess:
+    def __init__(self, chunks: list[bytes] = ()):
+        self.returncode = None
+        self.stdout = _FakeStdout(list(chunks))
+
+
+class _FakeListenSocket:
+    """A /v1/listen connection that replays ``replies`` and then ends."""
+
+    def __init__(self, replies: list[dict], *, dropped: bool = False):
+        self.sent: list = []
+        self._replies = [json.dumps(reply) for reply in replies]
+        self._closed = asyncio.Event()
+        # A dropped connection ends right after its replies instead of waiting for CloseStream.
+        if dropped:
+            self._closed.set()
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, *exc):
+        return False
+
+    async def send(self, data):
+        self.sent.append(data)
+        if isinstance(data, str) and json.loads(data)["type"] == "CloseStream":
+            self._closed.set()
+
+    def __aiter__(self):
+        return self._iterate()
+
+    async def _iterate(self):
+        for reply in self._replies:
+            yield reply
+        await self._closed.wait()
+
+
+def _rejection(status: int):
+    from websockets.datastructures import Headers
+    from websockets.exceptions import InvalidStatus
+    from websockets.http11 import Response
+
+    return InvalidStatus(Response(status, "Bad Request", Headers(), b""))
+
+
+async def _run(process, broadcast) -> None:
+    await stt.DeepgramProvider().run_stream(
+        process, "en", "nova-3", stt.ProviderConfig("key"), broadcast, "conf-1-floor", room_id=7
+    )
+
+
+@pytest.mark.anyio
+async def test_refused_glossary_terms_fall_back_to_captions_without_them(monkeypatch):
+    async def terms(room_id):
+        return ["VoxBento"]
+
+    monkeypatch.setattr(stt, "load_keyterms", terms)
+    urls: list[str] = []
+
+    def connect(url, **kwargs):
+        urls.append(url)
+        if len(urls) == 1:
+            raise _rejection(400)
+        return _FakeListenSocket([])
+
+    monkeypatch.setattr(stt.websockets, "connect", connect)
+
+    async def broadcast(booth_id, message):
+        pass
+
+    await _run(_FakeProcess(), broadcast)
+    assert "keyterm" in _query(urls[0])
+    assert len(urls) == 2 and "keyterm" not in _query(urls[1])
+    # Everything else about the stream is unchanged.
+    assert {k: v for k, v in _query(urls[0]).items() if k != "keyterm"} == _query(urls[1])
+
+
+@pytest.mark.anyio
+async def test_settled_words_are_published_when_the_connection_is_given_up(monkeypatch):
+    async def no_terms(room_id):
+        return []
+
+    monkeypatch.setattr(stt, "load_keyterms", no_terms)
+    monkeypatch.setattr(stt, "RECONNECT_DELAY_SECONDS", 0)
+    attempts = 0
+
+    def connect(url, **kwargs):
+        nonlocal attempts
+        attempts += 1
+        if attempts == 1:
+            # Settles part of a sentence, then the server drops the connection.
+            return _FakeListenSocket([_result("Please take your seats", is_final=True)], dropped=True)
+        raise OSError("network unreachable")
+
+    monkeypatch.setattr(stt.websockets, "connect", connect)
+    messages: list[dict] = []
+
+    async def broadcast(booth_id, message):
+        messages.append(message)
+
+    class _EndlessStdout:
+        async def read(self, size):
+            await asyncio.sleep(0.01)
+            return b"\x00" * size
+
+    process = _FakeProcess()
+    process.stdout = _EndlessStdout()
+    await asyncio.wait_for(_run(process, broadcast), timeout=5)
+
+    assert attempts == 1 + stt.MAX_CONSECUTIVE_ERRORS
+    assert _finals(messages) == ["Please take your seats"]
+
+
+@pytest.mark.anyio
 async def test_complete_sentences_are_published_without_waiting(recorder):
     aggregator, messages = recorder
     booth = "conf-1-floor"
@@ -182,6 +316,8 @@ async def test_speech_keyterms_cover_the_room_and_respect_the_budget():
                     entry("Room Term", room_id=room.id, priority=50),
                     entry("Booth Term", room_id=room.id, booth_id=booth.id),
                     entry("Other Room", room_id=other.id),
+                    # A booth entry saved without its room still counts for the booth's room.
+                    entry("Booth Only", booth_id=booth.id),
                     # The same source term for another language is one keyterm, not two.
                     AIVocabularyEntry(
                         event_id=event.id, source_term="event  wide", target_language="ja", target_term="x"
@@ -192,7 +328,7 @@ async def test_speech_keyterms_cover_the_room_and_respect_the_budget():
 
             terms = await speech_keyterms(session, room.id)
             assert terms[0] == "Room Term"  # Highest priority first.
-            assert sorted(terms) == ["Booth Term", "Event Wide", "Room Term"]
+            assert sorted(terms) == ["Booth Only", "Booth Term", "Event Wide", "Room Term"]
             assert await speech_keyterms(session, 999_999) == []
 
             # Newlines and control characters would break the request; the term survives as one line.

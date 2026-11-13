@@ -13,7 +13,7 @@ import pycountry
 from sqlalchemy import or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from portal.models import AIVocabularyEntry, Room
+from portal.models import AIVocabularyEntry, DBBooth, Room
 from portal.translations.prompts import MAX_DESCRIPTION_CHARS, MAX_TERM_CHARS
 
 REQUIRED_COLUMNS = {"source_term", "target_language", "target_term"}
@@ -511,6 +511,9 @@ async def speech_keyterms(session: AsyncSession, room_id: int) -> list[str]:
             or_(
                 AIVocabularyEntry.room_id == room_id,
                 AIVocabularyEntry.room_id.is_(None) & AIVocabularyEntry.booth_id.is_(None),
+                # A booth entry saved without its room still belongs to the room its booth is in.
+                AIVocabularyEntry.room_id.is_(None)
+                & AIVocabularyEntry.booth_id.in_(select(DBBooth.id).where(DBBooth.room_id == room_id)),
             ),
         )
         # Room entries before event-wide ones of the same priority; oldest first after that.
