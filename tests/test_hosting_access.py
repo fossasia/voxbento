@@ -2041,3 +2041,59 @@ async def test_get_access_flags_room_coordinator_on_event_page():
 
     assert own == {"is_admin": False, "is_event_owner": False, "is_room_coordinator": True}
     assert other == {"is_admin": False, "is_event_owner": False, "is_room_coordinator": False}
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("name", ["x" * 201, "bell\x07name", "c1\x85name", "\x85Organizer"])
+async def test_admin_invite_rejects_invalid_display_name(name):
+    async with get_session() as session:
+        admin = await create_user(session, email="admin@example.com", display_name="Admin", is_admin=True)
+
+    admin_token = create_user_token(user_id=admin.id, email=admin.email, is_admin=True)
+    csrf = generate_admin_csrf_token(str(decode_token(admin_token)["jti"]))
+    async with client() as http:
+        res = await http.post(
+            "/admin/users/invite",
+            data={"email": "new.host@example.com", "display_name": name, "csrf_token": csrf},
+            cookies={"user_token": admin_token, "admin_csrf": csrf},
+            headers={"Origin": "http://test"},
+        )
+    assert res.status_code == 400
+    assert "without control characters" in res.text
+    async with get_session() as session:
+        assert (await session.execute(select(User).where(User.email == "new.host@example.com"))).scalar_one_or_none() is None
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("name", ["x" * 201, "bell\x07name"])
+async def test_invite_acceptance_rejects_invalid_display_name(name):
+    async with get_session() as session:
+        user = await create_user(
+            session, email="invited@example.com", display_name="Invited Stub", password_hash=None, email_verified=False
+        )
+        raw_token, _ = await create_hosting_invite(session, user.id, 3600)
+
+    form = {"password": "ValidPassword123!", "password_confirm": "ValidPassword123!"}
+    async with client() as http:
+        bad = await http.post(
+            f"/invite/accept/{raw_token}",
+            data={**form, "display_name": name},
+            headers={"Origin": "http://test"},
+            follow_redirects=False,
+        )
+        assert bad.status_code == 400
+        assert "without control characters" in bad.text
+        async with get_session() as session:
+            stub = await get_user_by_id(session, user.id)
+            assert stub.display_name == "Invited Stub"
+            assert stub.password_hash is None
+
+        ok = await http.post(
+            f"/invite/accept/{raw_token}",
+            data={**form, "display_name": "  New   Organizer "},
+            headers={"Origin": "http://test"},
+            follow_redirects=False,
+        )
+        assert ok.status_code == 303
+    async with get_session() as session:
+        assert (await get_user_by_id(session, user.id)).display_name == "New Organizer"

@@ -27,6 +27,8 @@ from portal import meeting_source
 from portal import roles as roles_module
 from portal.auth import (
     ADMIN_CSRF_COOKIE,
+    INVALID_DISPLAY_NAME,
+    clean_display_name,
     coordinates_room,
     get_access_flags,
     get_accessible_event_ids,
@@ -2990,10 +2992,14 @@ async def admin_invite_user(request: Request):
 
     form = await request.form()
     raw_email = form.get("email", "").strip().lower()
-    display_name = form.get("display_name", "").strip()
+    raw_display_name = form.get("display_name", "")
 
     if not raw_email or "@" not in raw_email or "." not in raw_email.split("@")[-1]:
         raise HTTPException(status_code=400, detail="Invalid email address.")
+    # The name is optional. Check the raw value, so strip() can't remove controls before the check.
+    display_name = ""
+    if str(raw_display_name).strip() and not (display_name := clean_display_name(raw_display_name)):
+        raise HTTPException(status_code=400, detail=INVALID_DISPLAY_NAME)
 
     async with get_session() as session:
         user = await get_user_by_email(session, raw_email)

@@ -4,6 +4,7 @@ import hashlib
 import hmac
 import logging
 import secrets
+import unicodedata
 import uuid
 from datetime import datetime, timedelta, timezone
 
@@ -74,6 +75,23 @@ PASSWORD_TOO_LONG_MESSAGE = (
     f"Password must be at most {PASSWORD_MAX_BYTES} bytes. "
     "Accented letters and other non-ASCII characters count as more than one byte."
 )
+
+
+DISPLAY_NAME_MAX = 200
+INVALID_DISPLAY_NAME = f"Enter a display name of up to {DISPLAY_NAME_MAX} characters, without control characters."
+
+
+def clean_display_name(raw) -> str | None:
+    """Collapse spaces and check the name. Returns None if it is empty, too long or has control characters."""
+    if not isinstance(raw, str):
+        return None
+    # Check the raw value: split() would turn controls such as \t, \x1c or \x85 into spaces before a later check sees them.
+    if any(unicodedata.category(ch) == "Cc" for ch in raw):
+        return None
+    name = " ".join(raw.split())
+    if not name or len(name) > DISPLAY_NAME_MAX:
+        return None
+    return name
 
 
 def password_too_long(password: str) -> bool:
