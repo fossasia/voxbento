@@ -181,8 +181,10 @@ def _rejection(status: int):
 
 
 async def _run(process, broadcast) -> None:
+    # No room: the aggregator then publishes captions without touching the database.
+    # Glossary loading is stubbed by each test.
     await stt.DeepgramProvider().run_stream(
-        process, "en", "nova-3", stt.ProviderConfig("key"), broadcast, "conf-1-floor", room_id=7
+        process, "en", "nova-3", stt.ProviderConfig("key"), broadcast, "conf-1-floor"
     )
 
 
