@@ -51,6 +51,8 @@ async def clean_registry():
 
 
 class MockProvider:
+    sample_rate = 16000
+
     def __init__(self, name):
         self.name = name
         self.received_configs = []

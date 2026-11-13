@@ -208,7 +208,7 @@ class TestBoothLanguageCodeAdmin:
     @pytest.mark.anyio
     async def test_admin_create_booth_redirects_with_invalid_language_error(self, seed_data):
         """Admin form submission of floor redirects with invalid_language_code error."""
-        from portal.auth import create_user_token
+        from portal.auth import create_user_token, decode_token, generate_admin_csrf_token
         from portal.database import get_session, get_user_by_email
 
         event, room, _token = seed_data
@@ -216,13 +216,17 @@ class TestBoothLanguageCodeAdmin:
             user = await get_user_by_email(session, "floor@example.com")
             user_id = user.id
 
-        cookies = {"user_token": create_user_token(user_id=user_id, email="floor@example.com", is_admin=False)}
+        user_token = create_user_token(user_id=user_id, email="floor@example.com", is_admin=False)
+        session_id = decode_token(user_token)["jti"]
+        csrf_token = generate_admin_csrf_token(session_id)
+        cookies = {"user_token": user_token, "admin_csrf": csrf_token}
 
         async with _client() as c:
             resp = await c.post(
                 f"/workspace/events/{event.id}/rooms/{room.id}/booths/",
-                data={"language_code": "floor", "language_name": "Floor"},
+                data={"language_code": "floor", "language_name": "Floor", "csrf_token": csrf_token},
                 cookies=cookies,
+                headers={"X-CSRF-Token": csrf_token},
                 follow_redirects=False,
             )
             assert resp.status_code == 303
