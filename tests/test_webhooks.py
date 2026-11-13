@@ -1286,3 +1286,19 @@ def test_event_registry_single_source_of_truth():
                                     f"{py_file}: Identifier {event_arg.id} binds to {bound_val!r}, "
                                     f"which is not in SUPPORTED_EVENT_TYPES"
                                 )
+
+
+@pytest.mark.anyio
+async def test_webhook_debug_dump_endpoint_removed():
+    """Ensure the unauthenticated debug dump endpoint is not present or accessible."""
+    async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://test") as client:
+        # Unauthenticated request
+        response = await client.get("/api/v1/webhooks/debug/dump")
+        assert response.status_code == 404
+
+        # Request with arbitrary Bearer token
+        response_with_auth = await client.get(
+            "/api/v1/webhooks/debug/dump",
+            headers={"Authorization": "Bearer test_token"},
+        )
+        assert response_with_auth.status_code == 404
