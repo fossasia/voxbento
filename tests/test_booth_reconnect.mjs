@@ -26,6 +26,7 @@ function assert(condition, message) {
 // Close codes
 assert(finalCloseMessage(4001) !== null, 'an expired session (4001) is final')
 assert(finalCloseMessage(4003) !== null, 'revoked or foreign booth access (4003) is final')
+assert(finalCloseMessage(4009) !== null, 'a booth taken over by another tab (4009) is final')
 for (const code of [1000, 1001, 1006, 1011, 1012]) {
   assert(finalCloseMessage(code) === null, `close ${code} reconnects`)
 }

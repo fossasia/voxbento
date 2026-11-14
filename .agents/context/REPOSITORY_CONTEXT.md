@@ -46,7 +46,8 @@ Attendees receive sub-second audio via WHEP. All coordination flows through Fast
 | `portal/models.py` | SQLAlchemy declarative models (events, rooms, booths, tokens, users, memberships, hosting requests, AI vocabulary) |
 | `portal/database.py` | Async engine, session factory, all CRUD helpers |
 | `portal/auth.py` | JWT creation/validation, user auth, role resolution |
-| `portal/booth_state.py` | In-memory booth registry (`BoothRegistry`), participant state |
+| `portal/booth_state.py` | In-memory booth registry (`BoothRegistry`), participant state, reconnect grace |
+| `portal/booth_recovery.py` | Saves and restores live booth state (`booth_live_state`) across restarts |
 | `portal/booth_identity.py` | `make_booth_id`, `make_mediamtx_path`, validation |
 | `portal/roles.py` | `Permission` enum, `ROLE_PERMISSIONS` mapping |
 | `portal/crypto.py` | `encrypt_val`/`decrypt_val` using Fernet |

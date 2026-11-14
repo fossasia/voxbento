@@ -309,7 +309,12 @@ function renderCard(boothId) {
       const name = el('span', 'mc-person-name', p.display_name);
       if (isActive) name.appendChild(el('span', 'mc-person-tag', 'live'));
       row.appendChild(name);
-      row.appendChild(el('span', `mc-pill ${p.mic_active ? 'is-on' : 'is-off'}`, p.mic_active ? 'Speaking' : 'Muted'));
+      if (p.connected === false) {
+        // Their connection dropped; the server keeps their place while they reconnect.
+        row.appendChild(el('span', 'mc-pill is-off', 'Reconnecting…'));
+      } else {
+        row.appendChild(el('span', `mc-pill ${p.mic_active ? 'is-on' : 'is-off'}`, p.mic_active ? 'Speaking' : 'Muted'));
+      }
       list.appendChild(row);
     });
     people.appendChild(list);

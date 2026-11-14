@@ -54,6 +54,17 @@ Voxbento uses SQLite by default for zero-configuration local development. For an
 | --- | --- | --- |
 | `DATABASE_URL` | `sqlite+aiosqlite:///./interpretation.db` | Database connection string. For production PostgreSQL, use the format: `postgresql+asyncpg://user:pass@host:5432/dbname`. Database migrations run automatically on startup — no manual steps needed when using Docker Compose. |
 
+## Booth Recovery Variables
+
+These keep a live booth on air when an interpreter's connection drops or the portal restarts during an event. Interpreter audio goes from the browser to MediaMTX directly, so when only the connection to the portal drops, the audio keeps playing while the booth page reconnects. If the interpreter's own network goes down, the audio stops too until it comes back.
+
+| Variable | Default | Description |
+| --- | --- | --- |
+| `BOOTH_RECONNECT_GRACE_SECONDS` | `20` | How long a participant whose booth connection dropped keeps their place, including the active slot. Set `0` to remove them at once. |
+| `BOOTH_STATE_RECOVERY_ENABLED` | `true` | Save each booth's Go Live switch and active interpreter to the database and restore them when the portal starts. |
+| `BOOTH_RESTART_GRACE_SECONDS` | `60` | After a restart, how long the active slot waits for the interpreter who held it to reconnect. |
+| `BOOTH_STATE_MAX_AGE_SECONDS` | `600` | Saved booth state is not restored if it was last saved longer ago than this. A live booth's state is saved when it changes and at least once a minute, so this counts the time since that last save, including any time before the portal stopped. |
+
 ## Jitsi Variables
 
 Voxbento embeds a Jitsi Meet instance so interpreters can monitor the conference floor. These variables configure how the portal connects to and displays Jitsi.
