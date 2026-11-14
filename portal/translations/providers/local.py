@@ -224,7 +224,12 @@ def get_model_and_tokenizer(model_size: str):
             with _progress_lock:
                 _download_progress[model_size] = {"status": "completed"}
 
-        tokenizer = transformers.AutoTokenizer.from_pretrained(local_model_path, src_lang="eng_Latn", revision="main")  # nosec
+        entry = get_translation_model(model_size)
+        if entry and entry.tokenizer_type:
+            tokenizer_options = {"tokenizer_type": entry.tokenizer_type}
+        else:
+            tokenizer_options = {"src_lang": "eng_Latn"}
+        tokenizer = transformers.AutoTokenizer.from_pretrained(local_model_path, revision="main", **tokenizer_options)  # nosec
         cpu_count = os.cpu_count() or 4
         intra_threads = min(cpu_count, 2)
         model = ctranslate2.Translator(
@@ -271,7 +276,7 @@ def start_eviction_loop():
 
 
 class LocalProvider(TranslationProvider, TranslationEngine):
-    """NLLB through CTranslate2, in the portal process."""
+    """NLLB and M2M100 through CTranslate2, in the portal process."""
 
     kind = EngineKind.CT2_SEQ2SEQ
 
@@ -382,7 +387,7 @@ class LocalProvider(TranslationProvider, TranslationEngine):
             if not source:
                 return ""
 
-            # The NLLB tokenizer hardcodes eng_Latn as the first token based on how we initialized it.
+            # The tokenizer puts English (eng_Latn for NLLB, __en__ for M2M100) as the first token.
             # We must replace it with the actual source language token for the model to translate correctly.
             source[0] = source_lang_token
             # beam_size=1 provides 3x-4x speedup with high accuracy for real-time text

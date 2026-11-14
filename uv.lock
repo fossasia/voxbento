@@ -303,6 +303,7 @@ dependencies = [
     { name = "pyjwt" },
     { name = "python-dotenv" },
     { name = "python-multipart" },
+    { name = "sentencepiece" },
     { name = "sqlalchemy", extra = ["asyncio"] },
     { name = "tenacity" },
     { name = "transformers" },
@@ -346,6 +347,7 @@ requires-dist = [
     { name = "pyjwt", specifier = ">=2.9.0" },
     { name = "python-dotenv", specifier = "==1.2.4" },
     { name = "python-multipart", specifier = ">=0.0.30" },
+    { name = "sentencepiece", specifier = ">=0.2.0" },
     { name = "sqlalchemy", extras = ["asyncio"], specifier = ">=2.0.0" },
     { name = "supertonic", marker = "extra == 'supertonic'", specifier = ">=1.3.0" },
     { name = "tenacity", specifier = ">=9.1.4" },
@@ -1032,6 +1034,19 @@ wheels = [
     { url = "https://files.pythonhosted.org/packages/8e/3f/73ccf82579412b4a71c4ca673f10b5f1f888d7cf5af7fe24f27d30307be4/safetensors-0.8.0-cp310-abi3-win32.whl", hash = "sha256:2ddf52eac562eda224f99acfa7889d02968c1fd59a5b011ae7d8137c37e9c02d", size = 342401, upload-time = "2026-06-09T07:52:28.895Z" },
     { url = "https://files.pythonhosted.org/packages/1b/6d/3fba214c1e5e0f69991677ec3bc17023f0421776975e1de0c682dca475e2/safetensors-0.8.0-cp310-abi3-win_amd64.whl", hash = "sha256:096ec1a98435df7beb08853bb5aa9081a84f23d0adc67ed1a0a10550f608373f", size = 355540, upload-time = "2026-06-09T07:52:27.832Z" },
     { url = "https://files.pythonhosted.org/packages/8d/fc/7eedc3510d97878876e32774eebbeb61c43f148a96e915c84229a3e967aa/safetensors-0.8.0-cp310-abi3-win_arm64.whl", hash = "sha256:f7838e5135a406ad3e02efdcb8cf2e5397d368b0154537c4fec682dbc544d452", size = 340500, upload-time = "2026-06-09T07:52:26.745Z" },
+]
+
+[[package]]
+name = "sentencepiece"
+version = "0.2.3"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/54/83/0664683546ffca8e36653d39d6217c361d931953f40ce28210b56927a9b6/sentencepiece-0.2.3.tar.gz", hash = "sha256:21618ad31f0453a1ebf5ec58defed99758d54af0b670546ecac639ddd8b86fbd", size = 3751846, upload-time = "2026-11-05T05:38:22.108Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/4e/86/7ccc32fa2059e6d9217e31fe6d502dcb24a5760013f850292f59b85dc115/sentencepiece-0.2.3-cp313-cp313-macosx_11_0_arm64.whl", hash = "sha256:80fe42d6ecd3860ee43327de31687f222af8e93f7d66e248d241cf9a0466eb73", size = 1426935, upload-time = "2026-11-05T05:36:31.447Z" },
+    { url = "https://files.pythonhosted.org/packages/bb/31/a06474a3e0dc8366873fd10b7bbf690b9ad9b00603e02e5f14a370c74ed3/sentencepiece-0.2.3-cp313-cp313-manylinux_2_27_aarch64.manylinux_2_28_aarch64.whl", hash = "sha256:dfc31f9f133a2712d396efa94d666c2ad83d5611ce34f11339429c6831253014", size = 1627113, upload-time = "2026-11-05T05:36:36.653Z" },
+    { url = "https://files.pythonhosted.org/packages/8f/7e/78634050dcac5c3a6aedd6c315b83ce6bd466ccebf68f31a57d8d5655900/sentencepiece-0.2.3-cp313-cp313-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl", hash = "sha256:4d82f2a0f704f5d0cf027bc8cc5ad49e23c11a9cc0b5bd08ca51985917963bf5", size = 1717008, upload-time = "2026-11-05T05:36:40.505Z" },
+    { url = "https://files.pythonhosted.org/packages/a3/39/41b3c56beb8ced46bfb346a638ca588741fcd10b6e1143d9143787e1c66d/sentencepiece-0.2.3-cp313-cp313-win_amd64.whl", hash = "sha256:84e9def430ca8cc848b84adb304ffb77bff151cfc7dc66eb881f0385258f536b", size = 1655543, upload-time = "2026-11-05T05:36:49.566Z" },
+    { url = "https://files.pythonhosted.org/packages/00/18/12f01c575ea8afaa459959b9f71175c2caa9268639defe367db6d66a89bf/sentencepiece-0.2.3-cp313-cp313-win_arm64.whl", hash = "sha256:01e62cf99d3af7950cff04986c7e58dd4cd376fcf2367cd1c5314182d5f4adc5", size = 1860989, upload-time = "2026-11-05T05:36:56.342Z" },
 ]
 
 [[package]]
