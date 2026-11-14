@@ -1675,9 +1675,13 @@ def _apply_ai_settings(room: Room, form: FormData, catalog: EngineCatalog) -> No
             )
         room.floor_translation_provider = translation.provider
         room.floor_translation_model = model
-    if "floor_ai_interpreter_persona" in form:
+    has_translator_settings = "floor_ai_interpreter_persona" in form
+    if has_translator_settings:
         room.floor_ai_interpreter_persona = str(form.get("floor_ai_interpreter_persona", "")).strip() or None
         room.floor_ai_interpretation_style = str(form.get("floor_ai_interpretation_style", "")).strip() or None
+    # A room with captions but no AI language has no translator settings; its glossary switch sends a marker
+    # instead, because an unticked checkbox is simply missing from the form. A form with neither keeps the value.
+    if has_translator_settings or "floor_ai_vocabulary_toggle" in form:
         room.floor_ai_vocabulary_enabled = form.get("floor_ai_vocabulary_enabled") == "on"
 
     voice = catalog.find("voice", str(form.get("floor_tts_provider", "")))

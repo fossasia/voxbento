@@ -82,7 +82,8 @@ Jitsi Meet Floor Conference
 | `portal/transcription/worker.py` | `transcription_worker`, `start_transcription_worker`, `stop_transcription_worker`; `active_workers`/`active_processes` dicts |
 | `portal/transcription/aggregator.py` | `CaptionAggregator`, `CaptionState` — partial/final merging, forced finalization |
 | `portal/transcription/providers/base.py` | `TranscriptionProvider` ABC, `ProviderConfig`, `BoothTranscriptionState`, `pcm_to_wav`, `get_api_key` |
-| `portal/transcription/providers/local.py` | `LocalProvider` — faster-whisper CPU; model cache + LRU eviction |
+| `portal/transcription/vocabulary.py` | Glossary source terms for recognition (`select_terms`, `load_vocabulary_terms`); read once per worker start into `ProviderConfig.terms` (#1164) |
+| `portal/transcription/providers/local.py` | `LocalProvider` — faster-whisper CPU; model cache + LRU eviction; passes `config.terms` as `hotwords` |
 | `portal/transcription/providers/openai.py` | `OpenAIProvider` — whisper-1 (REST) + gpt-4o-realtime (WebSocket) |
 | `portal/transcription/providers/atlascloud.py` | `AtlasCloudProvider` — Seed ASR 2.0 async Audio API |
 | `portal/transcription/providers/deepgram.py` | `DeepgramProvider` — nova-3/nova-2 WebSocket streaming; glossary source terms (`speech_keyterms` in `portal/translations/vocabulary.py`, read once per stream, honours `floor_ai_vocabulary_enabled`) sent as nova-3 `keyterm`s or nova-2 `keywords=term:2`; settled chunks collected until `speech_final`/`UtteranceEnd` |
@@ -172,6 +173,16 @@ Cancels the asyncio Task and awaits it; removes from state dicts.
 - `_active_booths_per_model` — ref count per model size.
 - Eviction loop: runs every 15 minutes; evicts model if `refs == 0` and `last_used > 1 hour ago`.
 - `WhisperModel(model_size, device="cpu", compute_type="int8")` — uses int8 quantisation.
+
+---
+
+## Glossary biasing (#1164)
+
+- `TranscriptionWorkerSession._run_loop` calls `load_vocabulary_terms(event_slug, room_id, language_code)` **once**, before the ffmpeg retry loop, and stores the result in `config.terms` (a copy via `dataclasses.replace`; the caller's `ProviderConfig` is untouched, and the config is left alone when there are no terms).
+- Scope: event-wide + room + the booth's own entries (the floor has no booth row, so it gets event + room). Independent of target language and of what is said; ordering matches the translation resolver (priority >= 90 first, then booth > room > event, then priority). Terms are de-duplicated case-insensitively, cleaned to one plain line and capped at `MAX_TERMS_CHARS` (400) when joined.
+- Skipped when `room.floor_ai_vocabulary_enabled` is off. A database error or a lookup slower than `VOCABULARY_LOOKUP_TIMEOUT` (2 s) gives no terms; the worker never fails because of the glossary.
+- `LocalProvider._run_inference` adds `hotwords=", ".join(terms)` to `WhisperModel.transcribe` only when there are terms. Other providers ignore `config.terms` for now (#1167 Deepgram, #1168 OpenAI, #1169 ElevenLabs).
+- Changes to the glossary apply the next time a worker starts; there is no mid-session refresh.
 
 ---
 

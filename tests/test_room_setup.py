@@ -39,6 +39,7 @@ from portal.room_setup import (
 )
 from portal.routers import admin
 from portal.transcription.constants import ALLOWED_MODELS, ProviderEnum
+from portal.transcription.vocabulary import load_vocabulary_terms
 
 # These tests are not about CSRF; their requests carry the token a real page would send.
 pytestmark = pytest.mark.usefixtures("auto_csrf")
@@ -1109,6 +1110,103 @@ async def test_ai_settings_tab_explains_a_room_without_ai(admin_cookie, event_ro
         "This room doesn&#39;t use captions or AI" in page.text or "This room doesn't use captions or AI" in page.text
     )
     assert 'id="room_ai_form"' not in page.text
+
+
+async def _captions_only_room(room_id: int) -> None:
+    async with get_session() as s:
+        room = await s.get(Room, room_id)
+        room.floor_transcription_enabled = True
+        room.floor_translation_enabled = False
+
+
+@pytest.mark.anyio
+async def test_a_captions_only_room_can_manage_its_glossary(admin_cookie, event_room):
+    """The glossary also spells captions correctly (#1164), so a room without AI languages needs it too."""
+    event, room = event_room
+    await _captions_only_room(room.id)
+    async with _client() as c:
+        html = (await c.get(f"/admin/events/{event.id}/rooms/{room.id}/", cookies=admin_cookie)).text
+
+    assert 'id="ai-vocabulary-heading"' in html
+    assert "Names and terms the captions should spell correctly" in html
+    assert "For captions only, use <code>all</code> as target_language" in html
+    assert "/ai-vocabulary/upload" in html
+    # One switch, in the Captions card, with the marker that lets an unticked box be saved.
+    assert html.count('id="floor_ai_vocabulary_enabled"') == 1
+    assert 'name="floor_ai_vocabulary_toggle"' in html
+    assert "Instructions for the AI translator" not in html
+
+
+@pytest.mark.anyio
+async def test_a_room_with_ai_keeps_its_glossary_switch_with_the_translator_instructions(admin_cookie, event_room):
+    event, _ = event_room
+    room_id = await _create_ai_room(admin_cookie, event)
+    async with _client() as c:
+        html = (await c.get(f"/admin/events/{event.id}/rooms/{room_id}/", cookies=admin_cookie)).text
+
+    assert "Names and terms the AI should always translate the same way" in html
+    assert "Names and terms the captions should spell correctly" not in html
+    assert "Instructions for the AI translator" in html
+    assert html.count('id="floor_ai_vocabulary_enabled"') == 1
+    assert 'name="floor_ai_vocabulary_toggle"' not in html
+
+
+@pytest.mark.anyio
+async def test_the_glossary_switch_of_a_captions_only_room_is_saved(admin_cookie, event_room):
+    event, room = event_room
+    await _captions_only_room(room.id)
+    url = f"/admin/events/{event.id}/rooms/{room.id}/edit"
+    base = {
+        "form_section": "ai",
+        "floor_transcription_provider": "local",
+        "floor_transcription_model": "tiny",
+        "floor_ai_vocabulary_toggle": "1",
+    }
+    async with _client() as c:
+        # An unticked checkbox is missing from the form; the marker says the switch was part of it.
+        await c.post(url, data=base, headers=ORIGIN, cookies=admin_cookie, follow_redirects=False)
+        assert (await _room(room.id)).floor_ai_vocabulary_enabled is False
+
+        await c.post(
+            url,
+            data={**base, "floor_ai_vocabulary_enabled": "on"},
+            headers=ORIGIN,
+            cookies=admin_cookie,
+            follow_redirects=False,
+        )
+        assert (await _room(room.id)).floor_ai_vocabulary_enabled is True
+
+        # A form that does not carry the switch leaves it alone.
+        await c.post(
+            url,
+            data={"form_section": "ai", "floor_transcription_provider": "local", "floor_transcription_model": "tiny"},
+            headers=ORIGIN,
+            cookies=admin_cookie,
+            follow_redirects=False,
+        )
+        assert (await _room(room.id)).floor_ai_vocabulary_enabled is True
+
+
+@pytest.mark.anyio
+async def test_a_captions_only_room_can_upload_and_see_its_glossary(admin_cookie, event_room):
+    event, room = event_room
+    await _captions_only_room(room.id)
+    csv_content = "source_term,target_language,target_term\nEventyay,all,Eventyay\nMediaMTX,all,MediaMTX\n"
+    async with _client() as c:
+        upload = await c.post(
+            f"/admin/events/{event.id}/rooms/{room.id}/ai-vocabulary/upload",
+            data={"import_mode": "append"},
+            files={"vocabulary_file": ("glossary.csv", csv_content, "text/csv")},
+            headers=ORIGIN,
+            cookies=admin_cookie,
+            follow_redirects=False,
+        )
+        assert upload.status_code == 303
+        page = await c.get(upload.headers["location"], cookies=admin_cookie)
+
+    assert "Added 2 terms" in page.text
+    assert "Eventyay" in page.text and "MediaMTX" in page.text
+    assert set(await load_vocabulary_terms(event.slug, room.id, "floor")) == {"Eventyay", "MediaMTX"}
 
 
 @pytest.mark.parametrize(

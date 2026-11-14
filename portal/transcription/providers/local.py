@@ -117,12 +117,23 @@ class LocalProvider(TranscriptionProvider):
             overlap_audio = chunk
 
         audio_data = np.frombuffer(overlap_audio, np.int16).astype(np.float32) / 32768.0
-        return await asyncio.to_thread(self._run_inference, audio_data, language_code, model_variant, booth_state)
+        return await asyncio.to_thread(
+            self._run_inference, audio_data, language_code, model_variant, booth_state, config.terms
+        )
 
     def _run_inference(
-        self, audio_data: np.ndarray, language_code: str, model_size: str, booth_state: BoothTranscriptionState | None
+        self,
+        audio_data: np.ndarray,
+        language_code: str,
+        model_size: str,
+        booth_state: BoothTranscriptionState | None,
+        terms: tuple[str, ...] = (),
     ) -> str:
         model = get_model(model_size)
+        options = {}
+        if terms:
+            # Biases decoding towards the event glossary's spellings (#1164); without terms the call is unchanged.
+            options["hotwords"] = ", ".join(terms)
         segments, _ = model.transcribe(
             audio_data,
             beam_size=5,
@@ -133,6 +144,7 @@ class LocalProvider(TranscriptionProvider):
             no_speech_threshold=0.6,
             log_prob_threshold=-1.0,
             condition_on_previous_text=False,
+            **options,
         )
 
         valid_words = []

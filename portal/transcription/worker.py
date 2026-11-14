@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import dataclasses
 import logging
 import uuid
 from enum import Enum
@@ -16,6 +17,7 @@ from portal.transcription.providers.elevenlabs import ElevenLabsProvider
 from portal.transcription.providers.local import LocalProvider
 from portal.transcription.providers.nvidia import NVIDIAProvider
 from portal.transcription.providers.openai import OpenAIProvider
+from portal.transcription.vocabulary import load_vocabulary_terms
 
 logger = logging.getLogger(__name__)
 
@@ -115,6 +117,13 @@ class TranscriptionWorkerSession:
         self.loop_entered = True
         retry_count = 0
         try:
+            # Looked up once for the whole session: ffmpeg retries below reuse the same terms.
+            terms = await load_vocabulary_terms(self.event_slug, self.room_id, self.language_code)
+            if terms:
+                self.config = dataclasses.replace(self.config, terms=terms)
+                logger.info(
+                    "[%s][%s] Using %d glossary terms for recognition", self.booth_id, self.session_id, len(terms)
+                )
             while self.state != State.STOPPING:
                 # Narrow the race window: check STOPPING immediately before spawning ffmpeg
                 if self.state == State.STOPPING:
