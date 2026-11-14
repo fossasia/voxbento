@@ -558,6 +558,10 @@ class TranslationWorker:
                     room.id, lang_code, translated_text, timing.source_received_at_ms if timing else None
                 )
 
+            # Saved and delivered: the segment leaves its language's queue, so slow speech
+            # synthesis below does not hold back new segments.
+            job.close()
+
             if not synthesize_audio:
                 return
 
@@ -593,7 +597,8 @@ class TranslationWorker:
                 room.id, lang_code, booth_id_str, b"", uuid_segment_id, seq, text, "", "pipeline_failed"
             )
         finally:
-            # A job that never reached the engine (dropped, failed or cancelled) leaves its channel here.
+            # A job that stopped before its result was delivered (dropped, failed or cancelled) leaves its
+            # channel here; for the others this does nothing.
             job.close()
 
     async def _drop_while_downloading(

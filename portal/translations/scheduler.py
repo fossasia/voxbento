@@ -37,29 +37,31 @@ class TranslationJob:
     """One translation's place in its channel.
 
     ``async with job:`` waits for the job's turn and holds an engine slot until the block ends.
-    The job leaves its channel when the block ends or when ``close()`` is called, whichever
-    comes first, so a job that never reaches the engine must be closed.
+    The job keeps its place in the channel until ``close()``, so the worker can count it there
+    while it saves and delivers the result. A job that never reaches the engine must be closed
+    too. ``close()`` also gives back a slot the job still holds, and is safe to call twice.
     """
 
-    __slots__ = ("_scheduler", "_room", "_channel", "_state", "_busy_until")
+    __slots__ = ("_scheduler", "_room", "_channel", "_state", "_admitted", "_busy_until")
 
     def __init__(self, scheduler: TranslationScheduler, room: Hashable, channel: str) -> None:
         self._scheduler = scheduler
         self._room = room
         self._channel = channel
-        # "admitted" -> "running" -> "closed", or straight from "admitted" to "closed".
-        self._state = "admitted"
+        # "waiting" -> "running" -> "done": a job takes an engine slot once.
+        self._state = "waiting"
+        self._admitted = True
         self._busy_until: asyncio.Future | None = None
 
     async def __aenter__(self) -> TranslationJob:
-        if self._state != "admitted":
+        if self._state != "waiting" or not self._admitted:
             raise RuntimeError("a translation job takes an engine slot only once")
         await self._scheduler._wait_for_turn(self)
         self._state = "running"
         return self
 
     async def __aexit__(self, *exc_info: object) -> None:
-        self.close()
+        self._release_slot()
 
     def keep_slot_until(self, call: asyncio.Future) -> None:
         """Keep the engine slot until ``call`` ends, even after the job itself has moved on.
@@ -70,16 +72,23 @@ class TranslationJob:
             self._busy_until = call
 
     def close(self) -> None:
-        """Leave the channel, giving back the engine slot if the job holds one. Safe to call twice."""
-        if self._state == "closed":
+        """Leave the channel, giving back the engine slot too if the job still holds it."""
+        self._release_slot()
+        if self._admitted:
+            self._admitted = False
+            self._scheduler._leave(self._room, self._channel)
+
+    def _release_slot(self) -> None:
+        if self._state != "running":
+            if self._state == "waiting":
+                self._state = "done"
             return
-        running = self._state == "running"
-        self._state = "closed"
+        self._state = "done"
         busy = self._busy_until
-        if running and busy is not None and not busy.done():
-            busy.add_done_callback(lambda _: self._scheduler._leave(self, running=True))
-            return
-        self._scheduler._leave(self, running=running)
+        if busy is not None and not busy.done():
+            busy.add_done_callback(lambda _: self._scheduler._give_back(self._room, self._channel))
+        else:
+            self._scheduler._give_back(self._room, self._channel)
 
 
 class TranslationScheduler:
@@ -141,26 +150,31 @@ class TranslationScheduler:
         except asyncio.CancelledError:
             if not turn.cancelled():
                 # The slot was given just before the cancel reached the job: pass it on.
-                self._give_back(state)
+                self._give_back(job._room, job._channel)
             elif turn in state.waiters:
                 state.waiters.remove(turn)
             raise
 
-    def _leave(self, job: TranslationJob, *, running: bool) -> None:
-        channels = self._rooms[job._room]
-        state = channels[job._channel]
+    def _leave(self, room: Hashable, channel: str) -> None:
+        state = self._rooms[room][channel]
         state.admitted -= 1
-        if running:
-            self._give_back(state)
-        if state.admitted == 0:
-            del channels[job._channel]
-            if not channels:
-                del self._rooms[job._room]
+        self._forget_if_idle(room, channel, state)
 
-    def _give_back(self, state: _Channel) -> None:
+    def _give_back(self, room: Hashable, channel: str) -> None:
+        state = self._rooms[room][channel]
         state.running -= 1
         self.running -= 1
+        self._forget_if_idle(room, channel, state)
         self._dispatch()
+
+    def _forget_if_idle(self, room: Hashable, channel: str, state: _Channel) -> None:
+        """Drop a channel (and its room) once it holds no jobs and runs no calls."""
+        if state.admitted or state.running:
+            return
+        channels = self._rooms[room]
+        del channels[channel]
+        if not channels:
+            del self._rooms[room]
 
     def _dispatch(self) -> None:
         """Hand free engine slots to waiting jobs, one turn per room and then per language."""

@@ -254,8 +254,9 @@ async def test_a_slot_stays_taken_until_a_call_the_job_gave_up_on_ends():
     recorder = Recorder(scheduler)
     next_one = recorder.start("other", "other:fr")
     await settle()
+    # The job has left its channel, but the engine is still busy with its call.
     assert scheduler.running == 1 and scheduler.waiting() == 1
-    assert scheduler.admitted("room", "room:fr") == 1
+    assert scheduler.admitted("room", "room:fr") == 0
 
     still_running.set_result(None)
     await settle()
@@ -500,3 +501,50 @@ async def test_a_segment_leaves_its_language_queue_before_its_speech_is_made(mon
     finish_speaking.set()
     await task
     stored.add.assert_called_once()
+
+
+async def test_a_segment_counts_in_its_language_queue_until_its_text_is_delivered(monkeypatch):
+    """A slow save frees the engine for others but still counts against the language's 15 segments."""
+    engine = SlowEngine(max_concurrency=1)
+
+    async def answer(source, targets, texts, context, *, model, api_key=None):
+        return [["Bonjour" for _ in targets] for _ in texts]
+
+    engine.translate_batch = answer
+    monkeypatch.setitem(worker_module.ENGINES, "answering", engine)
+    saving = asyncio.Event()
+    finish_saving = asyncio.Event()
+
+    async def slow_flush():
+        saving.set()
+        await finish_saving.wait()
+
+    stored = MagicMock(add=MagicMock(), flush=slow_flush)
+
+    @asynccontextmanager
+    async def fake_session():
+        yield stored
+
+    monkeypatch.setattr(worker_module, "get_session", fake_session)
+    bundle = AsyncMock()
+    monkeypatch.setattr("portal.websockets.manager.tts_manager.broadcast_bundle", bundle)
+    monkeypatch.setattr("portal.websockets.manager.listener_manager.broadcast", AsyncMock())
+    monkeypatch.setattr(worker_module.youtube_captions, "offer", MagicMock())
+    monkeypatch.setattr("portal.tts.worker.synthesize", AsyncMock(return_value=b"audio"))
+
+    task = asyncio.create_task(
+        TranslationWorker(MagicMock())._translate_and_broadcast(
+            SimpleNamespace(id=1), fake_room(1), "answering", "m", None, "fr", "French", "en", "English",
+            1, "Hello", "event-1-floor", "uuid", 1, "event-1-fr",
+        )
+    )
+    await asyncio.wait_for(saving.wait(), timeout=5)
+
+    scheduler = worker_module.scheduler_for("answering")
+    assert scheduler.running == 0
+    assert scheduler.admitted(1, "event-1-floor:fr") == 1
+
+    finish_saving.set()
+    await task
+    assert scheduler.admitted(1, "event-1-floor:fr") == 0
+    assert bundle.await_count == 2
