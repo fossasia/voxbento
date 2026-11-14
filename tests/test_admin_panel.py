@@ -1410,7 +1410,7 @@ class TestEventCRUD:
         sarvam_data = {
             "transcription_enabled": "true",
             "transcription_provider": "sarvam",
-            "transcription_model": "saaras:v3-realtime",
+            "transcription_model": "saaras:v3",
         }
         async with _client() as c:
             api_disabled = await c.post(
@@ -1435,7 +1435,7 @@ class TestEventCRUD:
         async with _client() as c:
             bad_model = await c.post(
                 f"{url}transcription-settings",
-                data={**sarvam_data, "transcription_model": "saaras:v3"},
+                data={**sarvam_data, "transcription_model": "invalid-model"},
                 cookies=admin_cookie,
                 follow_redirects=False,
             )
@@ -1453,7 +1453,7 @@ class TestEventCRUD:
             saved = await session.get(type(booth), booth.id)
         assert saved.transcription_enabled is True
         assert saved.transcription_provider == "sarvam"
-        assert saved.transcription_model == "saaras:v3-realtime"
+        assert saved.transcription_model == "saaras:v3"
 
     @pytest.mark.anyio
     async def test_booth_transcription_settings_rejects_unsupported_sarvam_language_and_whitespace_key(
@@ -1479,7 +1479,7 @@ class TestEventCRUD:
         sarvam_data = {
             "transcription_enabled": "true",
             "transcription_provider": "sarvam",
-            "transcription_model": "saaras:v3-realtime",
+            "transcription_model": "saaras:v3",
         }
 
         # Whitespace-only Sarvam API key must be treated as missing.
@@ -1510,7 +1510,7 @@ class TestEventCRUD:
             fr_booth.id,
             transcription_enabled=True,
             transcription_provider="sarvam",
-            transcription_model="saaras:v3-realtime",
+            transcription_model="saaras:v3",
         )
         async with _client() as c:
             start_bad_lang = await c.post(
@@ -1527,7 +1527,7 @@ class TestEventCRUD:
             booth.id,
             transcription_enabled=True,
             transcription_provider="sarvam",
-            transcription_model="saaras:v3-realtime",
+            transcription_model="saaras:v3",
         )
         async with _client() as c:
             start_ws_key = await c.post(
@@ -2329,6 +2329,7 @@ class TestRoomCRUD:
             import types
 
             from portal import join_code_limit
+
             now = join_code_limit.time.monotonic()
             monkeypatch.setattr(join_code_limit, "time", types.SimpleNamespace(monotonic=lambda: now + 61))
             with tc.websocket_connect(f"/ws/captions/{booth_id}?code=ROOM42") as ws:
@@ -2479,7 +2480,9 @@ class TestRoomCRUD:
             resp_admin = await c.get(f"/admin/events/{event.id}/caption-overlays/", cookies=admin_cookie)
 
         assert resp_booth.status_code == 200
-        assert f'data-booth-id="{event.slug}-{target_room.id}-{target_booth.language_code}"'.encode() in resp_booth.content
+        assert (
+            f'data-booth-id="{event.slug}-{target_room.id}-{target_booth.language_code}"'.encode() in resp_booth.content
+        )
 
         assert resp_floor.status_code == 200
         assert f'data-booth-id="{event.slug}-{target_room.id}-floor"'.encode() in resp_floor.content
@@ -2953,7 +2956,9 @@ class TestBoothCRUD:
                 lambda _bid: SimpleNamespace(active_interpreter_id="p1", ingest_status="connected", participants={}),
             )
             bid = admin.make_booth_id(event.slug, booth.room_id, booth.language_code)
-            monkeypatch.setattr(admin, "active_workers", {bid: SimpleNamespace(state=State.RUNNING)})  # a worker is running
+            monkeypatch.setattr(
+                admin, "active_workers", {bid: SimpleNamespace(state=State.RUNNING)}
+            )  # a worker is running
             location, page = await save(c, enabled=True)
             assert location == f"{url}?saved=captions&worker=kept#captions"
             assert "The caption worker was restarted" not in page
@@ -3029,7 +3034,13 @@ class TestBoothCRUD:
         from portal.models import Event
 
         await _update_row(Event, event.id, transcription_api_enabled=True)
-        await _update_row(type(booth), booth.id, transcription_enabled=True, transcription_provider="deepgram", transcription_model="nova-2")
+        await _update_row(
+            type(booth),
+            booth.id,
+            transcription_enabled=True,
+            transcription_provider="deepgram",
+            transcription_model="nova-2",
+        )
         data = {"transcription_provider": "deepgram", "transcription_model": "nova-2"}
         async with _client() as c:
             # On with no key for the service: refused.
@@ -3072,7 +3083,11 @@ class TestBoothCRUD:
         async with _client() as c:
             on = await c.post(
                 f"{url}transcription-settings",
-                data={"transcription_enabled": "true", "transcription_provider": "openai", "transcription_model": "whisper-1"},
+                data={
+                    "transcription_enabled": "true",
+                    "transcription_provider": "openai",
+                    "transcription_model": "whisper-1",
+                },
                 cookies=admin_cookie,
                 follow_redirects=False,
             )
@@ -3088,7 +3103,11 @@ class TestBoothCRUD:
         async with _client() as c:
             on = await c.post(
                 f"{url}transcription-settings",
-                data={"transcription_enabled": "true", "transcription_provider": "openai", "transcription_model": "whisper-1"},
+                data={
+                    "transcription_enabled": "true",
+                    "transcription_provider": "openai",
+                    "transcription_model": "whisper-1",
+                },
                 cookies=admin_cookie,
                 follow_redirects=False,
             )
@@ -3253,7 +3272,11 @@ class TestBoothCRUD:
         event, room, booth = seed_event
         url = f"/admin/events/{event.id}/rooms/{room.id}/booths/{booth.id}/"
         await _update_row(
-            type(booth), booth.id, transcription_enabled=True, transcription_provider="nvidia", transcription_model="parakeet-rnnt"
+            type(booth),
+            booth.id,
+            transcription_enabled=True,
+            transcription_provider="nvidia",
+            transcription_model="parakeet-rnnt",
         )
         data = {"transcription_provider": "nvidia", "transcription_model": "parakeet-rnnt"}
         async with _client() as c:

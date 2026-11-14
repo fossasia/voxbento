@@ -754,7 +754,7 @@ async def test_reconcile_blocks_sarvam_unsupported_floor_language_and_allows_sup
         db_event.encrypted_sarvam_api_key = encrypt_val("sarvam-secret")
         db_room = await session.get(Room, room.id)
         db_room.floor_transcription_provider = "sarvam"
-        db_room.floor_transcription_model = "saaras:v3-realtime"
+        db_room.floor_transcription_model = "saaras:v3"
         db_room.floor_language_code = "fr"
 
     await ingest.reconcile_once()

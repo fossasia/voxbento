@@ -82,9 +82,9 @@ Best suited for deployments that already operate NVIDIA GPU infrastructure.
 </TabItem>
   <TabItem value="sarvam" label="Sarvam AI">
 
-Uses Sarvam AI's realtime Speech-to-Text WebSocket API for Indian languages (`en-IN`, `hi-IN`, `bn-IN`, `kn-IN`, `ml-IN`, `mr-IN`, `or-IN`, `pa-IN`, `ta-IN`, `te-IN`, `gu-IN`, `as-IN`, `ur-IN`, `ne-IN`, `kok-IN`, `ks-IN`, `sd-IN`, `sa-IN`, `sat-IN`, `mni-IN`, `brx-IN`, `mai-IN`, `doi-IN`, or `auto` / `floor`). Requires a Sarvam AI API key stored in the event's API settings and **Enable External Transcription APIs** switched on.
+Uses Sarvam AI's streaming Speech-to-Text WebSocket API for Indian languages (`en-IN`, `hi-IN`, `bn-IN`, `kn-IN`, `ml-IN`, `mr-IN`, `od-IN`, `pa-IN`, `ta-IN`, `te-IN`, `gu-IN`, `as-IN`, `ur-IN`, `ne-IN`, `kok-IN`, `ks-IN`, `sd-IN`, `sa-IN`, `sat-IN`, `mni-IN`, `brx-IN`, `mai-IN`, `doi-IN`, or `auto` / `floor`). Produces final-per-utterance captions. Requires a Sarvam AI API key stored in the event's API settings and **Enable External Transcription APIs** switched on.
 
-**Models available:** `saaras:v3-realtime`
+**Models available:** `saaras:v3`
 
 Unsupported explicit language codes are rejected when saving room/booth settings or starting Sarvam transcription.
 
@@ -100,7 +100,7 @@ Unsupported explicit language codes are rejected when saving room/booth settings
 | Deepgram | `nova-2` | Requires Deepgram API key, WebSocket streaming |
 | ElevenLabs | `scribe_v2` | Requires ElevenLabs API key |
 | NVIDIA Riva | `parakeet-rnnt`, `parakeet-ctc` | Requires NVIDIA API key and optional dependency |
-| Sarvam AI | `saaras:v3-realtime` | Requires Sarvam AI API key, WebSocket streaming (23 Indian languages + `auto`) |
+| Sarvam AI | `saaras:v3` | Requires Sarvam AI API key, WebSocket streaming (23 Indian languages + `auto`, final-per-utterance captions) |
 
 ## Storing API Keys per Event
 

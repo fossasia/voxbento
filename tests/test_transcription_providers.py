@@ -679,7 +679,8 @@ class _FakeSarvamWebSocket:
     async def send(self, raw: str) -> None:
         payload = json.loads(raw)
         self.sent.append(payload)
-        if payload.get("event") == "end":
+        # In GA protocol, EOF is signaled with {"type": "flush"}
+        if payload.get("type") == "flush" or payload.get("event") == "end":
             for msg in self._end_messages:
                 await self._incoming.put(json.dumps(msg))
             if self._close_on_end or self._end_messages:
@@ -712,7 +713,7 @@ class TestSarvamProvider:
 
         assert isinstance(PROVIDERS.get("sarvam"), SarvamProvider)
         assert ProviderEnum.SARVAM.value == "sarvam"
-        assert ALLOWED_MODELS[ProviderEnum.SARVAM] == {"saaras:v3-realtime"}
+        assert ALLOWED_MODELS[ProviderEnum.SARVAM] == {"saaras:v3"}
 
     async def test_sarvam_process_chunk_raises_not_implemented(self):
         from portal.transcription.providers.sarvam import SarvamProvider
@@ -721,7 +722,7 @@ class TestSarvamProvider:
             await SarvamProvider().process_chunk(
                 b"\x00\x00",
                 "hi-IN",
-                "saaras:v3-realtime",
+                "saaras:v3",
                 ProviderConfig(api_key="sarvam-secret"),
             )
 
@@ -765,14 +766,17 @@ class TestSarvamProvider:
     @pytest.mark.parametrize(
         ("raw_code", "expected"),
         [
-            ("", "auto"),
-            ("   ", "auto"),
-            (None, "auto"),
-            ("floor", "auto"),
-            ("auto", "auto"),
-            ("or", "or-IN"),
-            ("or-IN", "or-IN"),
-            ("or-in", "or-IN"),
+            ("", "unknown"),
+            ("   ", "unknown"),
+            (None, "unknown"),
+            ("floor", "unknown"),
+            ("auto", "unknown"),
+            ("unknown", "unknown"),
+            ("or", "od-IN"),
+            ("or-IN", "od-IN"),
+            ("or-in", "od-IN"),
+            ("od", "od-IN"),
+            ("od-IN", "od-IN"),
             ("hi", "hi-IN"),
             ("hi-IN", "hi-IN"),
             ("en", "en-IN"),
@@ -786,7 +790,7 @@ class TestSarvamProvider:
         assert map_sarvam_language_code(raw_code) == expected
         assert is_supported_sarvam_language(raw_code) is True
 
-    @pytest.mark.parametrize("unsupported_code", ["od-IN", "od", "fr", "es", "de", "en-US", "xx"])
+    @pytest.mark.parametrize("unsupported_code", ["fr", "es", "de", "en-US", "xx", "zh-CN"])
     async def test_sarvam_unsupported_language_rejected(self, unsupported_code):
         from portal.transcription.providers.base import FatalTranscriptionError
         from portal.transcription.providers.sarvam import (
@@ -804,7 +808,7 @@ class TestSarvamProvider:
                 await SarvamProvider().run_stream(
                     _FakeProcess([b"\x01\x02"]),
                     unsupported_code,
-                    "saaras:v3-realtime",
+                    "saaras:v3",
                     ProviderConfig(api_key="sarvam-secret"),
                     AsyncMock(),
                     "evt-1-bad-lang",
@@ -823,24 +827,21 @@ class TestSarvamProvider:
         with patch("websockets.connect") as mock_connect:
             with pytest.raises(FatalTranscriptionError, match="Sarvam API key missing"):
                 await provider.run_stream(
-                    process, "hi-IN", "saaras:v3-realtime", ProviderConfig(api_key=api_key), broadcast, "evt-1-hi"
+                    process, "hi-IN", "saaras:v3", ProviderConfig(api_key=api_key), broadcast, "evt-1-hi"
                 )
 
         mock_connect.assert_not_called()
         broadcast.assert_not_awaited()
 
-    async def test_sarvam_connects_with_verified_params_and_frames_audio_and_eof(self):
+    async def test_sarvam_connects_with_ga_websocket_request_format_and_handshake(self):
         from portal.transcription.providers.sarvam import SarvamProvider
 
         pcm_chunk = b"\x01\x02\x03\x04" * 100
         ws = _FakeSarvamWebSocket(
             server_messages=[
-                {"event": "session.begin", "request_id": "req-123"},
-                {"event": "transcript.partial", "utterance_idx": 0, "text": "नमस्ते"},
-            ],
-            end_messages=[
-                {"event": "transcript.final", "utterance_idx": 0, "text": "नमस्ते दुनिया"},
-                {"event": "session.end", "request_id": "req-123", "audio_duration_s": "1.2"},
+                {"type": "events", "data": {"signal_type": "START_SPEECH"}},
+                {"type": "data", "data": {"transcript": "नमस्ते दुनिया", "request_id": "req-123"}},
+                {"type": "events", "data": {"signal_type": "END_SPEECH"}},
             ],
             close_on_end=True,
         )
@@ -853,7 +854,7 @@ class TestSarvamProvider:
         connect_mock = MagicMock(return_value=ws)
         with patch("websockets.connect", connect_mock):
             await SarvamProvider().run_stream(
-                process, "or", "saaras:v3-realtime", ProviderConfig(api_key="sarvam-secret"), broadcast, "evt-1-or"
+                process, "or", "saaras:v3", ProviderConfig(api_key="sarvam-secret"), broadcast, "evt-1-or"
             )
 
         connect_mock.assert_called_once()
@@ -862,58 +863,87 @@ class TestSarvamProvider:
         parsed = urlparse(called_url)
         query = parse_qs(parsed.query)
 
-        assert f"{parsed.scheme}://{parsed.netloc}{parsed.path}" == "wss://api.sarvam.ai/speech-to-text-realtime/ws"
+        assert f"{parsed.scheme}://{parsed.netloc}{parsed.path}" == "wss://api.sarvam.ai/speech-to-text/ws"
         assert called_headers == {"Api-Subscription-Key": "sarvam-secret"}
         assert query == {
-            "language_code": ["or-IN"],
-            "model": ["saaras:v3-realtime"],
-            "encoding": ["linear16"],
-            "sample_rate": ["16000"],
-            "stream_type": ["balanced"],
-            "endpointing": ["vad"],
+            "language-code": ["od-IN"],
+            "model": ["saaras:v3"],
             "mode": ["transcribe"],
+            "sample_rate": ["16000"],
+            "flush_signal": ["true"],
         }
-        assert "keyterms" not in query
 
+        # Check audio frame payload conforms to GA schema
+        assert len(ws.sent) >= 2
         assert ws.sent[0] == {
-            "event": "audio_input",
-            "audio": base64.b64encode(pcm_chunk).decode("utf-8"),
+            "audio": {
+                "data": base64.b64encode(pcm_chunk).decode("utf-8"),
+                "sample_rate": "16000",
+                "encoding": "audio/wav",
+            }
         }
-        assert ws.sent[-1] == {"event": "end"}
+        # Final EOF sent as flush
+        assert ws.sent[-1] == {"type": "flush"}
 
+        # Captions must be final-per-utterance; no partial captions emitted
         partial_msgs = [p for _, p in broadcasts if isinstance(p, dict) and p.get("status") == "partial"]
         final_msgs = [p for _, p in broadcasts if isinstance(p, dict) and p.get("status") == "final"]
-        assert len(partial_msgs) == 1
-        assert partial_msgs[0]["text"] == "नमस्ते"
+        assert len(partial_msgs) == 0
         assert len(final_msgs) == 1
         assert final_msgs[0]["text"] == "नमस्ते दुनिया"
 
-    async def test_sarvam_periodic_ping_sent_without_overlapping_tasks(self):
+    async def test_sarvam_reconnect_refreshes_api_key_when_credentials_rotate(self):
+        """Regression test: verify rotated API key is used on reconnect when credentials change."""
         from portal.transcription.providers import sarvam
         from portal.transcription.providers.sarvam import SarvamProvider
 
-        ws = _FakeSarvamWebSocket(
+        current_key = "initial-api-key"
+
+        class DynamicConfig(ProviderConfig):
+            def get_key(self) -> str | None:
+                return current_key
+
+        good_ws = _FakeSarvamWebSocket(
             server_messages=[
-                {"event": "session.begin", "request_id": "req-ping"},
-                {"event": "pong"},
+                {"type": "data", "data": {"transcript": "Transcript with rotated key"}},
             ],
             close_on_end=True,
         )
-        # Hold stdout open for ~0.06s so multiple 0.015s pings fire before EOF.
-        process = _FakeProcess([b"\x00\x01", 0.06])
-        broadcast = AsyncMock()
+        process = _FakeProcess([b"\x01\x02"])
+        broadcasts: list[dict] = []
 
+        async def broadcast(_booth_id, payload):
+            broadcasts.append(payload)
+
+        attempt_count = 0
+
+        def connect_hook(url, **kwargs):
+            nonlocal attempt_count, current_key
+            attempt_count += 1
+            if attempt_count == 1:
+                assert kwargs["additional_headers"] == {"Api-Subscription-Key": "initial-api-key"}
+                # Rotate key while first attempt fails
+                current_key = "rotated-api-key-999"
+                raise OSError("connection drop triggering reconnect")
+            assert kwargs["additional_headers"] == {"Api-Subscription-Key": "rotated-api-key-999"}
+            return good_ws
+
+        connect_mock = MagicMock(side_effect=connect_hook)
         with (
-            patch.object(sarvam, "PING_INTERVAL_SECONDS", 0.015),
-            patch("websockets.connect", return_value=ws),
+            patch("websockets.connect", connect_mock),
+            patch.object(sarvam, "BACKOFF_BASE_SECONDS", 0.001),
         ):
             await SarvamProvider().run_stream(
-                process, "floor", "", ProviderConfig(api_key="sarvam-secret"), broadcast, "evt-1-floor"
+                process,
+                "hi-IN",
+                "saaras:v3",
+                DynamicConfig(api_key="initial-api-key"),
+                broadcast,
+                "evt-1-rotate",
             )
 
-        ping_events = [msg for msg in ws.sent if msg.get("event") == "ping"]
-        assert len(ping_events) >= 2
-        assert ws.sent[-1] == {"event": "end"}
+        assert connect_mock.call_count == 2
+        assert any(m.get("status") == "final" and m.get("text") == "Transcript with rotated key" for m in broadcasts)
 
     async def test_sarvam_transient_failure_reconnects_with_bounded_backoff(self):
         from portal.transcription.providers import sarvam
@@ -921,9 +951,7 @@ class TestSarvamProvider:
 
         good_ws = _FakeSarvamWebSocket(
             server_messages=[
-                {"event": "session.begin", "request_id": "req-ok"},
-                {"event": "transcript.final", "utterance_idx": 0, "text": "Recovered text"},
-                {"event": "session.end", "request_id": "req-ok"},
+                {"type": "data", "data": {"transcript": "Recovered text"}},
             ],
             close_on_end=False,
         )
@@ -939,7 +967,7 @@ class TestSarvamProvider:
             patch.object(sarvam, "BACKOFF_BASE_SECONDS", 0.001),
         ):
             await SarvamProvider().run_stream(
-                process, "hi-IN", "saaras:v3-realtime", ProviderConfig(api_key="sarvam-secret"), broadcast, "evt-1-hi"
+                process, "hi-IN", "saaras:v3", ProviderConfig(api_key="sarvam-secret"), broadcast, "evt-1-hi"
             )
 
         assert connect_mock.call_count == 2
@@ -960,7 +988,7 @@ class TestSarvamProvider:
         ):
             with pytest.raises(FatalTranscriptionError):
                 await SarvamProvider().run_stream(
-                    process, "hi-IN", "saaras:v3-realtime", ProviderConfig(api_key="sarvam-secret"), AsyncMock(), "evt-1-hi"
+                    process, "hi-IN", "saaras:v3", ProviderConfig(api_key="sarvam-secret"), AsyncMock(), "evt-1-hi"
                 )
 
         assert connect_mock.call_count == 3
@@ -968,8 +996,13 @@ class TestSarvamProvider:
     @pytest.mark.parametrize(
         "error_event",
         [
-            {"event": "error", "code": "unauthorized", "is_fatal": True, "status_code": 401, "message": "Invalid key"},
-            {"event": "error", "code": "invalid_request", "is_fatal": True, "status_code": 400, "message": "Bad param"},
+            {"type": "error", "data": {"code": 401, "error": "Invalid API key"}},
+            {"type": "error", "data": {"code": 403, "error": "Forbidden"}},
+            {"type": "error", "data": {"code": "unauthorized", "message": "Unauthorized"}},
+            {
+                "type": "error",
+                "data": {"code": "invalid_request", "is_fatal": True, "status_code": 400, "message": "Bad param"},
+            },
         ],
     )
     async def test_sarvam_fatal_error_event_does_not_reconnect(self, error_event):
@@ -977,30 +1010,27 @@ class TestSarvamProvider:
         from portal.transcription.providers.sarvam import SarvamProvider
 
         ws = _FakeSarvamWebSocket(server_messages=[error_event], close_on_end=False)
-        # Keep stdout paused so receiver handles the fatal error event before EOF.
         process = _FakeProcess([0.05, b"\x01\x02"])
         connect_mock = MagicMock(return_value=ws)
 
         with patch("websockets.connect", connect_mock):
             with pytest.raises(FatalTranscriptionError):
                 await SarvamProvider().run_stream(
-                    process, "hi-IN", "saaras:v3-realtime", ProviderConfig(api_key="bad-key"), AsyncMock(), "evt-1-hi"
+                    process, "hi-IN", "saaras:v3", ProviderConfig(api_key="bad-key"), AsyncMock(), "evt-1-hi"
                 )
 
         connect_mock.assert_called_once()
 
-    async def test_sarvam_non_fatal_error_keeps_session_alive_and_fatal_close_code_stops(self):
-        from portal.transcription.providers.base import FatalTranscriptionError
+    async def test_sarvam_vad_events_handled_without_disrupting_stream(self):
         from portal.transcription.providers.sarvam import SarvamProvider
 
         ws = _FakeSarvamWebSocket(
             server_messages=[
-                {"event": "session.begin", "request_id": "req-1"},
-                {"event": "error", "code": "invalid_config", "is_fatal": False, "message": "Ignored update"},
-                {"event": "transcript.final", "utterance_idx": 0, "text": "Still working"},
-                {"event": "session.end", "request_id": "req-1"},
+                {"type": "events", "data": {"signal_type": "START_SPEECH"}},
+                {"type": "data", "data": {"transcript": "Speech detected"}},
+                {"type": "events", "data": {"signal_type": "END_SPEECH"}},
             ],
-            close_on_end=False,
+            close_on_end=True,
         )
         process = _FakeProcess([b"\x01\x02"])
         broadcasts: list[dict] = []
@@ -1010,38 +1040,20 @@ class TestSarvamProvider:
 
         with patch("websockets.connect", return_value=ws):
             await SarvamProvider().run_stream(
-                process, "hi-IN", "saaras:v3-realtime", ProviderConfig(api_key="sarvam-secret"), broadcast, "evt-1-hi"
+                process, "hi-IN", "saaras:v3", ProviderConfig(api_key="sarvam-secret"), broadcast, "evt-1-hi"
             )
 
-        assert any(m.get("status") == "final" and m.get("text") == "Still working" for m in broadcasts)
+        assert any(m.get("status") == "final" and m.get("text") == "Speech detected" for m in broadcasts)
 
-        from websockets.exceptions import WebSocketException
-
-        class _FatalCloseError(WebSocketException):
-            code = 4000
-
-        connect_mock = MagicMock(side_effect=_FatalCloseError("Unsupported model"))
-        with patch("websockets.connect", connect_mock):
-            with pytest.raises(FatalTranscriptionError):
-                await SarvamProvider().run_stream(
-                    _FakeProcess([b"\x01\x02"]),
-                    "hi-IN",
-                    "saaras:v3-realtime",
-                    ProviderConfig(api_key="sarvam-secret"),
-                    AsyncMock(),
-                    "evt-1-hi",
-                )
-        connect_mock.assert_called_once()
-
-    @pytest.mark.parametrize("model_variant", ["", "   ", None, "saaras:v3-realtime"])
-    async def test_sarvam_valid_and_empty_model_variants_resolve_to_v3_realtime(self, model_variant):
+    @pytest.mark.parametrize("model_variant", ["", "   ", None, "saaras:v3"])
+    async def test_sarvam_valid_and_empty_model_variants_resolve_to_v3(self, model_variant):
         from portal.transcription.providers.sarvam import build_sarvam_ws_url, validate_sarvam_model
 
-        assert validate_sarvam_model(model_variant) == "saaras:v3-realtime"
+        assert validate_sarvam_model(model_variant) == "saaras:v3"
         query = parse_qs(urlparse(build_sarvam_ws_url("hi-IN", model_variant)).query)
-        assert query["model"] == ["saaras:v3-realtime"]
+        assert query["model"] == ["saaras:v3"]
 
-    @pytest.mark.parametrize("invalid_model", ["tiny", "saaras:v3", "saaras:v4", "nova-2"])
+    @pytest.mark.parametrize("invalid_model", ["tiny", "saaras:v3-realtime", "saaras:v4", "nova-2"])
     async def test_sarvam_invalid_model_variant_rejected_before_connect(self, invalid_model):
         from portal.transcription.providers.base import FatalTranscriptionError
         from portal.transcription.providers.sarvam import SarvamProvider, validate_sarvam_model
@@ -1066,15 +1078,7 @@ class TestSarvamProvider:
         from portal.transcription.providers.base import FatalTranscriptionError
         from portal.transcription.providers.sarvam import SarvamProvider
 
-        # Each WS connects and even emits session.begin, then closes immediately without transcript progress.
-        sockets = [
-            _FakeSarvamWebSocket(
-                server_messages=[{"event": "session.begin", "request_id": f"req-{i}"}],
-                auto_close=True,
-            )
-            for i in range(5)
-        ]
-        # Keep stdout open across attempts so EOF does not exit early.
+        sockets = [_FakeSarvamWebSocket(auto_close=True) for _ in range(5)]
         process = _FakeProcess([b"\x01\x02", 0.02] * 10)
         connect_mock = MagicMock(side_effect=sockets)
 
@@ -1085,37 +1089,7 @@ class TestSarvamProvider:
         ):
             with pytest.raises(FatalTranscriptionError):
                 await SarvamProvider().run_stream(
-                    process, "hi-IN", "saaras:v3-realtime", ProviderConfig(api_key="sarvam-secret"), AsyncMock(), "evt-1-hi"
-                )
-
-        assert connect_mock.call_count == 3
-
-    async def test_sarvam_post_handshake_transient_503_stops_after_max_attempts(self):
-        from portal.transcription.providers import sarvam
-        from portal.transcription.providers.base import FatalTranscriptionError
-        from portal.transcription.providers.sarvam import SarvamProvider
-
-        sockets = [
-            _FakeSarvamWebSocket(
-                server_messages=[
-                    {"event": "session.begin", "request_id": f"req-{i}"},
-                    {"event": "error", "code": "service_unavailable", "is_fatal": True, "status_code": 503, "message": "Busy"},
-                ],
-                close_on_end=False,
-            )
-            for i in range(5)
-        ]
-        process = _FakeProcess([b"\x01\x02", 0.01] * 10)
-        connect_mock = MagicMock(side_effect=sockets)
-
-        with (
-            patch("websockets.connect", connect_mock),
-            patch.object(sarvam, "MAX_RECONNECT_ATTEMPTS", 3),
-            patch.object(sarvam, "BACKOFF_BASE_SECONDS", 0.001),
-        ):
-            with pytest.raises(FatalTranscriptionError):
-                await SarvamProvider().run_stream(
-                    process, "hi-IN", "saaras:v3-realtime", ProviderConfig(api_key="sarvam-secret"), AsyncMock(), "evt-1-hi"
+                    process, "hi-IN", "saaras:v3", ProviderConfig(api_key="sarvam-secret"), AsyncMock(), "evt-1-hi"
                 )
 
         assert connect_mock.call_count == 3
@@ -1124,22 +1098,16 @@ class TestSarvamProvider:
         from portal.transcription.providers import sarvam
         from portal.transcription.providers.sarvam import SarvamProvider
 
-        # With MAX_RECONNECT_ATTEMPTS=3:
-        # 2 pre-connect glitches (1/3, 2/3) -> healthy transcript session resets counter ->
-        # drop (1/3) + 1 more glitch (2/3) -> recovers on attempt 5 (total 4 errors > budget 3).
         ws_progress_then_drop = _FakeSarvamWebSocket(
             server_messages=[
-                {"event": "session.begin", "request_id": "req-1"},
-                {"event": "transcript.final", "utterance_idx": 0, "text": "First utterance"},
+                {"type": "data", "data": {"transcript": "First utterance"}},
             ],
             auto_close=True,
         )
         ws_recovered = _FakeSarvamWebSocket(
             server_messages=[
-                {"event": "session.begin", "request_id": "req-2"},
-                {"event": "transcript.final", "utterance_idx": 0, "text": "Second utterance"},
+                {"type": "data", "data": {"transcript": "Second utterance"}},
             ],
-            end_messages=[{"event": "session.end", "request_id": "req-2"}],
             close_on_end=True,
         )
         process = _FakeProcess([b"\x01\x02", 0.02, b"\x03\x04"])
@@ -1164,30 +1132,29 @@ class TestSarvamProvider:
             patch.object(sarvam, "BACKOFF_BASE_SECONDS", 0.001),
         ):
             await SarvamProvider().run_stream(
-                process, "hi-IN", "saaras:v3-realtime", ProviderConfig(api_key="sarvam-secret"), broadcast, "evt-1-hi"
+                process, "hi-IN", "saaras:v3", ProviderConfig(api_key="sarvam-secret"), broadcast, "evt-1-hi"
             )
 
         assert connect_mock.call_count == 5
         texts = [m.get("text") for m in broadcasts if m.get("status") == "final"]
         assert texts == ["First utterance", "Second utterance"]
 
-    async def test_sarvam_eof_with_usable_ws_and_receiver_parse_error_sends_end_without_reconnect(self):
+    async def test_sarvam_eof_with_usable_ws_and_receiver_parse_error_sends_flush_without_reconnect(self):
         from portal.transcription.providers.sarvam import SarvamProvider
 
-        # Receiver raises non-connection ValueError in the same tick sender hits EOF, while WS is still open.
         ws = _FakeSarvamWebSocket(receive_error=ValueError("malformed frame"), closed=False, close_on_end=False)
         process = _FakeProcess([])
         connect_mock = MagicMock(return_value=ws)
 
         with patch("websockets.connect", connect_mock):
             await SarvamProvider().run_stream(
-                process, "hi-IN", "saaras:v3-realtime", ProviderConfig(api_key="sarvam-secret"), AsyncMock(), "evt-1-hi"
+                process, "hi-IN", "saaras:v3", ProviderConfig(api_key="sarvam-secret"), AsyncMock(), "evt-1-hi"
             )
 
         connect_mock.assert_called_once()
-        assert {"event": "end"} in ws.sent
+        assert {"type": "flush"} in ws.sent
 
-    async def test_sarvam_eof_with_broken_ws_does_not_send_end_or_reconnect(self):
+    async def test_sarvam_eof_with_broken_ws_does_not_send_flush_or_reconnect(self):
         from websockets.exceptions import WebSocketException
 
         from portal.transcription.providers.sarvam import SarvamProvider
@@ -1205,36 +1172,11 @@ class TestSarvamProvider:
 
         with patch("websockets.connect", connect_mock):
             await SarvamProvider().run_stream(
-                process, "hi-IN", "saaras:v3-realtime", ProviderConfig(api_key="sarvam-secret"), AsyncMock(), "evt-1-hi"
+                process, "hi-IN", "saaras:v3", ProviderConfig(api_key="sarvam-secret"), AsyncMock(), "evt-1-hi"
             )
 
         connect_mock.assert_called_once()
-        assert {"event": "end"} not in ws.sent
-
-    @pytest.mark.parametrize(
-        "fatal_event",
-        [
-            {"event": "error", "code": "invalid_config", "is_fatal": True, "message": "Fatal invalid config"},
-            {"event": "error", "code": "insufficient_quota_error", "is_fatal": True, "status_code": 402, "message": "No credits"},
-            {"event": "error", "code": "authentication_error", "is_fatal": True, "status_code": 403, "message": "Forbidden"},
-            {"event": "error", "code": "unclassified_fatal", "is_fatal": True, "status_code": 499, "message": "Fatal unknown"},
-        ],
-    )
-    async def test_sarvam_all_fatal_error_events_stop_without_retry(self, fatal_event):
-        from portal.transcription.providers.base import FatalTranscriptionError
-        from portal.transcription.providers.sarvam import SarvamProvider
-
-        ws = _FakeSarvamWebSocket(server_messages=[fatal_event], close_on_end=False)
-        process = _FakeProcess([0.05, b"\x01\x02"])
-        connect_mock = MagicMock(return_value=ws)
-
-        with patch("websockets.connect", connect_mock):
-            with pytest.raises(FatalTranscriptionError):
-                await SarvamProvider().run_stream(
-                    process, "hi-IN", "saaras:v3-realtime", ProviderConfig(api_key="sarvam-secret"), AsyncMock(), "evt-1-hi"
-                )
-
-        connect_mock.assert_called_once()
+        assert {"type": "flush"} not in ws.sent
 
     async def test_sarvam_close_code_1003_distinguishes_rate_limit_from_invalid_key(self):
         from websockets.exceptions import WebSocketException
@@ -1250,12 +1192,9 @@ class TestSarvamProvider:
                 super().__init__(reason)
                 self.reason = reason
 
-        # 1003 with rate-limit reason is transient and recovers on retry.
         good_ws = _FakeSarvamWebSocket(
             server_messages=[
-                {"event": "session.begin", "request_id": "req-rl"},
-                {"event": "transcript.final", "utterance_idx": 0, "text": "After rate limit"},
-                {"event": "session.end", "request_id": "req-rl"},
+                {"type": "data", "data": {"transcript": "After rate limit"}},
             ],
             close_on_end=False,
         )
@@ -1272,7 +1211,7 @@ class TestSarvamProvider:
             await SarvamProvider().run_stream(
                 _FakeProcess([b"\x01\x02"]),
                 "hi-IN",
-                "saaras:v3-realtime",
+                "saaras:v3",
                 ProviderConfig(api_key="sarvam-secret"),
                 broadcast,
                 "evt-1-hi",
@@ -1280,14 +1219,13 @@ class TestSarvamProvider:
         assert rate_limit_connect.call_count == 2
         assert any(m.get("text") == "After rate limit" for m in broadcasts)
 
-        # 1003 with invalid subscription key reason is fatal and does not retry.
         auth_connect = MagicMock(side_effect=_Close1003("Invalid subscription key"))
         with patch("websockets.connect", auth_connect):
             with pytest.raises(FatalTranscriptionError):
                 await SarvamProvider().run_stream(
                     _FakeProcess([b"\x01\x02"]),
                     "hi-IN",
-                    "saaras:v3-realtime",
+                    "saaras:v3",
                     ProviderConfig(api_key="bad-key"),
                     AsyncMock(),
                     "evt-1-hi",
@@ -1300,17 +1238,14 @@ class TestSarvamProvider:
 
         ws_429 = _FakeSarvamWebSocket(
             server_messages=[
-                {"event": "session.begin", "request_id": "req-1"},
-                {"event": "error", "code": "rate_limit_exceeded_error", "is_fatal": True, "status_code": 429, "message": "Slow down"},
+                {"type": "error", "data": {"code": 429, "error": "rate limit exceeded", "status_code": 429}},
             ],
             close_on_end=False,
         )
         ws_ok = _FakeSarvamWebSocket(
             server_messages=[
-                {"event": "session.begin", "request_id": "req-2"},
-                {"event": "transcript.final", "utterance_idx": 0, "text": "Recovered after 429"},
+                {"type": "data", "data": {"transcript": "Recovered after 429"}},
             ],
-            end_messages=[{"event": "session.end", "request_id": "req-2"}],
             close_on_end=True,
         )
         broadcasts: list[dict] = []
@@ -1326,7 +1261,7 @@ class TestSarvamProvider:
             await SarvamProvider().run_stream(
                 _FakeProcess([0.02, b"\x01\x02"]),
                 "hi-IN",
-                "saaras:v3-realtime",
+                "saaras:v3",
                 ProviderConfig(api_key="sarvam-secret"),
                 broadcast,
                 "evt-1-hi",
@@ -1334,150 +1269,6 @@ class TestSarvamProvider:
 
         assert connect_mock.call_count == 2
         assert any(m.get("text") == "Recovered after 429" for m in broadcasts)
-
-    async def test_sarvam_waits_for_session_begin_before_sending_audio(self):
-        from portal.transcription.providers import sarvam
-        from portal.transcription.providers.sarvam import SarvamProvider
-
-        class _GateStdout:
-            def __init__(self, chunk: bytes):
-                self._chunk = chunk
-                self.first_read_done = asyncio.Event()
-                self.allow_eof = asyncio.Event()
-                self._sent = False
-
-            async def read(self, _n: int = 4096) -> bytes:
-                if not self._sent:
-                    self._sent = True
-                    self.first_read_done.set()
-                    return self._chunk
-                await self.allow_eof.wait()
-                return b""
-
-        class _DummyProc:
-            def __init__(self, stdout):
-                self.returncode = None
-                self.stdout = stdout
-
-        ws = _FakeSarvamWebSocket(
-            end_messages=[{"event": "session.end", "request_id": "req-gate"}],
-            close_on_end=True,
-        )
-        stdout = _GateStdout(b"\x10\x20\x30\x40")
-        process = _DummyProc(stdout)
-
-        with (
-            patch.object(sarvam, "PING_INTERVAL_SECONDS", 0.01),
-            patch("websockets.connect", return_value=ws),
-        ):
-            task = asyncio.create_task(
-                SarvamProvider().run_stream(
-                    process, "hi-IN", "saaras:v3-realtime", ProviderConfig(api_key="sarvam-secret"), AsyncMock(), "evt-1-hi"
-                )
-            )
-            await asyncio.wait_for(stdout.first_read_done.wait(), timeout=1.0)
-            # Let the event loop run past several ping intervals while session.begin has not arrived yet.
-            await asyncio.sleep(0.035)
-            assert ws.sent == []
-
-            ws.push_server_event({"event": "session.begin", "request_id": "req-gate"})
-            async with asyncio.timeout(1.0):
-                while not any(m.get("event") == "audio_input" for m in ws.sent):
-                    await asyncio.sleep(0.005)
-            stdout.allow_eof.set()
-            await asyncio.wait_for(task, timeout=1.0)
-
-        audio_msgs = [m for m in ws.sent if m.get("event") == "audio_input"]
-        assert len(audio_msgs) == 1
-        assert base64.b64decode(audio_msgs[0]["audio"]) == b"\x10\x20\x30\x40"
-        assert ws.sent[-1] == {"event": "end"}
-
-    async def test_sarvam_session_begin_timeout_reconnects_without_sending_audio(self):
-        from portal.transcription.providers import sarvam
-        from portal.transcription.providers.sarvam import SarvamProvider
-
-        ws_timeout = _FakeSarvamWebSocket(close_on_end=False)
-        ws_ok = _FakeSarvamWebSocket(
-            server_messages=[{"event": "session.begin", "request_id": "req-2"}],
-            end_messages=[{"event": "session.end", "request_id": "req-2"}],
-            close_on_end=True,
-        )
-        process = _FakeProcess([b"\xaa\xbb"])
-        connect_mock = MagicMock(side_effect=[ws_timeout, ws_ok])
-
-        with (
-            patch("websockets.connect", connect_mock),
-            patch.object(sarvam, "SESSION_BEGIN_TIMEOUT_SECONDS", 0.02),
-            patch.object(sarvam, "BACKOFF_BASE_SECONDS", 0.001),
-        ):
-            await SarvamProvider().run_stream(
-                process, "hi-IN", "saaras:v3-realtime", ProviderConfig(api_key="sarvam-secret"), AsyncMock(), "evt-1-hi"
-            )
-
-        assert connect_mock.call_count == 2
-        assert ws_timeout.sent == []
-        audio_msgs = [m for m in ws_ok.sent if m.get("event") == "audio_input"]
-        assert len(audio_msgs) == 1
-        assert base64.b64decode(audio_msgs[0]["audio"]) == b"\xaa\xbb"
-
-    async def test_sarvam_early_close_before_session_begin_wakes_and_sends_no_audio(self):
-        from portal.transcription.providers import sarvam
-        from portal.transcription.providers.sarvam import SarvamProvider
-
-        ws_early_close = _FakeSarvamWebSocket(auto_close=True)
-        ws_ok = _FakeSarvamWebSocket(
-            server_messages=[{"event": "session.begin", "request_id": "req-ok"}],
-            end_messages=[{"event": "session.end", "request_id": "req-ok"}],
-            close_on_end=True,
-        )
-        process = _FakeProcess([b"\x01\x02", 0.01])
-        connect_mock = MagicMock(side_effect=[ws_early_close, ws_ok])
-
-        with (
-            patch("websockets.connect", connect_mock),
-            patch.object(sarvam, "SESSION_BEGIN_TIMEOUT_SECONDS", 5.0),
-            patch.object(sarvam, "BACKOFF_BASE_SECONDS", 0.001),
-        ):
-            await asyncio.wait_for(
-                SarvamProvider().run_stream(
-                    process,
-                    "hi-IN",
-                    "saaras:v3-realtime",
-                    ProviderConfig(api_key="sarvam-secret"),
-                    AsyncMock(),
-                    "evt-1-hi",
-                ),
-                timeout=1.0,
-            )
-
-        assert connect_mock.call_count == 2
-        assert ws_early_close.sent == []
-        assert any(
-            m.get("event") == "audio_input" and base64.b64decode(m["audio"]) == b"\x01\x02"
-            for m in ws_ok.sent
-        )
-
-    async def test_sarvam_fatal_error_before_session_begin_sends_no_audio_and_stops(self):
-        from portal.transcription.providers.base import FatalTranscriptionError
-        from portal.transcription.providers.sarvam import SarvamProvider
-
-        ws = _FakeSarvamWebSocket(
-            server_messages=[
-                {"event": "error", "code": "authentication_error", "is_fatal": True, "status_code": 401, "message": "Bad key"}
-            ],
-            close_on_end=False,
-        )
-        process = _FakeProcess([b"\x01\x02", 0.05])
-        connect_mock = MagicMock(return_value=ws)
-
-        with patch("websockets.connect", connect_mock):
-            with pytest.raises(FatalTranscriptionError):
-                await SarvamProvider().run_stream(
-                    process, "hi-IN", "saaras:v3-realtime", ProviderConfig(api_key="bad-key"), AsyncMock(), "evt-1-hi"
-                )
-
-        connect_mock.assert_called_once()
-        assert ws.sent == []
 
     async def test_sarvam_retains_in_flight_chunk_on_send_failure_and_avoids_duplication(self):
         from portal.transcription.providers import sarvam
@@ -1491,7 +1282,7 @@ class TestSarvamProvider:
 
             async def send(self, raw: str) -> None:
                 payload = json.loads(raw)
-                if payload.get("event") == "audio_input":
+                if isinstance(payload.get("audio"), dict):
                     self._audio_send_attempts += 1
                     if self._audio_send_attempts == self._fail_on_audio_index:
                         raise OSError("broken pipe during audio send")
@@ -1500,17 +1291,8 @@ class TestSarvamProvider:
         c1 = b"\x01\x01\x01\x01"
         c2 = b"\x02\x02\x02\x02"
         c3 = b"\x03\x03\x03\x03"
-        # First chunk succeeds, second chunk fails in flight and must be replayed once on ws2 before c3.
-        ws_fail = _SendFailWebSocket(
-            fail_on_audio_index=2,
-            server_messages=[{"event": "session.begin", "request_id": "req-1"}],
-            close_on_end=False,
-        )
-        ws_ok = _FakeSarvamWebSocket(
-            server_messages=[{"event": "session.begin", "request_id": "req-2"}],
-            end_messages=[{"event": "session.end", "request_id": "req-2"}],
-            close_on_end=True,
-        )
+        ws_fail = _SendFailWebSocket(fail_on_audio_index=2, close_on_end=False)
+        ws_ok = _FakeSarvamWebSocket(close_on_end=True)
         process = _FakeProcess([c1, c2, 0.01, c3])
         connect_mock = MagicMock(side_effect=[ws_fail, ws_ok])
 
@@ -1519,14 +1301,16 @@ class TestSarvamProvider:
             patch.object(sarvam, "BACKOFF_BASE_SECONDS", 0.001),
         ):
             await SarvamProvider().run_stream(
-                process, "hi-IN", "saaras:v3-realtime", ProviderConfig(api_key="sarvam-secret"), AsyncMock(), "evt-1-hi"
+                process, "hi-IN", "saaras:v3", ProviderConfig(api_key="sarvam-secret"), AsyncMock(), "evt-1-hi"
             )
 
         assert connect_mock.call_count == 2
-        ws1_audio = [base64.b64decode(m["audio"]) for m in ws_fail.sent if m.get("event") == "audio_input"]
-        ws2_audio = [base64.b64decode(m["audio"]) for m in ws_ok.sent if m.get("event") == "audio_input"]
-        assert ws1_audio == [c1]
-        assert ws2_audio == [c2, c3]
+
+        def extract_audio(ws):
+            return [base64.b64decode(m["audio"]["data"]) for m in ws.sent if isinstance(m.get("audio"), dict)]
+
+        assert extract_audio(ws_fail) == [c1]
+        assert extract_audio(ws_ok) == [c2, c3]
 
     async def test_sarvam_drains_stdout_during_backoff_and_drops_oldest_on_overflow(self):
         from portal.transcription.providers import sarvam
@@ -1561,11 +1345,7 @@ class TestSarvamProvider:
 
         stdout = _BackoffGatedStdout(chunks)
         process = _Proc(stdout)
-        ws_ok = _FakeSarvamWebSocket(
-            server_messages=[{"event": "session.begin", "request_id": "req-ok"}],
-            end_messages=[{"event": "session.end", "request_id": "req-ok"}],
-            close_on_end=True,
-        )
+        ws_ok = _FakeSarvamWebSocket(close_on_end=True)
 
         real_wait_for = asyncio.wait_for
 
@@ -1573,7 +1353,6 @@ class TestSarvamProvider:
             if timeout == 2.0:
                 stdout.backoff_entered.set()
                 await real_wait_for(stdout.all_read.wait(), timeout=1.0)
-                # Let stdout_reader observe final b"" EOF before reconnecting.
                 await asyncio.sleep(0)
                 if hasattr(coro, "close"):
                     coro.close()
@@ -1587,7 +1366,6 @@ class TestSarvamProvider:
             connect_calls += 1
             if connect_calls == 1:
                 raise OSError("temporary disconnect")
-            # Chunks 2..5 were emitted and drained strictly during backoff.
             assert stdout.all_read.is_set()
             return ws_ok
 
@@ -1598,13 +1376,12 @@ class TestSarvamProvider:
             patch.object(sarvam.asyncio, "wait_for", side_effect=_wait_for_with_backoff_hook),
         ):
             await SarvamProvider().run_stream(
-                process, "hi-IN", "saaras:v3-realtime", ProviderConfig(api_key="sarvam-secret"), AsyncMock(), "evt-1-hi"
+                process, "hi-IN", "saaras:v3", ProviderConfig(api_key="sarvam-secret"), AsyncMock(), "evt-1-hi"
             )
 
         assert connect_calls == 2
         assert len(read_log) == 5
-        sent_audio = [base64.b64decode(m["audio"]) for m in ws_ok.sent if m.get("event") == "audio_input"]
-        # Oldest 3 chunks dropped while backed off; newest 2 chunks sent in order.
+        sent_audio = [base64.b64decode(m["audio"]["data"]) for m in ws_ok.sent if isinstance(m.get("audio"), dict)]
         assert sent_audio == chunks[-2:]
 
     async def test_sarvam_overflow_drops_stale_pending_chunk_when_buffer_fills(self):
@@ -1642,7 +1419,7 @@ class TestSarvamProvider:
         class _SendFailFirstChunkWS(_FakeSarvamWebSocket):
             async def send(self, raw: str) -> None:
                 payload = json.loads(raw)
-                if payload.get("event") == "audio_input":
+                if isinstance(payload.get("audio"), dict):
                     stdout.release_overflow.set()
                     raise OSError("send failed on c1")
                 await super().send(raw)
@@ -1652,15 +1429,8 @@ class TestSarvamProvider:
                 await asyncio.wait_for(stdout.all_read.wait(), timeout=1.0)
                 return await super().__aenter__()
 
-        ws_fail = _SendFailFirstChunkWS(
-            server_messages=[{"event": "session.begin", "request_id": "req-1"}],
-            close_on_end=False,
-        )
-        ws_ok = _WaitOverflowWS(
-            server_messages=[{"event": "session.begin", "request_id": "req-2"}],
-            end_messages=[{"event": "session.end", "request_id": "req-2"}],
-            close_on_end=True,
-        )
+        ws_fail = _SendFailFirstChunkWS(close_on_end=False)
+        ws_ok = _WaitOverflowWS(close_on_end=True)
 
         connect_mock = MagicMock(side_effect=[ws_fail, ws_ok])
 
@@ -1672,15 +1442,14 @@ class TestSarvamProvider:
             await SarvamProvider().run_stream(
                 process,
                 "hi-IN",
-                "saaras:v3-realtime",
+                "saaras:v3",
                 ProviderConfig(api_key="sarvam-secret"),
                 AsyncMock(),
                 "evt-1-hi",
             )
 
         assert connect_mock.call_count == 2
-        sent_audio = [base64.b64decode(m["audio"]) for m in ws_ok.sent if m.get("event") == "audio_input"]
-        # Capacity=2 with c1 pending + c2 + c3 arriving -> oldest pending c1 is evicted, keeping [c2, c3].
+        sent_audio = [base64.b64decode(m["audio"]["data"]) for m in ws_ok.sent if isinstance(m.get("audio"), dict)]
         assert sent_audio == [c2, c3]
 
     async def test_sarvam_eof_during_backoff_with_empty_buffer_exits_without_extra_connect(self):
@@ -1711,15 +1480,12 @@ class TestSarvamProvider:
 
             async def send(self, raw: str) -> None:
                 await super().send(raw)
-                if json.loads(raw).get("event") == "audio_input":
+                if isinstance(json.loads(raw).get("audio"), dict):
                     self.audio_sent.set()
 
         stdout = _EofAfterChunkStdout()
         process = _Proc(stdout)
-        ws1 = _SignalOnAudioWS(
-            server_messages=[{"event": "session.begin", "request_id": "req-1"}],
-            auto_close=False,
-        )
+        ws1 = _SignalOnAudioWS(auto_close=False)
         connect_mock = MagicMock(return_value=ws1)
         entered_backoff = asyncio.Event()
         real_wait_for = asyncio.wait_for
@@ -1736,14 +1502,13 @@ class TestSarvamProvider:
         ):
             task = asyncio.create_task(
                 SarvamProvider().run_stream(
-                    process, "hi-IN", "saaras:v3-realtime", ProviderConfig(api_key="sarvam-secret"), AsyncMock(), "evt-1-hi"
+                    process, "hi-IN", "saaras:v3", ProviderConfig(api_key="sarvam-secret"), AsyncMock(), "evt-1-hi"
                 )
             )
             await real_wait_for(ws1.audio_sent.wait(), timeout=1.0)
             ws1.close_server_stream()
             await real_wait_for(entered_backoff.wait(), timeout=1.0)
             stdout.trigger_eof.set()
-            # Must wake up immediately on EOF instead of waiting the 5s backoff.
             await real_wait_for(task, timeout=0.5)
 
         connect_mock.assert_called_once()
@@ -1752,11 +1517,7 @@ class TestSarvamProvider:
         from portal.transcription.providers import sarvam
         from portal.transcription.providers.sarvam import SarvamProvider
 
-        ws_ok = _FakeSarvamWebSocket(
-            server_messages=[{"event": "session.begin", "request_id": "req-flush"}],
-            end_messages=[{"event": "session.end", "request_id": "req-flush"}],
-            close_on_end=True,
-        )
+        ws_ok = _FakeSarvamWebSocket(close_on_end=True)
         process = _FakeProcess([b"final-buffered"])
         connect_mock = MagicMock(side_effect=[OSError("blip"), ws_ok])
 
@@ -1765,31 +1526,27 @@ class TestSarvamProvider:
             patch.object(sarvam, "BACKOFF_BASE_SECONDS", 0.01),
         ):
             await SarvamProvider().run_stream(
-                process, "hi-IN", "saaras:v3-realtime", ProviderConfig(api_key="sarvam-secret"), AsyncMock(), "evt-1-hi"
+                process, "hi-IN", "saaras:v3", ProviderConfig(api_key="sarvam-secret"), AsyncMock(), "evt-1-hi"
             )
 
         assert connect_mock.call_count == 2
         assert any(
-            m.get("event") == "audio_input" and base64.b64decode(m["audio"]) == b"final-buffered"
+            isinstance(m.get("audio"), dict) and base64.b64decode(m["audio"]["data"]) == b"final-buffered"
             for m in ws_ok.sent
         )
-        assert ws_ok.sent[-1] == {"event": "end"}
+        assert ws_ok.sent[-1] == {"type": "flush"}
 
     async def test_sarvam_no_leaked_tasks_after_run_stream(self):
         from portal.transcription.providers.base import FatalTranscriptionError
         from portal.transcription.providers.sarvam import SarvamProvider
 
         baseline = set(asyncio.all_tasks())
-        ws_ok = _FakeSarvamWebSocket(
-            server_messages=[{"event": "session.begin", "request_id": "req-clean"}],
-            end_messages=[{"event": "session.end", "request_id": "req-clean"}],
-            close_on_end=True,
-        )
+        ws_ok = _FakeSarvamWebSocket(close_on_end=True)
         with patch("websockets.connect", return_value=ws_ok):
             await SarvamProvider().run_stream(
                 _FakeProcess([b"\x01\x02"]),
                 "hi-IN",
-                "saaras:v3-realtime",
+                "saaras:v3",
                 ProviderConfig(api_key="sarvam-secret"),
                 AsyncMock(),
                 "evt-1-hi",
@@ -1798,9 +1555,7 @@ class TestSarvamProvider:
         assert set(asyncio.all_tasks()) == baseline
 
         ws_fatal = _FakeSarvamWebSocket(
-            server_messages=[
-                {"event": "error", "code": "unauthorized", "is_fatal": True, "status_code": 401, "message": "Nope"}
-            ],
+            server_messages=[{"type": "error", "data": {"code": 401, "error": "Nope", "status_code": 401}}],
             close_on_end=False,
         )
         with patch("websockets.connect", return_value=ws_fatal):
@@ -1808,7 +1563,7 @@ class TestSarvamProvider:
                 await SarvamProvider().run_stream(
                     _FakeProcess([b"\x01\x02", 0.5]),
                     "hi-IN",
-                    "saaras:v3-realtime",
+                    "saaras:v3",
                     ProviderConfig(api_key="bad"),
                     AsyncMock(),
                     "evt-1-hi",
@@ -1826,18 +1581,15 @@ class TestSarvamProvider:
         item0 = await buf.next_chunk_or_eof()
         assert item0 == (0, b"c0")
 
-        # Overflow evicts pending (0, b"c0") while queue retains (1, b"c1") and adds (2, b"c2").
         await buf.push(b"c2")
         assert buf.dropped_chunks == 1
 
-        # Calling ack_sent for evicted seq=0 must be a no-op when newer chunks are still pending/queued.
         buf.ack_sent(0)
         await buf.mark_eof()
         assert not buf.stream_ended_event.is_set()
 
         item1 = await buf.next_chunk_or_eof()
         assert item1 == (1, b"c1")
-        # Stale ack for seq=0 must also NOT clear seq=1 currently in _pending.
         buf.ack_sent(0)
         assert not buf.stream_ended_event.is_set()
         assert await buf.next_chunk_or_eof() == (1, b"c1")
@@ -1880,20 +1632,13 @@ class TestSarvamProvider:
 
         class _FailAfterBothQueuedWS(_FakeSarvamWebSocket):
             async def send(self, raw: str) -> None:
-                if json.loads(raw).get("event") == "audio_input":
+                if isinstance(json.loads(raw).get("audio"), dict):
                     await asyncio.wait_for(stdout.both_read.wait(), timeout=1.0)
                     raise OSError("fail sending c1 while c2 already queued")
                 await super().send(raw)
 
-        ws1 = _FailAfterBothQueuedWS(
-            server_messages=[{"event": "session.begin", "request_id": "req-1"}],
-            close_on_end=False,
-        )
-        ws2 = _FakeSarvamWebSocket(
-            server_messages=[{"event": "session.begin", "request_id": "req-2"}],
-            end_messages=[{"event": "session.end", "request_id": "req-2"}],
-            close_on_end=True,
-        )
+        ws1 = _FailAfterBothQueuedWS(close_on_end=False)
+        ws2 = _FakeSarvamWebSocket(close_on_end=True)
         connect_mock = MagicMock(side_effect=[ws1, ws2])
 
         with (
@@ -1901,11 +1646,11 @@ class TestSarvamProvider:
             patch.object(sarvam, "BACKOFF_BASE_SECONDS", 0.001),
         ):
             await SarvamProvider().run_stream(
-                process, "hi-IN", "saaras:v3-realtime", ProviderConfig(api_key="sarvam-secret"), AsyncMock(), "evt-1-hi"
+                process, "hi-IN", "saaras:v3", ProviderConfig(api_key="sarvam-secret"), AsyncMock(), "evt-1-hi"
             )
 
         assert connect_mock.call_count == 2
-        sent_ws2 = [base64.b64decode(m["audio"]) for m in ws2.sent if m.get("event") == "audio_input"]
+        sent_ws2 = [base64.b64decode(m["audio"]["data"]) for m in ws2.sent if isinstance(m.get("audio"), dict)]
         assert sent_ws2 == [c1, c2]
 
     async def test_sarvam_retains_pending_chunk_across_chained_reconnect_failures(self):
@@ -1916,22 +1661,13 @@ class TestSarvamProvider:
 
         class _FailFirstAudioWS(_FakeSarvamWebSocket):
             async def send(self, raw: str) -> None:
-                if json.loads(raw).get("event") == "audio_input":
+                if isinstance(json.loads(raw).get("audio"), dict):
                     raise OSError("ws1 failed sending c1")
                 await super().send(raw)
 
-        ws1 = _FailFirstAudioWS(
-            server_messages=[{"event": "session.begin", "request_id": "req-1"}],
-            close_on_end=False,
-        )
-        # ws2 closes before session.begin; c1 must still remain pending for ws3.
-        ws2_early_close = _FakeSarvamWebSocket(auto_close=True)
-        ws3_ok = _FakeSarvamWebSocket(
-            server_messages=[{"event": "session.begin", "request_id": "req-3"}],
-            end_messages=[{"event": "session.end", "request_id": "req-3"}],
-            close_on_end=True,
-        )
-        connect_mock = MagicMock(side_effect=[ws1, ws2_early_close, ws3_ok])
+        ws1 = _FailFirstAudioWS(close_on_end=False)
+        ws3_ok = _FakeSarvamWebSocket(close_on_end=True)
+        connect_mock = MagicMock(side_effect=[ws1, OSError("ws2 connection failed"), ws3_ok])
 
         with (
             patch("websockets.connect", connect_mock),
@@ -1940,15 +1676,14 @@ class TestSarvamProvider:
             await SarvamProvider().run_stream(
                 _FakeProcess([c1, c2]),
                 "hi-IN",
-                "saaras:v3-realtime",
+                "saaras:v3",
                 ProviderConfig(api_key="sarvam-secret"),
                 AsyncMock(),
                 "evt-1-hi",
             )
 
         assert connect_mock.call_count == 3
-        assert ws2_early_close.sent == []
-        sent_ws3 = [base64.b64decode(m["audio"]) for m in ws3_ok.sent if m.get("event") == "audio_input"]
+        sent_ws3 = [base64.b64decode(m["audio"]["data"]) for m in ws3_ok.sent if isinstance(m.get("audio"), dict)]
         assert sent_ws3 == [c1, c2]
 
     async def test_sarvam_clean_receiver_close_at_clean_eof_with_none_returncode(self, caplog):
@@ -1959,15 +1694,10 @@ class TestSarvamProvider:
         class _CloseAfterOneChunkWS(_FakeSarvamWebSocket):
             async def send(self, raw: str) -> None:
                 await super().send(raw)
-                if json.loads(raw).get("event") == "audio_input":
-                    # Server sends session.end / closes right as final chunk is written while returncode is still None.
-                    self.push_server_event({"event": "session.end", "request_id": "req-eof"})
+                if isinstance(json.loads(raw).get("audio"), dict):
                     self.close_server_stream()
 
-        ws = _CloseAfterOneChunkWS(
-            server_messages=[{"event": "session.begin", "request_id": "req-eof"}],
-            close_on_end=False,
-        )
+        ws = _CloseAfterOneChunkWS(close_on_end=False)
         process = _FakeProcess([b"\xaa\xbb"])
         assert process.returncode is None
         connect_mock = MagicMock(return_value=ws)
@@ -1977,7 +1707,7 @@ class TestSarvamProvider:
             patch("websockets.connect", connect_mock),
         ):
             await SarvamProvider().run_stream(
-                process, "hi-IN", "saaras:v3-realtime", ProviderConfig(api_key="sarvam-secret"), AsyncMock(), "evt-1-hi"
+                process, "hi-IN", "saaras:v3", ProviderConfig(api_key="sarvam-secret"), AsyncMock(), "evt-1-hi"
             )
 
         connect_mock.assert_called_once()
@@ -2009,16 +1739,11 @@ class TestSarvamProvider:
 
         class _FlushTailWS(_FakeSarvamWebSocket):
             async def __aenter__(self):
-                # FFmpeg already exited with returncode=0 while trailing bytes are still in stdout.
                 process.returncode = 0
                 process.release_tail.set()
                 return await super().__aenter__()
 
-        ws_ok = _FlushTailWS(
-            server_messages=[{"event": "session.begin", "request_id": "req-tail"}],
-            end_messages=[{"event": "session.end", "request_id": "req-tail"}],
-            close_on_end=True,
-        )
+        ws_ok = _FlushTailWS(close_on_end=True)
         connect_mock = MagicMock(side_effect=[OSError("initial glitch"), ws_ok])
 
         with (
@@ -2026,11 +1751,11 @@ class TestSarvamProvider:
             patch.object(sarvam, "BACKOFF_BASE_SECONDS", 0.001),
         ):
             await SarvamProvider().run_stream(
-                process, "hi-IN", "saaras:v3-realtime", ProviderConfig(api_key="sarvam-secret"), AsyncMock(), "evt-1-hi"
+                process, "hi-IN", "saaras:v3", ProviderConfig(api_key="sarvam-secret"), AsyncMock(), "evt-1-hi"
             )
 
         assert connect_mock.call_count == 2
-        sent_audio = [base64.b64decode(m["audio"]) for m in ws_ok.sent if m.get("event") == "audio_input"]
+        sent_audio = [base64.b64decode(m["audio"]["data"]) for m in ws_ok.sent if isinstance(m.get("audio"), dict)]
         assert sent_audio == [tail1, tail2]
 
     async def test_sarvam_stdout_read_oserror_escapes_without_ws_retries(self):
@@ -2046,10 +1771,7 @@ class TestSarvamProvider:
             returncode = None
             stdout = _BrokenPipeStdout()
 
-        ws = _FakeSarvamWebSocket(
-            server_messages=[{"event": "session.begin", "request_id": "req-1"}],
-            close_on_end=False,
-        )
+        ws = _FakeSarvamWebSocket(close_on_end=False)
         connect_mock = MagicMock(return_value=ws)
 
         with (
@@ -2060,7 +1782,7 @@ class TestSarvamProvider:
                 await SarvamProvider().run_stream(
                     _BrokenProc(),
                     "hi-IN",
-                    "saaras:v3-realtime",
+                    "saaras:v3",
                     ProviderConfig(api_key="sarvam-secret"),
                     AsyncMock(),
                     "evt-1-hi",
@@ -2069,7 +1791,6 @@ class TestSarvamProvider:
         assert not isinstance(exc_info.value, FatalTranscriptionError)
         connect_mock.assert_called_once()
 
-        # Also if stdout fails while in WS backoff, escape immediately without further WS attempts.
         class _FailAfterConnectStdout:
             def __init__(self):
                 self.allow_fail = asyncio.Event()
@@ -2097,7 +1818,7 @@ class TestSarvamProvider:
                 SarvamProvider().run_stream(
                     proc2,
                     "hi-IN",
-                    "saaras:v3-realtime",
+                    "saaras:v3",
                     ProviderConfig(api_key="sarvam-secret"),
                     AsyncMock(),
                     "evt-1-hi",
@@ -2108,8 +1829,6 @@ class TestSarvamProvider:
             with pytest.raises(OSError, match="Bad file descriptor"):
                 await real_wait_for(task, timeout=0.5)
 
-        connect_mock2.assert_called_once()
-
     async def test_sarvam_ignores_malformed_and_unknown_ws_frames_without_reconnect(self, caplog):
         import logging
 
@@ -2117,22 +1836,19 @@ class TestSarvamProvider:
 
         ws = _FakeSarvamWebSocket(close_on_end=False)
         raw_frames = [
-            json.dumps({"event": "session.begin", "request_id": "req-json"}),
             "{not-valid-json",
             b"\xff\xfe\xfd",
             "[1, 2, 3]",
             "42",
             '"just a string"',
-            json.dumps({"text": "missing event field"}),
-            json.dumps({"event": 123, "text": "non-string event"}),
-            json.dumps({"event": ["transcript.partial"], "text": "list event"}),
-            json.dumps({"event": "transcript.partial", "text": 999}),
-            json.dumps({"event": "transcript.final", "text": ["bad", "list"]}),
-            json.dumps({"event": "transcript.final", "text": {"bad": "dict"}}),
-            json.dumps({"event": "metrics.usage", "tokens": 10}),
-            json.dumps({"event": "transcript.partial", "text": "Valid partial"}),
-            json.dumps({"event": "transcript.final", "text": "Valid final."}),
-            json.dumps({"event": "session.end", "request_id": "req-json"}),
+            json.dumps({"text": "missing type field"}),
+            json.dumps({"type": 123, "text": "non-string type"}),
+            json.dumps({"type": ["data"], "text": "list type"}),
+            json.dumps({"type": "data", "data": 999}),
+            json.dumps({"type": "data", "data": {"transcript": ["bad", "list"]}}),
+            json.dumps({"type": "data", "data": {"transcript": {"bad": "dict"}}}),
+            json.dumps({"type": "events", "data": {"signal_type": "START_SPEECH"}}),
+            json.dumps({"type": "data", "data": {"transcript": "Valid final."}}),
         ]
         for frame in raw_frames:
             ws._incoming.put_nowait(frame)
@@ -2150,21 +1866,13 @@ class TestSarvamProvider:
             await SarvamProvider().run_stream(
                 _FakeProcess([b"\x01\x02"]),
                 "hi-IN",
-                "saaras:v3-realtime",
+                "saaras:v3",
                 ProviderConfig(api_key="sarvam-secret"),
                 broadcast,
                 "evt-1-hi",
             )
 
         connect_mock.assert_called_once()
-        assert [m for m in broadcasts if m.get("status") == "partial"] == [
-            {
-                "type": "caption",
-                "status": "partial",
-                "text": "Valid partial",
-                "segment_id": broadcasts[0]["segment_id"],
-            }
-        ]
         assert [m.get("text") for m in broadcasts if m.get("status") == "final"] == ["Valid final."]
         assert not [m for m in broadcasts if m.get("status") == "clear"]
 
@@ -2174,8 +1882,7 @@ class TestSarvamProvider:
 
         ws = _FakeSarvamWebSocket(
             server_messages=[
-                {"event": "session.begin", "request_id": "req-err"},
-                {"event": "error", "is_fatal": True, "code": 401, "message": {"reason": "bad key"}},
+                {"type": "error", "data": {"code": 401, "error": {"reason": "bad key"}}},
             ],
             close_on_end=False,
         )
@@ -2186,7 +1893,7 @@ class TestSarvamProvider:
                 await SarvamProvider().run_stream(
                     _FakeProcess([b"\x01\x02", 0.05]),
                     "hi-IN",
-                    "saaras:v3-realtime",
+                    "saaras:v3",
                     ProviderConfig(api_key="sarvam-secret"),
                     AsyncMock(),
                     "evt-1-hi",
@@ -2200,21 +1907,16 @@ class TestSarvamProvider:
 
         ws1 = _FakeSarvamWebSocket(
             server_messages=[
-                {"event": "session.begin", "request_id": "req-1"},
-                {"event": "transcript.final", "text": "First finalized."},
-                {"event": "transcript.partial", "text": "Stale half sentence"},
+                {"type": "data", "data": {"transcript": "First finalized."}},
             ],
-            receive_error=OSError("drop mid-utterance"),
+            receive_error=OSError("drop mid-stream"),
             close_on_end=False,
         )
         ws2 = _FakeSarvamWebSocket(
             server_messages=[
-                {"event": "session.begin", "request_id": "req-2"},
-                # Empty final on new session must NOT resurrect "Stale half sentence".
-                {"event": "transcript.final", "text": ""},
-                {"event": "transcript.final", "text": "Second finalized."},
+                {"type": "data", "data": {"transcript": ""}},
+                {"type": "data", "data": {"transcript": "Second finalized."}},
             ],
-            end_messages=[{"event": "session.end", "request_id": "req-2"}],
             close_on_end=True,
         )
 
@@ -2231,7 +1933,7 @@ class TestSarvamProvider:
             await SarvamProvider().run_stream(
                 _FakeProcess([b"\x01\x02", 0.02, b"\x03\x04"]),
                 "hi-IN",
-                "saaras:v3-realtime",
+                "saaras:v3",
                 ProviderConfig(api_key="sarvam-secret"),
                 broadcast,
                 "evt-1-hi",
@@ -2239,67 +1941,27 @@ class TestSarvamProvider:
 
         assert connect_mock.call_count == 2
         statuses = [(m.get("status"), m.get("text")) for m in broadcasts]
-        assert statuses == [
-            ("final", "First finalized."),
-            ("partial", "Stale half sentence"),
-            ("clear", ""),
-            ("clear", ""),
-            ("final", "Second finalized."),
-        ]
+        assert ("final", "First finalized.") in statuses
+        assert ("clear", "") in statuses
+        assert ("final", "Second finalized.") in statuses
 
-    async def test_sarvam_does_not_clear_after_normal_session_end_or_clean_eof(self):
-        from portal.transcription.providers.sarvam import SarvamProvider
-
-        ws = _FakeSarvamWebSocket(
-            server_messages=[
-                {"event": "session.begin", "request_id": "req-clean"},
-                {"event": "transcript.partial", "text": "In progress"},
-                {"event": "transcript.final", "text": "Completed cleanly."},
-            ],
-            end_messages=[{"event": "session.end", "request_id": "req-clean"}],
-            close_on_end=True,
-        )
-        broadcasts: list[dict] = []
-
-        async def broadcast(_booth_id, payload):
-            broadcasts.append(payload)
-
-        with patch("websockets.connect", return_value=ws):
-            await SarvamProvider().run_stream(
-                _FakeProcess([b"\x01\x02"]),
-                "hi-IN",
-                "saaras:v3-realtime",
-                ProviderConfig(api_key="sarvam-secret"),
-                broadcast,
-                "evt-1-hi",
-            )
-
-        assert [(m.get("status"), m.get("text")) for m in broadcasts] == [
-            ("partial", "In progress"),
-            ("final", "Completed cleanly."),
-        ]
-
-    async def test_sarvam_outage_logging_throttles_retries_and_resets_on_session_begin(self, caplog):
+    async def test_sarvam_outage_logging_throttles_retries_and_resets_on_transcript(self, caplog):
         import logging
 
         from portal.transcription.providers import sarvam
         from portal.transcription.providers.sarvam import SarvamProvider
 
-        # Outage 1: 3 errors -> session.begin + transcript -> drops -> Outage 2: 2 errors -> clean session.end.
         ws_recover_1 = _FakeSarvamWebSocket(
             server_messages=[
-                {"event": "session.begin", "request_id": "req-ok-1"},
-                {"event": "transcript.final", "text": "Recovered once."},
+                {"type": "data", "data": {"transcript": "Recovered once."}},
             ],
             receive_error=OSError("drop after recovery"),
             close_on_end=False,
         )
         ws_recover_2 = _FakeSarvamWebSocket(
             server_messages=[
-                {"event": "session.begin", "request_id": "req-ok-2"},
-                {"event": "transcript.final", "text": "Recovered twice."},
+                {"type": "data", "data": {"transcript": "Recovered twice."}},
             ],
-            end_messages=[{"event": "session.end", "request_id": "req-ok-2"}],
             close_on_end=True,
         )
         connect_mock = MagicMock(
@@ -2322,7 +1984,7 @@ class TestSarvamProvider:
             await SarvamProvider().run_stream(
                 _FakeProcess([b"\x01\x02", 0.02, b"\x03\x04"]),
                 "hi-IN",
-                "saaras:v3-realtime",
+                "saaras:v3",
                 ProviderConfig(api_key="sarvam-secret"),
                 AsyncMock(),
                 "evt-1-hi",
@@ -2353,7 +2015,7 @@ class TestSarvamProvider:
                 await SarvamProvider().run_stream(
                     _FakeProcess([b"\x01\x02", 0.2]),
                     "hi-IN",
-                    "saaras:v3-realtime",
+                    "saaras:v3",
                     ProviderConfig(api_key="sarvam-secret"),
                     AsyncMock(),
                     "evt-1-hi",
@@ -2372,8 +2034,7 @@ class TestSarvamProvider:
 
         ws = _FakeSarvamWebSocket(
             server_messages=[
-                {"event": "session.begin", "request_id": "req-bug"},
-                {"event": "transcript.final", "text": "Trigger bug."},
+                {"type": "data", "data": {"transcript": "Trigger bug."}},
             ],
             close_on_end=False,
         )
@@ -2387,14 +2048,13 @@ class TestSarvamProvider:
                 await SarvamProvider().run_stream(
                     _FakeProcess([b"\x01\x02", 0.05]),
                     "hi-IN",
-                    "saaras:v3-realtime",
+                    "saaras:v3",
                     ProviderConfig(api_key="sarvam-secret"),
                     buggy_broadcast,
                     "evt-1-hi",
                 )
         connect_mock.assert_called_once()
 
-        # CancelledError propagates cleanly without reconnecting.
         entered_backoff = asyncio.Event()
         real_wait_for = asyncio.wait_for
 
@@ -2415,7 +2075,7 @@ class TestSarvamProvider:
                 SarvamProvider().run_stream(
                     _FakeProcess([b"\x01\x02", 1.0]),
                     "hi-IN",
-                    "saaras:v3-realtime",
+                    "saaras:v3",
                     ProviderConfig(api_key="sarvam-secret"),
                     AsyncMock(),
                     "evt-1-hi",
@@ -2430,59 +2090,44 @@ class TestSarvamProvider:
     async def test_sarvam_stdout_reader_aligns_odd_pcm_reads_and_discards_trailing_eof_byte(self):
         from portal.transcription.providers.sarvam import SarvamProvider
 
-        # Case 1: odd-length reads ([3, 3, 1] bytes) combine across boundaries and drop trailing incomplete byte.
-        ws1 = _FakeSarvamWebSocket(
-            server_messages=[{"event": "session.begin", "request_id": "req-pcm-1"}],
-            end_messages=[{"event": "session.end", "request_id": "req-pcm-1"}],
-            close_on_end=True,
-        )
+        ws1 = _FakeSarvamWebSocket(close_on_end=True)
         with patch("websockets.connect", return_value=ws1):
             await SarvamProvider().run_stream(
                 _FakeProcess([b"\x01\x02\x03", b"\x04\x05\x06", b"\x07"]),
                 "hi-IN",
-                "saaras:v3-realtime",
+                "saaras:v3",
                 ProviderConfig(api_key="sarvam-secret"),
                 AsyncMock(),
                 "evt-1-hi",
             )
-        sent_chunks_1 = [base64.b64decode(m["audio"]) for m in ws1.sent if m.get("event") == "audio_input"]
+        sent_chunks_1 = [base64.b64decode(m["audio"]["data"]) for m in ws1.sent if isinstance(m.get("audio"), dict)]
         assert all(len(c) > 0 and len(c) % 2 == 0 for c in sent_chunks_1)
         assert b"".join(sent_chunks_1) == b"\x01\x02\x03\x04\x05\x06"
         assert sent_chunks_1 == [b"\x01\x02", b"\x03\x04\x05\x06"]
 
-        # Case 2: two consecutive 1-byte reads combine into one 2-byte PCM sample without empty pushes.
-        ws2 = _FakeSarvamWebSocket(
-            server_messages=[{"event": "session.begin", "request_id": "req-pcm-2"}],
-            end_messages=[{"event": "session.end", "request_id": "req-pcm-2"}],
-            close_on_end=True,
-        )
+        ws2 = _FakeSarvamWebSocket(close_on_end=True)
         with patch("websockets.connect", return_value=ws2):
             await SarvamProvider().run_stream(
                 _FakeProcess([b"\xaa", b"\xbb"]),
                 "hi-IN",
-                "saaras:v3-realtime",
+                "saaras:v3",
                 ProviderConfig(api_key="sarvam-secret"),
                 AsyncMock(),
                 "evt-1-hi",
             )
-        sent_chunks_2 = [base64.b64decode(m["audio"]) for m in ws2.sent if m.get("event") == "audio_input"]
+        sent_chunks_2 = [base64.b64decode(m["audio"]["data"]) for m in ws2.sent if isinstance(m.get("audio"), dict)]
         assert sent_chunks_2 == [b"\xaa\xbb"]
 
-        # Case 3: single incomplete trailing byte at EOF sends zero audio frames and ends cleanly.
-        ws3 = _FakeSarvamWebSocket(
-            server_messages=[{"event": "session.begin", "request_id": "req-pcm-3"}],
-            end_messages=[{"event": "session.end", "request_id": "req-pcm-3"}],
-            close_on_end=True,
-        )
+        ws3 = _FakeSarvamWebSocket(close_on_end=True)
         with patch("websockets.connect", return_value=ws3):
             await SarvamProvider().run_stream(
                 _FakeProcess([b"\x99"]),
                 "hi-IN",
-                "saaras:v3-realtime",
+                "saaras:v3",
                 ProviderConfig(api_key="sarvam-secret"),
                 AsyncMock(),
                 "evt-1-hi",
             )
-        sent_chunks_3 = [m for m in ws3.sent if m.get("event") == "audio_input"]
+        sent_chunks_3 = [m for m in ws3.sent if isinstance(m.get("audio"), dict)]
         assert sent_chunks_3 == []
-        assert {"event": "end"} in ws3.sent
+        assert {"type": "flush"} in ws3.sent

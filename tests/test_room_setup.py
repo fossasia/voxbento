@@ -165,7 +165,7 @@ def test_sarvam_engine_requires_api_key_and_transcription_switch():
     enabled_catalog = engine_catalog(enabled_event)
     sarvam_engine = enabled_catalog.find("speech", "sarvam")
     assert sarvam_engine is not None
-    assert sarvam_engine.model == "saaras:v3-realtime"
+    assert sarvam_engine.model == "saaras:v3"
     assert "Sarvam AI" not in enabled_catalog.locked_speech
 
     whitespace_event = _event(encrypted_sarvam_api_key=encrypt_val("   "))
@@ -225,7 +225,7 @@ async def test_sarvam_rejects_unsupported_spoken_language_in_room_setup_and_edit
                 "form_section": "transcription",
                 "floor_transcription_enabled": "on",
                 "floor_transcription_provider": "sarvam",
-                "floor_transcription_model": "saaras:v3-realtime",
+                "floor_transcription_model": "saaras:v3",
                 "floor_language_code": "fr",
             },
             headers=ORIGIN,
@@ -236,7 +236,7 @@ async def test_sarvam_rejects_unsupported_spoken_language_in_room_setup_and_edit
             data={
                 "form_section": "ai",
                 "floor_transcription_provider": "sarvam",
-                "floor_transcription_model": "saaras:v3-realtime",
+                "floor_transcription_model": "saaras:v3",
             },
             headers=ORIGIN,
             cookies=admin_cookie,

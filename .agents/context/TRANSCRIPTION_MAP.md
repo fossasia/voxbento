@@ -88,7 +88,7 @@ Jitsi Meet Floor Conference
 | `portal/transcription/providers/deepgram.py` | `DeepgramProvider` — nova-2 WebSocket streaming |
 | `portal/transcription/providers/nvidia.py` | `NVIDIAProvider` — Parakeet-RNNT/CTC via Riva gRPC |
 | `portal/transcription/providers/elevenlabs.py` | `ElevenLabsProvider` — scribe_v2 |
-| `portal/transcription/providers/sarvam.py` | `SarvamProvider` — Saaras v3 Realtime WebSocket streaming for 23 Indian languages (`+ auto`) |
+| `portal/transcription/providers/sarvam.py` | `SarvamProvider` — Saaras v3 WebSocket streaming for 23 Indian languages (`+ auto`) |
 | `portal/translations/worker.py` | `TranslationWorker`: per-language translation dispatch, timeouts and delivery; `ENGINES` maps each provider to its `TranslationEngine` |
 | `portal/translations/engine.py` | `TranslationEngine` interface (`translate_batch`, `translate_text`), `Language`, `TranslationContext`, `EngineKind`; the worker calls engines only through it |
 | `portal/translations/providers/` | Backends: `LocalProvider` (NLLB, an engine itself) and the prompt-based cloud providers, wrapped by `ProviderEngine` in `base.py` |
@@ -112,7 +112,7 @@ Jitsi Meet Floor Conference
 | `deepgram` | `DeepgramProvider` | `nova-2` | `deepgram_api_key` | WebSocket streaming (with `numerals=true` for interpretation) |
 | `nvidia` | `NVIDIAProvider` | `parakeet-rnnt`, `parakeet-ctc` | `nvidia_api_key` | Riva gRPC |
 | `elevenlabs` | `ElevenLabsProvider` | `scribe_v2` | `elevenlabs_api_key` | — |
-| `sarvam` | `SarvamProvider` | `saaras:v3-realtime` | `sarvam_api_key` | WebSocket realtime (`wss://api.sarvam.ai/speech-to-text-realtime/ws`) |
+| `sarvam` | `SarvamProvider` | `saaras:v3` | `sarvam_api_key` | WebSocket streaming (`wss://api.sarvam.ai/speech-to-text/ws`) |
 
 API keys are stored encrypted on the `events` table (`encrypted_*_api_key` columns).
 `get_api_key(event, ProviderEnum.X)` decrypts via `portal.crypto.decrypt_val`.

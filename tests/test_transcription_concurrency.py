@@ -324,7 +324,7 @@ async def test_sarvam_api_key_isolation_across_concurrent_events():
             language_name="Hindi",
             transcription_enabled=True,
             transcription_provider="sarvam",
-            transcription_model="saaras:v3-realtime",
+            transcription_model="saaras:v3",
         )
         b2 = DBBooth(
             event_id=e2.id,
@@ -333,7 +333,7 @@ async def test_sarvam_api_key_isolation_across_concurrent_events():
             language_name="Tamil",
             transcription_enabled=True,
             transcription_provider="sarvam",
-            transcription_model="saaras:v3-realtime",
+            transcription_model="saaras:v3",
         )
         session.add_all([b1, b2])
         await session.flush()

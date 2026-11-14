@@ -17,13 +17,12 @@ from portal.transcription.providers.base import (
 
 logger = logging.getLogger(__name__)
 
-SARVAM_REALTIME_WS_URL = "wss://api.sarvam.ai/speech-to-text-realtime/ws"
-SARVAM_DEFAULT_MODEL = "saaras:v3-realtime"
+SARVAM_STREAMING_WS_URL = "wss://api.sarvam.ai/speech-to-text/ws"
+SARVAM_REALTIME_WS_URL = SARVAM_STREAMING_WS_URL
+SARVAM_DEFAULT_MODEL = "saaras:v3"
 SARVAM_ALLOWED_MODELS = frozenset({SARVAM_DEFAULT_MODEL})
 SARVAM_SAMPLE_RATE = 16000
 AUDIO_CHUNK_BYTES = 4096
-PING_INTERVAL_SECONDS = 15.0
-SESSION_BEGIN_TIMEOUT_SECONDS = 5.0
 STABLE_SESSION_SECONDS = 10.0
 EOF_DRAIN_TIMEOUT_SECONDS = 5.0
 MAX_RECONNECT_ATTEMPTS = 5
@@ -67,7 +66,7 @@ PERMANENT_ERROR_CODES = frozenset(
     }
 )
 
-# Official 23 BCP-47 language codes supported by Sarvam realtime STT (note: Odia is or-IN, not legacy od-IN).
+# Official 23 BCP-47 language codes supported by Sarvam streaming STT.
 SUPPORTED_SARVAM_LANGUAGE_CODES: tuple[str, ...] = (
     "en-IN",
     "hi-IN",
@@ -75,7 +74,7 @@ SUPPORTED_SARVAM_LANGUAGE_CODES: tuple[str, ...] = (
     "kn-IN",
     "ml-IN",
     "mr-IN",
-    "or-IN",
+    "od-IN",
     "pa-IN",
     "ta-IN",
     "te-IN",
@@ -95,7 +94,9 @@ SUPPORTED_SARVAM_LANGUAGE_CODES: tuple[str, ...] = (
 )
 
 _SARVAM_BCP47_MAP: dict[str, str] = {code.lower(): code for code in SUPPORTED_SARVAM_LANGUAGE_CODES}
+_SARVAM_BCP47_MAP["or-in"] = "od-IN"
 _SARVAM_ISO_MAP: dict[str, str] = {code.split("-", 1)[0].lower(): code for code in SUPPORTED_SARVAM_LANGUAGE_CODES}
+_SARVAM_ISO_MAP["or"] = "od-IN"
 
 
 class _SarvamFatalError(Exception):
@@ -115,25 +116,23 @@ class _StdoutReadError(Exception):
 
 
 def validate_sarvam_model(model_variant: str | None) -> str:
-    """Validate and normalize the Sarvam realtime model identifier."""
+    """Validate and normalize the Sarvam streaming model identifier."""
     model = (model_variant or "").strip() or SARVAM_DEFAULT_MODEL
     if model not in SARVAM_ALLOWED_MODELS:
-        raise ValueError(
-            f"Unsupported Sarvam model '{model}'. Allowed models: {sorted(SARVAM_ALLOWED_MODELS)}"
-        )
+        raise ValueError(f"Unsupported Sarvam model '{model}'. Allowed models: {sorted(SARVAM_ALLOWED_MODELS)}")
     return model
 
 
 def map_sarvam_language_code(language_code: str | None) -> str:
-    """Map a VoxBento language code to a Sarvam realtime BCP-47 code or 'auto'.
+    """Map a VoxBento language code to a Sarvam streaming BCP-47 code or 'unknown'.
 
-    Raises ``ValueError`` for explicit language codes not supported by Sarvam realtime STT.
+    Raises ``ValueError`` for explicit language codes not supported by Sarvam streaming STT.
     """
     if not language_code:
-        return "auto"
+        return "unknown"
     lower = language_code.strip().replace("_", "-").lower()
-    if not lower or lower in ("floor", "auto"):
-        return "auto"
+    if not lower or lower in ("floor", "auto", "unknown"):
+        return "unknown"
     if lower in _SARVAM_BCP47_MAP:
         return _SARVAM_BCP47_MAP[lower]
     if lower in _SARVAM_ISO_MAP:
@@ -145,7 +144,7 @@ def map_sarvam_language_code(language_code: str | None) -> str:
 
 
 def is_supported_sarvam_language(language_code: str | None) -> bool:
-    """Return True when ``language_code`` is supported by Sarvam realtime STT (or floor/auto)."""
+    """Return True when ``language_code`` is supported by Sarvam streaming STT (or floor/auto)."""
     try:
         map_sarvam_language_code(language_code)
     except ValueError:
@@ -154,19 +153,16 @@ def is_supported_sarvam_language(language_code: str | None) -> bool:
 
 
 def build_sarvam_ws_url(language_code: str | None, model_variant: str | None) -> str:
-    """Construct the Sarvam realtime WebSocket URL with verified query parameters."""
+    """Construct the Sarvam streaming WebSocket URL with verified query parameters."""
     model = validate_sarvam_model(model_variant)
-    # TODO(#1164): Pass room/booth glossary terms via Sarvam's 'prompt' parameter once glossary integration is available.
     params = {
-        "language_code": map_sarvam_language_code(language_code),
+        "language-code": map_sarvam_language_code(language_code),
         "model": model,
-        "encoding": "linear16",
-        "sample_rate": str(SARVAM_SAMPLE_RATE),
-        "stream_type": "balanced",
-        "endpointing": "vad",
         "mode": "transcribe",
+        "sample_rate": str(SARVAM_SAMPLE_RATE),
+        "flush_signal": "true",
     }
-    return f"{SARVAM_REALTIME_WS_URL}?{urllib.parse.urlencode(params)}"
+    return f"{SARVAM_STREAMING_WS_URL}?{urllib.parse.urlencode(params)}"
 
 
 def _http_status_from_exc(exc: BaseException) -> int | None:
@@ -197,18 +193,39 @@ def _ws_close_reason_from_exc(exc: BaseException) -> str:
 
 
 def _is_fatal_error_event(data: dict) -> bool:
-    """Classify a server error event; any is_fatal=True error is fatal unless explicitly transient."""
-    if not data.get("is_fatal"):
-        return False
-    code = str(data.get("code") or "").strip().lower()
+    """Classify a server error event; any error with fatal code or HTTP status is fatal."""
+    raw_code = data.get("code")
+    code = str(raw_code or "").strip().lower()
     status_code = data.get("status_code")
+    if status_code is None:
+        try:
+            status_code = int(raw_code)
+        except (TypeError, ValueError):
+            pass
     if code in PERMANENT_ERROR_CODES:
+        return True
+    if isinstance(status_code, int) and status_code in FATAL_HTTP_STATUS_CODES:
         return True
     if isinstance(status_code, int) and status_code in TRANSIENT_HTTP_STATUS_CODES:
         return False
     if code in TRANSIENT_ERROR_CODES:
         return False
-    return True
+    err_text = str(data.get("error") or data.get("message") or "").lower()
+    if any(
+        k in err_text
+        for k in (
+            "unauthorized",
+            "invalid api key",
+            "invalid key",
+            "bad key",
+            "quota",
+            "forbidden",
+            "unsupported language",
+            "invalid model",
+        )
+    ):
+        return True
+    return bool(data.get("is_fatal", False))
 
 
 def _is_fatal_ws_exception(exc: BaseException) -> bool:
@@ -332,7 +349,7 @@ class _BoundedAudioBuffer:
 
 
 class SarvamProvider(TranscriptionProvider):
-    """Streaming speech-to-text provider backed by Sarvam AI's realtime WebSocket API."""
+    """Streaming speech-to-text provider backed by Sarvam AI's streaming WebSocket API."""
 
     async def process_chunk(
         self,
@@ -359,18 +376,12 @@ class SarvamProvider(TranscriptionProvider):
 
         from portal.transcription.aggregator import CaptionAggregator
 
-        api_key = (config.get_key() or "").strip() if config else ""
-        if not api_key:
-            logger.error(f"[{booth_id}] Sarvam API key missing")
-            raise FatalTranscriptionError("Sarvam API key missing")
-
         try:
             url = build_sarvam_ws_url(language_code, model_variant)
         except ValueError as exc:
             raise FatalTranscriptionError(str(exc)) from exc
 
         aggregator = CaptionAggregator(broadcast_callback, room_id=room_id)
-        headers = {"Api-Subscription-Key": api_key}
         buffer = _BoundedAudioBuffer(MAX_AUDIO_BUFFER_CHUNKS)
 
         async def stdout_reader() -> None:
@@ -409,15 +420,25 @@ class SarvamProvider(TranscriptionProvider):
                         return
                 attempt += 1
 
-                session_started = False
+                # Re-read the API key before each connection attempt so rotations take effect immediately.
+                api_key = (config.get_key() or "").strip() if config else ""
+                if not api_key:
+                    logger.error(f"[{booth_id}] Sarvam API key missing")
+                    raise FatalTranscriptionError("Sarvam API key missing")
+
+                headers = {"Api-Subscription-Key": api_key}
                 session_ended_cleanly = False
                 transcript_received = False
                 connected_at = time.monotonic()
 
                 try:
-                    async with websockets.connect(url, additional_headers=headers) as ws:
+                    async with websockets.connect(
+                        url,
+                        additional_headers=headers,
+                        ping_interval=20.0,
+                        ping_timeout=20.0,
+                    ) as ws:
                         send_lock = asyncio.Lock()
-                        session_ready = asyncio.Event()
                         receiver_done = asyncio.Event()
 
                         async def send_json(payload: dict) -> None:
@@ -430,21 +451,18 @@ class SarvamProvider(TranscriptionProvider):
                                 if item is None:
                                     return "EOF"
                                 seq, chunk = item
-                                await send_json(
-                                    {
-                                        "event": "audio_input",
-                                        "audio": base64.b64encode(chunk).decode("utf-8"),
+                                payload = {
+                                    "audio": {
+                                        "data": base64.b64encode(chunk).decode("utf-8"),
+                                        "sample_rate": str(SARVAM_SAMPLE_RATE),
+                                        "encoding": "audio/wav",
                                     }
-                                )
+                                }
+                                await send_json(payload)
                                 buffer.ack_sent(seq)
 
-                        async def pinger() -> str:
-                            while True:
-                                await asyncio.sleep(PING_INTERVAL_SECONDS)
-                                await send_json({"event": "ping"})
-
                         async def receiver() -> str:
-                            nonlocal consecutive_errors, outage_logged, session_started, session_ended_cleanly, transcript_received
+                            nonlocal consecutive_errors, outage_logged, session_ended_cleanly, transcript_received
                             try:
                                 async for raw_msg in ws:
                                     try:
@@ -460,125 +478,78 @@ class SarvamProvider(TranscriptionProvider):
                                         )
                                         continue
 
-                                    event = data.get("event")
-                                    if not isinstance(event, str):
+                                    msg_type = data.get("type")
+                                    if not isinstance(msg_type, str):
                                         logger.warning(
-                                            f"[{booth_id}] Ignoring Sarvam frame with invalid event type: {event!r}"
+                                            f"[{booth_id}] Ignoring Sarvam frame with invalid type: {msg_type!r}"
                                         )
                                         continue
 
-                                    if event == "session.begin":
-                                        session_started = True
+                                    if msg_type == "data":
+                                        inner_data = data.get("data")
+                                        if not isinstance(inner_data, dict):
+                                            logger.warning(
+                                                f"[{booth_id}] Ignoring Sarvam data frame with non-dict data: "
+                                                f"{type(inner_data).__name__}"
+                                            )
+                                            continue
+                                        raw_text = inner_data.get("transcript")
+                                        if raw_text is not None and not isinstance(raw_text, str):
+                                            logger.warning(
+                                                f"[{booth_id}] Ignoring Sarvam transcript with non-string text: "
+                                                f"{type(raw_text).__name__}"
+                                            )
+                                            continue
+                                        transcript_received = True
+                                        consecutive_errors = 0
                                         outage_logged = False
-                                        session_ready.set()
-                                        logger.info(
-                                            f"[{booth_id}] Sarvam session started (request_id={data.get('request_id')})"
-                                        )
-                                    elif event == "transcript.partial":
-                                        raw_text = data.get("text")
-                                        if raw_text is not None and not isinstance(raw_text, str):
-                                            logger.warning(
-                                                f"[{booth_id}] Ignoring Sarvam transcript.partial with non-string text: "
-                                                f"{type(raw_text).__name__}"
-                                            )
-                                            continue
-                                        if session_started:
-                                            transcript_received = True
-                                            consecutive_errors = 0
-                                        text = raw_text.strip() if isinstance(raw_text, str) else ""
-                                        if text:
-                                            await aggregator.handle_partial(booth_id, text)
-                                    elif event == "transcript.final":
-                                        raw_text = data.get("text")
-                                        if raw_text is not None and not isinstance(raw_text, str):
-                                            logger.warning(
-                                                f"[{booth_id}] Ignoring Sarvam transcript.final with non-string text: "
-                                                f"{type(raw_text).__name__}"
-                                            )
-                                            continue
-                                        if session_started:
-                                            transcript_received = True
-                                            consecutive_errors = 0
                                         text = raw_text.strip() if isinstance(raw_text, str) else ""
                                         if text:
                                             await aggregator.handle_final(booth_id, text)
                                         else:
                                             await aggregator.handle_clear(booth_id)
-                                    elif event == "session.end":
-                                        session_ended_cleanly = True
-                                        logger.info(
-                                            f"[{booth_id}] Sarvam session ended "
-                                            f"(request_id={data.get('request_id')}, "
-                                            f"audio_duration_s={data.get('audio_duration_s')})"
-                                        )
-                                        return "SESSION_END"
-                                    elif event == "error":
-                                        code = data.get("code")
-                                        status_code = data.get("status_code")
-                                        is_fatal = bool(data.get("is_fatal", False))
-                                        message = data.get("message")
-                                        if message is None:
-                                            message = data.get("error", "")
-                                        if is_fatal:
-                                            if _is_fatal_error_event(data):
-                                                logger.error(
-                                                    f"[{booth_id}] Sarvam WS error "
-                                                    f"(code={code}, status_code={status_code}, is_fatal={is_fatal}): "
-                                                    f"{message}"
-                                                )
-                                                raise _SarvamFatalError(
-                                                    f"Sarvam fatal error (code={code}, status={status_code}): {message}"
-                                                )
-                                            logger.debug(
-                                                f"[{booth_id}] Sarvam WS transient error event "
-                                                f"(code={code}, status_code={status_code}, is_fatal={is_fatal}): "
-                                                f"{message}"
-                                            )
-                                            raise _SarvamTransientError(
-                                                f"Sarvam stream error (code={code}, status={status_code}): {message}"
-                                            )
-                                        logger.warning(
-                                            f"[{booth_id}] Sarvam WS non-fatal error "
-                                            f"(code={code}, status_code={status_code}): {message}"
-                                        )
-                                    elif event in ("pong", "vad.speech_start", "vad.speech_end", "config.updated"):
-                                        logger.debug(f"[{booth_id}] Sarvam event {event}: {data}")
+                                    elif msg_type == "events":
+                                        events_data = data.get("data")
+                                        logger.debug(f"[{booth_id}] Sarvam VAD event: {events_data}")
+                                    elif msg_type == "error":
+                                        err_data = data.get("data")
+                                        if not isinstance(err_data, dict):
+                                            err_data = {"error": str(err_data)}
+                                        code = err_data.get("code")
+                                        message = err_data.get("error") or err_data.get("message") or ""
+                                        if _is_fatal_error_event(err_data):
+                                            logger.error(f"[{booth_id}] Sarvam WS fatal error (code={code}): {message}")
+                                            raise _SarvamFatalError(f"Sarvam fatal error (code={code}): {message}")
+                                        logger.debug(f"[{booth_id}] Sarvam WS transient error (code={code}): {message}")
+                                        raise _SarvamTransientError(f"Sarvam stream error (code={code}): {message}")
                                     else:
-                                        logger.debug(f"[{booth_id}] Ignoring unknown Sarvam event '{event}': {data}")
+                                        logger.debug(
+                                            f"[{booth_id}] Ignoring unknown Sarvam message type '{msg_type}': {data}"
+                                        )
                                 return "CLOSED"
                             finally:
                                 receiver_done.set()
 
-                        async def handle_eof(
-                            recv_task: asyncio.Task, ping_t: asyncio.Task | None
-                        ) -> None:
-                            if ping_t is not None:
-                                await _cancel_and_await(ping_t)
-
+                        async def handle_eof(recv_task: asyncio.Task) -> None:
                             if recv_task.done():
                                 recv_exc = None if recv_task.cancelled() else recv_task.exception()
                                 if isinstance(recv_exc, _SarvamFatalError):
                                     raise recv_exc
                                 if recv_exc is not None and _is_ws_usable(ws, recv_exc):
                                     logger.warning(
-                                        f"[{booth_id}] Receiver failed at EOF while WS usable; sending end: {recv_exc}"
+                                        f"[{booth_id}] Receiver failed at EOF while WS usable; sending flush: {recv_exc}"
                                     )
                                     try:
-                                        await send_json({"event": "end"})
+                                        await send_json({"type": "flush"})
                                     except (WebSocketException, OSError, TimeoutError, RuntimeError) as exc:
-                                        logger.debug(f"[{booth_id}] Sarvam end signal failed during EOF: {exc}")
-                                else:
-                                    logger.debug(
-                                        f"[{booth_id}] Stream ended at EOF with receiver already finished: "
-                                        f"{recv_exc or recv_task.result()}"
-                                    )
+                                        logger.debug(f"[{booth_id}] Sarvam flush signal failed during EOF: {exc}")
                                 return
 
                             if _is_ws_usable(ws, None):
                                 try:
-                                    await send_json({"event": "end"})
+                                    await send_json({"type": "flush"})
                                 except (WebSocketException, OSError, TimeoutError, RuntimeError) as exc:
-                                    logger.debug(f"[{booth_id}] Sarvam end signal failed during EOF: {exc}")
+                                    logger.debug(f"[{booth_id}] Sarvam flush signal failed during EOF: {exc}")
 
                             if not recv_task.done():
                                 try:
@@ -587,7 +558,7 @@ class SarvamProvider(TranscriptionProvider):
                                         timeout=EOF_DRAIN_TIMEOUT_SECONDS,
                                     )
                                 except TimeoutError:
-                                    logger.warning(f"[{booth_id}] Timed out waiting for Sarvam session.end after EOF")
+                                    logger.warning(f"[{booth_id}] Timed out waiting for Sarvam response after EOF")
                                 except _SarvamFatalError:
                                     raise
                                 except (WebSocketException, _SarvamTransientError, OSError, RuntimeError) as exc:
@@ -599,42 +570,10 @@ class SarvamProvider(TranscriptionProvider):
                                     raise recv_exc
 
                         receiver_task = asyncio.create_task(receiver())
-                        sender_task: asyncio.Task | None = None
-                        ping_task: asyncio.Task | None = None
+                        sender_task = asyncio.create_task(sender())
+                        tasks = (sender_task, receiver_task)
 
                         try:
-                            ready_wait = asyncio.create_task(session_ready.wait())
-                            done_wait = asyncio.create_task(receiver_done.wait())
-                            try:
-                                await asyncio.wait(
-                                    (ready_wait, done_wait),
-                                    timeout=SESSION_BEGIN_TIMEOUT_SECONDS,
-                                    return_when=asyncio.FIRST_COMPLETED,
-                                )
-                            finally:
-                                await _cancel_and_await(ready_wait, done_wait)
-
-                            if not session_ready.is_set():
-                                if receiver_done.is_set():
-                                    recv_exc = None if receiver_task.cancelled() else receiver_task.exception()
-                                    if isinstance(recv_exc, _SarvamFatalError):
-                                        raise recv_exc
-                                    if not stdout_reader_task.done():
-                                        await asyncio.sleep(0)
-                                    if buffer.error is not None and not buffer.has_unsent():
-                                        raise buffer.error
-                                    if buffer.is_at_clean_eof():
-                                        await handle_eof(receiver_task, None)
-                                        return
-                                    if recv_exc is not None:
-                                        raise recv_exc
-                                    raise _SarvamTransientError("Sarvam WebSocket closed before session.begin")
-                                raise _SarvamTransientError("Timed out waiting for Sarvam session.begin")
-
-                            sender_task = asyncio.create_task(sender())
-                            ping_task = asyncio.create_task(pinger())
-                            tasks = (sender_task, receiver_task, ping_task)
-
                             done, _ = await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
 
                             sender_eof = (
@@ -644,7 +583,8 @@ class SarvamProvider(TranscriptionProvider):
                                 and sender_task.result() == "EOF"
                             )
                             if sender_eof:
-                                await handle_eof(receiver_task, ping_task)
+                                await handle_eof(receiver_task)
+                                session_ended_cleanly = True
                                 return
 
                             for task in done:
@@ -654,11 +594,12 @@ class SarvamProvider(TranscriptionProvider):
                                         raise exc
 
                             if buffer.is_at_clean_eof():
+                                session_ended_cleanly = True
                                 return
 
                             raise _SarvamTransientError("Sarvam WebSocket closed unexpectedly before stream EOF")
                         finally:
-                            cleanup_tasks = [t for t in (sender_task, receiver_task, ping_task) if t is not None]
+                            cleanup_tasks = [t for t in (sender_task, receiver_task) if t is not None]
                             await _cancel_and_await(*cleanup_tasks)
 
                 except asyncio.CancelledError:
@@ -666,7 +607,9 @@ class SarvamProvider(TranscriptionProvider):
                 except _StdoutReadError:
                     raise
                 except _SarvamFatalError as exc:
-                    logger.error(f"[{booth_id}] Sarvam fatal configuration/authentication error; not reconnecting: {exc}")
+                    logger.error(
+                        f"[{booth_id}] Sarvam fatal configuration/authentication error; not reconnecting: {exc}"
+                    )
                     raise FatalTranscriptionError(str(exc)) from exc
                 except (_SarvamTransientError, WebSocketException, OSError, TimeoutError, EOFError) as exc:
                     if buffer.error is not None and not buffer.has_unsent():
@@ -680,9 +623,7 @@ class SarvamProvider(TranscriptionProvider):
                         )
                         raise FatalTranscriptionError(str(exc)) from exc
 
-                    if session_started and (
-                        transcript_received or (time.monotonic() - connected_at) >= STABLE_SESSION_SECONDS
-                    ):
+                    if transcript_received or (time.monotonic() - connected_at) >= STABLE_SESSION_SECONDS:
                         consecutive_errors = 0
 
                     consecutive_errors += 1
@@ -698,9 +639,9 @@ class SarvamProvider(TranscriptionProvider):
                         )
 
                     if consecutive_errors >= MAX_RECONNECT_ATTEMPTS:
-                        logger.error(f"[{booth_id}] Sarvam Realtime connection repeatedly failed. Giving up.")
+                        logger.error(f"[{booth_id}] Sarvam streaming connection repeatedly failed. Giving up.")
                         raise FatalTranscriptionError(
-                            f"Sarvam Realtime connection failed after {consecutive_errors} attempts: {exc}",
+                            f"Sarvam streaming connection failed after {consecutive_errors} attempts: {exc}",
                             permanent=False,
                         ) from exc
 
