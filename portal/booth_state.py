@@ -431,7 +431,12 @@ class BoothRegistry:
             if can_go_live(participant.role) and booth.active_interpreter_id is None:
                 reservation = self._live_reservation(booth_id)
                 if reservation is None:
-                    booth.active_interpreter_id = participant.participant_id
+                    if self._reservations.pop(booth_id, None) is not None:
+                        # The window ended before the reaper ran: whoever waited longest goes first,
+                        # not the interpreter who happened to join after the deadline.
+                        booth.active_interpreter_id = _pick_next_interpreter(booth)
+                    else:
+                        booth.active_interpreter_id = participant.participant_id
                     self._schedule_persist(booth_id)
                 elif participant.joined_by is not None and participant.joined_by == reservation[0]:
                     # Back after a restart: the same session, not a participant_id anyone could reuse.

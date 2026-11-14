@@ -259,6 +259,23 @@ async def test_a_lapsed_reservation_no_longer_blocks_a_join():
 
 
 @pytest.mark.anyio
+async def test_a_late_joiner_does_not_jump_the_interpreter_who_waited_through_the_window():
+    store, clock = FakeStore(), Clock()
+    registry = restarted(store, clock)
+    waiting = await join(registry, "B", "user:2")  # joined during the reservation, stayed passive
+    assert active_of(registry) is None
+
+    clock.now += 500  # the window is over but the reaper has not ticked yet
+    await join(registry, "C", "user:3")
+    await settle(registry)
+
+    assert active_of(registry) == waiting.participant_id
+    assert store.saved[BOOTH] == "user:2"
+    assert registry._reservations == {}
+    assert await registry.expire_reservations() == []  # the reaper has nothing left to do
+
+
+@pytest.mark.anyio
 async def test_a_coordinator_choosing_someone_ends_the_reservation():
     store, clock = FakeStore(), Clock()
     registry = restarted(store, clock)
