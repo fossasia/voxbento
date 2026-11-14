@@ -5,14 +5,19 @@ on:
     workflows: ["Translation Load Benchmark"]
     types: [completed]
 
+concurrency:
+  group: post-translation-load-report-${{ github.event.workflow_run.head_sha }}
+  cancel-in-progress: false
+
 permissions:
+  actions: read
   contents: read
   pull-requests: write
   issues: write
 
 jobs:
   comment:
-    if: github.event.workflow_run.conclusion == 'success'
+    if: github.event.workflow_run.event == 'pull_request'
     runs-on: ubuntu-latest
     steps:
       - name: Download benchmark report artifact
@@ -30,22 +35,72 @@ jobs:
             const fs = require('fs');
             const path = require('path');
 
-            const prNumberFile = path.join(process.cwd(), 'report', 'pr_number.txt');
+            const run = context.payload.workflow_run;
+            const headSha = run.head_sha;
+
+            if (!headSha) {
+              core.setFailed('Missing head_sha on workflow_run.');
+              return;
+            }
+
+            // 1. Derive the target PR from trusted GitHub metadata
+            let targetPr = null;
+            const prs = run.pull_requests ?? [];
+            if (prs.length > 0 && prs[0]?.number) {
+              const { data: prData } = await github.rest.pulls.get({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                pull_number: prs[0].number,
+              });
+              targetPr = prData;
+            } else {
+              const { data: associatedPrs } = await github.rest.repos.listPullRequestsAssociatedWithCommit({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                commit_sha: headSha,
+              });
+              targetPr = associatedPrs.find((p) => p.state === 'open') ?? associatedPrs[0];
+            }
+
+            if (!targetPr || !targetPr.number) {
+              core.info(`No pull request found associated with head SHA ${headSha}.`);
+              return;
+            }
+
+            // 2. Reject stale out-of-order runs
+            if (targetPr.head.sha !== headSha) {
+              core.info(`PR #${targetPr.number} head SHA (${targetPr.head.sha}) has moved past this run (${headSha}). Skipping stale run.`);
+              return;
+            }
+
+            // 3. Verify artifact authenticity against derived targetPr
             const commentFile = path.join(process.cwd(), 'report', 'comment.md');
+            const prNumberFile = path.join(process.cwd(), 'report', 'pr_number.txt');
+            const artifactShaFile = path.join(process.cwd(), 'report', 'head_sha.txt');
 
-            if (!fs.existsSync(prNumberFile) || !fs.existsSync(commentFile)) {
-              core.warning('Benchmark report or PR number file not found in artifact.');
+            if (!fs.existsSync(commentFile)) {
+              core.warning('Comment report file not found in artifact.');
               return;
             }
 
-            const prNumber = parseInt(fs.readFileSync(prNumberFile, 'utf8').trim(), 10);
+            if (fs.existsSync(prNumberFile)) {
+              const artifactPrNumber = parseInt(fs.readFileSync(prNumberFile, 'utf8').trim(), 10);
+              if (artifactPrNumber && artifactPrNumber !== targetPr.number) {
+                core.setFailed(`Artifact PR number (${artifactPrNumber}) does not match trusted target PR (${targetPr.number}). Potential forgery rejected.`);
+                return;
+              }
+            }
+
+            if (fs.existsSync(artifactShaFile)) {
+              const artifactSha = fs.readFileSync(artifactShaFile, 'utf8').trim();
+              if (artifactSha && artifactSha !== headSha) {
+                core.setFailed(`Artifact head SHA (${artifactSha}) does not match trusted run head SHA (${headSha}). Potential forgery rejected.`);
+                return;
+              }
+            }
+
             const body = fs.readFileSync(commentFile, 'utf8').trim();
-
-            if (!prNumber || isNaN(prNumber)) {
-              core.warning(`Invalid PR number: ${prNumber}`);
-              return;
-            }
-
+            const prNumber = targetPr.number;
             const { owner, repo } = context.repo;
             const marker = '<!-- translation-load-benchmark-report -->';
 

@@ -9,6 +9,10 @@ on:
       - "portal/translations/**"
       - "portal/database.py"
 
+concurrency:
+  group: translation-benchmark-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
 permissions:
   contents: read
 
@@ -19,6 +23,7 @@ jobs:
     steps:
       - uses: actions/checkout@v7.0.1
         with:
+          ref: ${{ github.event.pull_request.head.sha }}
           persist-credentials: false
 
       - uses: astral-sh/setup-uv@v7
@@ -35,19 +40,31 @@ jobs:
         env:
           PR_NUMBER: ${{ github.event.pull_request.number }}
           HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          BASE_REF: ${{ github.event.pull_request.base.ref }}
         run: |
           mkdir -p report
           echo "$PR_NUMBER" > report/pr_number.txt
           echo "$HEAD_SHA" > report/head_sha.txt
+          echo "${BASE_REF:-dev}" > report/base_ref.txt
 
+          set +e
           uv run python tests/translation_load_harness.py \
             --rooms 3 --languages 1,4 --segments 6 --interval 0.5 --latency 0.1 --markdown \
-            > report/pr_table.md
+            > report/pr_table.md 2>&1
+          PR_STATUS=$?
+          set -e
+          echo "$PR_STATUS" > report/pr_status.txt
+          if [ ! -s report/pr_table.md ]; then
+            echo "Benchmark produced no table output (exit code $PR_STATUS)." > report/pr_table.md
+          fi
 
-      - name: Run benchmark on dev baseline
+      - name: Run benchmark on baseline
         shell: bash
+        env:
+          BASE_REF: ${{ github.event.pull_request.base.ref }}
         run: |
-          git clone --depth 1 --branch dev "https://github.com/${{ github.repository }}.git" dev-baseline || true
+          TARGET_BASE="${BASE_REF:-dev}"
+          git clone --depth 1 --branch "$TARGET_BASE" "https://github.com/${{ github.repository }}.git" dev-baseline || true
           if [ -f dev-baseline/tests/translation_load_harness.py ]; then
             (cd dev-baseline && uv sync --python 3.13 --dev --frozen && uv run python tests/translation_load_harness.py \
               --rooms 3 --languages 1,4 --segments 6 --interval 0.5 --latency 0.1 --markdown \
@@ -58,6 +75,7 @@ jobs:
           fi
 
       - name: Build comparison report
+        if: always()
         shell: bash
         run: |
           python -c '
@@ -67,22 +85,35 @@ jobs:
           sha = sha_file.read_text(encoding="utf-8").strip() if sha_file.exists() else ""
           short_sha = sha[:7] if sha else "PR"
 
+          base_file = pathlib.Path("report/base_ref.txt")
+          base_ref = base_file.read_text(encoding="utf-8").strip() if base_file.exists() else "dev"
+
+          status_file = pathlib.Path("report/pr_status.txt")
+          status = status_file.read_text(encoding="utf-8").strip() if status_file.exists() else "0"
+
           pr_file = pathlib.Path("report/pr_table.md")
           pr_table = pr_file.read_text(encoding="utf-8").strip() if pr_file.exists() else "No data"
 
           dev_file = pathlib.Path("report/dev_table.md")
           dev_table = dev_file.read_text(encoding="utf-8").strip() if dev_file.exists() else "No baseline data"
 
+          status_banner = ""
+          if status != "0":
+              status_banner = f"> [!WARNING]\n> **Regression detected**: The load harness exited with status `{status}` (dropped, failed, missing translations or unhandled error).\n"
+          else:
+              status_banner = "> [!NOTE]\n> **All signals passed**: 0 dropped, 0 failed, 0 missing translations.\n"
+
           comment = f"""### 📊 Translation Load Benchmark Report
 
-          Comparison against `dev` baseline for translation PRs.
+          {status_banner}
+          Comparison of PR branch against `{base_ref}` baseline.
 
           #### 🚀 PR Branch (`{short_sha}`)
 
           {pr_table}
 
           <details>
-          <summary><b>📌 <code>dev</code> Baseline</b></summary>
+          <summary><b>📌 <code>{base_ref}</code> Baseline</b></summary>
 
           {dev_table}
 
@@ -95,12 +126,25 @@ jobs:
           '
 
       - name: Publish to Job Summary
+        if: always()
         shell: bash
-        run: cat report/comment.md >> "$GITHUB_STEP_SUMMARY"
+        run: |
+          if [ -f report/comment.md ]; then
+            cat report/comment.md >> "$GITHUB_STEP_SUMMARY"
+          fi
 
       - name: Upload report artifact
+        if: always()
         uses: actions/upload-artifact@v7.0.2
         with:
           name: translation-load-report
           path: report/
 
+      - name: Propagate harness exit status
+        shell: bash
+        run: |
+          STATUS=$(cat report/pr_status.txt 2>/dev/null || echo 0)
+          if [ "$STATUS" -ne 0 ]; then
+            echo "Failing job because load harness detected regressions (exit status $STATUS)."
+            exit "$STATUS"
+          fi
