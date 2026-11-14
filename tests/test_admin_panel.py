@@ -10,9 +10,11 @@ Covers:
 
 from __future__ import annotations
 
+import asyncio
 import json
 import os
 import re
+from pathlib import Path
 
 os.environ["BOOTH_ACCESS_TOKEN"] = ""
 
@@ -20,8 +22,21 @@ from datetime import datetime, timedelta, timezone
 from html.parser import HTMLParser
 
 import pytest
+from sqlalchemy import Update, func, select
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from portal.auth import create_user_token, decode_token, hash_password
+from portal.database import (
+    configure,
+    dispose,
+    get_session,
+    get_user_by_email,
+    init_db,
+    list_memberships_for_booth,
+    list_memberships_for_event,
+    list_memberships_for_room,
+)
+from portal.models import EventAPIKey, User
 
 # ---------------------------------------------------------------------------
 # Fixtures
@@ -31,12 +46,18 @@ from portal.auth import create_user_token, decode_token, hash_password
 @pytest.fixture(autouse=True)
 async def setup_db():
     """Set up an in-memory database for the FastAPI app."""
-    from portal.database import configure, dispose, init_db
-
     configure("sqlite+aiosqlite://")
     await init_db()
     yield
     await dispose()
+
+
+@pytest.fixture
+async def concurrent_db(setup_db, tmp_path: Path):
+    """Give overlapping requests separate connections and real transaction isolation."""
+    await dispose()
+    configure(f"sqlite+aiosqlite:///{tmp_path / 'concurrent.db'}")
+    await init_db()
 
 
 @pytest.fixture
@@ -1307,6 +1328,26 @@ class TestEventCRUD:
         assert resp.status_code == 200
         assert b"TestCon 2026" in resp.content
         assert b"Main Hall" in resp.content
+
+    @pytest.mark.anyio
+    async def test_event_api_key_popups_are_labelled_dialogs(self, admin_cookie, seed_event):
+        # A div never matches the dialog-only :not([open]) rule in admin.css, so these must be dialogs (#1243).
+        event, _, _ = seed_event
+        async with _client() as c:
+            resp = await c.get(f"/admin/events/{event.id}/", cookies=admin_cookie)
+        assert resp.status_code == 200
+        for dialog_id, title in (
+            ("api-key-modal", "Generate API Key"),
+            ("api-key-success-modal", "API Key Generated"),
+            ("api-key-revoke-modal", "Revoke API Key"),
+        ):
+            tag = re.search(rf'<(\w+) id="{dialog_id}"[^>]*>', resp.text)
+            assert tag is not None and tag.group(1) == "dialog", dialog_id
+            assert " hidden" not in tag.group(0) and " open" not in tag.group(0)
+            label = re.search(r'aria-labelledby="([^"]+)"', tag.group(0))
+            assert label is not None, dialog_id
+            assert re.search(rf'id="{label.group(1)}"[^>]*>{title}<', resp.text), dialog_id
+        assert 'aria-describedby="api-key-revoke-message"' in resp.text
 
     @pytest.mark.anyio
     async def test_api_settings_update_and_clear_keys(self, admin_cookie, seed_event):
@@ -3602,9 +3643,8 @@ class TestAPIKeyCRUD:
             assert res_remake.json()["name"] == "Integration Key"
 
     @pytest.mark.anyio
-    async def test_concurrent_api_key_revocation(self, setup_db):
-        import asyncio
-
+    async def test_concurrent_api_key_revocation(self, concurrent_db, monkeypatch):
+        """Competing revocations reach the update together and only one succeeds."""
         from portal.auth import create_user_token
         from portal.database import create_event, create_user, get_session, set_event_membership
 
@@ -3626,11 +3666,25 @@ class TestAPIKeyCRUD:
             assert res.status_code == 200
             key_id = res.json()["id"]
 
-            # Overlapping concurrent revoke requests
+            barrier = asyncio.Barrier(2)
+            updates_reached = 0
+            execute = AsyncSession.execute
+
+            async def competing_execute(session, statement, *args, **kwargs):
+                """Hold both revocation writes until both requests reach the database."""
+                nonlocal updates_reached
+                if isinstance(statement, Update) and statement.table.name == EventAPIKey.__tablename__:
+                    updates_reached += 1
+                    await asyncio.wait_for(barrier.wait(), timeout=5)
+                return await execute(session, statement, *args, **kwargs)
+
+            monkeypatch.setattr(AsyncSession, "execute", competing_execute)
+
             req1 = c.delete(f"/workspace/api/events/{event_id}/api-keys/{key_id}")
             req2 = c.delete(f"/workspace/api/events/{event_id}/api-keys/{key_id}")
             res1, res2 = await asyncio.gather(req1, req2)
 
+            assert updates_reached == 2
             status_codes = sorted([res1.status_code, res2.status_code])
             assert status_codes == [200, 404]
 
@@ -4167,3 +4221,64 @@ async def test_developer_accounts_page_has_no_inline_styles(seed_accounts):
     else:
         assert b"No developer applications" in resp.content
     assert not re.search(rb"\sstyle\s*=", resp.content, re.IGNORECASE)
+
+
+MEMBER_FORMS = [
+    ("/admin/events/{event}/setup/invite", "event_owner"),
+    ("/admin/events/{event}/members/", "event_owner"),
+    ("/admin/events/{event}/rooms/{room}/members/", "room_coordinator"),
+    ("/admin/events/{event}/rooms/{room}/booths/{booth}/members/", "interpreter"),
+]
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize(("path", "role"), MEMBER_FORMS)
+@pytest.mark.parametrize(
+    "email",
+    ["testuser", "user@", "a@b", "@example.com", "user@@example.com", "us er@example.com", "x" * 320 + "@example.com"],
+)
+async def test_member_forms_reject_invalid_email(path, role, email, admin_cookie, seed_event):
+    """#1239: a bad address used to reach User._validate_email and return a 500."""
+    event, room, booth = seed_event
+    async with get_session() as s:
+        users_before = await s.scalar(select(func.count(User.id)))
+
+    async with _client() as c:
+        resp = await c.post(
+            path.format(event=event.id, room=room.id, booth=booth.id),
+            data={"email": email, "role": role},
+            cookies=admin_cookie,
+        )
+        if resp.status_code == 303:
+            assert resp.headers["location"].endswith("?error=invalid_email")
+            resp = await c.get(resp.headers["location"], cookies=admin_cookie)
+
+    assert resp.status_code in (200, 400)
+    assert "Enter a valid email address." in resp.text
+    async with get_session() as s:
+        assert await s.scalar(select(func.count(User.id))) == users_before
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize(("path", "role"), MEMBER_FORMS)
+async def test_member_forms_still_add_valid_email(path, role, admin_cookie, seed_event):
+    event, room, booth = seed_event
+    async with _client() as c:
+        resp = await c.post(
+            path.format(event=event.id, room=room.id, booth=booth.id),
+            data={"email": "  New.Person@Example.com ", "role": role},
+            cookies=admin_cookie,
+        )
+
+    assert resp.status_code == 303
+    assert "error=" not in resp.headers["location"]
+    async with get_session() as s:
+        user = await get_user_by_email(s, "new.person@example.com")
+        assert user is not None
+        if "/booths/" in path:
+            memberships = await list_memberships_for_booth(s, booth.id)
+        elif "/rooms/" in path:
+            memberships = await list_memberships_for_room(s, room.id)
+        else:
+            memberships = await list_memberships_for_event(s, event.id)
+        assert any(m.user_id == user.id and m.role == role for m in memberships)

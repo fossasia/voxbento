@@ -24,8 +24,9 @@ from portal.database import create_booth, delete_booth, list_booths_for_room
 from portal.models import DBBooth, Event, Room, RoomTranslationLanguage
 from portal.roles import INTERPRETER
 from portal.transcription.constants import ALLOWED_MODELS, ProviderEnum
-from portal.translations.constants import NLLB_LANGUAGE_MAP
-from portal.tts.constants import DEEPGRAM_VOICE_MAPPING, SUPERTONIC_SUPPORTED_LANGS
+from portal.translations.model_languages import supported_languages, unsupported_languages
+from portal.translations.registry import NLLB_200_DISTILLED_600M
+from portal.tts.constants import DEEPGRAM_VOICE_MAPPING, ELEVENLABS_SUPPORTED_LANGS, SUPERTONIC_SUPPORTED_LANGS
 from portal.utils import _make_jitsi_url
 
 AI_VOICE = "ai_voice"
@@ -136,12 +137,43 @@ class EngineCatalog:
         """The languages each available voice service can speak, for the setup form."""
         return {engine.provider: sorted(voice_languages_for(engine.provider)) for engine in self.voice}
 
+    @property
+    def translation_support(self) -> dict[str, list[str]]:
+        """The languages of each translation service that has a fixed list, for the setup form.
+
+        A service that is missing here translates any language.
+        """
+        support = {engine.provider: supported_languages(engine.provider, engine.model) for engine in self.translation}
+        return {provider: codes for provider, codes in support.items() if codes is not None}
+
+    def translation_unfit(self, language_codes: Iterable[str | None]) -> set[str]:
+        """The translation services that cannot handle every one of these languages."""
+        codes = list(language_codes)
+        return {
+            engine.provider
+            for engine in self.translation
+            if unsupported_languages(engine.provider, engine.model, codes)
+        }
+
+    def translation_hidden(self, language_codes: Iterable[str | None]) -> set[str]:
+        """The unfit services a settings page leaves out of its service picker.
+
+        None when no service fits: hiding them all would leave the picker empty, and saving
+        one still explains which language it cannot translate.
+        """
+        unfit = self.translation_unfit(language_codes)
+        return unfit if len(unfit) < len(self.translation) else set()
+
     def find(self, kind: str, provider: str) -> Engine | None:
         return next((e for e in getattr(self, kind) if e.provider == provider), None)
 
 
 def voice_languages_for(provider: str) -> Iterable[str]:
-    return DEEPGRAM_VOICE_MAPPING if provider == "deepgram" else SUPERTONIC_SUPPORTED_LANGS
+    if provider == "deepgram":
+        return DEEPGRAM_VOICE_MAPPING
+    if provider == "elevenlabs":
+        return ELEVENLABS_SUPPORTED_LANGS
+    return SUPERTONIC_SUPPORTED_LANGS
 
 
 _KEY_ADDED = "uses your API key"
@@ -151,7 +183,7 @@ _SERVER_MODEL = "runs on this server's own AI model"
 # (provider, default model, label, event key attribute). Cloud first: they are faster
 # and more accurate than the self-hosted fallback when the event has a key for them.
 _SPEECH_ENGINES = (
-    ("deepgram", "nova-2", "Deepgram Nova", "encrypted_deepgram_api_key"),
+    ("deepgram", "nova-3", "Deepgram Nova", "encrypted_deepgram_api_key"),
     ("elevenlabs", "scribe_v2_realtime", "ElevenLabs Scribe", "encrypted_elevenlabs_api_key"),
     ("openai", "whisper-1", "OpenAI Whisper", "encrypted_openai_api_key"),
     ("atlascloud", "bytedance/seed-asr-2.0", "Atlas Cloud Seed ASR", "encrypted_atlascloud_api_key"),
@@ -168,7 +200,10 @@ _TRANSLATION_ENGINES = (
 
 # The caption models each speech service offers, with a plain description, recommended first.
 SPEECH_MODELS: dict[str, tuple[tuple[str, str], ...]] = {
-    "deepgram": (("nova-2", "Nova 2"),),
+    "deepgram": (
+        ("nova-3", "Nova 3, most accurate, uses the glossary"),
+        ("nova-2", "Nova 2"),
+    ),
     "elevenlabs": (("scribe_v2_realtime", "Scribe v2, streaming"),),
     "openai": (
         ("whisper-1", "Whisper"),
@@ -252,7 +287,7 @@ def engine_catalog(event: Event) -> EngineCatalog:
         else:
             locked.append(_BRANDS[provider])
             locked_translation.append(_BRANDS[provider])
-    translation.append(Engine("local", "nllb-200-distilled-600M", "NLLB (built in)", _SELF_HOSTED))
+    translation.append(Engine("local", NLLB_200_DISTILLED_600M.id, "NLLB (built in)", _SELF_HOSTED))
     # After NLLB so new rooms keep the built-in default; the operator's server may be slow or stopped.
     if settings.self_hosted_llm_enabled:
         translation.append(
@@ -265,6 +300,11 @@ def engine_catalog(event: Event) -> EngineCatalog:
         voice.append(Engine("deepgram", "aura", "Deepgram Aura", _KEY_ADDED))
     else:
         locked.append(_BRANDS["deepgram"])
+    if event.encrypted_elevenlabs_api_key:
+        # Deepgram Aura has no Thai voice; Eleven v4 speaks Thai and 90+ other languages.
+        voice.append(Engine("elevenlabs", "eleven_v4", "ElevenLabs v4", _KEY_ADDED))
+    else:
+        locked.append(_BRANDS["elevenlabs"])
     if find_spec("supertonic") is not None:
         voice.append(Engine("supertonic", "supertonic", "Supertonic (built in)", _SELF_HOSTED))
     else:
@@ -454,12 +494,13 @@ def parse_plan(
             f"AI voice isn't available for {', '.join(language_name(code) for code in plan.voice_languages)}: "
             "no voice service is set up for this event. Choose AI captions, or add a Deepgram key on API keys."
         )
-    if ai_languages and plan.translation_engine == "local":
+    chosen_translation = catalog.find("translation", plan.translation_engine)
+    if ai_languages and chosen_translation:
         unsupported = [
             language_name(code)
-            for code in dict.fromkeys((plan.spoken_language, *plan.ai_languages))
-            if not pycountry.languages.get(alpha_2=code)
-            or pycountry.languages.get(alpha_2=code).name not in NLLB_LANGUAGE_MAP
+            for code in unsupported_languages(
+                chosen_translation.provider, chosen_translation.model, (plan.spoken_language, *plan.ai_languages)
+            )
         ]
         if unsupported:
             errors.append(

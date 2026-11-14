@@ -72,6 +72,29 @@ def _admin_user_cookie() -> dict:
 _ws_auth = _admin_user_cookie
 
 
+def _ws_booth(event_slug: str, language_code: str = "fr", language: str = "French") -> str:
+    """Create a booth and return its ID. booth:join needs a well-formed booth ID, and
+    broadcasts only reach members of a booth that exists in the database."""
+    res = client.post(
+        f"/api/events/{event_slug}/booths",
+        json={"language_code": language_code, "room_id": 1, "language": language},
+    )
+    assert res.status_code in (200, 201), res.text
+    return res.json()["booth_id"]
+
+
+def _ws_ready(*sockets) -> None:
+    """Wait until each socket is on the booth's broadcast list.
+
+    The server looks the booth up in the database before registering a new socket,
+    so a socket can miss a join broadcast sent right after it connects. Any reply
+    to a message means the socket is registered.
+    """
+    for ws in sockets:
+        ws.send_text(json.dumps({"type": "booth:ready-check"}))
+        assert json.loads(ws.receive_text())["type"] == "booth:error"
+
+
 # ── REST & page tests ─────────────────────────────────────────────────────────
 
 
@@ -306,7 +329,8 @@ def test_ingest_status_endpoint():
 
 
 def test_ws_join_receives_joined_and_state():
-    with client.websocket_connect("/ws/booth/ws-test-booth", cookies=_ws_auth()) as ws:
+    booth_id = _ws_booth("wstest")
+    with client.websocket_connect(f"/ws/booth/{booth_id}", cookies=_ws_auth()) as ws:
         ws.send_text(
             json.dumps(
                 {
@@ -329,6 +353,103 @@ def test_ws_join_receives_joined_and_state():
     assert "participant_id" in joined
     assert "state" in joined
 
+def test_ws_role_recheck_is_throttled():
+    from unittest.mock import AsyncMock, patch
+
+    from portal.roles import EVENT_OWNER
+
+    with (
+        patch(
+            "portal.websockets.handlers.resolve_booth_role",
+            new=AsyncMock(return_value=EVENT_OWNER),
+        ) as resolve_role,
+        patch("portal.websockets.handlers._monotonic", return_value=0.0),
+    ):
+        with client.websocket_connect(
+            "/ws/booth/throttle-test-booth",
+            cookies=_ws_auth(),
+        ) as ws:
+            ws.send_text(json.dumps({"type": "unknown"}))
+            assert json.loads(ws.receive_text())["type"] == "booth:error"
+
+            ws.send_text(json.dumps({"type": "unknown"}))
+            assert json.loads(ws.receive_text())["type"] == "booth:error"
+
+    # One initial resolution; neither message triggers a recheck.
+    assert resolve_role.await_count == 1
+
+
+def test_ws_role_change_closes_connection():
+    from unittest.mock import AsyncMock, patch
+
+    from fastapi import WebSocketDisconnect
+
+    from portal.roles import EVENT_OWNER, INTERPRETER
+
+    clock = iter([0.0, 6.0])
+
+    def fake_monotonic():
+        return next(clock, 6.0)
+
+    with (
+        patch(
+            "portal.websockets.handlers.resolve_booth_role",
+            new=AsyncMock(side_effect=[EVENT_OWNER, INTERPRETER]),
+        ) as resolve_role,
+        patch(
+            "portal.websockets.handlers._monotonic",
+            side_effect=fake_monotonic,
+        ),
+    ):
+        with client.websocket_connect(
+            "/ws/booth/role-change-test-booth",
+            cookies=_ws_auth(),
+        ) as ws:
+            ws.send_text(json.dumps({"type": "unknown"}))
+            with pytest.raises(WebSocketDisconnect) as exc_info:
+                ws.receive_text()
+            assert exc_info.value.code == 4003
+
+    assert resolve_role.await_count == 2
+
+
+def test_ws_role_recheck_database_error_keeps_connection_open():
+    from unittest.mock import AsyncMock, patch
+
+    from portal.roles import EVENT_OWNER
+
+    clock = iter([0.0, 6.0, 12.0])
+
+    def fake_monotonic():
+        return next(clock, 12.0)
+
+    with (
+        patch(
+            "portal.websockets.handlers.resolve_booth_role",
+            new=AsyncMock(
+                side_effect=[
+                    EVENT_OWNER,
+                    RuntimeError("temporary database failure"),
+                    EVENT_OWNER,
+                ]
+            ),
+        ) as resolve_role,
+        patch(
+            "portal.websockets.handlers._monotonic",
+            side_effect=fake_monotonic,
+        ),
+    ):
+        with client.websocket_connect(
+            "/ws/booth/role-db-error-test-booth",
+            cookies=_ws_auth(),
+        ) as ws:
+            ws.send_text(json.dumps({"type": "unknown"}))
+            assert json.loads(ws.receive_text())["type"] == "booth:error"
+
+            ws.send_text(json.dumps({"type": "unknown"}))
+            assert json.loads(ws.receive_text())["type"] == "booth:error"
+
+    assert resolve_role.await_count == 3
 
 def test_ws_join_without_language_and_unconfigured_booth_returns_error():
     """If neither the client specifies a language nor the booth exists in DB, join must error."""
@@ -350,8 +471,9 @@ def test_ws_join_without_language_and_unconfigured_booth_returns_error():
 
 def test_ws_join_uses_db_booth_language_when_unspecified():
     """If the client does not specify language in join, it should inherit the resolved booth language."""
+    booth_id = _ws_booth("japan", "ja", "Japanese")
     with patch("portal.websockets.handlers.get_booth_language_name", new=AsyncMock(return_value="Japanese")):
-        with client.websocket_connect("/ws/booth/japan-booth", cookies=_ws_auth()) as ws:
+        with client.websocket_connect(f"/ws/booth/{booth_id}", cookies=_ws_auth()) as ws:
             ws.send_text(
                 json.dumps(
                     {
@@ -399,6 +521,54 @@ def test_ws_join_rejected_without_session():
 
 
 @pytest.mark.parametrize(
+    ("booth_id", "room_id"),
+    [("roomcheck-1-fr", 2), ("roomcheck-0-fr", 1)],
+)
+def test_ws_join_rejects_room_id_not_matching_booth(booth_id, room_id):
+    """A room_id that disagrees with the booth ID must not create the booth in another room (#975)."""
+    from portal.globals import booths
+
+    with client.websocket_connect(f"/ws/booth/{booth_id}", cookies=_ws_auth()) as ws:
+        ws.send_text(
+            json.dumps({"type": "booth:join", "display_name": "Ana", "language": "French", "room_id": room_id})
+        )
+        msg = json.loads(ws.receive_text())
+
+    assert msg == {"type": "booth:error", "message": "room_id does not match this booth."}
+    assert booths.get_booth_sync(booth_id) is None
+
+
+@pytest.mark.parametrize(
+    ("booth_id", "extra"),
+    [
+        ("not-a-booth", {}),
+        ("not-a-booth", {"room_id": 1}),
+        ("demo-1-english", {}),
+    ],
+)
+def test_ws_join_rejects_malformed_booth_id(booth_id, extra):
+    """Only an Admin socket can reach a malformed booth ID; joining it must not create a booth without an identity."""
+    from portal.globals import booths
+
+    with client.websocket_connect(f"/ws/booth/{booth_id}", cookies=_ws_auth()) as ws:
+        ws.send_text(json.dumps({"type": "booth:join", "display_name": "Ana", "language": "French", **extra}))
+        msg = json.loads(ws.receive_text())
+
+    assert msg == {"type": "booth:error", "message": "Invalid booth_id format."}
+    assert booths.get_booth_sync(booth_id) is None
+
+
+def test_ws_join_accepts_room_id_matching_booth():
+    with client.websocket_connect("/ws/booth/roomcheck-1-it", cookies=_ws_auth()) as ws:
+        ws.send_text(json.dumps({"type": "booth:join", "display_name": "Ana", "language": "Italian", "room_id": 1}))
+        msg = json.loads(ws.receive_text())
+
+    assert msg["type"] == "booth:joined"
+    assert msg["state"]["room_id"] == 1
+    assert msg["state"]["mediamtx_path"] == "roomcheck/1/it"
+
+
+@pytest.mark.parametrize(
     ("field", "value", "error"),
     [
         ("display_name", 123, "display_name must be a string."),
@@ -437,6 +607,7 @@ def test_ws_join_rejected_without_session():
 )
 def test_ws_join_rejects_invalid_fields(field, value, error):
     """An invalid booth:join field gets a booth:error, and the socket can still join afterwards."""
+    booth_id = _ws_booth("joinvalidation")
     join = {
         "type": "booth:join",
         "display_name": "Grace",
@@ -446,7 +617,7 @@ def test_ws_join_rejects_invalid_fields(field, value, error):
     }
     # A configured booth language, so a falsy language can't fail on the missing-language check instead.
     with patch("portal.websockets.handlers.get_booth_language_name", new=AsyncMock(return_value="French")):
-        with client.websocket_connect("/ws/booth/join-validation-booth", cookies=_ws_auth()) as ws:
+        with client.websocket_connect(f"/ws/booth/{booth_id}", cookies=_ws_auth()) as ws:
             ws.send_text(json.dumps({**join, field: value}))
             msg = json.loads(ws.receive_text())
             assert msg == {"type": "booth:error", "message": error}
@@ -459,8 +630,9 @@ def test_ws_join_rejects_invalid_fields(field, value, error):
 
 def test_ws_join_without_language_uses_booth_language():
     """An empty language still falls back to the booth's configured language."""
+    booth_id = _ws_booth("joinfallback")
     with patch("portal.websockets.handlers.get_booth_language_name", new=AsyncMock(return_value="French")):
-        with client.websocket_connect("/ws/booth/join-fallback-booth", cookies=_ws_auth()) as ws:
+        with client.websocket_connect(f"/ws/booth/{booth_id}", cookies=_ws_auth()) as ws:
             ws.send_text(json.dumps({"type": "booth:join", "display_name": "Grace", "language": ""}))
             msg1 = json.loads(ws.receive_text())
             msg2 = json.loads(ws.receive_text())
@@ -470,7 +642,8 @@ def test_ws_join_without_language_uses_booth_language():
 
 
 def test_ws_join_then_leave_broadcasts_state():
-    with client.websocket_connect("/ws/booth/leave-test-booth", cookies=_ws_auth()) as ws:
+    booth_id = _ws_booth("leavetest")
+    with client.websocket_connect(f"/ws/booth/{booth_id}", cookies=_ws_auth()) as ws:
         ws.send_text(
             json.dumps(
                 {
@@ -493,7 +666,8 @@ def test_ws_join_then_leave_broadcasts_state():
 
 
 def test_ws_chat_message():
-    with client.websocket_connect("/ws/booth/chat-test-booth", cookies=_ws_auth()) as ws:
+    booth_id = _ws_booth("chattest")
+    with client.websocket_connect(f"/ws/booth/{booth_id}", cookies=_ws_auth()) as ws:
         ws.send_text(
             json.dumps(
                 {
@@ -551,7 +725,8 @@ def test_ws_set_active_before_join_returns_error():
 
 
 def test_ws_set_active_missing_target_returns_error():
-    with client.websocket_connect("/ws/booth/sa-missing-booth", cookies=_ws_auth()) as ws:
+    booth_id = _ws_booth("samissing")
+    with client.websocket_connect(f"/ws/booth/{booth_id}", cookies=_ws_auth()) as ws:
         ws.send_text(
             json.dumps(
                 {
@@ -573,7 +748,8 @@ def test_ws_set_active_missing_target_returns_error():
 
 
 def test_ws_update_state_active_interpreter():
-    with client.websocket_connect("/ws/booth/upd-state-booth", cookies=_ws_auth()) as ws:
+    booth_id = _ws_booth("updstate")
+    with client.websocket_connect(f"/ws/booth/{booth_id}", cookies=_ws_auth()) as ws:
         ws.send_text(
             json.dumps(
                 {
@@ -596,7 +772,8 @@ def test_ws_update_state_active_interpreter():
 
 def test_ws_disconnect_without_leave_auto_removes_participant():
     """Participant is cleaned up from registry when WS disconnects unexpectedly."""
-    with client.websocket_connect("/ws/booth/disc-nl", cookies=_ws_auth()) as ws:
+    booth_id = _ws_booth("disc", "nl", "Dutch")
+    with client.websocket_connect(f"/ws/booth/{booth_id}", cookies=_ws_auth()) as ws:
         client.post("/api/events/disc/booths", json={"language_code": "nl", "language": "Dutch"})
         ws.send_text(
             json.dumps(
@@ -625,7 +802,8 @@ def test_ws_active_interpreter_can_set_active():
     issues with TestClient. Permission logic is covered by test_booth_state.py;
     here we verify the WS protocol path produces a booth:state response.
     """
-    with client.websocket_connect("/ws/booth/self-active-booth", cookies=_ws_auth()) as ws:
+    booth_id = _ws_booth("selfactive")
+    with client.websocket_connect(f"/ws/booth/{booth_id}", cookies=_ws_auth()) as ws:
         ws.send_text(
             json.dumps(
                 {
@@ -653,11 +831,13 @@ def test_ws_active_interpreter_can_set_active():
 
 def test_ws_standby_cannot_set_mic_active():
     """Standby interpreter (not active) receives booth:error when trying to set mic_active."""
+    booth_id = _ws_booth("standbyperm")
     # Use two connections: IntA (first-joined = active), IntB (standby)
     with (
-        client.websocket_connect("/ws/booth/standby-perm-booth", cookies=_ws_auth()) as ws_a,
-        client.websocket_connect("/ws/booth/standby-perm-booth", cookies=_ws_auth()) as ws_b,
+        client.websocket_connect(f"/ws/booth/{booth_id}", cookies=_ws_auth()) as ws_a,
+        client.websocket_connect(f"/ws/booth/{booth_id}", cookies=_ws_auth()) as ws_b,
     ):
+        _ws_ready(ws_a, ws_b)
         # IntA joins first → becomes active; ws_b receives the broadcast immediately
         ws_a.send_text(
             json.dumps(
@@ -705,10 +885,12 @@ def test_ws_standby_cannot_set_themselves_active():
     """Standby interpreter gets booth:error when naming themselves in booth:set-active."""
     from portal.globals import booths
 
+    booth_id = _ws_booth("standbyself")
     with (
-        client.websocket_connect("/ws/booth/standby-self-active-booth", cookies=_ws_auth()) as ws_a,
-        client.websocket_connect("/ws/booth/standby-self-active-booth", cookies=_ws_auth()) as ws_b,
+        client.websocket_connect(f"/ws/booth/{booth_id}", cookies=_ws_auth()) as ws_a,
+        client.websocket_connect(f"/ws/booth/{booth_id}", cookies=_ws_auth()) as ws_b,
     ):
+        _ws_ready(ws_a, ws_b)
         ws_a.send_text(
             json.dumps(
                 {
@@ -746,7 +928,7 @@ def test_ws_standby_cannot_set_themselves_active():
         ws_b.send_text(json.dumps({"type": "booth:set-active", "target_id": joined_b["participant_id"]}))
         err_msg = json.loads(ws_b.receive_text())
         # Read the live booth while both sockets are still joined.
-        active_after = booths.get_booth_sync("standby-self-active-booth").active_interpreter_id
+        active_after = booths.get_booth_sync(booth_id).active_interpreter_id
 
     assert err_msg["type"] == "booth:error"
     assert active_after == joined_a["participant_id"]
@@ -759,7 +941,7 @@ def test_ws_three_way_coordinator_flow():
     Verifies the booth:state broadcast reflects the new active interpreter.
     All expected WS messages are drained to keep the test deterministic.
     """
-    booth = "three-way-coord-booth"
+    booth = _ws_booth("threeway")
     channel = f"{booth}-audio"
 
     def ws_join(ws, name, role, n_pending):
@@ -795,6 +977,7 @@ def test_ws_three_way_coordinator_flow():
         client.websocket_connect(f"/ws/booth/{booth}", cookies=_ws_auth()) as ws_b,
         client.websocket_connect(f"/ws/booth/{booth}", cookies=_ws_auth()) as ws_coord,
     ):
+        _ws_ready(ws_a, ws_b, ws_coord)
         # IntA joins (no pending for ws_a; ws_b + ws_coord each queue 1 state msg)
         ws_join(ws_a, "IntA", "interpreter", n_pending=0)
 
@@ -823,7 +1006,8 @@ def test_ws_three_way_coordinator_flow():
 
 def test_ws_full_flow_join_update_chat_leave():
     """Single-connection end-to-end flow: join → update-state → chat → leave."""
-    with client.websocket_connect("/ws/booth/e2e-flow-booth", cookies=_ws_auth()) as ws:
+    booth_id = _ws_booth("e2eflow")
+    with client.websocket_connect(f"/ws/booth/{booth_id}", cookies=_ws_auth()) as ws:
         # 1. Join
         ws.send_text(
             json.dumps(
@@ -874,6 +1058,7 @@ def test_ws_full_flow_join_update_chat_leave():
 
 def test_ws_auth_required_with_token(monkeypatch):
     """When BOOTH_ACCESS_TOKEN is set, a valid JWT is needed to use the API."""
+    booth_id = _ws_booth("authtest", "en", "English")
     from portal.config import settings
 
     monkeypatch.setenv("BOOTH_ACCESS_TOKEN", "secret-test-token")
@@ -885,11 +1070,11 @@ def test_ws_auth_required_with_token(monkeypatch):
 
     # WebSocket WITHOUT a token should be rejected (closed with code 4001).
     with pytest.raises(Exception):
-        with client.websocket_connect("/ws/booth/auth-test") as ws:
+        with client.websocket_connect(f"/ws/booth/{booth_id}") as ws:
             ws.receive_text()
 
     # WebSocket WITH a valid JWT should be accepted.
-    with client.websocket_connect(f"/ws/booth/auth-test?token={jwt_token}", cookies=_ws_auth()) as ws:
+    with client.websocket_connect(f"/ws/booth/{booth_id}?token={jwt_token}", cookies=_ws_auth()) as ws:
         ws.send_text(
             json.dumps(
                 {
@@ -968,6 +1153,7 @@ def test_ws_auth_cookie_bola_rejected(monkeypatch):
 
 def test_ws_auth_cswsh_protection(monkeypatch):
     """If Origin header is present and mismatches settings.public_base_url, reject."""
+    booth_id = _ws_booth("authtest", "en", "English")
     from fastapi.websockets import WebSocketDisconnect
 
     from portal.config import settings
@@ -978,14 +1164,14 @@ def test_ws_auth_cswsh_protection(monkeypatch):
     # Mismatched origin
     with pytest.raises(WebSocketDisconnect) as exc_info:
         with client.websocket_connect(
-            "/ws/booth/auth-test", cookies=_ws_auth(), headers={"Origin": "https://evil.com"}
+            f"/ws/booth/{booth_id}", cookies=_ws_auth(), headers={"Origin": "https://evil.com"}
         ) as ws:
             ws.receive_text()
     assert exc_info.value.code == 4003
 
     # Matching origin
     with client.websocket_connect(
-        "/ws/booth/auth-test", cookies=_ws_auth(), headers={"Origin": "https://voxbento.com"}
+        f"/ws/booth/{booth_id}", cookies=_ws_auth(), headers={"Origin": "https://voxbento.com"}
     ) as ws:
         ws.send_text(
             json.dumps(
@@ -1004,10 +1190,12 @@ def test_ws_auth_cswsh_protection(monkeypatch):
 
 def test_ws_coordinator_can_switch_active_interpreter():
     """Coordinator assigns a second interpreter as active; state broadcast reflects the change."""
+    booth_id = _ws_booth("switchbooth")
     with (
-        client.websocket_connect("/ws/booth/switch-booth", cookies=_ws_auth()) as ws_a,
-        client.websocket_connect("/ws/booth/switch-booth", cookies=_ws_auth()) as ws_coord,
+        client.websocket_connect(f"/ws/booth/{booth_id}", cookies=_ws_auth()) as ws_a,
+        client.websocket_connect(f"/ws/booth/{booth_id}", cookies=_ws_auth()) as ws_coord,
     ):
+        _ws_ready(ws_a, ws_coord)
         # Interpreter A joins
         ws_a.send_text(
             json.dumps(
@@ -1101,7 +1289,7 @@ def _ws_join(ws, display_name: str, role: str, language: str, channel_id: str) -
     ],
 )
 def test_ws_invalid_frame_keeps_active_interpreter_connected(raw_frame: str, expected_error: str):
-    booth_id = "shape-test-booth"
+    booth_id = _ws_booth("shapetest", "en", "English")
     with client.websocket_connect(f"/ws/booth/{booth_id}", cookies=_ws_auth()) as ws:
         participant_id, initial_state = _ws_join(ws, "Alice", "interpreter", "English", f"{booth_id}-audio")
         assert initial_state["active_interpreter_id"] == participant_id
@@ -1130,7 +1318,7 @@ def test_ws_invalid_frame_keeps_active_interpreter_connected(raw_frame: str, exp
 )
 def test_ws_chat_rejects_invalid_body(body, expected_error: str):
     # One booth per case: chat history is kept in the shared in-memory registry.
-    booth_id = f"chat-limit-{type(body).__name__}-booth"
+    booth_id = _ws_booth(f"chatlimit{type(body).__name__}", "en", "English")
     with client.websocket_connect(f"/ws/booth/{booth_id}", cookies=_ws_auth()) as ws:
         _ws_join(ws, "Alice", "interpreter", "English", f"{booth_id}-audio")
 
@@ -1147,8 +1335,7 @@ def test_ws_chat_rejects_invalid_body(body, expected_error: str):
 
 def test_ws_broadcast_unlock_authorized_user_can_toggle():
     """Authorized coordinator/admin session can toggle broadcast lock."""
-    client.post("/api/events/broadcastok/booths", json={"language_code": "en", "room_id": 1, "language": "English"})
-    booth = "broadcastok-en"
+    booth = _ws_booth("broadcastok", "en", "English")
     channel = "broadcastok/en"
 
     with client.websocket_connect(f"/ws/booth/{booth}", cookies=_ws_auth()) as ws:
@@ -1164,7 +1351,7 @@ def test_ws_broadcast_unlock_authorized_user_can_toggle():
 @pytest.mark.parametrize("payload", [{"unlocked": "false"}, {"unlocked": 1}, {}])
 def test_ws_broadcast_unlock_rejects_non_boolean(payload):
     """A non-boolean or missing unlocked value is rejected and leaves the booth as it was."""
-    booth = "broadcastbad-en"
+    booth = _ws_booth("broadcastbad", "en", "English")
     channel = "broadcastbad/en"
 
     with client.websocket_connect(f"/ws/booth/{booth}", cookies=_ws_auth()) as ws:
@@ -1353,13 +1540,14 @@ async def test_listener_state_lock_serializes_then_cleans_up():
 
 def test_ws_initiate_handoff_active_interpreter_sets_offered_state():
     """Active interpreter initiating handoff sets handoff_state='offered'."""
-    booth = "handoff-offered"
+    booth = _ws_booth("handoffoffered")
     channel = f"{booth}-audio"
 
     with (
         client.websocket_connect(f"/ws/booth/{booth}", cookies=_ws_auth()) as ws_a,
         client.websocket_connect(f"/ws/booth/{booth}", cookies=_ws_auth()) as ws_b,
     ):
+        _ws_ready(ws_a, ws_b)
         pid_a, _ = _ws_join(ws_a, "IntA", "interpreter", "French", channel)
         ws_b.receive_text()  # drain broadcast from A joining on ws_b
 
@@ -1378,13 +1566,14 @@ def test_ws_initiate_handoff_active_interpreter_sets_offered_state():
 
 def test_ws_initiate_handoff_passive_interpreter_sets_requested_state():
     """Passive interpreter initiating handoff sets handoff_state='requested'."""
-    booth = "handoff-requested"
+    booth = _ws_booth("handoffrequested")
     channel = f"{booth}-audio"
 
     with (
         client.websocket_connect(f"/ws/booth/{booth}", cookies=_ws_auth()) as ws_a,
         client.websocket_connect(f"/ws/booth/{booth}", cookies=_ws_auth()) as ws_b,
     ):
+        _ws_ready(ws_a, ws_b)
         pid_a, _ = _ws_join(ws_a, "IntA", "interpreter", "French", channel)
         ws_b.receive_text()  # drain broadcast from A joining on ws_b
 
@@ -1413,13 +1602,14 @@ def test_ws_initiate_handoff_before_join_returns_error():
 
 def test_ws_accept_handoff_from_offered_switches_active_interpreter():
     """Active offers handoff; passive accepts; passive becomes active."""
-    booth = "handoff-accept-offered"
+    booth = _ws_booth("handoffacceptoffered")
     channel = f"{booth}-audio"
 
     with (
         client.websocket_connect(f"/ws/booth/{booth}", cookies=_ws_auth()) as ws_a,
         client.websocket_connect(f"/ws/booth/{booth}", cookies=_ws_auth()) as ws_b,
     ):
+        _ws_ready(ws_a, ws_b)
         pid_a, _ = _ws_join(ws_a, "IntA", "interpreter", "French", channel)
         ws_b.receive_text()  # drain broadcast from A joining on ws_b
 
@@ -1444,13 +1634,14 @@ def test_ws_accept_handoff_from_offered_switches_active_interpreter():
 
 def test_ws_accept_handoff_from_requested_switches_active_to_requester():
     """Passive requests handoff; active accepts/yields; requester becomes active."""
-    booth = "handoff-accept-requested"
+    booth = _ws_booth("handoffacceptrequested")
     channel = f"{booth}-audio"
 
     with (
         client.websocket_connect(f"/ws/booth/{booth}", cookies=_ws_auth()) as ws_a,
         client.websocket_connect(f"/ws/booth/{booth}", cookies=_ws_auth()) as ws_b,
     ):
+        _ws_ready(ws_a, ws_b)
         pid_a, _ = _ws_join(ws_a, "IntA", "interpreter", "French", channel)
         ws_b.receive_text()  # drain broadcast from A joining on ws_b
 
@@ -1475,13 +1666,14 @@ def test_ws_accept_handoff_from_requested_switches_active_to_requester():
 
 def test_ws_cancel_handoff_initiator_resets_state_to_idle():
     """Initiator can cancel an in-progress handoff; booth returns to idle."""
-    booth = "handoff-cancel"
+    booth = _ws_booth("handoffcancel")
     channel = f"{booth}-audio"
 
     with (
         client.websocket_connect(f"/ws/booth/{booth}", cookies=_ws_auth()) as ws_a,
         client.websocket_connect(f"/ws/booth/{booth}", cookies=_ws_auth()) as ws_b,
     ):
+        _ws_ready(ws_a, ws_b)
         pid_a, _ = _ws_join(ws_a, "IntA", "interpreter", "French", channel)
         ws_b.receive_text()  # drain broadcast from A joining on ws_b
 
@@ -1506,11 +1698,12 @@ def test_ws_cancel_handoff_initiator_resets_state_to_idle():
 
 def test_ws_live_interpreter_disconnect_clears_ingest_status():
     """When the live interpreter's socket drops, the booth is no longer reported as live."""
-    booth = "ingest-drop"
+    booth = _ws_booth("ingestdrop")
     channel = f"{booth}-audio"
 
     with client.websocket_connect(f"/ws/booth/{booth}", cookies=_ws_auth()) as ws_b:
         with client.websocket_connect(f"/ws/booth/{booth}", cookies=_ws_auth()) as ws_a:
+            _ws_ready(ws_b, ws_a)
             pid_a, _ = _ws_join(ws_a, "IntA", "interpreter", "French", channel)
             ws_b.receive_text()  # drain broadcast from A joining on ws_b
 
@@ -1964,13 +2157,22 @@ def test_event_booth_state_does_not_load_booth_whose_room_belongs_to_another_eve
     from portal.database import create_booth, create_event, create_room, get_session
 
     async def seed() -> int:
+        from portal.models import DBBooth
+
         async with get_session() as session:
             owner = await create_event(session, slug="roomowner", display_name="Room Owner")
             borrower = await create_event(session, slug="roomborrower", display_name="Room Borrower")
             room = await create_room(session, event_id=owner.id, display_name="Main")
-            await create_booth(
-                session, event_id=borrower.id, room_id=room.id, language_code="fr", language_name="French"
+
+            session.add(
+                DBBooth(
+                    event_id=borrower.id,
+                    room_id=room.id,
+                    language_code="fr",
+                    language_name="French",
+                )
             )
+            await session.flush()
             return room.id
 
     room_id = anyio.run(seed)
@@ -2211,6 +2413,7 @@ def test_strong_secret_passes_production():
 
 
 def test_missing_media_auth_hook_secret_raises_in_production():
+    """Verify that production rejects missing MEDIAMTX_AUTH_HOOK_SECRET."""
     from portal.config import Settings
 
     s = Settings(
@@ -2221,6 +2424,79 @@ def test_missing_media_auth_hook_secret_raises_in_production():
     )
     with pytest.raises(RuntimeError, match="MEDIAMTX_AUTH_HOOK_SECRET"):
         s.validate_production_secrets()
+
+
+def test_common_password_secret_raises_in_production():
+    """Verify that common passwords in the weak defaults list are rejected in production."""
+    from portal.config import Settings
+
+    s = Settings(debug=False, secret_key="admin", jwt_secret="")
+    with pytest.raises(RuntimeError, match="known-weak default value"):
+        s.validate_production_secrets()
+
+
+def test_none_secret_raises_in_production():
+    """Verify that a None effective secret raises RuntimeError instead of TypeError."""
+    from portal.config import Settings
+
+    class NoneSecretSettings(Settings):
+        @property
+        def effective_jwt_secret(self) -> str:
+            return None  # type: ignore[return-value]
+
+    s = NoneSecretSettings(debug=False)
+    with pytest.raises(RuntimeError, match="known-weak default value"):
+        s.validate_production_secrets()
+
+
+def test_short_secret_raises_in_production():
+    """Verify that production rejects secrets shorter than 32 characters."""
+    from portal.config import Settings
+
+    s = Settings(
+        debug=False,
+        secret_key="short-key-not-in-weak-defaults",
+        jwt_secret="",
+        mediamtx_auth_hook_secret="media-hook-secret",
+    )
+    with pytest.raises(RuntimeError, match="too short"):
+        s.validate_production_secrets()
+
+
+def test_low_diversity_secret_raises_in_production():
+    """Verify that secrets with low character diversity (e.g. repeated characters) are rejected."""
+    from portal.config import Settings
+
+    s = Settings(
+        debug=False,
+        secret_key="a" * 32,
+        jwt_secret="",
+        mediamtx_auth_hook_secret="media-hook-secret",
+    )
+    with pytest.raises(RuntimeError, match="character diversity"):
+        s.validate_production_secrets()
+
+
+def test_short_secret_allowed_in_debug_mode():
+    """Verify that short secrets remain permitted when debug mode is enabled."""
+    from portal.config import Settings
+
+    s = Settings(debug=True, secret_key="tooshort", jwt_secret="")
+    s.validate_production_secrets()  # must not raise
+
+
+def test_exactly_32_char_secret_passes_production():
+    """Verify that a compliant 32-character secret passes validation in production."""
+    from portal.config import Settings
+
+    s = Settings(
+        debug=False,
+        secret_key="0123456789abcdef0123456789abcdef",
+        jwt_secret="",
+        mediamtx_auth_hook_secret="media-hook-secret",
+        booth_access_token="0123456789abcdef0123456789abcdef",
+    )
+    s.validate_production_secrets()  # must not raise
 
 
 # ── Unified error pages (PR #263) ──────────────────────────────────────
