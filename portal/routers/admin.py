@@ -18,6 +18,7 @@ from fastapi.responses import JSONResponse, RedirectResponse, Response
 from fastapi.templating import Jinja2Templates
 from pydantic import BaseModel
 from sqlalchemy import delete, func, select
+from sqlalchemy import inspect as sa_inspect
 from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import joinedload
@@ -1599,24 +1600,39 @@ def _require_translatable(provider: str | None, model: str | None, language_code
         raise TranslationLanguageError(status_code=400, detail=error)
 
 
+def _saved_value(obj: object, attr: str) -> object | None:
+    """An attribute's value as last loaded from the database, before this save; None for a new row."""
+    state = sa_inspect(obj)
+    if state.transient or state.pending:
+        return None
+    history = getattr(state.attrs, attr).history
+    if history.deleted:
+        return history.deleted[0]
+    return history.unchanged[0] if history.unchanged else getattr(obj, attr)
+
+
 def _require_speakable(room: Room, provider: str, label: str) -> None:
     """Refuse a voice service that cannot speak a language the room reads aloud, keeping the current one.
 
-    Only a changed service or a language added in this save is checked, so a room saved before
-    this rule can still save its other settings.
+    Only what this save changes is checked: a new voice service, or a language that starts being
+    read aloud (added, enabled again, or AI voice switched on). A room saved before this rule can
+    still save its other settings.
     """
     if not room.floor_tts_enabled:
         return
-    changed = provider != room.floor_tts_provider
+    changed = provider != _saved_value(room, "floor_tts_provider") or not _saved_value(room, "floor_tts_enabled")
     supported = voice_languages_for(provider)
+
+    def newly_spoken(lang: RoomTranslationLanguage) -> bool:
+        return not (_saved_value(lang, "enabled") and _saved_value(lang, "tts_enabled"))
+
     unsupported = [
         room_language_name(lang.language_code)
         for lang in room.translation_languages
         if lang.enabled
         and lang.tts_enabled
         and lang.language_code not in supported
-        # Not flushed yet: added by the translation section earlier in this same save.
-        and (changed or lang.id is None)
+        and (changed or newly_spoken(lang))
     ]
     if unsupported:
         raise TranslationLanguageError(
