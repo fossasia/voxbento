@@ -1401,17 +1401,45 @@ async def test_anonymous_demo_request_does_not_mutate_existing_user_hosting_requ
 
 @pytest.mark.anyio
 async def test_demo_modal_privacy_checkbox_starts_unchecked_and_is_required():
-    """Verify demo privacy consent checkbox is unchecked by default and marked required."""
-    import re
+    """Verify the demo modal keeps its required consent and external assets."""
+    from html.parser import HTMLParser
+    from urllib.parse import urlsplit
+
+    class DemoModalMarkupParser(HTMLParser):
+        def __init__(self):
+            super().__init__()
+            self.stylesheet_hrefs = []
+            self.module_script_srcs = []
+            self.privacy_checkbox_attributes = None
+
+        def handle_starttag(self, tag, attrs):
+            attributes = dict(attrs)
+            if tag.lower() == "link" and attributes.get("rel", "").lower() == "stylesheet":
+                self.stylesheet_hrefs.append(attributes.get("href", ""))
+            elif tag.lower() == "script" and attributes.get("type", "").lower() == "module":
+                self.module_script_srcs.append(attributes.get("src", ""))
+            elif tag.lower() == "input" and attributes.get("id") == "demo-privacy":
+                self.privacy_checkbox_attributes = attributes
 
     async with client() as http:
         resp_home = await http.get("/")
         assert resp_home.status_code == 200
-        home_match = re.search(r"<input[^>]*id=[\"']demo-privacy[\"'][^>]*>", resp_home.text)
-        assert home_match is not None, "demo-privacy checkbox not found on home page"
-        tag = home_match.group(0)
-        assert "required" in tag, "demo-privacy checkbox must have required attribute"
-        assert "checked" not in tag, "demo-privacy checkbox must not start checked"
+
+        parser = DemoModalMarkupParser()
+        parser.feed(resp_home.text)
+
+        assert any(
+            urlsplit(href).path.endswith("/css/demo-modal.css")
+            for href in parser.stylesheet_hrefs
+        ), "demo-modal.css stylesheet link not found"
+        assert any(
+            urlsplit(src).path.endswith("/js/demo-modal.js")
+            for src in parser.module_script_srcs
+        ), "demo-modal.js module script not found"
+
+        assert parser.privacy_checkbox_attributes is not None, "demo-privacy checkbox not found on home page"
+        assert "required" in parser.privacy_checkbox_attributes, "demo-privacy checkbox must have required attribute"
+        assert "checked" not in parser.privacy_checkbox_attributes, "demo-privacy checkbox must not start checked"
 
 
 @pytest.mark.anyio

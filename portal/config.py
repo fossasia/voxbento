@@ -97,6 +97,19 @@ class Settings(BaseSettings):
     # Database — SQLite for dev, PostgreSQL for prod
     database_url: str = "sqlite+aiosqlite:///./interpretation.db"
 
+    # Booth recovery (portal/booth_recovery.py). A participant whose booth socket
+    # drops keeps their place, including the active slot, for this long so a
+    # network blip does not take the live interpreter off air. 0 removes them at once.
+    booth_reconnect_grace_seconds: float = 20.0
+    # Save each booth's Go Live switch and active interpreter, and restore them
+    # when the portal restarts, so a deploy or crash mid-event keeps booths live.
+    booth_state_recovery_enabled: bool = True
+    # How long a restored active interpreter keeps the slot waiting to reconnect.
+    booth_restart_grace_seconds: float = 60.0
+    # Saved state is not restored when its last save is older than this. Live booths are saved on
+    # every change and at least every minute, so the age is the downtime plus up to a minute before it.
+    booth_state_max_age_seconds: float = 600.0
+
     @property
     def effective_jwt_secret(self) -> str:
         return self.jwt_secret or self.secret_key
@@ -196,6 +209,17 @@ class Settings(BaseSettings):
     # ONNX Runtime intra-op threads for synthesis. 0 = let ONNX Runtime pick
     # (uses all physical cores).
     supertonic_intra_op_threads: int = 0
+
+    # Home-page live demo (/ws/demo/live): visitors speak and get captions, translations and a
+    # voice from the server's own models. Public, so its load is capped per server and per IP.
+    # Admins switch it on at /admin/live-demo/ (off until then); False forbids it on this server.
+    live_demo_enabled: bool = True
+    live_demo_voice_enabled: bool = True
+    live_demo_whisper_model: str = "base"
+    live_demo_translation_model: str = "nllb-200-distilled-600M"
+    live_demo_max_sessions: int = Field(default=2, ge=1)
+    live_demo_max_session_seconds: int = Field(default=120, ge=10)
+    live_demo_sessions_per_ip_per_hour: int = Field(default=12, ge=1)
 
     # Email Settings
     smtp_host: str = ""
