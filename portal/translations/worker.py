@@ -178,7 +178,7 @@ class TranslationWorker:
 
         tasks = self._build_language_tasks(job, segment_id, text, booth_id_str, uuid_segment_id, seq)
         if tasks:
-            logger.error(f"[{booth_id_str}] Spawning {len(tasks)} translation tasks for active listeners")
+            logger.error("[%s] Spawning %d translation tasks for active listeners", booth_id_str, len(tasks))
             await asyncio.gather(*tasks)
         return tasks
 
