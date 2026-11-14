@@ -14,6 +14,7 @@ class TranslationProviderEnum(str, Enum):
     GEMINI = "gemini"
     ANTHROPIC = "anthropic"
     GROQ = "groq"
+    AZURE = "azure"
     SELF_HOSTED = "self_hosted"
 
 
@@ -27,6 +28,7 @@ TRANSLATION_MODELS: Dict[str, List[str]] = {
     TranslationProviderEnum.GEMINI.value: ["gemini-2.5-flash", "gemini-2.5-pro", "gemini-1.5-flash"],
     TranslationProviderEnum.ANTHROPIC.value: ["claude-3-5-sonnet-20241022", "claude-3-5-haiku-20241022"],
     TranslationProviderEnum.GROQ.value: ["openai/gpt-oss-120b", "openai/gpt-oss-20b", "groq/compound-mini"],
+    TranslationProviderEnum.AZURE.value: ["translator-text-v3"],
     # Self-hosted models are described in the registry; this is only their names.
     TranslationProviderEnum.LOCAL.value: list(LOCAL_TRANSLATION_MODELS),
 }

@@ -10,8 +10,9 @@ from portal.models import DBBooth, Event, Room, TranscriptTranslation
 from portal.transcription.timing import segment_timing, timing_metadata
 from portal.translations.constants import OPENAI_COMPATIBLE_ENDPOINTS, TranslationProviderEnum
 from portal.translations.engine import EngineKind, Language, TranslationContext, TranslationEngine
-from portal.translations.keys import get_translation_api_key
+from portal.translations.keys import get_azure_translator_region, get_translation_api_key
 from portal.translations.providers.anthropic import AnthropicProvider
+from portal.translations.providers.azure import AzureTranslatorProvider
 from portal.translations.providers.base import ProviderEngine
 from portal.translations.providers.gemini import GeminiProvider
 from portal.translations.providers.local import LocalProvider
@@ -35,6 +36,9 @@ ENGINES: dict[str, TranslationEngine] = {
     ),
     TranslationProviderEnum.ANTHROPIC.value: ProviderEngine(
         TranslationProviderEnum.ANTHROPIC.value, AnthropicProvider(), EngineKind.LLM_API
+    ),
+    TranslationProviderEnum.AZURE.value: ProviderEngine(
+        TranslationProviderEnum.AZURE.value, AzureTranslatorProvider(), EngineKind.MT_API
     ),
     TranslationProviderEnum.LOCAL.value: LocalProvider(),
 }
@@ -353,8 +357,21 @@ class TranslationWorker:
         return tasks
 
     def _get_translation_api_key(self, event: Event, provider: str) -> str | None:
-        """Resolve the API key for the given event and translation provider."""
-        return get_translation_api_key(event, provider)
+        """Resolve the API key for the given event and translation provider.
+
+        For Azure Translator, returns a combined "key|region" string since the
+        provider needs both credentials but the engine interface only passes one.
+        """
+        api_key = get_translation_api_key(event, provider)
+        if provider == TranslationProviderEnum.AZURE.value and api_key:
+            region = get_azure_translator_region(event)
+            if region:
+                return f"{api_key}|{region}"
+            logger.warning(
+                "Azure Translator key is configured but no region is set; calling the global endpoint "
+                "(a regional Azure resource requires a region)."
+            )
+        return api_key
 
     async def _translate_and_broadcast(
         self,

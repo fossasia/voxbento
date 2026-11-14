@@ -90,6 +90,12 @@ class Event(Base):
         "anthropic_api_key", Text, nullable=True, default=None
     )
     encrypted_groq_api_key: Mapped[str | None] = mapped_column("groq_api_key", Text, nullable=True, default=None)
+    encrypted_azure_translator_api_key: Mapped[str | None] = mapped_column(
+        "azure_translator_api_key", Text, nullable=True, default=None
+    )
+    encrypted_azure_translator_region: Mapped[str | None] = mapped_column(
+        "azure_translator_region", Text, nullable=True, default=None
+    )
     listener_join_code: Mapped[str | None] = mapped_column(String(64), nullable=True, default=None)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
     deleted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True, default=None)

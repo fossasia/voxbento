@@ -191,6 +191,7 @@ _TRANSLATION_ENGINES = (
     ("gemini", "gemini-2.5-flash", "Google Gemini", "encrypted_gemini_api_key"),
     ("groq", "openai/gpt-oss-120b", "Groq", "encrypted_groq_api_key"),
     ("openrouter", "meta-llama/llama-3.3-70b-instruct", "OpenRouter", "encrypted_openrouter_api_key"),
+    ("azure", "translator-text-v3", "Azure Translator", "encrypted_azure_translator_api_key"),
 )
 
 
@@ -237,6 +238,7 @@ _BRANDS = {
     "gemini": "Google Gemini",
     "groq": "Groq",
     "openrouter": "OpenRouter",
+    "azure": "Azure Translator",
 }
 
 
