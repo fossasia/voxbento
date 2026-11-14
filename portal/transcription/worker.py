@@ -174,15 +174,24 @@ class TranscriptionWorkerSession:
                         if not self.ready_event.is_set():
                             self.ready_event.set()
                         if not self.started_webhook_emitted:
-                            await _wh_worker.enqueue_webhook(
-                                "booth.transcription.started",
-                                {
-                                    "booth_id": self.booth_id,
-                                    "session_id": self.session_id,
-                                    "event_slug": self.event_slug,
-                                },
-                            )
-                            self.started_webhook_emitted = True
+                            try:
+                                await _wh_worker.enqueue_webhook(
+                                    "booth.transcription.started",
+                                    {
+                                        "booth_id": self.booth_id,
+                                        "session_id": self.session_id,
+                                        "event_slug": self.event_slug,
+                                    },
+                                )
+                                self.started_webhook_emitted = True
+                            except asyncio.CancelledError:
+                                raise
+                            except Exception:
+                                logger.exception(
+                                    "[%s][%s] Failed to enqueue booth.transcription.started webhook",
+                                    self.booth_id,
+                                    self.session_id,
+                                )
                         actual_language = self.transcription_language or self.language_code
                         if actual_language == "floor":
                             actual_language = ""
