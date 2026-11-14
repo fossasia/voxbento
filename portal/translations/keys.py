@@ -21,6 +21,16 @@ def get_translation_api_key(event: Event, provider: str) -> str | None:
         TranslationProviderEnum.GEMINI.value: event.encrypted_gemini_api_key,
         TranslationProviderEnum.ANTHROPIC.value: event.encrypted_anthropic_api_key,
         TranslationProviderEnum.GROQ.value: event.encrypted_groq_api_key,
+        TranslationProviderEnum.AZURE.value: event.encrypted_azure_translator_api_key,
     }
     encrypted = key_map.get(provider)
+    return decrypt_val(encrypted) if encrypted else None
+
+
+def get_azure_translator_region(event: Event) -> str | None:
+    """Return the decrypted Azure Translator region for ``event``.
+
+    Returns ``None`` when no region is stored.
+    """
+    encrypted = event.encrypted_azure_translator_region
     return decrypt_val(encrypted) if encrypted else None

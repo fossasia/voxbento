@@ -28,6 +28,7 @@ class TranslationProvider(ABC):
         persona: str | None = None,
         style: str | None = None,
         vocabulary_entries: Sequence[Any] = (),
+        source_lang_code: str = "",
     ) -> str | None:
         """
         Translates text to the target language.
@@ -36,6 +37,8 @@ class TranslationProvider(ABC):
             text: The source text to translate
             target_lang_name: The human-readable name of the target language (e.g., 'French')
             target_lang_code: The ISO code of the target language (e.g., 'fr')
+            source_lang_name: The human-readable name of the source language (e.g., 'English')
+            source_lang_code: The ISO code of the source language (e.g., 'en')
             model: The specific model to use
             api_key: The API key for the provider (None for local models)
 
@@ -78,6 +81,7 @@ class ProviderEngine(TranslationEngine):
                 target_lang_name=target.name,
                 target_lang_code=target.code,
                 source_lang_name=source.name,
+                source_lang_code=source.code,
                 model=model,
                 api_key=api_key,
                 persona=context.persona,

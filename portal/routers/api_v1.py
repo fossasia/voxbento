@@ -53,6 +53,8 @@ _API_KEY_FIELDS: list[tuple[str, str]] = [
     ("gemini_api_key",             "encrypted_gemini_api_key"),
     ("anthropic_api_key",          "encrypted_anthropic_api_key"),
     ("groq_api_key",               "encrypted_groq_api_key"),
+    ("azure_translator_api_key",   "encrypted_azure_translator_api_key"),
+    ("azure_translator_region",    "encrypted_azure_translator_region"),
 ]
 
 
@@ -1189,6 +1191,8 @@ class EventAPIKeysUpdate(BaseModel):
     gemini_api_key: str | None = None
     anthropic_api_key: str | None = None
     groq_api_key: str | None = None
+    azure_translator_api_key: str | None = None
+    azure_translator_region: str | None = None
 
 
 @router.patch("/events/{event_slug}/api_keys", response_model=dict)

@@ -153,6 +153,28 @@
       </div>
     </div>
 
+    <div class="form-group api-key-field">
+      <label for="azure_translator_api_key" class="api-key-label">Azure Translator API Key</label>
+      <input type="password" id="azure_translator_api_key" name="azure_translator_api_key" placeholder="{{ 'Configured' if event.encrypted_azure_translator_api_key else '' }}" value="" class="input api-key-input">
+      <div class="api-key-meta">
+        <p class="form-help api-key-help">Required for Azure Translator Text API</p>
+        <label class="api-key-clear">
+          <input type="checkbox" name="clear_azure_translator_api_key" value="1"> Clear Key
+        </label>
+      </div>
+    </div>
+
+    <div class="form-group api-key-field api-key-field--last">
+      <label for="azure_translator_region" class="api-key-label">Azure Translator Region</label>
+      <input type="password" id="azure_translator_region" name="azure_translator_region" placeholder="{{ 'Configured' if event.encrypted_azure_translator_region else 'e.g., eastus' }}" value="" class="input api-key-input">
+      <div class="api-key-meta">
+        <p class="form-help api-key-help">Required for Azure Translator (e.g., eastus, westeurope, centralus)</p>
+        <label class="api-key-clear">
+          <input type="checkbox" name="clear_azure_translator_region" value="1"> Clear Key
+        </label>
+      </div>
+    </div>
+
     <div class="form-actions api-settings-actions">
       <button type="submit" class="btn btn-primary api-settings-save">Save API Settings</button>
       <a href="{{ management_prefix }}/events/{{ event.id }}/" class="btn api-settings-cancel">Cancel</a>
