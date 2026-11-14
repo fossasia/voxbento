@@ -314,6 +314,7 @@ async def test_key_refresh_is_opt_in_for_other_worker_callers(environment: Envir
         "deepgram",
         "nova-2",
         ProviderConfig(api_key=NEW_KEY),
+        transcription_language="en",
         room_id=env.room_id,
     )
     assert started.status == "already_running"

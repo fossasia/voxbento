@@ -35,7 +35,12 @@ from portal.models import Event, Room
 from portal.outage_log import OutageLog
 from portal.transcription.process import audio_progress
 from portal.transcription.providers.base import ProviderConfig, ProviderEnum, get_api_key
-from portal.transcription.worker import active_workers, start_transcription_worker, stop_transcription_worker
+from portal.transcription.worker import (
+    ERROR_CODE_STOPPING_TIMEOUT,
+    active_workers,
+    start_transcription_worker,
+    stop_transcription_worker,
+)
 from portal.websockets.manager import broadcast_transcription
 
 logger = logging.getLogger(__name__)
@@ -728,7 +733,12 @@ async def reconcile_processing(
             booth_id,
             started.error_code,
         )
-        current.state, current.reason = "degraded", "Transcription worker is stopping; retry shortly."
+        reason = (
+            "Transcription worker is stopping; retry shortly."
+            if started.error_code == ERROR_CODE_STOPPING_TIMEOUT
+            else "Failed to start transcription worker."
+        )
+        current.state, current.reason = "degraded", reason
         current.processing_state, current.processing_reason = current.state, current.reason
         return
     current.worker_config = config

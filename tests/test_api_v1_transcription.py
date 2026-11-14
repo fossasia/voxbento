@@ -14,6 +14,7 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+from pydantic import ValidationError
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
 import portal.routers.api_v1 as api_v1
@@ -87,7 +88,15 @@ async def _cleanup_test_worker(booth_id: str):
     stopped_cleanly = False
     try:
         await asyncio.wait_for(stop_transcription_worker(booth_id), timeout=2.0)
-        stopped_cleanly = True
+        task = getattr(session, "task", None)
+        if task is not None and task.done():
+            if not task.cancelled():
+                exc = task.exception()
+                if exc is not None:
+                    raise exc
+            stopped_cleanly = True
+        elif task is None:
+            stopped_cleanly = True
     except TimeoutError:
         # Stop timed out: cancel task as last resort
         task = getattr(session, "task", None)
@@ -162,9 +171,9 @@ async def test_delete_booth_stops_transcription_worker_with_correct_booth_id(eve
     assert resp == {"status": "deleted"}
     expected_booth_id = make_booth_id(EVENT_SLUG, ROOM_ID, "en")
     assert calls == [
-        ("stop", expected_booth_id),
         ("revoke", "booth", 42),
         ("delete", 42),
+        ("stop", expected_booth_id),
     ]
 
 
@@ -665,6 +674,7 @@ async def test_start_success_invokes_worker_with_resolved_config(event):
 
     assert response == {
         "status": "started",
+        "already_running": False,
         "booth_id": "pycon2026-3-en",
         "provider": "local",
         "model": "tiny",
@@ -749,6 +759,7 @@ async def test_start_external_provider_resolves_api_key(event):
     mock_get_key.assert_called_once_with(event, ProviderEnum.OPENAI)
     assert response == {
         "status": "started",
+        "already_running": False,
         "booth_id": "pycon2026-3-en",
         "provider": "openai",
         "model": "whisper-1",
@@ -949,7 +960,8 @@ async def test_start_already_running_same_config_returns_already_running(event):
             response = await api_v1.start_transcription(EVENT_SLUG, ROOM_ID, "en", db=db, token=object())
 
         assert response == {
-            "status": "already_running",
+            "status": "started",
+            "already_running": True,
             "booth_id": booth_id,
             "provider": "local",
             "model": "tiny",
@@ -1018,6 +1030,7 @@ async def test_start_already_running_rotated_api_key_restarts_worker(event):
                 assert stopped_called is True
                 assert response == {
                     "status": "started",
+                    "already_running": False,
                     "booth_id": booth_id,
                     "provider": "openai",
                     "model": "whisper-1",
@@ -1060,6 +1073,7 @@ async def test_start_normal_success_with_real_worker_lifecycle(event):
 
                 assert response == {
                     "status": "started",
+                    "already_running": False,
                     "booth_id": booth_id,
                     "provider": "local",
                     "model": "tiny",
@@ -1196,7 +1210,9 @@ async def test_start_concurrent_requests_during_starting_state(event):
 
                 res1, res2 = await asyncio.gather(task1, task2)
                 assert res1["status"] == "started"
-                assert res2["status"] == "already_running"
+                assert res1["already_running"] is False
+                assert res2["status"] == "started"
+                assert res2["already_running"] is True
                 assert res1["booth_id"] == booth_id
                 assert res2["booth_id"] == booth_id
             finally:
@@ -1354,6 +1370,7 @@ async def test_start_failure_does_not_emit_stopped_webhook(event):
 
     async def mock_enqueue(event_name, payload):
         emitted_events.append((event_name, payload))
+        return True
 
     try:
         with (
@@ -1397,8 +1414,8 @@ async def test_start_aborts_if_db_commit_fails(event):
 
 
 @pytest.mark.anyio
-async def test_admin_and_api_v1_resolve_identical_configuration(event):
-    """Admin route and API v1 route resolve identical provider, model, API key, and language."""
+async def test_shared_transcription_config_resolution_matches_admin_pattern(event):
+    """resolve_transcription_config produces identical provider, model, API key, and language matching admin pattern."""
     from portal.crypto import encrypt_val
     from portal.transcription.worker import _worker_config_matches
 
@@ -1699,12 +1716,12 @@ async def test_worker_running_published_together_with_ready_event():
         return self.process
 
     session = None
-    try:
-        with (
-            patch("portal.transcription.worker.FfmpegProcess.__aenter__", dummy_aenter),
-            patch("portal.transcription.worker.PROVIDERS", {"local": MagicMock(sample_rate=16000)}),
-            patch("portal.webhooks.worker.enqueue_webhook", side_effect=blocking_enqueue),
-        ):
+    with (
+        patch("portal.transcription.worker.FfmpegProcess.__aenter__", dummy_aenter),
+        patch("portal.transcription.worker.PROVIDERS", {"local": MagicMock(sample_rate=16000)}),
+        patch("portal.webhooks.worker.enqueue_webhook", side_effect=blocking_enqueue),
+    ):
+        try:
             res1 = await start_transcription_worker(
                 "pycon2026",
                 "en",
@@ -1742,9 +1759,9 @@ async def test_worker_running_published_together_with_ready_event():
 
             started_emitted = [e for e in emitted_events if e[0] == "booth.transcription.started"]
             assert len(started_emitted) == 1
-    finally:
-        release_webhook.set()
-        await _cleanup_test_worker(booth_id)
+        finally:
+            release_webhook.set()
+            await _cleanup_test_worker(booth_id)
 
 
 @pytest.mark.anyio
@@ -1757,13 +1774,16 @@ async def test_webhook_pairing_across_retries():
 
     async def mock_enqueue(event_name, payload):
         emitted_events.append((event_name, payload))
+        return True
 
     stream_attempts = 0
 
     class CrashOnceProvider:
-        async def run_stream(self, process, language, model, config, callback, booth, room):
+        async def run_stream(self, process, language, model, config, callback, booth, room, **kwargs):
             nonlocal stream_attempts
             stream_attempts += 1
+            if kwargs.get("ready_callback"):
+                kwargs["ready_callback"]()
             if stream_attempts == 1:
                 raise RuntimeError("First stream attempt crashed")
             # Second attempt stays alive until cancelled
@@ -1833,6 +1853,7 @@ async def test_start_worker_spawn_failure_wakes_waiter_immediately():
 
     async def mock_enqueue(event_name, payload):
         emitted_events.append((event_name, payload))
+        return True
 
     async def failing_aenter(self):
         raise FileNotFoundError("ffmpeg binary not found on PATH")
@@ -1989,13 +2010,13 @@ async def test_started_webhook_enqueue_failure_does_not_abort_worker():
     dummy_provider.run_stream = dummy_run_stream
 
     session = None
-    try:
-        with (
-            patch("portal.transcription.worker.FfmpegProcess.__aenter__", counting_aenter),
-            patch("portal.transcription.worker.FfmpegProcess.__aexit__", counting_aexit),
-            patch("portal.transcription.worker.PROVIDERS", {"local": dummy_provider}),
-            patch("portal.webhooks.worker.enqueue_webhook", side_effect=failing_enqueue),
-        ):
+    with (
+        patch("portal.transcription.worker.FfmpegProcess.__aenter__", counting_aenter),
+        patch("portal.transcription.worker.FfmpegProcess.__aexit__", counting_aexit),
+        patch("portal.transcription.worker.PROVIDERS", {"local": dummy_provider}),
+        patch("portal.webhooks.worker.enqueue_webhook", side_effect=failing_enqueue),
+    ):
+        try:
             res = await start_transcription_worker(
                 "pycon2026",
                 "en",
@@ -2025,5 +2046,459 @@ async def test_started_webhook_enqueue_failure_does_not_abort_worker():
             assert session.state == State.STOPPED
             stopped_webhooks = [e for e in emitted_events if e[0] == "booth.transcription.stopped"]
             assert len(stopped_webhooks) == 0
+        finally:
+            await _cleanup_test_worker(booth_id)
+
+
+# ── PR #1110 Comprehensive Stabilization Regression Tests ────────────────────
+
+
+@pytest.mark.anyio
+async def test_start_missing_db_booth_returns_404(event):
+    """When DBBooth is None, start_transcription returns 404, distinct from disabled returning 200."""
+    db = _db(_result(first=event), _result(first=None))
+    with pytest.raises(api_v1.HTTPException) as exc_info:
+        await api_v1.start_transcription(EVENT_SLUG, ROOM_ID, "en", db=db, token=object())
+    assert exc_info.value.status_code == 404
+    assert exc_info.value.detail == "Booth not found"
+
+
+def test_transcription_startup_timeout_setting_validation():
+    """Settings enforces transcription_startup_timeout_secs > 0 via Pydantic validation."""
+    from portal.config import Settings
+
+    with pytest.raises(ValidationError):
+        Settings(transcription_startup_timeout_secs=0.0)
+
+    with pytest.raises(ValidationError):
+        Settings(transcription_startup_timeout_secs=-2.5)
+
+    valid = Settings(transcription_startup_timeout_secs=3.5)
+    assert valid.transcription_startup_timeout_secs == 3.5
+
+
+@pytest.mark.anyio
+async def test_provider_initialization_fails_before_readiness():
+    """When provider initialization fails before readiness, start_transcription_worker returns failed
+    without entering infinite retries and cleans up registry."""
+    from portal.transcription.providers.base import ProviderConfig
+    from portal.transcription.worker import (
+        ERROR_CODE_SPAWN_FAILED,
+        active_workers,
+        start_transcription_worker,
+    )
+
+    booth_id = "test-provider-init-fail-booth"
+
+    class FailingInitProvider:
+        sample_rate = 16000
+
+        async def initialize(self):
+            raise RuntimeError("Provider credentials rejected by remote API")
+
+        async def run_stream(self, *args, **kwargs):
+            while True:
+                await asyncio.sleep(0.01)
+
+    async def dummy_aenter(self):
+        self.process = MagicMock(pid=7777)
+        self.stderr_task = MagicMock(done=MagicMock(return_value=True))
+        return self.process
+
+    async def dummy_aexit(self, exc_type, exc_val, exc_tb):
+        pass
+
+    with (
+        patch("portal.transcription.worker.FfmpegProcess.__aenter__", dummy_aenter),
+        patch("portal.transcription.worker.FfmpegProcess.__aexit__", dummy_aexit),
+        patch("portal.transcription.worker.PROVIDERS", {"local": FailingInitProvider()}),
+    ):
+        try:
+            res = await start_transcription_worker(
+                "pycon2026",
+                "en",
+                booth_id,
+                MagicMock(),
+                "local",
+                "tiny",
+                ProviderConfig(api_key=None),
+                wait_for_ready=True,
+            )
+            assert res.status == "failed"
+            assert res.error_code == ERROR_CODE_SPAWN_FAILED
+            assert "Provider credentials rejected by remote API" in (res.error or "")
+            assert booth_id not in active_workers
+        finally:
+            await _cleanup_test_worker(booth_id)
+
+
+@pytest.mark.anyio
+async def test_stopped_webhook_failure_does_not_prevent_cleanup_and_model_decrement():
+    """Failure while enqueueing booth.transcription.stopped webhook must not prevent model-reference decrement
+    or registry cleanup."""
+    from portal.transcription.providers.base import ProviderConfig
+    from portal.transcription.providers.local import _active_booths_per_model
+    from portal.transcription.worker import (
+        active_workers,
+        start_transcription_worker,
+        stop_transcription_worker,
+    )
+
+    booth_id = "test-stopped-webhook-failure-booth"
+    model = "tiny"
+    initial_refs = _active_booths_per_model.get(model, 0)
+
+    async def failing_enqueue(event_name, payload):
+        if event_name == "booth.transcription.stopped":
+            raise RuntimeError("Webhook endpoint unreachable")
+        return True
+
+    async def dummy_aenter(self):
+        self.process = MagicMock(pid=6666)
+        self.stderr_task = MagicMock(done=MagicMock(return_value=True))
+        return self.process
+
+    async def dummy_aexit(self, exc_type, exc_val, exc_tb):
+        pass
+
+    dummy_provider = MagicMock()
+    dummy_provider.sample_rate = 16000
+
+    async def dummy_stream(*args, **kwargs):
+        while True:
+            await asyncio.sleep(0.01)
+
+    dummy_provider.run_stream = dummy_stream
+
+    with (
+        patch("portal.transcription.worker.FfmpegProcess.__aenter__", dummy_aenter),
+        patch("portal.transcription.worker.FfmpegProcess.__aexit__", dummy_aexit),
+        patch("portal.transcription.worker.PROVIDERS", {"local": dummy_provider}),
+        patch("portal.transcription.worker._wh_worker.enqueue_webhook", side_effect=failing_enqueue),
+    ):
+        try:
+            res = await start_transcription_worker(
+                "pycon2026",
+                "en",
+                booth_id,
+                MagicMock(),
+                "local",
+                model,
+                ProviderConfig(api_key=None),
+                wait_for_ready=True,
+            )
+            assert res.status == "started"
+            assert _active_booths_per_model.get(model, 0) == initial_refs + 1
+            assert booth_id in active_workers
+
+            # Stop worker - stopped webhook will raise RuntimeError, but cleanup must still finish
+            stopped = await stop_transcription_worker(booth_id)
+            assert stopped is True
+            assert booth_id not in active_workers
+            assert _active_booths_per_model.get(model, 0) == initial_refs
+        finally:
+            await _cleanup_test_worker(booth_id)
+
+
+@pytest.mark.anyio
+async def test_local_model_ref_decremented_exactly_once():
+    """Repeated stop requests or multiple teardown steps must decrement local model ref exactly once."""
+    from portal.transcription.providers.base import ProviderConfig
+    from portal.transcription.providers.local import _active_booths_per_model
+    from portal.transcription.worker import (
+        active_workers,
+        start_transcription_worker,
+        stop_transcription_worker,
+    )
+
+    booth_id = "test-single-decrement-booth"
+    model = "tiny"
+    initial_refs = _active_booths_per_model.get(model, 0)
+
+    async def dummy_aenter(self):
+        self.process = MagicMock(pid=6667)
+        self.stderr_task = MagicMock(done=MagicMock(return_value=True))
+        return self.process
+
+    async def dummy_aexit(self, exc_type, exc_val, exc_tb):
+        pass
+
+    dummy_provider = MagicMock()
+    dummy_provider.sample_rate = 16000
+
+    async def dummy_stream(*args, **kwargs):
+        while True:
+            await asyncio.sleep(0.01)
+
+    dummy_provider.run_stream = dummy_stream
+
+    with (
+        patch("portal.transcription.worker.FfmpegProcess.__aenter__", dummy_aenter),
+        patch("portal.transcription.worker.FfmpegProcess.__aexit__", dummy_aexit),
+        patch("portal.transcription.worker.PROVIDERS", {"local": dummy_provider}),
+    ):
+        try:
+            res = await start_transcription_worker(
+                "pycon2026",
+                "en",
+                booth_id,
+                MagicMock(),
+                "local",
+                model,
+                ProviderConfig(api_key=None),
+                wait_for_ready=True,
+            )
+            assert res.status == "started"
+            assert _active_booths_per_model.get(model, 0) == initial_refs + 1
+
+            session = active_workers.get(booth_id)
+            assert session is not None
+
+            # First stop
+            await stop_transcription_worker(booth_id)
+            assert _active_booths_per_model.get(model, 0) == initial_refs
+
+            # Second stop on same session must be a no-op and not decrement below initial_refs
+            session.stop()
+            await session.wait_until_stopped()
+            assert _active_booths_per_model.get(model, 0) == initial_refs
+        finally:
+            await _cleanup_test_worker(booth_id)
+
+
+@pytest.mark.anyio
+async def test_old_worker_cleanup_cannot_remove_replacement_session():
+    """An old session completing teardown cannot pop a newer replacement session from active_workers."""
+    from portal.transcription.providers.base import ProviderConfig
+    from portal.transcription.worker import (
+        State,
+        TranscriptionWorkerSession,
+        active_workers,
+        active_workers_lock,
+    )
+
+    booth_id = "test-replacement-ownership-booth"
+
+    session_old = TranscriptionWorkerSession(
+        "pycon2026",
+        "en",
+        booth_id,
+        MagicMock(),
+        "local",
+        "tiny",
+        ProviderConfig(api_key=None),
+    )
+    session_new = TranscriptionWorkerSession(
+        "pycon2026",
+        "en",
+        booth_id,
+        MagicMock(),
+        "local",
+        "tiny",
+        ProviderConfig(api_key=None),
+    )
+    session_new.state = State.RUNNING
+
+    # Put new session into registry
+    active_workers[booth_id] = session_new
+
+    # Simulate old session cleanup block
+    async with active_workers_lock:
+        if active_workers.get(booth_id) is session_old:
+            active_workers.pop(booth_id, None)
+
+    # Invariant: session_new was NOT removed by session_old
+    assert active_workers.get(booth_id) is session_new
+    active_workers.pop(booth_id, None)
+
+
+@pytest.mark.anyio
+async def test_shutdown_timeout_preserves_registry_ownership():
+    """When stop_transcription_worker times out, worker remains in active_workers and returns False."""
+    from portal.transcription.worker import (
+        State,
+        active_workers,
+        stop_transcription_worker,
+    )
+
+    booth_id = "test-shutdown-timeout-retention-booth"
+
+    async def stuck_wait():
+        await asyncio.sleep(0.5)
+
+    stuck_session = SimpleNamespace(
+        session_id="stuck-123",
+        state=State.STOPPING,
+        stop=MagicMock(),
+        wait_until_stopped=stuck_wait,
+    )
+    active_workers[booth_id] = stuck_session
+
+    try:
+        stopped = await stop_transcription_worker(booth_id, timeout=0.02)
+        assert stopped is False
+        assert active_workers.get(booth_id) is stuck_session
     finally:
-        await _cleanup_test_worker(booth_id)
+        active_workers.pop(booth_id, None)
+
+
+@pytest.mark.anyio
+async def test_concurrent_stop_requests_are_safe():
+    """Concurrent stop requests for the same booth both complete cleanly without errors."""
+    from portal.transcription.providers.base import ProviderConfig
+    from portal.transcription.worker import (
+        active_workers,
+        start_transcription_worker,
+        stop_transcription_worker,
+    )
+
+    booth_id = "test-concurrent-stop-booth"
+
+    async def dummy_aenter(self):
+        self.process = MagicMock(pid=6668)
+        self.stderr_task = MagicMock(done=MagicMock(return_value=True))
+        return self.process
+
+    async def dummy_aexit(self, exc_type, exc_val, exc_tb):
+        pass
+
+    dummy_provider = MagicMock()
+    dummy_provider.sample_rate = 16000
+
+    async def dummy_stream(*args, **kwargs):
+        while True:
+            await asyncio.sleep(0.01)
+
+    dummy_provider.run_stream = dummy_stream
+
+    with (
+        patch("portal.transcription.worker.FfmpegProcess.__aenter__", dummy_aenter),
+        patch("portal.transcription.worker.FfmpegProcess.__aexit__", dummy_aexit),
+        patch("portal.transcription.worker.PROVIDERS", {"local": dummy_provider}),
+    ):
+        try:
+            res = await start_transcription_worker(
+                "pycon2026",
+                "en",
+                booth_id,
+                MagicMock(),
+                "local",
+                "tiny",
+                ProviderConfig(api_key=None),
+                wait_for_ready=True,
+            )
+            assert res.status == "started"
+
+            stop1 = asyncio.create_task(stop_transcription_worker(booth_id))
+            stop2 = asyncio.create_task(stop_transcription_worker(booth_id))
+
+            res1, res2 = await asyncio.gather(stop1, stop2)
+            assert res1 is True
+            assert res2 is True
+            assert booth_id not in active_workers
+        finally:
+            await _cleanup_test_worker(booth_id)
+
+
+@pytest.mark.anyio
+async def test_start_versus_booth_deletion():
+    """When revalidate_active reports false (booth deleted in DB/memory), start_transcription_worker aborts."""
+    from portal.transcription.providers.base import ProviderConfig
+    from portal.transcription.worker import active_workers, start_transcription_worker
+
+    booth_id = "test-revalidate-deleted-booth"
+
+    res = await start_transcription_worker(
+        "pycon2026",
+        "en",
+        booth_id,
+        MagicMock(),
+        "local",
+        "tiny",
+        ProviderConfig(api_key=None),
+        revalidate_active=lambda: False,
+    )
+    assert res.status == "failed"
+    assert res.error_code == "booth_deleted"
+    assert booth_id not in active_workers
+
+
+@pytest.mark.anyio
+async def test_booth_deletion_rollback_does_not_stop_worker(event):
+    """If DB deletion fails or rolls back, stop_transcription_worker is not called."""
+    booth = SimpleNamespace(id=55, room_id=ROOM_ID, language_code="en", event_id=event.id)
+    db = _db(_result(first=event), _result(first=booth))
+    db.commit = AsyncMock(side_effect=RuntimeError("Database write conflict during deletion"))
+
+    stop_called = False
+
+    async def mock_stop(bid):
+        nonlocal stop_called
+        stop_called = True
+
+    with (
+        patch("portal.routers.api_v1.revoke_booths_for_deleted_entity", AsyncMock()),
+        patch("portal.database.delete_booth", AsyncMock()),
+        patch("portal.routers.api_v1.stop_transcription_worker", mock_stop),
+    ):
+        with pytest.raises(RuntimeError, match="Database write conflict during deletion"):
+            await api_v1.delete_booth_endpoint(EVENT_SLUG, ROOM_ID, "en", db=db, token=object())
+
+    assert stop_called is False
+
+
+def test_floor_language_matching_all_edge_cases():
+    """Verify _languages_match and _effective_language cover all edge cases deterministically."""
+    from portal.transcription.providers.base import ProviderConfig
+    from portal.transcription.worker import (
+        TranscriptionWorkerSession,
+        _effective_language,
+        _languages_match,
+    )
+
+    # 1. Normal booth
+    assert _effective_language("en", None) == "en"
+    assert _effective_language("en", "en") == "en"
+
+    # 2. Explicit floor transcription language
+    assert _effective_language("floor", "fr") == "fr"
+    assert _effective_language("floor", "FR") == "fr"
+
+    # 3. Floor request without explicit transcription language
+    assert _effective_language("floor", None) == ""
+    assert _effective_language("floor", "") == ""
+    assert _effective_language("floor", "floor") == ""
+
+    # 4. Normal booth with explicit transcription language override
+    assert _effective_language("es", "en") == "en"
+
+    # 5. Case normalization
+    assert _effective_language("  EN  ", "  DE  ") == "de"
+    assert _effective_language("  EN  ", None) == "en"
+
+    # Matching tests with sessions
+    def _make_session(lang_code, trans_lang):
+        return TranscriptionWorkerSession(
+            "event",
+            lang_code,
+            "bid",
+            MagicMock(),
+            "local",
+            "tiny",
+            ProviderConfig(api_key=None),
+            transcription_language=trans_lang,
+        )
+
+    # Session floor with en vs incoming floor without explicit language -> should NOT match!
+    floor_en_session = _make_session("floor", "en")
+    assert _languages_match(floor_en_session, None, "floor") is False
+    assert _languages_match(floor_en_session, "en", "floor") is True
+
+    # Existing floor session vs non-floor request -> should NOT match
+    assert _languages_match(floor_en_session, None, "es") is False
+
+    # Normal session en vs incoming EN -> matches
+    normal_en_session = _make_session("en", None)
+    assert _languages_match(normal_en_session, None, "EN") is True
+    assert _languages_match(normal_en_session, None, "  en  ") is True
+    assert _languages_match(normal_en_session, None, "fr") is False

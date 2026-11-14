@@ -92,6 +92,7 @@ class TranscriptionProvider:
         broadcast_callback,
         booth_id: str,
         room_id: int | None = None,
+        ready_callback: Callable[[], None] | None = None,
     ) -> None:
         from portal.transcription.aggregator import CaptionAggregator
 
@@ -113,7 +114,7 @@ class TranscriptionProvider:
                             pass
                     break
                 except Exception as e:
-                    logger.error(f"[{booth_id}] Reader error: {e}")
+                    logger.error("[%s] Reader error: %s", booth_id, e)
                     break
 
                 if not chunk:
@@ -125,7 +126,9 @@ class TranscriptionProvider:
                         booth_state.chunks_dropped_total += 1
                         booth_state.consecutive_drops += 1
                         logger.warning(
-                            f"[{booth_id}] Inference lagging: dropped oldest audio chunk. Total dropped: {booth_state.chunks_dropped_total}"
+                            "[%s] Inference lagging: dropped oldest audio chunk. Total dropped: %d",
+                            booth_id,
+                            booth_state.chunks_dropped_total,
                         )
                     except asyncio.QueueEmpty:
                         pass
@@ -145,7 +148,7 @@ class TranscriptionProvider:
                     break
 
                 if booth_state.consecutive_drops > 3:
-                    logger.error(f"[{booth_id}] Overload Protection triggered. Pausing inference for 10s.")
+                    logger.error("[%s] Overload Protection triggered. Pausing inference for 10s.", booth_id)
                     while not queue.empty():
                         try:
                             queue.get_nowait()
@@ -164,15 +167,17 @@ class TranscriptionProvider:
                     )
                     consecutive_errors = 0
                     booth_state.consecutive_drops = 0
+                    if ready_callback:
+                        ready_callback()
 
                     if text:
-                        logger.debug(f"[{booth_id}] Transcribed: {text}")
+                        logger.debug("[%s] Transcribed: %s", booth_id, text)
                         await aggregator.handle_chunk(booth_id, text)
                     else:
                         await aggregator.handle_clear(booth_id)
                 except Exception as e:
                     consecutive_errors += 1
-                    logger.error(f"[{booth_id}] Provider error ({consecutive_errors}/3): {e}")
+                    logger.error("[%s] Provider error (%d/3): %s", booth_id, consecutive_errors, e)
                     if consecutive_errors >= 3:
                         await broadcast_callback(booth_id, "[Transcription provider failed. Check logs.]")
                         break
@@ -186,10 +191,12 @@ class TranscriptionProvider:
                         )
 
                     if latency > 3000:
-                        logger.warning(f"[{booth_id}] Inference slow: {latency:.0f}ms")
+                        logger.warning("[%s] Inference slow: %.0fms", booth_id, latency)
 
         reader = asyncio.create_task(audio_reader_task())
         inference = asyncio.create_task(inference_task())
+        if ready_callback:
+            ready_callback()
 
         await asyncio.wait([reader, inference], return_when=asyncio.FIRST_COMPLETED)
 

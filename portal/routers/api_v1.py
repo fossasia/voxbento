@@ -1009,10 +1009,11 @@ async def delete_booth_endpoint(
     from portal.database import delete_booth
 
     booth_id = make_booth_id(event_slug, target_room_id, canonical_language)
-    await stop_transcription_worker(booth_id)
-
+    await booths.remove_booth(event_slug, target_room_id, canonical_language)
     await revoke_booths_for_deleted_entity(db, level="booth", target_id=booth.id)
     await delete_booth(db, booth.id)
+    await db.commit()
+    await stop_transcription_worker(booth_id)
     return {"status": "deleted"}
 
 
@@ -1050,7 +1051,9 @@ async def start_transcription(
     )
     result = await db.execute(stmt)
     db_booth = result.scalars().first()
-    if not db_booth or not db_booth.transcription_enabled:
+    if not db_booth:
+        raise HTTPException(status_code=404, detail="Booth not found")
+    if not db_booth.transcription_enabled:
         return {"status": "disabled", "message": "Transcription is not enabled for this booth."}
 
     if booths.get_booth_sync(booth_id) is None:
@@ -1060,6 +1063,9 @@ async def start_transcription(
 
     # End the database transaction and release the connection before waiting on worker startup
     await db.commit()
+
+    def _revalidate_active() -> bool:
+        return booths.get_booth_sync(booth_id) is not None
 
     try:
         result = await start_transcription_worker(
@@ -1073,19 +1079,20 @@ async def start_transcription(
             room_id=target_room_id,
             restart_on_key_change=True,
             wait_for_ready=True,
+            revalidate_active=_revalidate_active,
         )
     except ValueError as e:
         raise HTTPException(status_code=429, detail=str(e))
 
     if not isinstance(result, TranscriptionStartResult):
-        logger.error(f"[{booth_id}] Unexpected start_transcription_worker result type: {type(result)}")
+        logger.error("[%s] Unexpected start_transcription_worker result type: %s", booth_id, type(result))
         raise HTTPException(
             status_code=500,
             detail="Failed to start transcription worker",
         )
 
     if result.status == "failed":
-        logger.error(f"[{booth_id}] Transcription worker failed to start: {result.error}")
+        logger.error("[%s] Transcription worker failed to start: %s", booth_id, result.error)
         if result.error_code == ERROR_CODE_STOPPING_TIMEOUT:
             retry_after = str(math.ceil(settings.transcription_startup_timeout_secs))
             raise HTTPException(
@@ -1098,7 +1105,13 @@ async def start_transcription(
             detail="Failed to start transcription worker",
         )
 
-    return {"status": result.status, "booth_id": booth_id, "provider": result.provider, "model": result.model}
+    return {
+        "status": "started",
+        "already_running": result.status == "already_running",
+        "booth_id": booth_id,
+        "provider": result.provider,
+        "model": result.model,
+    }
 
 
 @router.post("/events/{event_slug}/rooms/{room_id}/booths/{language_code}/transcription/stop")

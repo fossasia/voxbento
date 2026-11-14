@@ -21,7 +21,7 @@ from portal.routers.webhooks import validate_ssrf
 logger = logging.getLogger(__name__)
 
 
-async def enqueue_webhook(event_type: str, payload: dict) -> None:
+async def enqueue_webhook(event_type: str, payload: dict) -> bool:
     """Helper to insert a new webhook delivery into the queue."""
     try:
         async with get_session() as db:
@@ -43,8 +43,12 @@ async def enqueue_webhook(event_type: str, payload: dict) -> None:
             if deliveries:
                 db.add_all(deliveries)
                 await db.flush()
+        return True
+    except asyncio.CancelledError:
+        raise
     except Exception as e:
-        logger.error(f"Failed to enqueue webhook: {e}", exc_info=True)
+        logger.error("Failed to enqueue webhook: %s", e, exc_info=True)
+        return False
 
 
 def sign_payload(secret: str, payload_str: str, timestamp: int) -> str:

@@ -895,7 +895,7 @@ async def api_transcription_start(
         raise HTTPException(status_code=429, detail=str(e))
     if isinstance(result, TranscriptionStartResult):
         if result.status == "failed":
-            logger.error(f"[{booth_id}] Transcription worker failed to start: {result.error}")
+            logger.error("[%s] Transcription worker failed to start: %s", booth_id, result.error)
             if result.error_code == ERROR_CODE_STOPPING_TIMEOUT:
                 retry_after = str(math.ceil(settings.transcription_startup_timeout_secs))
                 raise HTTPException(
@@ -916,7 +916,12 @@ async def api_transcription_start(
         res_model = model_size
 
     logger.info("Transcription worker running for booth %s (provider: %s)", booth_id, res_provider)
-    return {"status": result_status, "provider": res_provider, "model": res_model}
+    return {
+        "status": "started",
+        "already_running": result_status == "already_running",
+        "provider": res_provider,
+        "model": res_model,
+    }
 
 
 @router.post("/events/{event_slug}/rooms/{room_id}/booths/{language_code}/transcription/stop")
