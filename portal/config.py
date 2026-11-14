@@ -180,6 +180,9 @@ class Settings(BaseSettings):
 
     # Transcription Settings
     nvidia_function_id: str = ""
+    # Maximum concurrent transcription booth workers. Overridable via the
+    # MAX_TRANSCRIPTION_WORKERS environment variable (or .env).
+    max_transcription_workers: int = 10
 
     # Self-hosted translation: an OpenAI-compatible server (Ollama, llama.cpp, vLLM) run by
     # the operator. Only the server sets this URL, so event owners can't aim requests at
