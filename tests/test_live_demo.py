@@ -345,6 +345,10 @@ def test_prompt_echo_is_recognised():
     # Real speech that only starts with the word is kept, with or without a glossary.
     assert not live_demo.is_prompt_echo("Glossary entries help translators.", hints)
     assert not live_demo.is_prompt_echo("Glossary entries help translators.", ())
+    # A glossary term said on its own is speech, not an echo, single- or multi-word.
+    assert not live_demo.is_prompt_echo("Arnav.", hints)
+    assert not live_demo.is_prompt_echo("Good morning!", (*hints, "Good morning"))
+    assert live_demo.is_prompt_echo("Good morning, Arnav.", (*hints, "Good morning"))
     assert not live_demo.is_prompt_echo("Welcome.", ())
 
 

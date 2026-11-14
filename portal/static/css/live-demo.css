@@ -661,10 +661,15 @@
   font-weight: 700;
 }
 
-/* The previous caption's translation, while the next one is on its way. */
+/* The previous caption's translation, while the next one is on its way: italic and, outside
+   the selected row, grey. No fading, which would make white text on blue unreadable. */
 .live-demo__text[data-kind='stale'] {
-  opacity: 0.55;
-  transition: opacity 0.2s ease;
+  font-style: italic;
+  color: var(--ld-muted);
+}
+
+.live-demo__row--target[aria-pressed='true'] .live-demo__text[data-kind='stale'] {
+  color: #ffffff;
 }
 
 .live-demo__row--target[aria-pressed='true'] .live-demo__text {

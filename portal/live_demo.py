@@ -598,16 +598,26 @@ def clean_transcript(text: str) -> str:
 def is_prompt_echo(text: str, hints: Sequence[str]) -> bool:
     """Whether Whisper only repeated its glossary prompt, as it does on noise or silence.
 
-    That is text made only of glossary terms, optionally after the prompt's "Glossary" label.
-    Without a glossary there is no prompt to repeat, so nothing counts as an echo.
+    The text must be made only of glossary terms, and either keep the prompt's "Glossary"
+    label or list at least two different terms. One term on its own ("Arnav", "Good morning")
+    is real speech and kept. Without a glossary there is no prompt, so nothing is an echo.
     """
-    hint_words = {word for hint in hints for word in re.findall(r"\w+", hint.casefold())}
-    if not hint_words:
+    terms = sorted({tuple(re.findall(r"\w+", hint.casefold())) for hint in hints} - {()}, key=len, reverse=True)
+    if not terms:
         return False
     words = re.findall(r"\w+", text.casefold())
-    if words[:1] == ["glossary"] and "glossary" not in hint_words:
+    labelled = words[:1] == ["glossary"] and ("glossary",) not in terms
+    if labelled:
         words = words[1:]
-    return all(word in hint_words for word in words)
+    matched: set[tuple[str, ...]] = set()
+    position = 0
+    while position < len(words):
+        term = next((t for t in terms if tuple(words[position : position + len(t)]) == t), None)
+        if term is None:
+            return False
+        matched.add(term)
+        position += len(term)
+    return labelled or len(matched) >= 2
 
 
 @dataclass(frozen=True)
