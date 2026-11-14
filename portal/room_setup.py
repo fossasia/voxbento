@@ -26,7 +26,7 @@ from portal.roles import INTERPRETER
 from portal.transcription.constants import ALLOWED_MODELS, ProviderEnum
 from portal.translations.model_languages import supported_languages, unsupported_languages
 from portal.translations.registry import NLLB_200_DISTILLED_600M
-from portal.tts.constants import DEEPGRAM_VOICE_MAPPING, SUPERTONIC_SUPPORTED_LANGS
+from portal.tts.constants import DEEPGRAM_VOICE_MAPPING, ELEVENLABS_SUPPORTED_LANGS, SUPERTONIC_SUPPORTED_LANGS
 from portal.utils import _make_jitsi_url
 
 AI_VOICE = "ai_voice"
@@ -169,7 +169,11 @@ class EngineCatalog:
 
 
 def voice_languages_for(provider: str) -> Iterable[str]:
-    return DEEPGRAM_VOICE_MAPPING if provider == "deepgram" else SUPERTONIC_SUPPORTED_LANGS
+    if provider == "deepgram":
+        return DEEPGRAM_VOICE_MAPPING
+    if provider == "elevenlabs":
+        return ELEVENLABS_SUPPORTED_LANGS
+    return SUPERTONIC_SUPPORTED_LANGS
 
 
 _KEY_ADDED = "uses your API key"
@@ -296,6 +300,11 @@ def engine_catalog(event: Event) -> EngineCatalog:
         voice.append(Engine("deepgram", "aura", "Deepgram Aura", _KEY_ADDED))
     else:
         locked.append(_BRANDS["deepgram"])
+    if event.encrypted_elevenlabs_api_key:
+        # Deepgram Aura has no Thai voice; Eleven v4 speaks Thai and 90+ other languages.
+        voice.append(Engine("elevenlabs", "eleven_v4", "ElevenLabs v4", _KEY_ADDED))
+    else:
+        locked.append(_BRANDS["elevenlabs"])
     if find_spec("supertonic") is not None:
         voice.append(Engine("supertonic", "supertonic", "Supertonic (built in)", _SELF_HOSTED))
     else:
