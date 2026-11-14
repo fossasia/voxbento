@@ -471,6 +471,54 @@ async def test_deepgram_handshake_401_is_reported():
 
 
 @pytest.mark.anyio
+async def test_deepgram_handshake_401_is_reported_when_the_room_has_glossary_terms():
+    """A rejected key must not be mistaken for the glossary retry that follows an HTTP 400."""
+    from portal.transcription.providers.deepgram import DeepgramProvider
+
+    process = MagicMock()
+    process.returncode = None
+
+    def raise_handshake(*args, **kwargs):
+        raise _ws_invalid_status(401)
+
+    with patch("portal.transcription.providers.deepgram.load_keyterms", new=AsyncMock(return_value=["Eventyay"])):
+        with patch("websockets.connect", side_effect=raise_handshake):
+            with pytest.raises(TranscriptionAuthError) as excinfo:
+                await DeepgramProvider().run_stream(
+                    process, "en", "nova-3", ProviderConfig(api_key="bad"), AsyncMock(), "booth-1", room_id=1
+                )
+
+    assert excinfo.value.provider == "deepgram"
+
+
+@pytest.mark.anyio
+async def test_deepgram_handshake_400_with_glossary_terms_is_not_reported_as_a_rejected_key():
+    """An HTTP 400 drops the glossary and carries on; it is not an authentication failure."""
+    from portal.transcription.providers.deepgram import DeepgramProvider
+
+    process = MagicMock()
+    process.returncode = None
+    urls: list[str] = []
+
+    def raise_handshake(url, *args, **kwargs):
+        urls.append(url)
+        raise _ws_invalid_status(400)
+
+    with patch("portal.transcription.providers.deepgram.load_keyterms", new=AsyncMock(return_value=["Eventyay"])):
+        with patch("websockets.connect", side_effect=raise_handshake):
+            with patch("portal.transcription.providers.deepgram.asyncio.sleep", new=AsyncMock()):
+                await asyncio.wait_for(
+                    DeepgramProvider().run_stream(
+                        process, "en", "nova-3", ProviderConfig(api_key="good"), AsyncMock(), "booth-1", room_id=1
+                    ),
+                    timeout=5,
+                )
+
+    assert "keyterm=Eventyay" in urls[0]
+    assert all("keyterm" not in url for url in urls[1:])
+
+
+@pytest.mark.anyio
 async def test_openai_realtime_handshake_401_is_reported():
     """A rejected key on the realtime path used to be retried, then abandoned."""
     from portal.transcription.providers.openai import OpenAIProvider
