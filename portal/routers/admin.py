@@ -2948,11 +2948,7 @@ async def admin_transcription_settings(
                         room_id=db_booth.room_id,
                     )
                     # The start call only schedules the worker; ffmpeg is launched right after, so wait for that.
-                    status_val = getattr(start_res, "status", None)
-                    is_success = status_val in ("started", "already_running") or (
-                        status_val is None and bool(start_res)
-                    )
-                    if is_success and await wait_for_worker_start(bid):
+                    if start_res.status in ("started", "already_running") and await wait_for_worker_start(bid):
                         worker = "restarted"
                     else:
                         worker = "failed"
