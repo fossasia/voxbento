@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import logging
+
 import jwt as pyjwt
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
@@ -55,6 +57,7 @@ from portal.websockets.manager import broadcast_transcription
 
 router = APIRouter(prefix="/api")
 bearer_scheme = HTTPBearer(auto_error=False)
+logger = logging.getLogger(__name__)
 
 
 async def _verify_event_access(
@@ -304,9 +307,7 @@ async def _verify_resource_access(
     elif credentials is not None and payload is None:
         # A bearer API key is not a JWT. Resolve it through the event-scoped
         # authorization path instead of falling through to the generic gate.
-        await _verify_event_access(
-            session, request, event.id, room_id=room_id, credentials=credentials, token=token
-        )
+        await _verify_event_access(session, request, event.id, room_id=room_id, credentials=credentials, token=token)
     else:
         _require_access(request, credentials, token, session_payload=payload)
     if payload and not payload.get("user") and payload.get("token_id") is not None:
@@ -629,9 +630,10 @@ async def list_event_booths(
         b["label"] = f"{b.get('language_name', b.get('language_code', ''))} (Human)"
 
     async with get_session() as session:
-
-        stmt = select(Event).where(Event.slug == event_slug, Event.deleted_at.is_(None)).options(
-            selectinload(Event.rooms).selectinload(Room.translation_languages)
+        stmt = (
+            select(Event)
+            .where(Event.slug == event_slug, Event.deleted_at.is_(None))
+            .options(selectinload(Event.rooms).selectinload(Room.translation_languages))
         )
         event = await session.scalar(stmt)
         if event:
@@ -798,9 +800,7 @@ async def ingest_status_api(channel_id: str) -> dict:
     return {"channel_id": channel_id, "state": "mediamtx", "reachable": await _check_mediamtx()}
 
 
-def resolve_transcription_config(
-    db_booth: DBBooth, event: Event | None = None
-) -> tuple[str, str, ProviderConfig]:
+def resolve_transcription_config(db_booth: DBBooth, event: Event | None = None) -> tuple[str, str, ProviderConfig]:
     """Resolve provider, model size, and ProviderConfig for a booth."""
     provider = db_booth.transcription_provider
     model_size = db_booth.transcription_model
@@ -876,16 +876,25 @@ async def api_transcription_start(
         provider, model_size, config = resolve_transcription_config(db_booth)
     try:
         result = await start_transcription_worker(
-            event_slug, language_code, booth_id, broadcast_transcription, provider, model_size, config, room_id=room_id, wait_for_ready=True
+            event_slug,
+            language_code,
+            booth_id,
+            broadcast_transcription,
+            provider,
+            model_size,
+            config,
+            room_id=room_id,
+            wait_for_ready=True,
         )
     except ValueError as e:
         raise HTTPException(status_code=429, detail=str(e))
 
     if isinstance(result, TranscriptionStartResult):
         if result.status == "failed":
+            logger.error(f"[{booth_id}] Transcription worker failed to start: {result.error}")
             raise HTTPException(
                 status_code=500,
-                detail=f"Transcription worker failed to start: {result.error or 'Unknown error'}",
+                detail="Failed to start transcription worker",
             )
         result_status = result.status
         res_provider = result.provider

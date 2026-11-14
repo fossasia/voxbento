@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import asyncio
 import logging
 from datetime import datetime, timezone
 from typing import Annotated, Any
@@ -48,15 +47,15 @@ router = APIRouter(prefix="/api/v1")
 # attribute on the Event model.  Adding a new provider only requires one
 # new entry here.
 _API_KEY_FIELDS: list[tuple[str, str]] = [
-    ("openai_api_key",             "encrypted_openai_api_key"),
-    ("deepgram_api_key",           "encrypted_deepgram_api_key"),
-    ("nvidia_api_key",             "encrypted_nvidia_api_key"),
-    ("elevenlabs_api_key",         "encrypted_elevenlabs_api_key"),
+    ("openai_api_key", "encrypted_openai_api_key"),
+    ("deepgram_api_key", "encrypted_deepgram_api_key"),
+    ("nvidia_api_key", "encrypted_nvidia_api_key"),
+    ("elevenlabs_api_key", "encrypted_elevenlabs_api_key"),
     ("translation_openai_api_key", "encrypted_translation_openai_api_key"),
-    ("openrouter_api_key",         "encrypted_openrouter_api_key"),
-    ("gemini_api_key",             "encrypted_gemini_api_key"),
-    ("anthropic_api_key",          "encrypted_anthropic_api_key"),
-    ("groq_api_key",               "encrypted_groq_api_key"),
+    ("openrouter_api_key", "encrypted_openrouter_api_key"),
+    ("gemini_api_key", "encrypted_gemini_api_key"),
+    ("anthropic_api_key", "encrypted_anthropic_api_key"),
+    ("groq_api_key", "encrypted_groq_api_key"),
 ]
 
 
@@ -779,9 +778,7 @@ async def patch_room_settings(
     if not event:
         raise HTTPException(status_code=404, detail="Event not found")
 
-    await _verify_token_rbac(
-        db, token, event, room_id, manage=True, lock_event=True, write_lock=True
-    )
+    await _verify_token_rbac(db, token, event, room_id, manage=True, lock_event=True, write_lock=True)
     return {"status": "success"}
 
 
@@ -830,7 +827,11 @@ async def get_booth(
     room = await _verify_token_rbac(db, token, event, room_id, lock_event=True)
     target_room_id = _extract_room_id(room, room_id)
 
-    result = await db.execute(select(DBBooth).where(DBBooth.room_id == target_room_id, DBBooth.language_code == language_code, DBBooth.event_id == event.id))
+    result = await db.execute(
+        select(DBBooth).where(
+            DBBooth.room_id == target_room_id, DBBooth.language_code == language_code, DBBooth.event_id == event.id
+        )
+    )
     booth = result.scalars().first()
     if not booth:
         raise HTTPException(status_code=404, detail="Booth not found")
@@ -855,12 +856,12 @@ async def create_booth(
     if not event:
         raise HTTPException(status_code=404, detail="Event not found")
 
-    room = await _verify_token_rbac(
-        db, token, event, room_id, manage=True, lock_event=True, write_lock=True
-    )
+    room = await _verify_token_rbac(db, token, event, room_id, manage=True, lock_event=True, write_lock=True)
     target_room_id = _extract_room_id(room, room_id)
 
-    result = await db.execute(select(DBBooth).where(DBBooth.room_id == target_room_id, DBBooth.language_code == language_code))
+    result = await db.execute(
+        select(DBBooth).where(DBBooth.room_id == target_room_id, DBBooth.language_code == language_code)
+    )
     if result.scalars().first():
         raise HTTPException(status_code=409, detail="Booth already exists")
 
@@ -886,12 +887,14 @@ async def delete_booth_endpoint(
     if not event:
         raise HTTPException(status_code=404, detail="Event not found")
 
-    room = await _verify_token_rbac(
-        db, token, event, room_id, manage=True, lock_event=True, write_lock=True
-    )
+    room = await _verify_token_rbac(db, token, event, room_id, manage=True, lock_event=True, write_lock=True)
     target_room_id = _extract_room_id(room, room_id)
 
-    result = await db.execute(select(DBBooth).where(DBBooth.room_id == target_room_id, DBBooth.language_code == language_code, DBBooth.event_id == event.id))
+    result = await db.execute(
+        select(DBBooth).where(
+            DBBooth.room_id == target_room_id, DBBooth.language_code == language_code, DBBooth.event_id == event.id
+        )
+    )
     booth = result.scalars().first()
     if not booth:
         raise HTTPException(status_code=404, detail="Booth not found")
@@ -944,11 +947,8 @@ async def start_transcription(
 
     provider, model_size, config = resolve_transcription_config(db_booth, event=event)
 
-    # Release database write lock before waiting on worker startup
-    if hasattr(db, "commit"):
-        res = db.commit()
-        if asyncio.iscoroutine(res) or hasattr(res, "__await__"):
-            await res
+    # End the database transaction and release the connection before waiting on worker startup
+    await db.commit()
 
     try:
         result = await start_transcription_worker(
@@ -965,21 +965,26 @@ async def start_transcription(
     except ValueError as e:
         raise HTTPException(status_code=429, detail=str(e))
 
-    if isinstance(result, TranscriptionStartResult):
-        if result.status == "failed":
-            raise HTTPException(
-                status_code=500,
-                detail=f"Transcription worker failed to start: {result.error or 'Unknown error'}",
-            )
-        result_status = result.status
-        res_provider = result.provider
-        res_model = result.model
-    else:
-        result_status = "started"
-        res_provider = provider
-        res_model = model_size
+    if not isinstance(result, TranscriptionStartResult):
+        logger.error(f"[{booth_id}] Unexpected start_transcription_worker result type: {type(result)}")
+        raise HTTPException(
+            status_code=500,
+            detail="Failed to start transcription worker",
+        )
 
-    return {"status": result_status, "booth_id": booth_id, "provider": res_provider, "model": res_model}
+    if result.status == "failed":
+        logger.error(f"[{booth_id}] Transcription worker failed to start: {result.error}")
+        status_code = (
+            status.HTTP_503_SERVICE_UNAVAILABLE
+            if "existing worker to stop" in (result.error or "")
+            else status.HTTP_500_INTERNAL_SERVER_ERROR
+        )
+        raise HTTPException(
+            status_code=status_code,
+            detail="Failed to start transcription worker",
+        )
+
+    return {"status": result.status, "booth_id": booth_id, "provider": result.provider, "model": result.model}
 
 
 @router.post("/events/{event_slug}/rooms/{room_id}/booths/{language_code}/transcription/stop")
@@ -1025,10 +1030,7 @@ async def get_transcription_status(
     for b in booths_list:
         bid = make_booth_id(event_slug, target_room_id, b.language_code)
         worker = active_workers.get(bid)
-        is_running = (
-            worker is not None
-            and getattr(worker, "state", None) not in (State.STOPPING, State.STOPPED)
-        )
+        is_running = worker is not None and getattr(worker, "state", None) not in (State.STOPPING, State.STOPPED)
         statuses[b.language_code] = {
             "is_active": booths.get_booth_sync(bid) is not None,
             # Running transcription is tracked by the worker registry, not on the

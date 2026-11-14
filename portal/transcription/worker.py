@@ -1,4 +1,5 @@
 import asyncio
+import hmac
 import logging
 import uuid
 from enum import Enum
@@ -83,6 +84,7 @@ class TranscriptionWorkerSession:
         self.stop_event = asyncio.Event()
         self.ready_event = asyncio.Event()
         self.start_error: str | None = None
+        self.started_webhook_emitted: bool = False
         self.task: asyncio.Task | None = None
         self.loop_entered = False
 
@@ -130,11 +132,18 @@ class TranscriptionWorkerSession:
                     # The context manager entirely encapsulates ffmpeg process lifecycle and cleanup.
                     async with FfmpegProcess(self.rtsp_url, self.sample_rate, self.booth_id) as process:
                         self.state = State.RUNNING
+                        if not self.started_webhook_emitted:
+                            await _wh_worker.enqueue_webhook(
+                                "booth.transcription.started",
+                                {
+                                    "booth_id": self.booth_id,
+                                    "session_id": self.session_id,
+                                    "event_slug": self.event_slug,
+                                },
+                            )
+                            self.started_webhook_emitted = True
                         if not self.ready_event.is_set():
                             self.ready_event.set()
-                        await _wh_worker.enqueue_webhook(
-                            "booth.transcription.started", {"booth_id": self.booth_id, "session_id": self.session_id, "event_slug": self.event_slug}
-                        )
 
                         actual_language = self.transcription_language or self.language_code
                         if actual_language == "floor":
@@ -206,9 +215,11 @@ class TranscriptionWorkerSession:
             async with active_workers_lock:
                 if active_workers.get(self.booth_id) is self:
                     active_workers.pop(self.booth_id, None)
-            await _wh_worker.enqueue_webhook(
-                "booth.transcription.stopped", {"booth_id": self.booth_id, "session_id": self.session_id, "event_slug": self.event_slug}
-            )
+            if self.started_webhook_emitted:
+                await _wh_worker.enqueue_webhook(
+                    "booth.transcription.stopped",
+                    {"booth_id": self.booth_id, "session_id": self.session_id, "event_slug": self.event_slug},
+                )
             if self.provider_name == "local":
                 from portal.transcription.providers.local import decrement_model_ref
 
@@ -223,20 +234,26 @@ def _worker_config_matches(
     session: TranscriptionWorkerSession,
     provider: str,
     model_size: str,
-    config: ProviderConfig,
+    config: ProviderConfig | None,
     transcription_language: str | None = None,
+    language_code: str | None = None,
 ) -> bool:
     if session.provider_name != provider:
         return False
     if session.model_size != model_size:
         return False
-    if (session.transcription_language or None) != (transcription_language or None):
+
+    session_lang = (session.transcription_language or session.language_code or "").strip().lower()
+    fallback_lang = (session.language_code or "").strip().lower()
+    incoming_lang = (transcription_language or language_code or fallback_lang or "").strip().lower()
+    if session_lang != incoming_lang:
         return False
-    existing_key = getattr(session.config, "api_key", None) if session.config else None
-    new_key = getattr(config, "api_key", None) if config else None
-    if existing_key != new_key:
-        return False
-    return True
+
+    existing_key = (getattr(session.config, "api_key", None) or "") if session.config else ""
+    new_key = (getattr(config, "api_key", None) or "") if config else ""
+    if not existing_key and not new_key:
+        return True
+    return hmac.compare_digest(str(existing_key).encode("utf-8"), str(new_key).encode("utf-8"))
 
 
 async def start_transcription_worker(
@@ -251,6 +268,9 @@ async def start_transcription_worker(
     room_id: int | None = None,
     wait_for_ready: bool = False,
 ) -> TranscriptionStartResult:
+    session_to_wait: TranscriptionWorkerSession | None = None
+    is_new_session = False
+
     while True:
         async with active_workers_lock:
             existing_session = active_workers.get(booth_id)
@@ -279,24 +299,41 @@ async def start_transcription_worker(
                 )
                 active_workers[booth_id] = new_session
                 new_session.start()
+                session_to_wait = new_session
+                is_new_session = True
                 break
 
             if existing_session.state in (State.STOPPING, State.STOPPED):
                 if existing_session.state == State.STOPPED:
                     # It's fully dead. Pop it and let the loop recreate it immediately.
-                    active_workers.pop(booth_id, None)
+                    if active_workers.get(booth_id) is existing_session:
+                        active_workers.pop(booth_id, None)
                     continue
                 # Session is tearing down in the background. We must strictly serialize.
                 # Drop lock, actively await the old session's death, then loop around and re-check registry.
                 pass
             else:
-                if _worker_config_matches(existing_session, provider, model_size, config, transcription_language):
-                    logger.info(f"Transcription worker for {booth_id} is already running with matching config.")
-                    return TranscriptionStartResult(
-                        status="already_running",
-                        provider=existing_session.provider_name,
-                        model=existing_session.model_size,
-                    )
+                if _worker_config_matches(
+                    existing_session,
+                    provider,
+                    model_size,
+                    config,
+                    transcription_language=transcription_language,
+                    language_code=language_code,
+                ):
+                    if existing_session.state == State.RUNNING:
+                        logger.info(f"Transcription worker for {booth_id} is already running with matching config.")
+                        return TranscriptionStartResult(
+                            status="already_running",
+                            provider=existing_session.provider_name,
+                            model=existing_session.model_size,
+                        )
+
+                    # Existing session is in State.STARTING!
+                    # Wait for its readiness rather than assuming success.
+                    session_to_wait = existing_session
+                    is_new_session = False
+                    break
 
                 logger.info(f"[{booth_id}] Configuration changed for running worker; restarting with new settings.")
                 existing_session.stop()
@@ -306,37 +343,56 @@ async def start_transcription_worker(
         logger.info(
             f"[{booth_id}] start_transcription_worker actively waiting for old session [{existing_session.session_id}] to STOP."
         )
-        await existing_session.wait_until_stopped()
-
-    if wait_for_ready:
         startup_timeout = getattr(settings, "transcription_startup_timeout_secs", 5.0)
         try:
-            await asyncio.wait_for(new_session.ready_event.wait(), timeout=startup_timeout)
+            await asyncio.wait_for(existing_session.wait_until_stopped(), timeout=startup_timeout)
         except TimeoutError:
-            new_session.start_error = "Startup timed out waiting for audio process"
-            new_session.stop()
-            async with active_workers_lock:
-                if active_workers.get(booth_id) is new_session:
-                    active_workers.pop(booth_id, None)
+            logger.error(
+                f"[{booth_id}][{existing_session.session_id}] Timed out waiting for stopping session to terminate. Retaining session in registry."
+            )
             return TranscriptionStartResult(
                 status="failed",
                 provider=provider,
                 model=model_size,
-                error=new_session.start_error,
+                error="Timed out waiting for existing worker to stop",
             )
 
-        if new_session.start_error:
+    if wait_for_ready and session_to_wait is not None:
+        startup_timeout = getattr(settings, "transcription_startup_timeout_secs", 5.0)
+        try:
+            await asyncio.wait_for(session_to_wait.ready_event.wait(), timeout=startup_timeout)
+        except TimeoutError:
+            logger.warning(f"[{booth_id}][{session_to_wait.session_id}] Startup timed out waiting for audio process.")
+            session_to_wait.start_error = "Startup timed out waiting for audio process"
+            session_to_wait.stop()
+            try:
+                await asyncio.wait_for(session_to_wait.wait_until_stopped(), timeout=startup_timeout)
+                async with active_workers_lock:
+                    if active_workers.get(booth_id) is session_to_wait:
+                        active_workers.pop(booth_id, None)
+            except TimeoutError:
+                logger.error(
+                    f"[{booth_id}][{session_to_wait.session_id}] Teardown timed out after startup failure. Retaining session in registry to prevent duplicate workers."
+                )
             return TranscriptionStartResult(
                 status="failed",
                 provider=provider,
                 model=model_size,
-                error=new_session.start_error,
+                error=session_to_wait.start_error,
+            )
+
+        if session_to_wait.start_error:
+            return TranscriptionStartResult(
+                status="failed",
+                provider=provider,
+                model=model_size,
+                error=session_to_wait.start_error,
             )
 
     return TranscriptionStartResult(
-        status="started",
-        provider=provider,
-        model=model_size,
+        status="started" if is_new_session else "already_running",
+        provider=provider if is_new_session else session_to_wait.provider_name,
+        model=model_size if is_new_session else session_to_wait.model_size,
     )
 
 
@@ -353,4 +409,4 @@ async def stop_transcription_worker(booth_id: str):
         # Clean up only if it hasn't been replaced
         async with active_workers_lock:
             if active_workers.get(booth_id) is session:
-                active_workers.pop(booth_id)
+                active_workers.pop(booth_id, None)
