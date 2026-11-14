@@ -115,6 +115,19 @@ async def test_utterance_end_closes_a_phrase_endpointing_missed(recorder):
 
 
 @pytest.mark.anyio
+async def test_a_bare_is_final_short_phrase_is_not_judged_as_a_whole_turn(recorder):
+    """is_final can settle one short word of a longer turn, so it waits for the rest instead of being filtered (#299)."""
+    aggregator, messages = recorder
+    booth = "conf-1-floor"
+    await stt.handle_message(aggregator, booth, _result("Thank you.", is_final=True))
+    # Nothing is published or discarded yet: the phrase is only the start of the turn.
+    assert _finals(messages) == []
+
+    await stt.handle_message(aggregator, booth, _result("Now let us begin the talk.", is_final=True, speech_final=True))
+    assert _finals(messages) == ["Thank you. Now let us begin the talk."]
+
+
+@pytest.mark.anyio
 async def test_a_short_phrase_the_recogniser_followed_is_not_discarded_as_invented(recorder):
     """Interim results show real speech was heard, so a spoken "Thank you." must reach listeners (#299)."""
     aggregator, messages = recorder
