@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import math
 from datetime import datetime, timezone
 from typing import Annotated, Any
 
@@ -12,6 +13,7 @@ from sqlalchemy.orm import selectinload
 
 from portal.auth import coordinates_room, load_membership_scope, require_oauth_scope
 from portal.booth_identity import make_booth_id, make_mediamtx_path, validate_language_code
+from portal.config import settings
 from portal.database import get_db_session
 from portal.globals import booths
 from portal.models import (
@@ -32,7 +34,7 @@ from portal.routers.api import broadcast_transcription, resolve_transcription_co
 from portal.transcription.constants import ProviderEnum
 from portal.transcription.worker import (
     ERROR_CODE_STOPPING_TIMEOUT,
-    State,
+    State,  # noqa: F401
     TranscriptionStartResult,
     active_workers,
     start_transcription_worker,
@@ -975,14 +977,15 @@ async def start_transcription(
 
     if result.status == "failed":
         logger.error(f"[{booth_id}] Transcription worker failed to start: {result.error}")
-        is_stopping_timeout = getattr(
-            result, "error_code", None
-        ) == ERROR_CODE_STOPPING_TIMEOUT or "existing worker to stop" in (result.error or "")
-        status_code = (
-            status.HTTP_503_SERVICE_UNAVAILABLE if is_stopping_timeout else status.HTTP_500_INTERNAL_SERVER_ERROR
-        )
+        if result.error_code == ERROR_CODE_STOPPING_TIMEOUT:
+            retry_after = str(math.ceil(settings.transcription_startup_timeout_secs))
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail="Transcription worker is still stopping; retry shortly",
+                headers={"Retry-After": retry_after},
+            )
         raise HTTPException(
-            status_code=status_code,
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="Failed to start transcription worker",
         )
 
@@ -1032,18 +1035,7 @@ async def get_transcription_status(
     for b in booths_list:
         bid = make_booth_id(event_slug, target_room_id, b.language_code)
         worker = active_workers.get(bid)
-        if worker is None:
-            is_running = False
-        elif hasattr(worker, "is_running"):
-            is_running = bool(worker.is_running)
-        elif hasattr(worker, "state"):
-            is_running = (
-                worker.state == State.RUNNING
-                and getattr(worker, "start_error", None) is None
-                and not (getattr(worker, "task", None) and getattr(worker.task, "done", lambda: False)())
-            )
-        else:
-            is_running = getattr(worker, "state", None) not in (State.STOPPING, State.STOPPED)
+        is_running = worker is not None and worker.is_running
         statuses[b.language_code] = {
             "is_active": booths.get_booth_sync(bid) is not None,
             # Running transcription is tracked by the worker registry, not on the

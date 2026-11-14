@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import math
 
 import jwt as pyjwt
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
@@ -42,6 +43,7 @@ from portal.roles import INTERPRETER, Permission, can_set_active, has_permission
 from portal.schemas.booth import CreateBoothRequest
 from portal.transcription import ProviderConfig, ProviderEnum, get_api_key
 from portal.transcription.worker import (
+    ERROR_CODE_STOPPING_TIMEOUT,
     TranscriptionStartResult,
     start_transcription_worker,
     stop_transcription_worker,
@@ -892,14 +894,15 @@ async def api_transcription_start(
     if isinstance(result, TranscriptionStartResult):
         if result.status == "failed":
             logger.error(f"[{booth_id}] Transcription worker failed to start: {result.error}")
-            is_stopping_timeout = getattr(
-                result, "error_code", None
-            ) == "stopping_timeout" or "existing worker to stop" in (result.error or "")
-            status_code = (
-                status.HTTP_503_SERVICE_UNAVAILABLE if is_stopping_timeout else status.HTTP_500_INTERNAL_SERVER_ERROR
-            )
+            if result.error_code == ERROR_CODE_STOPPING_TIMEOUT:
+                retry_after = str(math.ceil(settings.transcription_startup_timeout_secs))
+                raise HTTPException(
+                    status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                    detail="Transcription worker is still stopping; retry shortly",
+                    headers={"Retry-After": retry_after},
+                )
             raise HTTPException(
-                status_code=status_code,
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
                 detail="Failed to start transcription worker",
             )
         result_status = result.status
