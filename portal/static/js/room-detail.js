@@ -106,10 +106,12 @@ function initAiSettings() {
   if (ttsProvider) {
     const voiceGroup = document.getElementById('tts_voice_group');
     const deepgramHelp = document.getElementById('tts_provider_help_deepgram');
+    const elevenlabsHelp = document.getElementById('tts_provider_help_elevenlabs');
     const syncVoice = () => {
       const supertonic = ttsProvider.value === 'supertonic';
       if (voiceGroup) voiceGroup.hidden = !supertonic;
       if (deepgramHelp) deepgramHelp.hidden = ttsProvider.value !== 'deepgram';
+      if (elevenlabsHelp) elevenlabsHelp.hidden = ttsProvider.value !== 'elevenlabs';
     };
     ttsProvider.addEventListener('change', syncVoice);
     syncVoice();
