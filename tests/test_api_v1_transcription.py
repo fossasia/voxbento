@@ -81,16 +81,30 @@ async def _cleanup_test_worker(booth_id: str):
     session = active_workers.get(booth_id)
     if session is None:
         return
-    try:
-        from portal.transcription.worker import stop_transcription_worker
 
+    from portal.transcription.worker import stop_transcription_worker
+
+    stopped_cleanly = False
+    try:
         await asyncio.wait_for(stop_transcription_worker(booth_id), timeout=2.0)
-    except (TimeoutError, asyncio.CancelledError, Exception):
-        if hasattr(session, "stop"):
-            session.stop()
+        stopped_cleanly = True
+    except TimeoutError:
+        # Stop timed out: cancel task as last resort
+        task = getattr(session, "task", None)
+        if task is not None and not task.done():
+            task.cancel()
+            try:
+                await asyncio.wait_for(asyncio.shield(task), timeout=0.5)
+            except (TimeoutError, asyncio.CancelledError):
+                pass
+            if task.done():
+                stopped_cleanly = True
+        raise AssertionError(f"worker did not stop within 2s: {booth_id}")
     finally:
-        if active_workers.get(booth_id) is session:
-            active_workers.pop(booth_id, None)
+        task = getattr(session, "task", None)
+        if stopped_cleanly and (task is None or task.done()):
+            if active_workers.get(booth_id) is session:
+                active_workers.pop(booth_id, None)
 
 
 # ── stop ──────────────────────────────────────────────────────────────────────
@@ -1730,12 +1744,7 @@ async def test_worker_running_published_together_with_ready_event():
             assert len(started_emitted) == 1
     finally:
         release_webhook.set()
-        if session:
-            try:
-                await asyncio.wait_for(stop_transcription_worker(booth_id), timeout=2.0)
-            except (TimeoutError, asyncio.CancelledError):
-                session.stop()
-        active_workers.pop(booth_id, None)
+        await _cleanup_test_worker(booth_id)
 
 
 @pytest.mark.anyio
