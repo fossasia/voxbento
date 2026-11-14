@@ -161,3 +161,68 @@ def test_a_refused_load_is_reported_clearly_and_the_reference_is_released(caplog
     assert result is None
     assert "Cannot load model model-a: no room for model-a" in caplog.text
     assert local._active_translations_per_model["model-a"] == 0
+
+
+def test_a_check_only_call_evicts_nothing():
+    _load("model-a", 1)
+    _load("model-b", 2)
+
+    make_room_for("model-c", evict=False)  # would evict model-a, but only checks
+
+    assert set(local._loaded_models) == {"model-a", "model-b"}
+
+
+def test_a_failed_download_does_not_evict_idle_models(tmp_path):
+    """Eviction waits until the model is ready to load, so a download that fails costs nothing."""
+    _load("model-a", 1)
+    _load("model-b", 2)
+
+    def failing_tokenizer(*args, **kwargs):
+        raise OSError("tokenizer files missing")
+
+    fake_transformers = SimpleNamespace(AutoTokenizer=SimpleNamespace(from_pretrained=failing_tokenizer))
+    fake_ctranslate2 = SimpleNamespace(get_cuda_device_count=lambda: 0)
+
+    with (
+        patch.dict(sys.modules, {"ctranslate2": fake_ctranslate2, "transformers": fake_transformers}),
+        patch.dict(SIZES, {str(tmp_path): 600}),
+        pytest.raises(OSError),
+    ):
+        local.get_model_and_tokenizer(str(tmp_path))
+
+    assert set(local._loaded_models) == {"model-a", "model-b"}
+
+
+def test_a_model_that_cannot_fit_is_refused_before_anything_is_loaded(tmp_path):
+    _load("model-a", 1)
+    local._active_translations_per_model["model-a"] = 1
+    _load("model-b", 2)
+    local._active_translations_per_model["model-b"] = 1
+
+    def forbidden(*args, **kwargs):
+        raise AssertionError("must not get as far as loading the tokenizer")
+
+    fake_transformers = SimpleNamespace(AutoTokenizer=SimpleNamespace(from_pretrained=forbidden))
+
+    with (
+        patch.dict(sys.modules, {"transformers": fake_transformers}),
+        patch.dict(SIZES, {str(tmp_path): 600}),
+        pytest.raises(ModelMemoryBudgetError),
+    ):
+        local.get_model_and_tokenizer(str(tmp_path))
+
+
+def test_repeated_refusals_are_logged_once(caplog):
+    provider = LocalProvider()
+    error = ModelMemoryBudgetError("no room for model-a")
+    local._refusal_logged.clear()
+
+    with (
+        patch.object(local, "get_model_and_tokenizer", side_effect=error),
+        caplog.at_level("ERROR"),
+    ):
+        for _ in range(3):
+            assert provider._run_inference("Hello", "eng_Latn", "fra_Latn", "model-a") is None
+
+    assert caplog.text.count("Cannot load model model-a") == 1
+    local._refusal_logged.clear()

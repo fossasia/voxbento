@@ -172,6 +172,25 @@ def decrement_model_ref(model_size: str):
             _active_translations_per_model[model_size] -= 1
 
 
+#: When each model's refused load was last logged as an error, so a busy room does not log one per segment.
+_refusal_logged: dict[str, float] = {}
+REFUSAL_LOG_SECS = 300.0
+
+
+def log_refused_load(model_size: str, error: Exception) -> None:
+    """Log a refused load as an error once per ``REFUSAL_LOG_SECS`` per model; repeats go to debug."""
+    now = time.monotonic()
+    with _model_lock:
+        last = _refusal_logged.get(model_size)
+        first = last is None or now - last >= REFUSAL_LOG_SECS
+        if first:
+            _refusal_logged[model_size] = now
+    if first:
+        logger.error("[NLLB] Cannot load model %s: %s (repeats are logged at debug)", model_size, error)
+    else:
+        logger.debug("[NLLB] Cannot load model %s: %s", model_size, error)
+
+
 class ModelMemoryBudgetError(RuntimeError):
     """A local translation model cannot be loaded without going over the memory budget."""
 
@@ -182,8 +201,11 @@ def model_memory_mb(model_size: str) -> int:
     return entry.approx_ram_mb if entry else 0
 
 
-def make_room_for(model_size: str) -> None:
+def make_room_for(model_size: str, *, evict: bool = True) -> None:
     """Evict idle models until ``model_size`` fits in the memory budget, or refuse to load it.
+
+    With ``evict=False`` it only checks, raising when the model could not fit and evicting nothing.
+    The loader checks first, before a download, and evicts only once the model is ready to load.
 
     The least recently used model that is not translating goes first. A model in use is never
     evicted. Nothing is evicted when the model cannot fit anyway. The budget counts each model's
@@ -217,6 +239,8 @@ def make_room_for(model_size: str) -> None:
                 f"Not enough memory to load {model_size} (about {needed} MB): the other loaded models are in use "
                 f"and the LOCAL_TRANSLATION_MEMORY_MB budget is {budget} MB"
             )
+        if not evict:
+            return
         for name in to_evict:
             logger.info("Evicting idle model %s to make room for %s", name, model_size)
             del _loaded_models[name]
@@ -238,7 +262,8 @@ def get_model_and_tokenizer(model_size: str):
                 _loaded_models[model_size].last_used = time.time()
                 return _loaded_models[model_size].model, _loaded_models[model_size].tokenizer
 
-        make_room_for(model_size)
+        # Refuse before a download that could not be used; nothing is evicted yet.
+        make_room_for(model_size, evict=False)
 
         logger.info(f"Loading NLLB model: {model_size}")
         import ctranslate2
@@ -276,6 +301,8 @@ def get_model_and_tokenizer(model_size: str):
         tokenizer = transformers.AutoTokenizer.from_pretrained(local_model_path, src_lang="eng_Latn", revision="main")  # nosec
         cpu_count = os.cpu_count() or 4
         intra_threads = min(cpu_count, 2)
+        # Evict only now, so a failed download or tokenizer load does not cost the idle models.
+        make_room_for(model_size)
         devices = ["cuda", "cpu"] if ctranslate2.get_cuda_device_count() > 0 else ["cpu"]
         for device in devices:
             try:
@@ -296,6 +323,7 @@ def get_model_and_tokenizer(model_size: str):
 
         with _model_lock:
             _loaded_models[model_size] = ModelEntry(model=model, tokenizer=tokenizer, last_used=time.time())
+            _refusal_logged.pop(model_size, None)
             return _loaded_models[model_size].model, _loaded_models[model_size].tokenizer
 
 
@@ -462,7 +490,7 @@ class LocalProvider(TranslationProvider, TranslationEngine):
             return translated_text.strip()
 
         except ModelMemoryBudgetError as e:
-            logger.error("[NLLB] Cannot load model %s: %s", model_size, e)
+            log_refused_load(model_size, e)
             return None
         except Exception as e:
             import traceback
