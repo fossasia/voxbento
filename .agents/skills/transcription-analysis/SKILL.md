@@ -91,7 +91,7 @@ await aggregator.handle_clear(booth_id)                   # silence endpoint
 
 ## Deepgram Provider Details
 
-- Connects to `wss://api.deepgram.com/v1/listen?model=nova-2&...&interim_results=true`
+- Connects to `wss://api.deepgram.com/v1/listen?model=nova-3&...&interim_results=true` (`build_listen_url`; glossary keyterms on nova-3)
 - Runs concurrent `sender` (pipes PCM) and `receiver` (gets transcripts) tasks
 - Handles `KeepAlive` (every 5s timeout to prevent WS close)
 - `speech_final=True` or `is_final=True` → `handle_final`; otherwise → `handle_partial`
