@@ -81,7 +81,19 @@ def event():
 def _skip_rbac():
     # Authorisation is covered elsewhere; these tests are about what happens
     # after the caller has been let in.
-    with patch.object(api_v1, "_verify_token_rbac", AsyncMock()):
+    class _DefaultMockSessionContext:
+        async def __aenter__(self):
+            session = MagicMock()
+            session.scalar = AsyncMock(return_value=1)
+            return session
+
+        async def __aexit__(self, exc_type, exc_val, exc_tb):
+            pass
+
+    with (
+        patch.object(api_v1, "_verify_token_rbac", AsyncMock()),
+        patch.object(api_v1, "get_session", return_value=_DefaultMockSessionContext()),
+    ):
         yield
 
 
@@ -801,22 +813,88 @@ async def test_start_invalid_language_code_raises_400(event):
 
 
 @pytest.mark.anyio
-async def test_start_inactive_booth_raises_400(event):
-    """If the booth is not active in memory, route raises 400 Bad Request."""
+async def test_start_booth_exists_only_in_db_succeeds(event):
+    """API v1 start for a booth that exists only in DB (not in memory) succeeds."""
+    booth_id = make_booth_id(EVENT_SLUG, ROOM_ID, "en")
     db_booth = SimpleNamespace(
+        id=42,
         transcription_enabled=True,
         transcription_provider="local",
         transcription_model="tiny",
+        language_code="en",
+        room_id=ROOM_ID,
+        event_id=event.id,
         event=event,
     )
     db = _db(_result(first=event), _result(first=db_booth))
 
-    with patch.object(api_v1.booths, "get_booth_sync", return_value=None):
+    class DummySessionContext:
+        async def __aenter__(self):
+            session = MagicMock()
+            session.scalar = AsyncMock(return_value=db_booth.id)
+            return session
+
+        async def __aexit__(self, exc_type, exc_val, exc_tb):
+            pass
+
+    async def dummy_aenter(self):
+        self.process = MagicMock(pid=1234)
+        self.stderr_task = MagicMock(done=MagicMock(return_value=True))
+        return self.process
+
+    try:
+        # Booth does NOT exist in memory (get_booth_sync returns None)
+        with (
+            patch.object(api_v1.booths, "get_booth_sync", return_value=None),
+            patch.object(api_v1, "get_session", return_value=DummySessionContext()),
+            patch("portal.transcription.worker.FfmpegProcess.__aenter__", dummy_aenter),
+            patch("portal.transcription.worker.PROVIDERS", {"local": MagicMock(sample_rate=16000)}),
+        ):
+            response = await api_v1.start_transcription(EVENT_SLUG, ROOM_ID, "en", db=db, token=object())
+            assert response["status"] == "started"
+            assert response["booth_id"] == booth_id
+            assert booth_id in active_workers
+    finally:
+        await _cleanup_test_worker(booth_id)
+
+
+@pytest.mark.anyio
+async def test_start_racing_delete_committing_before_registration_registers_no_worker(event):
+    """When a delete commits between route DB read and worker registration, start returns 404 and no worker is registered."""
+    booth_id = make_booth_id(EVENT_SLUG, ROOM_ID, "en")
+    mock_booth = MagicMock()
+    db_booth = SimpleNamespace(
+        id=88,
+        transcription_enabled=True,
+        transcription_provider="local",
+        transcription_model="tiny",
+        language_code="en",
+        room_id=ROOM_ID,
+        event_id=event.id,
+        event=event,
+    )
+    db = _db(_result(first=event), _result(first=db_booth))
+
+    class DeletedSessionContext:
+        async def __aenter__(self):
+            session = MagicMock()
+            # Delete committed in DB: row is gone
+            session.scalar = AsyncMock(return_value=None)
+            return session
+
+        async def __aexit__(self, exc_type, exc_val, exc_tb):
+            pass
+
+    # Notice: booth is still in memory (mock_booth), but deleted in DB
+    with (
+        patch.object(api_v1.booths, "get_booth_sync", return_value=mock_booth),
+        patch.object(api_v1, "get_session", return_value=DeletedSessionContext()),
+    ):
         with pytest.raises(api_v1.HTTPException) as exc_info:
             await api_v1.start_transcription(EVENT_SLUG, ROOM_ID, "en", db=db, token=object())
-
-    assert exc_info.value.status_code == 400
-    assert "Booth not active in memory" in exc_info.value.detail
+        assert exc_info.value.status_code == 404
+        assert exc_info.value.detail == "Booth is no longer active"
+        assert booth_id not in active_workers
 
 
 @pytest.mark.anyio
@@ -2293,21 +2371,23 @@ async def test_shutdown_timeout_preserves_registry_ownership():
 
     booth_id = "test-shutdown-timeout-retention-booth"
 
-    wait_cancelled = False
+    async def stuck_task_coro():
+        try:
+            await asyncio.sleep(1.0)
+        except asyncio.CancelledError:
+            pass
+
+    stuck_task = asyncio.create_task(stuck_task_coro())
 
     async def stuck_wait():
-        nonlocal wait_cancelled
-        try:
-            await asyncio.sleep(0.5)
-        except asyncio.CancelledError:
-            wait_cancelled = True
-            raise
+        await asyncio.shield(stuck_task)
 
     stuck_session = SimpleNamespace(
         session_id="stuck-123",
         state=State.STOPPING,
         stop=MagicMock(),
         wait_until_stopped=stuck_wait,
+        task=stuck_task,
     )
     active_workers[booth_id] = stuck_session
 
@@ -2315,9 +2395,15 @@ async def test_shutdown_timeout_preserves_registry_ownership():
         stopped = await stop_transcription_worker(booth_id, timeout=0.02)
         assert stopped is False
         assert active_workers.get(booth_id) is stuck_session
-        assert wait_cancelled is False, "wait_until_stopped coroutine was prematurely cancelled by wait_for timeout"
+        assert stuck_session.task.done() is False
+        assert stuck_session.task.cancelled() is False
     finally:
         active_workers.pop(booth_id, None)
+        stuck_task.cancel()
+        try:
+            await stuck_task
+        except asyncio.CancelledError:
+            pass
 
 
 @pytest.mark.anyio
@@ -2393,8 +2479,8 @@ async def test_start_versus_booth_deletion():
 
 
 @pytest.mark.anyio
-async def test_admin_start_versus_booth_deletion(event):
-    """When booth is removed from in-memory registry before registration, admin api_transcription_start registers no worker."""
+async def test_admin_start_booth_exists_only_in_db_succeeds(event):
+    """Admin api_transcription_start for a booth that exists only in DB (not in memory) succeeds."""
     import portal.routers.api as api_admin
 
     booth_id = make_booth_id(EVENT_SLUG, ROOM_ID, "en")
@@ -2418,15 +2504,76 @@ async def test_admin_start_versus_booth_deletion(event):
         async def __aexit__(self, exc_type, exc_val, exc_tb):
             pass
 
+    async def dummy_aenter(self):
+        self.process = MagicMock(pid=5678)
+        self.stderr_task = MagicMock(done=MagicMock(return_value=True))
+        return self.process
+
     mock_request = MagicMock()
 
-    # When booth is removed from memory, booths.get_booth_sync returns None
+    try:
+        # Booth does NOT exist in memory (get_booth_sync returns None)
+        with (
+            patch.object(api_admin.booths, "get_booth_sync", return_value=None),
+            patch.object(api_admin, "get_session", return_value=DummySessionContext()),
+            patch.object(api_admin, "get_event_by_slug", AsyncMock(return_value=event)),
+            patch.object(api_admin, "_verify_resource_access", AsyncMock()),
+            patch.object(api_admin, "_require_same_origin_for_cookies", MagicMock()),
+            patch("portal.transcription.worker.FfmpegProcess.__aenter__", dummy_aenter),
+            patch("portal.transcription.worker.PROVIDERS", {"local": MagicMock(sample_rate=16000)}),
+        ):
+            response = await api_admin.api_transcription_start(EVENT_SLUG, ROOM_ID, "en", request=mock_request)
+            assert response["status"] == "started"
+            assert response["provider"] == "local"
+            assert booth_id in active_workers
+    finally:
+        await _cleanup_test_worker(booth_id)
+
+
+@pytest.mark.anyio
+async def test_admin_start_versus_booth_deletion(event):
+    """When booth is deleted from DB before registration, admin api_transcription_start returns 404 and registers no worker."""
+    import portal.routers.api as api_admin
+
+    booth_id = make_booth_id(EVENT_SLUG, ROOM_ID, "en")
+    mock_booth = MagicMock()
+    db_booth = SimpleNamespace(
+        id=77,
+        transcription_enabled=True,
+        transcription_provider="local",
+        transcription_model="tiny",
+        language_code="en",
+        room_id=ROOM_ID,
+        event_id=event.id,
+        event=event,
+    )
+
+    first_query = True
+
+    class RaceSessionContext:
+        async def __aenter__(self):
+            nonlocal first_query
+            session = MagicMock()
+            if first_query:
+                first_query = False
+                session.scalar = AsyncMock(return_value=db_booth)
+            else:
+                # Revalidation query in _revalidate_active: delete has committed
+                session.scalar = AsyncMock(return_value=None)
+            return session
+
+        async def __aexit__(self, exc_type, exc_val, exc_tb):
+            pass
+
+    mock_request = MagicMock()
+
+    # Booth is still in memory (mock_booth), but deleted in DB during the race
     with (
-        patch.object(api_admin, "get_session", return_value=DummySessionContext()),
+        patch.object(api_admin, "get_session", return_value=RaceSessionContext()),
         patch.object(api_admin, "get_event_by_slug", AsyncMock(return_value=event)),
         patch.object(api_admin, "_verify_resource_access", AsyncMock()),
         patch.object(api_admin, "_require_same_origin_for_cookies", MagicMock()),
-        patch.object(api_admin.booths, "get_booth_sync", return_value=None),
+        patch.object(api_admin.booths, "get_booth_sync", return_value=mock_booth),
     ):
         with pytest.raises(api_admin.HTTPException) as exc_info:
             await api_admin.api_transcription_start(EVENT_SLUG, ROOM_ID, "en", request=mock_request)

@@ -878,17 +878,21 @@ async def api_transcription_start(
             )
             return {"status": "disabled", "message": "Transcription is not enabled for this booth."}
         provider, model_size, config = resolve_transcription_config(db_booth)
-        if booths.get_booth_sync(booth_id) is None:
-            await booths.snapshot(
-                booth_id=booth_id,
-                language=getattr(db_booth, "language_name", None) or language_code,
-                channel_id=make_mediamtx_path(event_slug, room_id, language_code),
-                room_id=room_id,
-            )
     try:
 
-        def _revalidate_active() -> bool:
-            return booths.get_booth_sync(booth_id) is not None
+        async def _revalidate_active() -> bool:
+            async with get_session() as s:
+                check_stmt = (
+                    select(DBBooth.id)
+                    .join(Event, Event.id == DBBooth.event_id)
+                    .where(
+                        Event.slug == event_slug,
+                        Event.deleted_at.is_(None),
+                        DBBooth.room_id == room_id,
+                        DBBooth.language_code == language_code,
+                    )
+                )
+                return (await s.scalar(check_stmt)) is not None
 
         result = await start_transcription_worker(
             event_slug,

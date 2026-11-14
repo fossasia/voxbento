@@ -15,7 +15,7 @@ from portal.auth import coordinates_room, load_membership_scope, require_oauth_s
 from portal.booth_identity import make_booth_id, make_mediamtx_path, validate_language_code
 from portal.config import settings
 from portal.database import delete_room as delete_db_room
-from portal.database import get_db_session
+from portal.database import get_db_session, get_session
 from portal.globals import booths
 from portal.models import (
     DBBooth,
@@ -1061,16 +1061,24 @@ async def start_transcription(
     if not db_booth.transcription_enabled:
         return {"status": "disabled", "message": "Transcription is not enabled for this booth."}
 
-    if booths.get_booth_sync(booth_id) is None:
-        raise HTTPException(status_code=400, detail="Booth not active in memory")
-
     provider, model_size, config = resolve_transcription_config(db_booth, event=event)
 
     # End the database transaction and release the connection before waiting on worker startup
     await db.commit()
 
-    def _revalidate_active() -> bool:
-        return booths.get_booth_sync(booth_id) is not None
+    async def _revalidate_active() -> bool:
+        async with get_session() as s:
+            check_stmt = (
+                select(DBBooth.id)
+                .join(Event, Event.id == DBBooth.event_id)
+                .where(
+                    Event.slug == event_slug,
+                    Event.deleted_at.is_(None),
+                    DBBooth.room_id == target_room_id,
+                    DBBooth.language_code == canonical_language,
+                )
+            )
+            return (await s.scalar(check_stmt)) is not None
 
     try:
         result = await start_transcription_worker(

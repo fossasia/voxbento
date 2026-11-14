@@ -6,7 +6,7 @@ import inspect
 import logging
 import uuid
 from enum import Enum
-from typing import Callable, Dict
+from typing import Awaitable, Callable, Dict
 
 import portal.webhooks.worker as _wh_worker
 from portal.config import settings
@@ -402,7 +402,7 @@ async def start_transcription_worker(
     *,
     restart_on_key_change: bool = False,
     wait_for_ready: bool = False,
-    revalidate_active: Callable[[], bool] | None = None,
+    revalidate_active: Callable[[], bool | Awaitable[bool]] | None = None,
 ) -> TranscriptionStartResult:
     session_to_wait: TranscriptionWorkerSession | None = None
     is_new_session = False
@@ -410,15 +410,19 @@ async def start_transcription_worker(
         async with active_workers_lock:
             existing_session = active_workers.get(booth_id)
             if not existing_session:
-                if revalidate_active is not None and not revalidate_active():
-                    logger.info("[%s] Booth is no longer active; aborting transcription start.", booth_id)
-                    return TranscriptionStartResult(
-                        status="failed",
-                        provider=provider,
-                        model=model_size,
-                        error="Booth is no longer active",
-                        error_code="booth_deleted",
-                    )
+                if revalidate_active is not None:
+                    is_active = revalidate_active()
+                    if inspect.isawaitable(is_active):
+                        is_active = await is_active
+                    if not is_active:
+                        logger.info("[%s] Booth is no longer active; aborting transcription start.", booth_id)
+                        return TranscriptionStartResult(
+                            status="failed",
+                            provider=provider,
+                            model=model_size,
+                            error="Booth is no longer active",
+                            error_code="booth_deleted",
+                        )
 
                 if len(active_workers) >= MAX_TOTAL_WORKERS:
                     raise WorkerCapacityError(
@@ -616,7 +620,7 @@ async def stop_transcription_worker(booth_id: str, timeout: float | None = None)
 
     effective_timeout = timeout if timeout is not None else settings.transcription_shutdown_timeout_secs
     try:
-        await asyncio.wait_for(asyncio.shield(session.wait_until_stopped()), timeout=effective_timeout)
+        await asyncio.wait_for(session.wait_until_stopped(), timeout=effective_timeout)
     except TimeoutError:
         logger.error(
             "[%s][%s] Timed out waiting for worker to stop. Retaining session in registry.",
