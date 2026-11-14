@@ -1018,6 +1018,29 @@ class EmailSettings(Base):
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now, onupdate=utc_now)
 
 
+class LiveDemoSettings(Base):
+    """Admin settings for the home-page live demo (one row, id 1). No row means the server defaults.
+
+    The ``LIVE_DEMO_*`` environment variables supply those defaults, and ``LIVE_DEMO_ENABLED=false``
+    switches the demo off whatever is saved here.
+    """
+
+    __tablename__ = "live_demo_settings"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    enabled: Mapped[bool] = mapped_column(Boolean, default=True, server_default=sa.true())
+    voice_enabled: Mapped[bool] = mapped_column(Boolean, default=True, server_default=sa.true())
+    whisper_model: Mapped[str] = mapped_column(String(20), default="base", server_default="base")
+    max_sessions: Mapped[int] = mapped_column(Integer, default=2, server_default="2")
+    max_session_seconds: Mapped[int] = mapped_column(Integer, default=120, server_default="120")
+    sessions_per_ip_per_hour: Mapped[int] = mapped_column(Integer, default=12, server_default="12")
+    max_targets: Mapped[int] = mapped_column(Integer, default=3, server_default="3")
+    # One entry per line: "term", "term = translation" or "term = fr: translation".
+    glossary: Mapped[str] = mapped_column(Text, default="", server_default="")
+    updated_by_id: Mapped[int | None] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now, onupdate=utc_now)
+
+
 class EmailDelivery(Base):
     """An encrypted rendered message awaiting SMTP delivery or its audit record."""
 

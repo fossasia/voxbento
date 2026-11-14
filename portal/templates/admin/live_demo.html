@@ -1,0 +1,146 @@
+{% extends "admin/base.html" %}
+
+{% block title %}Live demo{% endblock %}
+
+{% block breadcrumb %}
+<nav class="breadcrumb" aria-label="Breadcrumb">
+  <a href="/admin/">Overview</a> <span>/</span>
+  <span class="breadcrumb-current" aria-current="page">Live demo</span>
+</nav>
+{% endblock %}
+
+{% block content %}
+<div class="page-header">
+  <div>
+    <h1>Live demo</h1>
+    <p>The "Your voice" demo on the home page lets visitors speak and get captions, translations and a voice from this server's own models. Turn it off when the server can't spare the CPU.</p>
+  </div>
+</div>
+
+<div class="live-demo-summary">
+  <div class="card">
+    <strong>{% if not demo.server_allowed %}Off on this server{% elif demo.enabled %}On{% else %}Off{% endif %}</strong>
+    <span>{% if demo.live %}Shown on the home page{% else %}Home page shows the recording only{% endif %}</span>
+  </div>
+  <div class="card">
+    <strong>{{ active_sessions }} / {{ demo.max_sessions }}</strong>
+    <span>Visitors using it now</span>
+  </div>
+  <div class="card">
+    <strong>{% if models_ready %}Loaded{% elif models_loading %}Loading…{% else %}Not loaded{% endif %}</strong>
+    <span>Speech, translation{% if demo.voice %} and voice{% endif %} models</span>
+  </div>
+  <div class="card">
+    <strong>{{ glossary_count }}</strong>
+    <span>Site glossary entries</span>
+  </div>
+</div>
+
+{% if not demo.server_allowed %}
+<p class="alert alert-warning" role="status">The server sets <code>LIVE_DEMO_ENABLED=false</code>, so the demo stays off whatever is saved here.</p>
+{% endif %}
+{% if error %}
+<p class="alert alert-danger" role="alert">{{ error }}</p>
+{% elif request.query_params.get('saved') %}
+<p class="alert alert-success" role="status">Saved. The home page uses these settings within a few seconds; runs already in progress finish as they started.</p>
+{% elif request.query_params.get('loading') %}
+<p class="alert alert-success" role="status">Loading the models in the background. The first time, this downloads about 1 GB. Reload this page to see when they are ready.</p>
+{% endif %}
+
+<form method="post" action="/admin/live-demo/" class="live-demo-form">
+  <input type="hidden" name="csrf_token" value="{{ request.state.admin_csrf_token }}" />
+
+  <section class="card live-demo-card">
+    <div class="card-header">
+      <h2>Availability</h2>
+      <p>When the demo is off, the home page shows only the recorded demo.</p>
+    </div>
+    <div class="live-demo-card-body">
+      <label class="live-demo-check">
+        <input type="checkbox" name="enabled"{% if form.enabled %} checked{% endif %} />
+        Show the live demo on the home page
+      </label>
+      <label class="live-demo-check">
+        <input type="checkbox" name="voice_enabled"{% if form.voice_enabled %} checked{% endif %}{% if not voice_installed %} disabled{% endif %} aria-describedby="voice-help" />
+        Speak the translations aloud
+      </label>
+      <small id="voice-help" class="live-demo-help">
+        {% if voice_installed %}Uses Supertonic on the CPU. Turn it off to save CPU; captions and translations keep working.{% else %}Supertonic isn't installed on this server, so the demo shows captions only.{% endif %}
+      </small>
+      <div class="form-group">
+        <label for="whisper_model">Speech recognition model</label>
+        <select id="whisper_model" name="whisper_model" aria-describedby="whisper-help">
+          {% for value, label in whisper_models.items() %}
+          <option value="{{ value }}"{% if form.whisper_model == value %} selected{% endif %}>{{ label }}</option>
+          {% endfor %}
+        </select>
+        <small id="whisper-help">A new model loads on the next try or when you press "Load models now".</small>
+      </div>
+    </div>
+  </section>
+
+  <section class="card live-demo-card">
+    <div class="card-header">
+      <h2>Limits</h2>
+      <p>The demo is public, so these cap how much of the server it can use.</p>
+    </div>
+    <div class="live-demo-card-body live-demo-grid">
+      <div class="form-group">
+        <label for="max_sessions">Visitors at once</label>
+        <input id="max_sessions" name="max_sessions" type="number" inputmode="numeric" required min="{{ limits.max_sessions[0] }}" max="{{ limits.max_sessions[1] }}" value="{{ form.max_sessions }}" aria-describedby="max-sessions-help" />
+        <small id="max-sessions-help">Others are asked to try again in a minute.</small>
+      </div>
+      <div class="form-group">
+        <label for="max_session_seconds">Time limit per try (seconds)</label>
+        <input id="max_session_seconds" name="max_session_seconds" type="number" inputmode="numeric" required min="{{ limits.max_session_seconds[0] }}" max="{{ limits.max_session_seconds[1] }}" value="{{ form.max_session_seconds }}" />
+      </div>
+      <div class="form-group">
+        <label for="sessions_per_ip_per_hour">Tries per visitor per hour</label>
+        <input id="sessions_per_ip_per_hour" name="sessions_per_ip_per_hour" type="number" inputmode="numeric" required min="{{ limits.sessions_per_ip_per_hour[0] }}" max="{{ limits.sessions_per_ip_per_hour[1] }}" value="{{ form.sessions_per_ip_per_hour }}" aria-describedby="per-ip-help" />
+        <small id="per-ip-help">Counted per network address.</small>
+      </div>
+      <div class="form-group">
+        <label for="max_targets">Languages per try</label>
+        <input id="max_targets" name="max_targets" type="number" inputmode="numeric" required min="{{ limits.max_targets[0] }}" max="{{ limits.max_targets[1] }}" value="{{ form.max_targets }}" aria-describedby="targets-help" />
+        <small id="targets-help">Each extra language adds a translation for every sentence.</small>
+      </div>
+    </div>
+  </section>
+
+  <section class="card live-demo-card">
+    <div class="card-header">
+      <h2>Site glossary</h2>
+      <p>Used in every visitor's try, together with the names and translations they add themselves. Speech recognition listens for these terms, and translations keep them or use the translation you set.</p>
+    </div>
+    <div class="live-demo-card-body">
+      <div class="form-group live-demo-glossary">
+        <label for="glossary">One entry per line</label>
+        <textarea id="glossary" name="glossary" rows="10" spellcheck="false" aria-describedby="glossary-help">{{ form.glossary }}</textarea>
+        <small id="glossary-help">
+          <code>VoxBento</code> keeps a term as it is in every language.
+          <code>keynote = plenary session</code> uses that translation in every language.
+          <code>keynote = fr: séance plénière</code> uses it only in French (two-letter language code).
+          Lines starting with <code>#</code> are ignored. Up to 100 entries.
+        </small>
+      </div>
+    </div>
+  </section>
+
+  <div class="live-demo-actions">
+    <button class="btn btn-primary" type="submit">Save settings</button>
+  </div>
+</form>
+
+<section class="card live-demo-card">
+  <div class="card-header">
+    <h2>Models</h2>
+    <p>Models load when the first visitor starts a try, which can take a minute the first time. Load them now to have the demo ready.</p>
+  </div>
+  <form method="post" action="/admin/live-demo/warm-up" class="live-demo-card-body">
+    <input type="hidden" name="csrf_token" value="{{ request.state.admin_csrf_token }}" />
+    <button class="btn btn-outline" type="submit"{% if models_ready or models_loading %} disabled{% endif %}>
+      {% if models_ready %}Models loaded{% elif models_loading %}Loading…{% else %}Load models now{% endif %}
+    </button>
+  </form>
+</section>
+{% endblock %}

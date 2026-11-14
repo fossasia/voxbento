@@ -210,6 +210,16 @@ class Settings(BaseSettings):
     # (uses all physical cores).
     supertonic_intra_op_threads: int = 0
 
+    # Home-page live demo (/ws/demo/live): visitors speak and get captions, translations and a
+    # voice from the server's own models. Public, so its load is capped per server and per IP.
+    live_demo_enabled: bool = True
+    live_demo_voice_enabled: bool = True
+    live_demo_whisper_model: str = "base"
+    live_demo_translation_model: str = "nllb-200-distilled-600M"
+    live_demo_max_sessions: int = Field(default=2, ge=1)
+    live_demo_max_session_seconds: int = Field(default=120, ge=10)
+    live_demo_sessions_per_ip_per_hour: int = Field(default=12, ge=1)
+
     # Email Settings
     smtp_host: str = ""
     smtp_port: int = 587
