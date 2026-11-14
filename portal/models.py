@@ -1037,10 +1037,18 @@ class LiveDemoSettings(Base):
     max_targets: Mapped[int] = mapped_column(Integer, default=3, server_default="3")
     # One entry per line: "term", "term = translation" or "term = fr: translation".
     glossary: Mapped[str] = mapped_column(Text, default="", server_default="")
-    # "built_in": this server's own models. "room": the speech, translation and voice services
-    # of ``room_id``, with its event's API keys, persona, style and glossary.
     ai_source: Mapped[str] = mapped_column(String(20), default="built_in", server_default="built_in")
-    room_id: Mapped[int | None] = mapped_column(ForeignKey("rooms.id", ondelete="SET NULL"), nullable=True)
+    speech_choice: Mapped[str] = mapped_column(Text, default="local|base", server_default="local|base")
+    translation_choice: Mapped[str] = mapped_column(
+        Text, default="local|nllb-200-distilled-600M", server_default="local|nllb-200-distilled-600M"
+    )
+    voice_provider: Mapped[str] = mapped_column(Text, default="supertonic", server_default="supertonic")
+    voice: Mapped[str] = mapped_column(Text, default="", server_default="")
+    persona: Mapped[str] = mapped_column(Text, default="", server_default="")
+    style: Mapped[str] = mapped_column(Text, default="", server_default="")
+    encrypted_speech_key: Mapped[str | None] = mapped_column(Text, nullable=True)
+    encrypted_translation_key: Mapped[str | None] = mapped_column(Text, nullable=True)
+    encrypted_voice_key: Mapped[str | None] = mapped_column(Text, nullable=True)
     # Visitor audio the demo accepts per UTC day, in minutes; caps hosted-service spend.
     daily_minutes: Mapped[int] = mapped_column(Integer, default=120, server_default="120")
     updated_by_id: Mapped[int | None] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"), nullable=True)

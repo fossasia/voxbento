@@ -14,10 +14,10 @@ from fastapi.testclient import TestClient
 from httpx import ASGITransport, AsyncClient
 from starlette.websockets import WebSocketDisconnect
 
-from portal import live_demo, live_demo_room, rate_limit
+from portal import live_demo, live_demo_ai, rate_limit
 from portal.auth import create_user_token, hash_password
 from portal.config import settings
-from portal.crypto import encrypt_val
+from portal.crypto import decrypt_val, encrypt_val
 from portal.database import configure, create_event, create_room, create_user, dispose, get_session, init_db
 from portal.models import AIVocabularyEntry, LiveDemoSettings
 from portal.routers.demo import router as demo_router
@@ -845,123 +845,8 @@ async def test_admin_can_load_the_models_ahead_of_visitors(admin_http, monkeypat
     await asyncio.wait_for(warmed.wait(), 1)
 
 
-# ── Room mode: the demo on an event room's AI settings ───────────────────────
-
-
-@pytest.fixture
-async def room_db():
-    """An in-memory database with an event whose room uses hosted services."""
-    configure("sqlite+aiosqlite://")
-    await init_db()
-    yield
-    await dispose()
-
-
-async def make_room(*, keys: bool = True, voice: str | None = "elevenlabs", glossary: bool = True) -> int:
-    async with get_session() as s:
-        event = await create_event(s, slug="summit", display_name="Summit 2026")
-        room = await create_room(s, event_id=event.id, display_name="Main Hall")
-        other = await create_room(s, event_id=event.id, display_name="Side Room")
-        room.floor_transcription_provider = "deepgram"
-        room.floor_transcription_model = "nova-3"
-        room.floor_translation_provider = "openai"
-        room.floor_translation_model = "gpt-4o-mini"
-        room.floor_ai_interpreter_persona = "A calm conference interpreter"
-        room.floor_ai_interpretation_style = "Formal"
-        room.floor_tts_enabled = voice is not None
-        if voice:
-            room.floor_tts_provider = voice
-            room.floor_tts_voice = "Rachel"
-        if keys:
-            event.encrypted_deepgram_api_key = encrypt_val("dg-key")
-            event.encrypted_translation_openai_api_key = encrypt_val("oa-key")
-            event.encrypted_elevenlabs_api_key = encrypt_val("el-key")
-        if glossary:
-            s.add_all(
-                [
-                    AIVocabularyEntry(
-                        event_id=event.id,
-                        room_id=room.id,
-                        source_term="keynote",
-                        target_language="fr",
-                        target_term="plénière",
-                    ),
-                    AIVocabularyEntry(
-                        event_id=event.id, source_term="Summit", target_language="all", target_term="Summit"
-                    ),
-                    AIVocabularyEntry(
-                        event_id=event.id,
-                        room_id=other.id,
-                        source_term="other room",
-                        target_language="all",
-                        target_term="x",
-                    ),
-                ]
-            )
-        await s.flush()
-        return room.id
-
-
-@pytest.mark.anyio
-async def test_a_room_s_services_keys_persona_and_glossary_are_loaded(room_db):
-    room_id = await make_room()
-    async with get_session() as s:
-        room = await live_demo_room.load_room_ai(s, room_id)
-        choices = await live_demo_room.room_choices(s)
-    assert (room.speech_provider, room.speech_model, room.speech_key) == ("deepgram", "nova-3", "dg-key")
-    assert (room.translation_provider, room.translation_model, room.translation_key) == (
-        "openai",
-        "gpt-4o-mini",
-        "oa-key",
-    )
-    assert (room.voice_provider, room.voice, room.voice_key) == ("elevenlabs", "Rachel", "el-key")
-    assert (room.persona, room.style) == ("A calm conference interpreter", "Formal")
-    # The room's own entries and the event-wide ones; not another room's.
-    assert sorted(e.source_term for e in room.glossary) == ["Summit", "keynote"]
-    assert room.problems == ()
-    assert room.label == "Summit 2026 › Main Hall"
-    # Keys never appear in what is shown or logged.
-    assert "dg-key" not in repr(room) and "dg-key" not in room.summary
-    assert [c.label for c in choices] == ["Summit 2026 › Main Hall", "Summit 2026 › Side Room"]
-    assert "Deepgram nova-3" in choices[0].summary and "ElevenLabs" in choices[0].summary
-
-
-@pytest.mark.anyio
-async def test_missing_keys_keep_the_demo_off_and_say_why(room_db):
-    room_id = await make_room(keys=False)
-    async with get_session() as s:
-        room = await live_demo_room.load_room_ai(s, room_id)
-        assert await live_demo_room.load_room_ai(s, 9999) is None
-    assert len(room.problems) == 3
-    demo = dataclasses.replace(DEMO, ai_source=live_demo.AI_ROOM, room_id=room_id, room=room)
-    assert not demo.live
-    assert "Deepgram API key" in demo.problem
-    gone = dataclasses.replace(DEMO, ai_source=live_demo.AI_ROOM, room_id=room_id, room=None)
-    assert not gone.live and "no longer exists" in gone.problem
-
-
-@pytest.mark.anyio
-async def test_room_mode_languages_follow_its_translator_and_voice(room_db):
-    room_id = await make_room()
-    async with get_session() as s:
-        room = await live_demo_room.load_room_ai(s, room_id)
-    demo = dataclasses.replace(DEMO, ai_source=live_demo.AI_ROOM, room_id=room_id, room=room)
-    languages = {lang.code: lang for lang in live_demo.languages_for(demo)}
-    # A hosted translator is not limited to NLLB's list; ElevenLabs speaks Thai, Supertonic does not.
-    assert len(languages) == len(live_demo.DEMO_LANGUAGES)
-    assert languages["th"].voice is True
-    without_voice = dataclasses.replace(demo, room=dataclasses.replace(room, voice_provider=None))
-    assert not any(lang.voice for lang in live_demo.languages_for(without_voice))
-    config = live_demo.public_config(demo)
-    assert {"term": "Summit", "lang": "all", "translation": "Summit"} in config["glossary"]
-    assert "dg-key" not in str(config)
-
-
-def room(**changes) -> live_demo_room.RoomAI:
-    base = live_demo_room.RoomAI(
-        room_id=1,
-        event_name="Summit",
-        room_name="Main",
+def room(**changes) -> live_demo_ai.DemoAI:
+    base = live_demo_ai.DemoAI(
         speech_provider="deepgram",
         speech_model="nova-3",
         translation_provider="openai",
@@ -987,7 +872,7 @@ async def test_room_translation_uses_its_engine_model_key_persona_and_glossary(m
             return [[f"{texts[0]} ({t.code})" for t in targets]]
 
     monkeypatch.setitem(live_demo.TRANSLATION_ENGINES, "openai", FakeEngine())
-    engines = live_demo.room_engines(room())
+    engines = live_demo.configured_engines(room())
     request = live_demo.DemoRequest(
         source=lang("en"),
         targets=(lang("fr"),),
@@ -1016,10 +901,10 @@ async def test_room_voice_uses_its_provider_voice_and_key(monkeypatch):
         return FakeVoice()
 
     monkeypatch.setattr(live_demo, "get_tts_provider", fake_get_tts_provider)
-    engines = live_demo.room_engines(room())
+    engines = live_demo.configured_engines(room())
     assert await engines.synthesize("Bonjour", "fr") == b"\x01\x00"
     assert built == [("elevenlabs", "el-key"), ("fr", "Rachel", "Bonjour")]
-    assert live_demo.room_engines(room(voice_provider=None)).synthesize is None
+    assert live_demo.configured_engines(room(voice_provider=None)).synthesize is None
 
 
 class FakeStreamingService:
@@ -1061,7 +946,7 @@ async def test_room_speech_runs_the_service_as_its_worker_does_and_finishes_the_
     )
     monkeypatch.setitem(live_demo.SPEECH_PROVIDERS, "deepgram", service)
     fake = FakeEngines()
-    engines = dataclasses.replace(live_demo.room_engines(room()), translate=fake.translate, synthesize=None)
+    engines = dataclasses.replace(live_demo.configured_engines(room()), translate=fake.translate, synthesize=None)
     sent, send_json, send_bytes = collector()
     request = live_demo.parse_start({"source": "en", "targets": ["es"], "names": "Summit"}, DEMO)
     session = live_demo.LiveDemoSession(request, send_json, send_bytes, engines=engines, audio_lead_seconds=FAST)
@@ -1089,7 +974,7 @@ async def test_a_failing_room_service_ends_the_try_with_a_message(monkeypatch):
     sent, send_json, send_bytes = collector()
     request = live_demo.DemoRequest(source=lang("en"), targets=(lang("es"),), listen=None)
     session = live_demo.LiveDemoSession(
-        request, send_json, send_bytes, engines=live_demo.room_engines(room()), audio_lead_seconds=FAST
+        request, send_json, send_bytes, engines=live_demo.configured_engines(room()), audio_lead_seconds=FAST
     )
     session.start()
     session.push_audio(speech_frame())
@@ -1118,26 +1003,26 @@ def test_resampling_keeps_duration():
 
 
 def test_a_room_s_built_in_voice_needs_supertonic_installed(monkeypatch):
-    in_room = dataclasses.replace(DEMO, ai_source=live_demo.AI_ROOM, room=room(voice_provider="supertonic"))
+    in_room = dataclasses.replace(DEMO, ai_source=live_demo.AI_CUSTOM, ai=room(voice_provider="supertonic"))
     assert in_room.voice
     monkeypatch.setattr(live_demo, "voice_installed", lambda: False)
     assert not in_room.voice
     # A hosted voice does not need the package.
-    assert dataclasses.replace(in_room, room=room()).voice
+    assert dataclasses.replace(in_room, ai=room()).voice
 
 
 def test_engines_follow_the_ai_choice():
     assert live_demo.engines_for(DEMO) is live_demo.LOCAL_ENGINES
-    in_room = dataclasses.replace(DEMO, ai_source=live_demo.AI_ROOM, room=room())
+    in_room = dataclasses.replace(DEMO, ai_source=live_demo.AI_CUSTOM, ai=room())
     assert live_demo.engines_for(in_room).stream is not None
 
 
 def test_only_built_in_models_need_loading():
-    in_room = dataclasses.replace(DEMO, ai_source=live_demo.AI_ROOM, room=room())
+    in_room = dataclasses.replace(DEMO, ai_source=live_demo.AI_CUSTOM, ai=room())
     assert live_demo._local_models(in_room) == (None, None, False)
     local_room = dataclasses.replace(
         in_room,
-        room=room(
+        ai=room(
             speech_provider="local",
             speech_model="small",
             translation_provider="local",
@@ -1187,44 +1072,75 @@ def test_a_running_try_ends_when_today_s_minutes_run_out(client, demo_config):
     assert '"reason":"daily_limit"' in messages[-1].replace(" ", "")
 
 
-# ── Admin: choosing a room ────────────────────────────────────────────────────
+CUSTOM_FORM = {
+    **FORM,
+    "ai_source": "custom",
+    "speech_choice": "deepgram|nova-3",
+    "translation_choice": "openai|gpt-4o-mini",
+    "voice_provider": "elevenlabs",
+    "voice": "Rachel",
+    "persona": "Calm",
+    "style": "Formal",
+}
 
 
 @pytest.mark.anyio
-async def test_admin_runs_the_demo_on_a_room(admin_http):
+async def test_independent_settings_keys_and_validation(admin_http):
     http, tokens = admin_http
     http.cookies.set("user_token", tokens["admin"])
-    room_id = await make_room()
-    page = await http.get("/admin/live-demo/")
-    assert "Summit 2026 › Main Hall" in page.text and 'value="room"' in page.text
-
-    saved = await http.post(
-        "/admin/live-demo/", data={**FORM, "ai_source": "room", "room_id": str(room_id), "daily_minutes": "30"}
-    )
-    assert saved.status_code == 303
-    live_demo.forget_cached_settings()
+    secrets = {"speech_key": "private-speech", "translation_key": "private-translation", "voice_key": "private-voice"}
+    response = await http.post("/admin/live-demo/", data={**CUSTOM_FORM, **secrets})
+    assert response.status_code == 303
     demo = await live_demo.current_settings()
-    assert (demo.ai_source, demo.room_id, demo.daily_minutes) == ("room", room_id, 30)
-    assert demo.room.speech_provider == "deepgram" and demo.live
+    assert demo.live and demo.ai.speech_key == secrets["speech_key"]
+    assert demo.ai.persona == "Calm" and demo.ai.style == "Formal"
+    async with get_session() as session:
+        row = await session.get(LiveDemoSettings, 1)
+        assert row.encrypted_speech_key != secrets["speech_key"]
+        assert decrypt_val(row.encrypted_speech_key) == secrets["speech_key"]
     page = await http.get("/admin/live-demo/")
-    assert "Now using Summit 2026 › Main Hall" in page.text
-
-    missing = await http.post("/admin/live-demo/", data={**FORM, "ai_source": "room", "room_id": "9999"})
-    assert missing.status_code == 400 and "no longer exists" in missing.text
-    unchosen = await http.post("/admin/live-demo/", data={**FORM, "ai_source": "room", "room_id": ""})
-    assert unchosen.status_code == 400 and "Choose the room" in unchosen.text
+    assert "Key saved" in page.text and "room_id" not in page.text
+    for secret in secrets.values():
+        assert (
+            secret not in page.text and secret not in str(live_demo.public_config(demo)) and secret not in repr(demo.ai)
+        )
+    # Blank keys preserve saved credentials; invalid choices change nothing and never echo keys.
+    assert (await http.post("/admin/live-demo/", data=CUSTOM_FORM)).status_code == 303
+    assert (await live_demo.current_settings()).ai.speech_key == secrets["speech_key"]
+    bad = await http.post("/admin/live-demo/", data={**CUSTOM_FORM, **secrets, "speech_choice": "deepgram|invalid"})
+    assert bad.status_code == 400 and secrets["speech_key"] not in bad.text
+    assert (await live_demo.current_settings()).ai.speech_model == "nova-3"
+    assert (await http.post("/admin/live-demo/", data={**CUSTOM_FORM, "speech_key": "replacement"})).status_code == 303
+    assert (await live_demo.current_settings()).ai.speech_key == "replacement"
+    assert (await http.post("/admin/live-demo/", data={**CUSTOM_FORM, "clear_speech_key": "on"})).status_code == 303
+    assert not (await live_demo.current_settings()).live
+    assert (await http.post("/admin/live-demo/", data={**CUSTOM_FORM, **secrets})).status_code == 303
+    assert (
+        await http.post("/admin/live-demo/", data={**CUSTOM_FORM, "speech_choice": "openai|whisper-1"})
+    ).status_code == 303
+    demo = await live_demo.current_settings()
+    assert demo.ai.speech_key is None and not demo.live
 
 
 @pytest.mark.anyio
-async def test_admin_page_says_why_a_room_cannot_run_the_demo(admin_http):
+async def test_disabled_voice_needs_no_voice_key_and_hosted_languages_are_available(admin_http):
     http, tokens = admin_http
     http.cookies.set("user_token", tokens["admin"])
-    room_id = await make_room(keys=False)
-    assert (
-        await http.post("/admin/live-demo/", data={**FORM, "ai_source": "room", "room_id": str(room_id)})
-    ).status_code == 303
-    page = await http.get("/admin/live-demo/")
-    assert "can&#39;t run on its room yet" in page.text or "can't run on its room yet" in page.text
-    assert "Deepgram API key" in page.text
-    live_demo.forget_cached_settings()
-    assert (await live_demo.current_settings()).live is False
+    response = await http.post(
+        "/admin/live-demo/",
+        data={
+            **CUSTOM_FORM,
+            "voice_enabled": "",
+            "speech_key": "speech-secret",
+            "translation_key": "translation-secret",
+        },
+    )
+    assert response.status_code == 303
+    demo = await live_demo.current_settings()
+    assert demo.live and not demo.voice
+    assert len(live_demo.languages_for(demo)) == len(live_demo.DEMO_LANGUAGES)
+    assert not any(language.voice for language in live_demo.languages_for(demo))
+    response = await http.post("/admin/live-demo/", data={**CUSTOM_FORM, "voice_key": "voice-secret"})
+    assert response.status_code == 303
+    demo = await live_demo.current_settings()
+    assert {language.code: language for language in live_demo.languages_for(demo)}["th"].voice

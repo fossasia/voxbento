@@ -174,8 +174,8 @@ with `?error=invalid_role&role=…` and the page explains why.
 | POST | `/admin/emails/{key}/draft` | — | Admin + same-origin; validates allowed placeholders and saves a draft |
 | POST | `/admin/emails/{key}/publish` | — | Admin + same-origin; publishes the draft and records a revision |
 | POST | `/admin/emails/{key}/test` | — | Admin + same-origin; queues a safe example message to the signed-in Admin |
-| GET | `/admin/live-demo/` | `admin/live_demo.html` | Admin-only settings for the home-page live demo: on/off, voice, AI engines (built-in models, or an event room's AI settings with a room picker), speech model, limits including demo minutes per day, site glossary; shows visitors using it now, today's minutes, whether models are loaded and why a chosen room cannot run the demo |
-| POST | `/admin/live-demo/` | — | Admin + same-origin; validates ranges, every glossary line and that a chosen room exists, saves the `live_demo_settings` row and replaces the cached settings; 400 re-renders with the error |
+| GET | `/admin/live-demo/` | `admin/live_demo.html` | Admin-only settings for the home-page live demo: on/off, voice, AI engines (built-in models or independent provider/model settings and encrypted write-only keys), speech model, limits including demo minutes per day, site glossary; shows visitors using it now, today's minutes, whether models are loaded and why configured services cannot run the demo |
+| POST | `/admin/live-demo/` | — | Admin + same-origin; validates ranges, every glossary line and provider/model choices, saves the `live_demo_settings` row and replaces the cached settings; 400 re-renders with the error |
 | POST | `/admin/live-demo/warm-up` | — | Admin + same-origin; loads (first time: downloads) the demo's models in a background task |
 | GET | `/admin/hosting-access/` | `admin/hosting_access.html` | "People with access" tab: hosts and pending hosting invitations, events owned, Remove access / Cancel invitation (#768) |
 | GET | `/admin/hosting-access/requests/` | `admin/hosting_access.html` | "Requests" tab: open hosting requests, newest first |

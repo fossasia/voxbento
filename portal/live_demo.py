@@ -39,9 +39,11 @@ import pycountry
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from portal import live_demo_ai
 from portal.config import settings
+from portal.crypto import encrypt_val
 from portal.database import get_session
-from portal.live_demo_room import RoomAI, load_room_ai
+from portal.live_demo_ai import DemoAI, load_demo_ai
 from portal.models import LiveDemoSettings
 from portal.room_setup import voice_languages_for
 from portal.transcription.aggregator import CaptionAggregator
@@ -102,7 +104,7 @@ SETTING_LIMITS: dict[str, tuple[int, int]] = {
 
 #: Where the demo's speech, translation and voice come from.
 AI_BUILT_IN = "built_in"
-AI_ROOM = "room"
+AI_CUSTOM = "custom"
 
 #: Audio is transcribed exactly as a booth's local Whisper captions are
 #: (``portal.transcription.providers.local``): 3 s chunks, each heard with the last second
@@ -203,19 +205,18 @@ class DemoSettings:
     #: False when ``LIVE_DEMO_ENABLED`` switches the demo off on this server.
     server_allowed: bool = True
     ai_source: str = AI_BUILT_IN
-    room_id: int | None = None
     daily_minutes: int = 120
-    #: The chosen room's AI settings and keys, loaded with the settings (room mode only).
-    room: RoomAI | None = field(default=None, repr=False)
+    #: The demo's independent AI settings and keys, loaded with the settings (custom mode only).
+    ai: DemoAI | None = field(default=None, repr=False)
 
     @property
     def problem(self) -> str | None:
         """Why the chosen AI cannot run the demo, or None."""
-        if self.ai_source != AI_ROOM:
+        if self.ai_source != AI_CUSTOM:
             return None
-        if self.room is None:
-            return "The room the demo uses no longer exists. Choose another one."
-        return " ".join(self.room.problems) or None
+        if self.ai is None:
+            return "Configure the demo AI services."
+        return " ".join(self.ai.problems) or None
 
     @property
     def live(self) -> bool:
@@ -223,12 +224,12 @@ class DemoSettings:
 
     @property
     def voice(self) -> bool:
-        """Whether translations are spoken: switched on, and the room has a voice (room mode)
+        """Whether translations are spoken: switched on, and the selected service has a voice (custom mode)
         or the Supertonic package is installed (built-in)."""
         if not self.voice_enabled:
             return False
-        if self.ai_source == AI_ROOM:
-            provider = self.room.voice_provider if self.room else None
+        if self.ai_source == AI_CUSTOM:
+            provider = self.ai.voice_provider if self.ai else None
             # A room's built-in voice needs the Supertonic package here too.
             return provider is not None and (provider != "supertonic" or voice_installed())
         return voice_installed()
@@ -237,12 +238,12 @@ class DemoSettings:
         """Languages the voice can speak."""
         if not self.voice:
             return frozenset()
-        provider = self.room.voice_provider if self.ai_source == AI_ROOM and self.room else "supertonic"
+        provider = self.ai.voice_provider if self.ai_source == AI_CUSTOM and self.ai else "supertonic"
         return frozenset(voice_languages_for(provider))
 
     @property
     def translation_provider(self) -> str:
-        return self.room.translation_provider if self.ai_source == AI_ROOM and self.room else "local"
+        return self.ai.translation_provider if self.ai_source == AI_CUSTOM and self.ai else "local"
 
 
 def voice_installed() -> bool:
@@ -264,7 +265,7 @@ def env_defaults() -> DemoSettings:
     )
 
 
-def settings_from_row(row: LiveDemoSettings | None, room: RoomAI | None = None) -> DemoSettings:
+def settings_from_row(row: LiveDemoSettings | None, ai: DemoAI | None = None) -> DemoSettings:
     if row is None:
         return env_defaults()
     glossary, _ = parse_glossary(row.glossary or "")
@@ -279,17 +280,16 @@ def settings_from_row(row: LiveDemoSettings | None, room: RoomAI | None = None) 
         glossary_text=row.glossary or "",
         glossary=tuple(glossary),
         server_allowed=settings.live_demo_enabled,
-        ai_source=row.ai_source if row.ai_source in {AI_BUILT_IN, AI_ROOM} else AI_BUILT_IN,
-        room_id=row.room_id,
+        ai_source=row.ai_source if row.ai_source in {AI_BUILT_IN, AI_CUSTOM} else AI_BUILT_IN,
         daily_minutes=row.daily_minutes,
-        room=room,
+        ai=ai,
     )
 
 
 async def _read(session: AsyncSession) -> DemoSettings:
     row = await session.get(LiveDemoSettings, 1)
-    room = await load_room_ai(session, row.room_id) if row is not None and row.ai_source == AI_ROOM else None
-    return settings_from_row(row, room)
+    ai = load_demo_ai(row) if row is not None and row.ai_source == AI_CUSTOM else None
+    return settings_from_row(row, ai)
 
 
 #: Settings are read for every home-page view, so they are cached briefly; saving replaces the cache.
@@ -347,7 +347,9 @@ async def save_settings(
     glossary: str,
     editor_id: int,
     ai_source: str = AI_BUILT_IN,
-    room_id: Any = None,
+    ai_options: dict[str, str] | None = None,
+    api_keys: dict[str, str] | None = None,
+    clear_keys: frozenset[str] = frozenset(),
     daily_minutes: Any = 120,
 ) -> DemoSettings:
     """Validate and save the Admin's settings. Nothing is changed when any value is refused.
@@ -366,18 +368,27 @@ async def save_settings(
         "max_targets": _bounded_int("max_targets", max_targets, "Languages per try"),
         "daily_minutes": _bounded_int("daily_minutes", daily_minutes, "Demo minutes per day"),
     }
-    if ai_source not in {AI_BUILT_IN, AI_ROOM}:
+    if ai_source not in {AI_BUILT_IN, AI_CUSTOM}:
         raise DemoSettingsError("Choose where the demo's AI comes from.")
-    room: RoomAI | None = None
-    chosen_room: int | None = None
-    if ai_source == AI_ROOM:
-        try:
-            chosen_room = int(str(room_id).strip())
-        except ValueError:
-            raise DemoSettingsError("Choose the room whose AI settings the demo uses.") from None
-        room = await load_room_ai(session, chosen_room)
-        if room is None:
-            raise DemoSettingsError("That room no longer exists. Choose another one.")
+    options = dict(live_demo_ai.DEFAULTS) if ai_options is None else ai_options
+    for name, choices in (
+        ("speech_choice", live_demo_ai.SPEECH_CHOICES),
+        ("translation_choice", live_demo_ai.TRANSLATION_CHOICES),
+        ("voice_provider", live_demo_ai.VOICE_CHOICES),
+    ):
+        if options.get(name) not in choices:
+            raise DemoSettingsError(f"Choose a listed {name.replace('_', ' ')}.")
+    for name, limit in (("voice", 200), ("persona", 2000), ("style", 2000)):
+        if len(options.get(name, "")) > limit:
+            raise DemoSettingsError(f"{name.title()} must be at most {limit} characters.")
+    encrypted_keys = {}
+    for service, key in (api_keys or {}).items():
+        if service not in {"speech", "translation", "voice"}:
+            raise DemoSettingsError("Unknown API key service.")
+        if len(key) > 4096:
+            raise DemoSettingsError("API key is too long.")
+        if key.strip():
+            encrypted_keys[service] = encrypt_val(key.strip())
     glossary = glossary.replace("\r\n", "\n").strip()
     _, errors = parse_glossary(glossary)
     if errors:
@@ -394,13 +405,21 @@ async def save_settings(
         setattr(row, name, value)
     row.glossary = glossary
     row.ai_source = ai_source
-    # Kept in built-in mode too, so switching back to the room needs no new choice.
-    row.room_id = chosen_room if ai_source == AI_ROOM else row.room_id
+    for service in ("speech", "translation", "voice"):
+        choice = "voice_provider" if service == "voice" else f"{service}_choice"
+        old_provider = (getattr(row, choice) or "").split("|", 1)[0]
+        new_provider = options[choice].split("|", 1)[0]
+        if service in clear_keys or old_provider != new_provider:
+            setattr(row, f"encrypted_{service}_key", None)
+        if service in encrypted_keys:
+            setattr(row, f"encrypted_{service}_key", encrypted_keys[service])
+    for name in live_demo_ai.DEFAULTS:
+        setattr(row, name, options.get(name, "").strip())
     row.updated_by_id = editor_id
     await session.flush()
 
     global _cached_settings
-    value = settings_from_row(row, room)
+    value = settings_from_row(row, load_demo_ai(row) if ai_source == AI_CUSTOM else None)
     _cached_settings = (time.monotonic(), value)
     return value
 
@@ -576,8 +595,7 @@ def public_config(demo: DemoSettings) -> dict[str, Any]:
         "sample_rate": SAMPLE_RATE,
         "max_glossary": MAX_VISITOR_GLOSSARY,
         "glossary": [
-            {"term": e.source_term, "lang": e.target_language, "translation": e.target_term}
-            for e in merge_glossaries(demo.glossary, demo.room.glossary if demo.room else ())
+            {"term": e.source_term, "lang": e.target_language, "translation": e.target_term} for e in demo.glossary
         ],
     }
 
@@ -587,7 +605,7 @@ class DemoRequest:
     source: DemoLanguage
     targets: tuple[DemoLanguage, ...]
     listen: str | None
-    #: Visitor entries first, then the visitor's names, the site glossary, then the room's (room mode).
+    #: Visitor entries first, then the visitor's names, then the site glossary.
     glossary: tuple[VocabularyEntryInput, ...] = ()
     whisper_model: str = "base"
 
@@ -631,7 +649,7 @@ def parse_start(message: dict[str, Any], demo: DemoSettings) -> DemoRequest:
         source=source,
         targets=tuple(targets),
         listen=_listen_code(message.get("listen"), targets),
-        glossary=merge_glossaries(visitor, names, demo.glossary, demo.room.glossary if demo.room else ()),
+        glossary=merge_glossaries(visitor, names, demo.glossary),
         whisper_model=demo.whisper_model,
     )
 
@@ -784,7 +802,7 @@ class Engines:
     transcribe: Transcribe | None
     translate: Translate
     synthesize: Synthesize | None
-    #: Set in room mode: the service reads the audio as a stream instead of chunk by chunk.
+    #: Set in custom mode: the service reads the audio as a stream instead of chunk by chunk.
     stream: StreamTranscribe | None = None
     #: The PCM rate ``stream`` expects (OpenAI's realtime models take 24 kHz).
     stream_rate: int = SAMPLE_RATE
@@ -888,45 +906,43 @@ async def _speak(provider: TTSProvider, text: str, language: str, voice: str) ->
 LOCAL_ENGINES = Engines(transcribe=_local_transcribe, translate=_local_translate, synthesize=_local_synthesize)
 
 
-def room_engines(room: RoomAI) -> Engines:
-    """The room's own services, called as its workers call them, with its event's keys."""
-    speech = SPEECH_PROVIDERS[room.speech_provider]
+def configured_engines(ai: DemoAI) -> Engines:
+    """The demo's own services and keys, using the shared provider implementations."""
+    speech = SPEECH_PROVIDERS[ai.speech_provider]
 
     async def stream(pipe: AudioPipe, on_message: CaptionCallback, request: DemoRequest) -> None:
         hints = request.hints
         config = ProviderConfig(
-            api_key=room.speech_key,
+            api_key=ai.speech_key,
             prompt=f"Glossary: {', '.join(hints)}." if hints else None,
             keyterms=hints,
         )
         # No room id: the demo's captions are not saved to the room or sent to its listeners.
-        await speech.run_stream(pipe, request.source.code, room.speech_model, config, on_message, _STREAM, None)
+        await speech.run_stream(pipe, request.source.code, ai.speech_model, config, on_message, _STREAM, None)
 
     async def translate(text: str, request: DemoRequest, targets: Sequence[DemoLanguage]) -> dict[str, str]:
-        engine = TRANSLATION_ENGINES[room.translation_provider]
+        engine = TRANSLATION_ENGINES[ai.translation_provider]
         rows = await engine.translate_batch(
             Language(request.source.code, request.source.name),
             [Language(target.code, target.name) for target in targets],
             [text],
             TranslationContext(
-                persona=room.persona,
-                style=room.style,
+                persona=ai.persona,
+                style=ai.style,
                 vocabulary={target.code: entries_for(request.glossary, target.code) for target in targets},
             ),
-            model=room.translation_model,
-            api_key=room.translation_key,
+            model=ai.translation_model,
+            api_key=ai.translation_key,
         )
         return {target.code: translated or "" for target, translated in zip(targets, rows[0], strict=True)}
 
     synthesize: Synthesize | None = None
-    if room.voice_provider:
-        voice_provider = room.voice_provider
+    if ai.voice_provider:
+        voice_provider = ai.voice_provider
 
         async def synthesize(text: str, language: str) -> bytes:
-            provider = get_tts_provider(
-                voice_provider, deepgram_api_key=room.voice_key, elevenlabs_api_key=room.voice_key
-            )
-            return await _speak(provider, text, language, room.voice)
+            provider = get_tts_provider(voice_provider, deepgram_api_key=ai.voice_key, elevenlabs_api_key=ai.voice_key)
+            return await _speak(provider, text, language, ai.voice)
 
     return Engines(
         transcribe=None,
@@ -938,9 +954,9 @@ def room_engines(room: RoomAI) -> Engines:
 
 
 def engines_for(demo: DemoSettings) -> Engines:
-    """The room's services in room mode, otherwise this server's built-in models."""
-    if demo.ai_source == AI_ROOM and demo.room is not None:
-        return room_engines(demo.room)
+    """The configured services in custom mode, otherwise this server's built-in models."""
+    if demo.ai_source == AI_CUSTOM and demo.ai is not None:
+        return configured_engines(demo.ai)
     return LOCAL_ENGINES
 
 
@@ -949,14 +965,14 @@ _warm_lock = asyncio.Lock()
 
 def _local_models(demo: DemoSettings) -> tuple[str | None, str | None, bool]:
     """The built-in models the demo needs: Whisper size, NLLB model, and whether Supertonic."""
-    if demo.ai_source == AI_ROOM:
-        room = demo.room
-        if room is None:
+    if demo.ai_source == AI_CUSTOM:
+        ai = demo.ai
+        if ai is None:
             return None, None, False
         return (
-            room.speech_model if room.speech_provider == "local" else None,
-            room.translation_model if room.translation_provider == "local" else None,
-            demo.voice and room.voice_provider == "supertonic",
+            ai.speech_model if ai.speech_provider == "local" else None,
+            ai.translation_model if ai.translation_provider == "local" else None,
+            demo.voice and ai.voice_provider == "supertonic",
         )
     return demo.whisper_model, settings.live_demo_translation_model, demo.voice
 
@@ -1014,7 +1030,7 @@ class LiveDemoSession:
 
     Captions follow the booth pipeline: overlapping chunks go to Whisper once each, and
     ``CaptionAggregator`` shows the words so far and finishes a caption at each sentence end.
-    In room mode the room's speech service reads the audio through an ``AudioPipe`` as its
+    In custom mode the configured speech service reads the audio through an ``AudioPipe`` as its
     worker reads the floor. Transcription and translation run in separate loops so the next
     sentence is captioned while the previous one is translated and spoken.
     """
@@ -1108,11 +1124,11 @@ class LiveDemoSession:
             task.cancel()
 
     async def _stream_loop(self) -> None:
-        """Run the room's speech service over the visitor's audio until the audio ends."""
+        """Run the configured speech service over the visitor's audio until the audio ends."""
         try:
             await self.engines.stream(self._pipe, self._on_stream_message, self.request)
         except Exception:  # a failing service must end with a message, not leave the visitor waiting
-            logger.exception("[LiveDemo] The room's speech service failed")
+            logger.exception("[LiveDemo] The configured speech service failed")
             await self._send({"type": "notice", "message": "The speech service stopped. Press the mic to try again."})
         finally:
             # Services finish a caption on a pause, not when the audio simply ends.

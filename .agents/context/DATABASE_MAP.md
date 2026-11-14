@@ -306,7 +306,8 @@ Tracks which languages the translation worker should generate for a given room o
 | 041 | `041_add_interpreter_attendance.py` | `interpreter_attendance` table (#1215) |
 | 042 | `042_add_booth_live_state.py` | `booth_live_state` table (TD-03) |
 | 043 | `043_add_live_demo_settings.py` | `live_demo_settings` singleton for the home-page live demo |
-| 044 | `044_live_demo_room_ai.py` | `live_demo_settings.ai_source`, `room_id` (FK `rooms`, SET NULL), `daily_minutes` |
+| 044 | `044_live_demo_room_ai.py` | Transitional room-linked demo settings and daily limit |
+| 045 | `045_live_demo_independent_ai.py` | Independent demo providers, models, encrypted keys, persona/style; removes room link |
 
 Run migrations: `uv run alembic upgrade head`
 
@@ -409,11 +410,11 @@ validated with the AI glossary rules). No row means the `LIVE_DEMO_*` environmen
 defaults with the demo off (an Admin switches it on), and `LIVE_DEMO_ENABLED=false` keeps the demo off whatever the row says.
 `portal/live_demo.py` reads it through a ~10 s cache that saving replaces.
 
-Migration 044 adds `ai_source` (`built_in` or `room`), `room_id` and `daily_minutes`
-(default 120). In room mode `portal/live_demo_room.py` loads that room's speech, translation
-and voice providers and models, its event's decrypted keys, persona, style and glossary;
-nothing new is stored. A deleted room sets `room_id` to NULL and the demo stops until another
-room is chosen.
+Migration 044 adds `ai_source` and `daily_minutes` (default 120). Migration 045 removes
+its transitional `room_id`, disabling previously room-linked demos without copying customer
+keys. `ai_source` is now `built_in` or `custom`. Independent `speech_choice`,
+`translation_choice`, `voice_provider`, `voice`, `persona`, `style` and three encrypted
+service key fields belong to this singleton. `portal/live_demo_ai.py` resolves these settings.
 
 ## Migrations 036–038 — live booth session revocation
 

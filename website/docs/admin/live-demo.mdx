@@ -6,8 +6,8 @@ description: "Switch the home page's live speech demo on or off, set its limits,
 
 The home page has a **Your voice** demo: a visitor presses the microphone, speaks, and
 sees live captions, translations into up to three languages, and hears one of them read
-aloud. It runs on the server's own models (Whisper for speech, NLLB for translation and
-Supertonic for the voice), so it uses no provider keys but does use the server's CPU.
+aloud. Choose the server's own models (Whisper, NLLB and Supertonic) or configure the
+demo's own hosted services and API keys.
 
 Admins manage it at **Admin → Live demo** (`/admin/live-demo/`).
 
@@ -26,18 +26,20 @@ The demo runs on one of two sources, chosen under **AI engines**:
 
 - **This server's built-in models.** Whisper, NLLB and Supertonic on the server's CPU. Free
   and needs no keys; pick the Whisper size here.
-- **An event room's AI settings.** Pick a room, and the demo uses that room's speech
-  recognition, translation and voice services with the API keys its event already holds,
-  along with the room's interpreter persona, style and glossary. Visitors hear exactly what
-  that room's listeners would. Set the services up, or change them, in the room's own settings;
-  nothing about them is stored on this page.
+- **Choose services for this demo.** Select caption and translation provider/model pairs,
+  a voice provider, an optional voice ID, interpreter persona and style. These settings
+  belong to the demo and require no event or room. Both modes use the site glossary.
 
-The room list shows each room's services. If the chosen room cannot run the demo, for example
-because its event has no key for one of the services, the page says why and the home page
-shows the recorded demo until it is fixed. The demo's captions are never saved to the room or
-sent to its listeners.
+Enter the demo's API keys in the corresponding password fields. They are encrypted at
+rest and never displayed again. Blank preserves a saved key; **Remove saved key** deletes
+it. Changing providers clears the old key, so enter the new provider's key when switching.
+Local models need no key. Missing or unreadable keys keep the demo unavailable and show
+an explanation to Admins. Hosted services bill the demo's keys, independently of events.
 
-Hosted services are billed to the event's keys. Use **Demo minutes per day** to cap them.
+**Demo minutes per day** limits accepted audio, not currency; pricing depends on the chosen
+services and number of target languages. The UTC-day usage counter resets on portal restart.
+Migration 045 disables any older room-linked demo and removes its link. Configure the demo's
+own services and credentials, then enable it again. Customer keys are never copied.
 
 ## Limits
 

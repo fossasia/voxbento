@@ -13,7 +13,7 @@
 <div class="page-header">
   <div>
     <h1>Live demo</h1>
-    <p>The "Your voice" demo on the home page lets visitors speak and get captions, translations and a voice, from this server's own models or from an event room's AI services. Turn it off when the server can't spare the CPU or the services' cost.</p>
+    <p>The "Your voice" demo on the home page lets visitors speak and get captions, translations and a voice, from this server's own models or from independently configured AI services. Turn it off when the server can't spare the CPU or the services' cost.</p>
   </div>
 </div>
 
@@ -44,7 +44,7 @@
 <p class="alert alert-warning" role="status">The server sets <code>LIVE_DEMO_ENABLED=false</code>, so the demo stays off whatever is saved here.</p>
 {% endif %}
 {% if demo.problem %}
-<p class="alert alert-warning" role="status">The demo can't run on its room yet, so the home page shows the recording: {{ demo.problem }}</p>
+<p class="alert alert-warning" role="status">The demo needs its AI settings completed, so the home page shows the recording: {{ demo.problem }}</p>
 {% endif %}
 {% if error %}
 <p class="alert alert-danger" role="alert">{{ error }}</p>
@@ -77,7 +77,7 @@
       {% endif %}
       <small id="voice-help" class="live-demo-help">
         With built-in models: {% if voice_installed %}Supertonic on the CPU.{% else %}Supertonic isn't installed on this server, so captions only.{% endif %}
-        With a room: the room's voice, if it has one. Turn it off to save CPU or cost; captions and translations keep working.
+        With custom services: the selected voice. Turn it off to save CPU or cost; captions and translations keep working.
       </small>
     </div>
   </section>
@@ -91,7 +91,7 @@
       <fieldset class="live-demo-choice">
         <legend class="visually-hidden">AI engines</legend>
         <label class="live-demo-check">
-          <input type="radio" name="ai_source" value="built_in"{% if form.ai_source != 'room' %} checked{% endif %} aria-describedby="built-in-help" />
+          <input type="radio" name="ai_source" value="built_in"{% if form.ai_source != 'custom' %} checked{% endif %} aria-describedby="built-in-help" />
           This server's built-in models
         </label>
         <small id="built-in-help" class="live-demo-help">Free and needs no keys: Whisper, NLLB and Supertonic on this server's CPU.</small>
@@ -105,28 +105,40 @@
           <small id="whisper-help">A new model loads on the next try or when you press "Load models now".</small>
         </div>
 
-        <label class="live-demo-check">
-          <input type="radio" name="ai_source" value="room"{% if form.ai_source == 'room' %} checked{% endif %} aria-describedby="room-help" />
-          An event room's AI settings
+        <label class='live-demo-check'>
+          <input type='radio' name='ai_source' value='custom'{% if form.ai_source == 'custom' %} checked{% endif %} />
+          Choose services for this demo
         </label>
-        <small id="room-help" class="live-demo-help">
-          Uses that room's speech recognition, translation and voice, with its event's API keys, its interpreter persona and style, and its glossary.
-          Choose or change them in the room's settings. Hosted services are billed to those keys, so set the daily limit below.
-        </small>
-        <div class="form-group live-demo-indent">
-          <label for="room_id">Room</label>
-          <select id="room_id" name="room_id" aria-describedby="room-id-help">
-            <option value="">Choose a room…</option>
-            {% for choice in room_choices %}
-            <option value="{{ choice.room_id }}"{% if form.room_id is not none and form.room_id|string == choice.room_id|string %} selected{% endif %}>{{ choice.label }} — {{ choice.summary }}</option>
+        <p>These settings and keys belong only to the public demo. Hosted services bill these keys. Changing a provider clears its saved key; supply a new one when switching.</p>
+        {% for name, label, choices in [('speech_choice', 'Captions', speech_choices), ('translation_choice', 'Translation', translation_choices), ('voice_provider', 'Voice service', voice_choices)] %}
+        <div class='form-group'>
+          <label for='{{ name }}'>{{ label }}</label>
+          <select id='{{ name }}' name='{{ name }}'>
+            {% for value, label in choices.items() %}
+            <option value='{{ value }}'{% if form[name] == value %} selected{% endif %}>{{ label }}</option>
             {% endfor %}
           </select>
-          <small id="room-id-help">
-            {% if not room_choices %}No rooms yet: create one in an event first.
-            {% elif demo.room %}Now using {{ demo.room.label }}: {{ demo.room.summary }}.
-            {% else %}The demo uses no room yet.{% endif %}
-          </small>
         </div>
+        {% endfor %}
+        {% for service in ['speech', 'translation', 'voice'] %}
+        <div class='form-group'>
+          <label for='{{ service }}_key'>{{ service|title }} API key — {{ 'Key saved' if saved_keys[service] else 'No key' }}</label>
+          <input type='password' id='{{ service }}_key' name='{{ service }}_key' autocomplete='new-password' maxlength='4096' />
+          <small>Encrypted when saved. Leave blank to keep it. Local services need no key.</small>
+          <label><input type='checkbox' name='clear_{{ service }}_key' /> Remove saved key</label>
+        </div>
+        {% endfor %}
+        <div class='form-group'>
+          <label for='voice'>Voice ID (optional)</label>
+          <input id='voice' name='voice' value='{{ form.voice }}' maxlength='200' />
+          <small>Leave blank for the service's default voice for each language.</small>
+        </div>
+        {% for name in ['persona', 'style'] %}
+        <div class='form-group'>
+          <label for='{{ name }}'>Interpreter {{ name }} (optional)</label>
+          <textarea id='{{ name }}' name='{{ name }}' maxlength='2000'>{{ form[name] }}</textarea>
+        </div>
+        {% endfor %}
       </fieldset>
     </div>
   </section>
