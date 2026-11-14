@@ -35,6 +35,7 @@ from portal.roles import EVENT_OWNER
 from portal.routers.api import broadcast_transcription, resolve_transcription_config
 from portal.transcription.constants import ProviderEnum
 from portal.transcription.worker import (
+    ERROR_CODE_REVALIDATION_TIMEOUT,
     ERROR_CODE_STOPPING_TIMEOUT,
     TranscriptionStartResult,
     active_workers,
@@ -1106,11 +1107,16 @@ async def start_transcription(
 
     if result.status == "failed":
         logger.error("[%s] Transcription worker failed to start: %s", booth_id, result.error)
-        if result.error_code == ERROR_CODE_STOPPING_TIMEOUT:
+        if result.error_code in (ERROR_CODE_STOPPING_TIMEOUT, ERROR_CODE_REVALIDATION_TIMEOUT):
             retry_after = str(math.ceil(settings.transcription_startup_timeout_secs))
+            detail = (
+                "Transcription worker is still stopping; retry shortly"
+                if result.error_code == ERROR_CODE_STOPPING_TIMEOUT
+                else "Timed out revalidating booth status; retry shortly"
+            )
             raise HTTPException(
                 status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-                detail="Transcription worker is still stopping; retry shortly",
+                detail=detail,
                 headers={"Retry-After": retry_after},
             )
         if result.error_code == "booth_deleted":
@@ -1149,7 +1155,14 @@ async def stop_transcription(
     language_code = _validate_lang(language_code)
 
     booth_id = make_booth_id(event_slug, target_room_id, language_code)
-    await stop_transcription_worker(booth_id)
+    stopped = await stop_transcription_worker(booth_id)
+    if not stopped:
+        retry_after = "2"
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Transcription worker is still stopping; retry shortly",
+            headers={"Retry-After": retry_after},
+        )
     return {"status": "stopped", "booth_id": booth_id}
 
 

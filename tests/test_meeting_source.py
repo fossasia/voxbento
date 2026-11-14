@@ -832,3 +832,19 @@ async def test_failed_transcription_start_leaves_worker_running_and_skips_stall_
     assert current.worker_started_at is not None
     assert current.worker_config is not None
     env["stop"].assert_not_awaited()
+
+
+@pytest.mark.anyio
+async def test_revalidation_timeout_transcription_start_marks_meeting_degraded(env):
+    """When start_transcription_worker returns failed (revalidation_timeout), set degraded with accurate reason."""
+    await env["client"].post(env["url"], json={"action": "connect", "meeting_url": "https://meet.example.org/TrackA"})
+    env["agents"].rooms[env["key"]]["stage"] = "in_meeting"
+    publish(env, 100)
+
+    env["start"].side_effect = None
+    env["start"].return_value = SimpleNamespace(status="failed", error_code="revalidation_timeout")
+    await meeting.reconcile_once()
+
+    current = meeting.health[env["room_id"]]
+    assert current.state == "degraded"
+    assert current.reason == "Timed out revalidating booth status; retry shortly."

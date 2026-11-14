@@ -32,6 +32,7 @@ from portal.program_ingest import MediaPath, configure_source, media_paths, pipe
 from portal.transcription.process import audio_progress
 from portal.transcription.providers.base import ProviderConfig, ProviderEnum, get_api_key
 from portal.transcription.worker import (
+    ERROR_CODE_REVALIDATION_TIMEOUT,
     ERROR_CODE_STOPPING_TIMEOUT,
     start_transcription_worker,
     stop_transcription_worker,
@@ -450,7 +451,11 @@ async def reconcile_room(
         reason = (
             "Transcription worker is stopping; retry shortly."
             if started.error_code == ERROR_CODE_STOPPING_TIMEOUT
-            else "Failed to start transcription worker."
+            else (
+                "Timed out revalidating booth status; retry shortly."
+                if started.error_code == ERROR_CODE_REVALIDATION_TIMEOUT
+                else "Failed to start transcription worker."
+            )
         )
         current.state, current.reason = "degraded", reason
         return

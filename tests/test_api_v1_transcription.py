@@ -2331,38 +2331,85 @@ async def test_old_worker_cleanup_cannot_remove_replacement_session():
     """An old session completing teardown cannot pop a newer replacement session from active_workers."""
 
     booth_id = "test-replacement-ownership-booth"
+    model = "tiny"
+    paused_at_cleanup = asyncio.Event()
+    allow_cleanup_to_proceed = asyncio.Event()
 
-    session_old = TranscriptionWorkerSession(
-        "pycon2026",
-        "en",
-        booth_id,
-        MagicMock(),
-        "local",
-        "tiny",
-        ProviderConfig(api_key=None),
-    )
+    async def pausing_enqueue(event_type: str, payload: dict) -> bool:
+        if event_type == "booth.transcription.stopped":
+            paused_at_cleanup.set()
+            await allow_cleanup_to_proceed.wait()
+        return True
+
+    dummy_process = MagicMock()
+    dummy_process.stdout = AsyncMock()
+    dummy_process.stdout.read = AsyncMock(return_value=b"")
+
+    async def dummy_aenter(self):
+        return dummy_process
+
+    async def dummy_aexit(self, exc_type, exc_val, exc_tb):
+        pass
+
+    dummy_provider = MagicMock()
+    dummy_provider.sample_rate = 16000
+
+    async def dummy_stream(*args, **kwargs):
+        while True:
+            await asyncio.sleep(0.01)
+
+    dummy_provider.run_stream = dummy_stream
+
     session_new = TranscriptionWorkerSession(
         "pycon2026",
         "en",
         booth_id,
         MagicMock(),
         "local",
-        "tiny",
+        model,
         ProviderConfig(api_key=None),
     )
     session_new.state = State.RUNNING
 
-    # Put new session into registry
-    active_workers[booth_id] = session_new
+    with (
+        patch("portal.transcription.worker.FfmpegProcess.__aenter__", dummy_aenter),
+        patch("portal.transcription.worker.FfmpegProcess.__aexit__", dummy_aexit),
+        patch("portal.transcription.worker.PROVIDERS", {"local": dummy_provider}),
+        patch("portal.transcription.worker._wh_worker.enqueue_webhook", side_effect=pausing_enqueue),
+    ):
+        res = await start_transcription_worker(
+            "pycon2026",
+            "en",
+            booth_id,
+            MagicMock(),
+            "local",
+            model,
+            ProviderConfig(api_key=None),
+            wait_for_ready=True,
+        )
+        assert res.status == "started"
+        session_old = active_workers[booth_id]
 
-    # Simulate old session cleanup block
-    async with active_workers_lock:
-        if active_workers.get(booth_id) is session_old:
-            active_workers.pop(booth_id, None)
+        # Stop session_old, triggering real teardown in _run_loop
+        session_old.stop()
 
-    # Invariant: session_new was NOT removed by session_old
-    assert active_workers.get(booth_id) is session_new
-    active_workers.pop(booth_id, None)
+        # Wait until session_old enters cleanup and pauses at the stopped webhook
+        await asyncio.wait_for(paused_at_cleanup.wait(), timeout=2.0)
+
+        # While paused before registry removal, register session_new under active_workers_lock
+        async with active_workers_lock:
+            active_workers[booth_id] = session_new
+
+        # Release the pause so session_old executes its real registry removal block
+        allow_cleanup_to_proceed.set()
+        await session_old.wait_until_stopped()
+
+        # Invariant: session_old did NOT remove session_new from active_workers
+        assert active_workers.get(booth_id) is session_new
+        assert session_new.state == State.RUNNING
+
+        # Clean up session_new
+        active_workers.pop(booth_id, None)
 
 
 @pytest.mark.anyio
@@ -2655,3 +2702,162 @@ def test_floor_language_matching_all_edge_cases():
     assert _languages_match(normal_en_session, None, "EN") is True
     assert _languages_match(normal_en_session, None, "  en  ") is True
     assert _languages_match(normal_en_session, None, "fr") is False
+
+
+@pytest.mark.anyio
+async def test_stop_route_timed_out_stop_returns_503_api_v1(event):
+    """When stop_transcription_worker returns False, API v1 stop returns 503 with Retry-After."""
+    room = SimpleNamespace(id=ROOM_ID, event_id=event.id, name="Test Room")
+    db = _db(_result(first=event), _result(first=room))
+
+    with patch("portal.routers.api_v1.stop_transcription_worker", AsyncMock(return_value=False)):
+        with pytest.raises(api_v1.HTTPException) as exc_info:
+            await api_v1.stop_transcription(EVENT_SLUG, ROOM_ID, "en", db=db, token=object())
+        assert exc_info.value.status_code == 503
+        assert exc_info.value.headers == {"Retry-After": "2"}
+        assert exc_info.value.detail == "Transcription worker is still stopping; retry shortly"
+
+    with patch("portal.routers.api_v1.stop_transcription_worker", AsyncMock(return_value=True)):
+        res = await api_v1.stop_transcription(EVENT_SLUG, ROOM_ID, "en", db=db, token=object())
+        assert res["status"] == "stopped"
+
+
+@pytest.mark.anyio
+async def test_stop_route_timed_out_stop_returns_503_admin(event):
+    """When stop_transcription_worker returns False, admin stop returns 503 with Retry-After."""
+    import portal.routers.api as api_admin
+
+    mock_request = MagicMock()
+    with (
+        patch.object(api_admin, "get_event_by_slug", AsyncMock(return_value=event)),
+        patch.object(api_admin, "_verify_resource_access", AsyncMock()),
+        patch.object(api_admin, "_require_same_origin_for_cookies", MagicMock()),
+        patch.object(api_admin, "_require_live_interpreter_to_stop", AsyncMock()),
+        patch("portal.routers.api.stop_transcription_worker", AsyncMock(return_value=False)),
+    ):
+        with pytest.raises(api_admin.HTTPException) as exc_info:
+            await api_admin.api_transcription_stop(mock_request, EVENT_SLUG, ROOM_ID, "en")
+        assert exc_info.value.status_code == 503
+        assert exc_info.value.headers == {"Retry-After": "2"}
+        assert exc_info.value.detail == "Transcription worker is still stopping; retry shortly"
+
+    with (
+        patch.object(api_admin, "get_event_by_slug", AsyncMock(return_value=event)),
+        patch.object(api_admin, "_verify_resource_access", AsyncMock()),
+        patch.object(api_admin, "_require_same_origin_for_cookies", MagicMock()),
+        patch.object(api_admin, "_require_live_interpreter_to_stop", AsyncMock()),
+        patch("portal.routers.api.stop_transcription_worker", AsyncMock(return_value=True)),
+    ):
+        res = await api_admin.api_transcription_stop(mock_request, EVENT_SLUG, ROOM_ID, "en")
+        assert res["status"] == "stopped"
+
+
+@pytest.mark.anyio
+async def test_start_revalidation_timeout_fails_closed_and_releases_lock(event, monkeypatch):
+    """When revalidation hangs, startup times out, returns 503, registers nothing, and releases the lock."""
+    from portal.config import settings
+
+    monkeypatch.setattr(settings, "transcription_startup_timeout_secs", 0.05)
+
+    booth_id = make_booth_id(EVENT_SLUG, ROOM_ID, "en")
+    mock_booth = MagicMock()
+    db_booth = SimpleNamespace(
+        id=99,
+        transcription_enabled=True,
+        transcription_provider="local",
+        transcription_model="tiny",
+        language_code="en",
+        room_id=ROOM_ID,
+        event_id=event.id,
+        event=event,
+    )
+    db = _db(_result(first=event), _result(first=db_booth))
+
+    class HangingSessionContext:
+        async def __aenter__(self):
+            session = MagicMock()
+
+            async def hanging_scalar(*args, **kwargs):
+                await asyncio.sleep(10.0)
+                return 1
+
+            session.scalar = hanging_scalar
+            return session
+
+        async def __aexit__(self, exc_type, exc_val, exc_tb):
+            pass
+
+    with (
+        patch.object(api_v1.booths, "get_booth_sync", return_value=mock_booth),
+        patch.object(api_v1, "get_session", return_value=HangingSessionContext()),
+    ):
+        with pytest.raises(api_v1.HTTPException) as exc_info:
+            await api_v1.start_transcription(EVENT_SLUG, ROOM_ID, "en", db=db, token=object())
+        assert exc_info.value.status_code == 503
+        assert exc_info.value.detail == "Timed out revalidating booth status; retry shortly"
+        assert booth_id not in active_workers
+
+    # Verify active_workers_lock was not leaked: lock can be acquired immediately
+    assert active_workers_lock.locked() is False
+    async with active_workers_lock:
+        assert booth_id not in active_workers
+
+
+@pytest.mark.anyio
+async def test_admin_start_revalidation_timeout_returns_503(event, monkeypatch):
+    """When revalidation hangs, admin start times out and returns 503."""
+    import portal.routers.api as api_admin
+    from portal.config import settings
+
+    monkeypatch.setattr(settings, "transcription_startup_timeout_secs", 0.05)
+
+    booth_id = make_booth_id(EVENT_SLUG, ROOM_ID, "en")
+    mock_booth = MagicMock()
+    db_booth = SimpleNamespace(
+        id=99,
+        transcription_enabled=True,
+        transcription_provider="local",
+        transcription_model="tiny",
+        language_code="en",
+        room_id=ROOM_ID,
+        event_id=event.id,
+        event=event,
+    )
+
+    first_query = True
+
+    class HangingRaceSessionContext:
+        async def __aenter__(self):
+            nonlocal first_query
+            session = MagicMock()
+            if first_query:
+                first_query = False
+                session.scalar = AsyncMock(return_value=db_booth)
+            else:
+
+                async def hanging_scalar(*args, **kwargs):
+                    await asyncio.sleep(10.0)
+                    return 1
+
+                session.scalar = hanging_scalar
+            return session
+
+        async def __aexit__(self, exc_type, exc_val, exc_tb):
+            pass
+
+    mock_request = MagicMock()
+
+    with (
+        patch.object(api_admin, "get_session", return_value=HangingRaceSessionContext()),
+        patch.object(api_admin, "get_event_by_slug", AsyncMock(return_value=event)),
+        patch.object(api_admin, "_verify_resource_access", AsyncMock()),
+        patch.object(api_admin, "_require_same_origin_for_cookies", MagicMock()),
+        patch.object(api_admin.booths, "get_booth_sync", return_value=mock_booth),
+    ):
+        with pytest.raises(api_admin.HTTPException) as exc_info:
+            await api_admin.api_transcription_start(EVENT_SLUG, ROOM_ID, "en", request=mock_request)
+        assert exc_info.value.status_code == 503
+        assert exc_info.value.detail == "Timed out revalidating booth status; retry shortly"
+        assert booth_id not in active_workers
+
+    assert active_workers_lock.locked() is False

@@ -1,6 +1,7 @@
 from portal.transcription.constants import ALLOWED_MODELS, ProviderEnum
 from portal.transcription.providers.base import ProviderConfig, get_api_key
 from portal.transcription.worker import (
+    ERROR_CODE_REVALIDATION_TIMEOUT,
     TranscriptionStartResult,
     active_workers,
     start_transcription_worker,
@@ -12,6 +13,7 @@ __all__ = [
     "ALLOWED_MODELS",
     "ProviderConfig",
     "get_api_key",
+    "ERROR_CODE_REVALIDATION_TIMEOUT",
     "TranscriptionStartResult",
     "active_workers",
     "start_transcription_worker",

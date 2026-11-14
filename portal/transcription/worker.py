@@ -48,6 +48,7 @@ class State(Enum):
 ERROR_CODE_STOPPING_TIMEOUT = "stopping_timeout"
 ERROR_CODE_STARTUP_TIMEOUT = "startup_timeout"
 ERROR_CODE_SPAWN_FAILED = "spawn_failed"
+ERROR_CODE_REVALIDATION_TIMEOUT = "revalidation_timeout"
 
 
 class TranscriptionStartResult:
@@ -411,9 +412,25 @@ async def start_transcription_worker(
             existing_session = active_workers.get(booth_id)
             if not existing_session:
                 if revalidate_active is not None:
-                    is_active = revalidate_active()
-                    if inspect.isawaitable(is_active):
-                        is_active = await is_active
+                    try:
+                        is_active = revalidate_active()
+                        if inspect.isawaitable(is_active):
+                            is_active = await asyncio.wait_for(
+                                is_active,
+                                timeout=settings.transcription_startup_timeout_secs,
+                            )
+                    except TimeoutError:
+                        logger.error(
+                            "[%s] Timed out revalidating booth status; aborting transcription start.",
+                            booth_id,
+                        )
+                        return TranscriptionStartResult(
+                            status="failed",
+                            provider=provider,
+                            model=model_size,
+                            error="Timed out revalidating booth status",
+                            error_code=ERROR_CODE_REVALIDATION_TIMEOUT,
+                        )
                     if not is_active:
                         logger.info("[%s] Booth is no longer active; aborting transcription start.", booth_id)
                         return TranscriptionStartResult(

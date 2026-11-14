@@ -774,3 +774,19 @@ async def test_failed_transcription_start_leaves_worker_running_and_skips_stall_
     assert current.worker_started_at is not None
     assert current.worker_config is not None
     stop.assert_not_awaited()
+
+
+@pytest.mark.anyio
+async def test_revalidation_timeout_transcription_start_marks_ingest_degraded(environment):
+    """When start_transcription_worker returns failed (revalidation_timeout), set degraded with accurate reason."""
+    client, event, rooms, media, _, start, stop, *_ = environment
+    room = rooms[0]
+    await connect_whip(client, event, room, media)
+
+    start.side_effect = None
+    start.return_value = SimpleNamespace(status="failed", error_code="revalidation_timeout")
+    await ingest.reconcile_once()
+
+    current = ingest.health[room.id]
+    assert current.state == "degraded"
+    assert current.reason == "Timed out revalidating booth status; retry shortly."

@@ -2937,7 +2937,7 @@ async def admin_transcription_settings(
                 config = ProviderConfig(api_key=api_key)
                 await asyncio.sleep(0.1)
                 try:
-                    await start_transcription_worker(
+                    start_res = await start_transcription_worker(
                         event.slug,
                         db_booth.language_code,
                         bid,
@@ -2948,7 +2948,14 @@ async def admin_transcription_settings(
                         room_id=db_booth.room_id,
                     )
                     # The start call only schedules the worker; ffmpeg is launched right after, so wait for that.
-                    worker = "restarted" if await wait_for_worker_start(bid) else "failed"
+                    status_val = getattr(start_res, "status", None)
+                    is_success = status_val in ("started", "already_running") or (
+                        status_val is None and bool(start_res)
+                    )
+                    if is_success and await wait_for_worker_start(bid):
+                        worker = "restarted"
+                    else:
+                        worker = "failed"
                 except WorkerCapacityError:
                     logger.warning("Could not start caption worker for %s", bid, exc_info=True)
                     worker = "failed"

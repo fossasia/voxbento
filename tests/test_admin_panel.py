@@ -2773,6 +2773,7 @@ class TestBoothCRUD:
 
         async def start(*_args, **_kwargs):
             calls.append("start")
+            return SimpleNamespace(status="started")
 
         async def broadcast(*_args, **_kwargs):
             pass
@@ -2875,6 +2876,7 @@ class TestBoothCRUD:
             # ffmpeg could not be launched after the start call returned: the page must not say "restarted".
             async def start_then_fail(*_args, **_kwargs):
                 calls.append("start")
+                return SimpleNamespace(status="started")
 
             async def not_started(_bid):
                 return False
@@ -2884,6 +2886,24 @@ class TestBoothCRUD:
             location, page = await save(c, enabled=True)
             assert location == f"{url}?saved=captions&worker=failed#captions"
             assert "The caption worker could not be started" in page
+
+            # Start returns failed (e.g. stopping_timeout): wait_for_worker_start must NOT be called.
+            wait_called = False
+
+            async def should_not_be_called(_bid):
+                nonlocal wait_called
+                wait_called = True
+                return True
+
+            async def start_stopping_timeout(*_args, **_kwargs):
+                return SimpleNamespace(status="failed", error_code="stopping_timeout")
+
+            monkeypatch.setattr(admin, "start_transcription_worker", start_stopping_timeout)
+            monkeypatch.setattr(admin, "wait_for_worker_start", should_not_be_called)
+            location, page = await save(c, enabled=True)
+            assert location == f"{url}?saved=captions&worker=failed#captions"
+            assert "The caption worker could not be started" in page
+            assert wait_called is False
 
     @pytest.mark.anyio
     async def test_captions_can_be_turned_off_when_the_saved_service_lost_its_key(self, admin_cookie, seed_event):
