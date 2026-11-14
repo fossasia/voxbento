@@ -21,6 +21,20 @@ from portal.translations.vocabulary import resolve_vocabulary_entries
 LANGUAGE_SEMAPHORES: dict[str, asyncio.Semaphore] = {}
 LANGUAGE_QUEUES: dict[str, int] = {}
 
+
+def reset_worker_state(prefix: str | None = None) -> None:
+    """Clear cached per-booth semaphores and queues.
+
+    If ``prefix`` is given, only keys starting with ``prefix`` are removed.
+    Otherwise, all worker state is cleared.
+    """
+    for state in (LANGUAGE_SEMAPHORES, LANGUAGE_QUEUES):
+        if prefix is None:
+            state.clear()
+        else:
+            for key in [k for k in state if k.startswith(prefix)]:
+                del state[key]
+
 logger = logging.getLogger(__name__)
 
 #: The glossary is optional context, so its lookup must never eat into the inference budget.
@@ -186,10 +200,16 @@ class TranslationWorker:
                 "[%s] handle_translation triggered for segment %s (len=%s)", booth_id_str, segment_id, len(text)
             )
 
-            sentence = self._accumulate_sentence(text)
-            await self._process_completed_sentence(
-                session, room_id, segment, segment_id, sentence, booth_id_str, uuid_segment_id, seq
-            )
+            job = await self._resolve_translation_job(session, room_id, segment, booth_id_str)
+
+        if job is None:
+            return
+
+        sentence = self._accumulate_sentence(text)
+        tasks = self._build_language_tasks(job, segment_id, sentence, booth_id_str, uuid_segment_id, seq)
+        if tasks:
+            logger.error(f"[{booth_id_str}] Spawning {len(tasks)} translation tasks for active listeners")
+            await asyncio.gather(*tasks)
 
     async def _resolve_translation_job(
         self, session, room_id: int, segment, booth_id_str: str
