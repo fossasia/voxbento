@@ -144,6 +144,10 @@ class _Saver:
             return True
         try:
             await save_changes(changes, _utc_now())
+        except asyncio.CancelledError:
+            # Shutdown cancelled the save mid-write: hand the batch back so the final save writes it.
+            self.registry.requeue_changes(set(changes))
+            raise
         except (SQLAlchemyError, OSError):
             self.outage.failed()
             logger.debug("Booth state save failed", exc_info=True)

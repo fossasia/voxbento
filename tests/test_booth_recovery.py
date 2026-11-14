@@ -147,6 +147,80 @@ async def test_disconnected_interpreter_is_not_handed_the_active_slot():
 
 
 @pytest.mark.anyio
+async def test_mic_request_lapses_when_its_requester_disconnects():
+    registry = BoothRegistry()
+    ana, _ = await join(registry, "Ana", ANA)
+    ben, _ = await join(registry, "Ben", BEN)
+    await go_live(registry, ana)
+    await registry.initiate_handoff(BOOTH, ben.participant_id, LANG, CHANNEL)
+
+    state = await registry.disconnect_participant(BOOTH, ben.participant_id, "Ben-socket")
+    assert state["handoff_state"] == "idle"
+
+    with pytest.raises(ValueError):
+        await registry.accept_handoff(BOOTH, ana.participant_id, LANG, CHANNEL)
+    state = await registry.get_booth(BOOTH)
+    assert state["active_interpreter_id"] == ana.participant_id
+    assert person(state, ana.participant_id)["mic_active"] is True
+    assert state["ingest_status"] == "connected"
+
+
+@pytest.mark.anyio
+async def test_mic_is_never_handed_to_a_disconnected_interpreter():
+    registry = BoothRegistry()
+    ana, _ = await join(registry, "Ana", ANA)
+    ben, _ = await join(registry, "Ben", BEN)
+    await go_live(registry, ana)
+    await registry.initiate_handoff(BOOTH, ben.participant_id, LANG, CHANNEL)
+    # A record that lost its connection some other way, e.g. a placeholder restored after a restart.
+    registry.get_booth_sync(BOOTH).participants[ben.participant_id].connected = False
+
+    with pytest.raises(ValueError, match="disconnected"):
+        await registry.accept_handoff(BOOTH, ana.participant_id, LANG, CHANNEL)
+    state = await registry.get_booth(BOOTH)
+    assert state["active_interpreter_id"] == ana.participant_id
+    assert person(state, ana.participant_id)["mic_active"] is True
+
+
+@pytest.mark.anyio
+async def test_revocation_removes_participants_whose_socket_had_dropped(monkeypatch):
+    from portal.websockets import manager as manager_module
+
+    registry = BoothRegistry()
+    monkeypatch.setattr(manager_module, "booths", registry)
+    broadcasts = []
+
+    async def record(booth_id, state):
+        broadcasts.append((booth_id, state))
+
+    monkeypatch.setattr(manager_module, "broadcast_booth_state", record)
+    ana, _ = await registry.join_participant(
+        BOOTH, "Ana", "interpreter", LANG, CHANNEL, user_id=7, connection_id="Ana-socket"
+    )
+    ben, _ = await registry.join_participant(
+        BOOTH, "Ben", "interpreter", LANG, CHANNEL, invite_public_id="inv-ben", connection_id="Ben-socket"
+    )
+    cleo, _ = await registry.join_participant(
+        BOOTH, "Cleo", "interpreter", LANG, CHANNEL, user_id=8, connection_id="Cleo-socket"
+    )
+    await go_live(registry, ana)
+    for participant, socket in ((ana, "Ana-socket"), (ben, "Ben-socket")):
+        await registry.disconnect_participant(BOOTH, participant.participant_id, socket)
+
+    connections = manager_module.ConnectionManager()
+    await connections.close_user_sessions(7)
+    await connections.close_token_sessions("inv-ben", booth_id=BOOTH)
+
+    state = await registry.get_booth(BOOTH)
+    assert [p["participant_id"] for p in state["participants"]] == [cleo.participant_id]
+    # The revoked active interpreter's slot passes on at once, not after the grace period.
+    assert state["active_interpreter_id"] == cleo.participant_id
+    assert len(broadcasts) == 2
+    # A connected participant is left to the socket closing path.
+    assert await registry.remove_disconnected(user_id=8) == []
+
+
+@pytest.mark.anyio
 async def test_live_record_holds_go_live_and_the_active_interpreter():
     registry = BoothRegistry()
     ana, _ = await join(registry, "Ana", ANA)
@@ -336,6 +410,32 @@ async def test_run_saves_changes_and_saves_again_at_shutdown(database, monkeypat
     await asyncio.gather(task, return_exceptions=True)
     [row] = await _rows()
     assert row.broadcast_unlocked is True
+
+
+@pytest.mark.anyio
+async def test_save_cancelled_by_shutdown_is_written_by_the_final_save(database, monkeypatch):
+    monkeypatch.setattr(booth_recovery, "DEBOUNCE_SECS", 0)
+    real_save = booth_recovery.save_changes
+    suspended = asyncio.Event()
+    calls = 0
+
+    async def slow_first_save(changes, now):
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            suspended.set()
+            await asyncio.sleep(3600)
+        await real_save(changes, now)
+
+    monkeypatch.setattr(booth_recovery, "save_changes", slow_first_save)
+    registry = BoothRegistry()
+    task = asyncio.create_task(booth_recovery.run(registry))
+    ana, _ = await join(registry, "Ana", ANA)
+    await asyncio.wait_for(suspended.wait(), 2)
+
+    task.cancel()
+    await asyncio.gather(task, return_exceptions=True)
+    assert [row.active_participant_id for row in await _rows()] == [ana.participant_id]
 
 
 # ── WebSocket ────────────────────────────────────────────────────────────────

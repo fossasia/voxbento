@@ -149,12 +149,15 @@ class ConnectionManager:
         code: int = WS_CLOSE_REVOKED,
         reason: str = REASON_INVITE_REVOKED,
     ) -> None:
-        """Revoke authorization and concurrently disconnect all matching active sessions of an invite token."""
+        """Revoke authorization, disconnect all matching active sessions of an invite token, and
+        remove its participants whose socket had already dropped."""
         revoked_sockets = self.revoke_token_sessions(token_id, booth_id)
-        if not revoked_sockets:
-            return
-        tasks = [self.close_session(ws, code=code, reason=reason) for ws in revoked_sockets]
-        await asyncio.gather(*tasks, return_exceptions=True)
+        if revoked_sockets:
+            tasks = [self.close_session(ws, code=code, reason=reason) for ws in revoked_sockets]
+            await asyncio.gather(*tasks, return_exceptions=True)
+        await _remove_retained_participants(
+            booths.remove_disconnected(invite_public_id=str(token_id), booth_id=booth_id)
+        )
 
     def revocation_epoch(self, user_id: int, booth_id: str | None = None) -> tuple[int, int]:
         """Return (user_wide_epoch, booth_specific_epoch) for this user and booth."""
@@ -284,12 +287,13 @@ class ConnectionManager:
         code: int = WS_CLOSE_REVOKED,
         reason: str = REASON_AUTH_REVOKED,
     ) -> None:
-        """Revoke authorization and concurrently disconnect all matching active sessions of a user."""
+        """Revoke authorization, disconnect all matching active sessions of a user, and remove
+        their participants whose socket had already dropped."""
         revoked_sockets = self.revoke_user_sessions(user_id, booth_id)
-        if not revoked_sockets:
-            return
-        tasks = [self.close_session(ws, code=code, reason=reason) for ws in revoked_sockets]
-        await asyncio.gather(*tasks, return_exceptions=True)
+        if revoked_sockets:
+            tasks = [self.close_session(ws, code=code, reason=reason) for ws in revoked_sockets]
+            await asyncio.gather(*tasks, return_exceptions=True)
+        await _remove_retained_participants(booths.remove_disconnected(user_id=user_id, booth_id=booth_id))
 
     async def close_booth_sessions(
         self,
@@ -838,6 +842,16 @@ async def _handle_leave(session: Session) -> None:
     )
     session.participant_id = None
     await broadcast_booth_state(session.booth_id, state)
+
+
+async def _remove_retained_participants(removal: Awaitable[list[tuple[str, dict]]]) -> None:
+    """Remove participants whose access was revoked while their socket was down, and tell their booths.
+
+    Without this they would keep their place, and an active slot with live audio, until the
+    reconnect or restart grace ran out, although they can no longer reconnect.
+    """
+    for booth_id, state in await removal:
+        await broadcast_booth_state(booth_id, state)
 
 
 def schedule_participant_expiry(booth_id: str, participant_id: str, connection_id: str | None, delay: float) -> None:

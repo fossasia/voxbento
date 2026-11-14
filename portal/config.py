@@ -106,7 +106,8 @@ class Settings(BaseSettings):
     booth_state_recovery_enabled: bool = True
     # How long a restored active interpreter keeps the slot waiting to reconnect.
     booth_restart_grace_seconds: float = 60.0
-    # Saved state older than this (the portal was down longer) is not restored.
+    # Saved state is not restored when its last save is older than this. Live booths are saved on
+    # every change and at least every minute, so the age is the downtime plus up to a minute before it.
     booth_state_max_age_seconds: float = 600.0
 
     @property

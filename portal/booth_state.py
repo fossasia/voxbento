@@ -496,6 +496,10 @@ class BoothRegistry:
                 return None
             participant.connected = False
             participant.updated_at = utc_now_iso()
+            # Their mic request or offer lapses: accepting it would hand the mic to someone not there.
+            if booth.handoff_initiator_id == participant_id:
+                booth.handoff_state = "idle"
+                booth.handoff_initiator_id = None
             self._changed(booth)
             return booth.as_public_dict()
 
@@ -511,6 +515,40 @@ class BoothRegistry:
                 return None
             self._remove_participant(booth, participant_id)
             return booth.as_public_dict()
+
+    async def remove_disconnected(
+        self,
+        *,
+        user_id: int | None = None,
+        invite_public_id: str | None = None,
+        booth_id: str | None = None,
+    ) -> list[tuple[str, dict]]:
+        """Remove participants kept after their socket dropped, for a user or invite whose access ended.
+
+        Covers records held for the reconnect grace and placeholders restored after a restart,
+        which have no socket for revocation to close. Returns ``(booth_id, state)`` per changed booth.
+        """
+        if user_id is None and invite_public_id is None:
+            return []
+        changed: list[tuple[str, dict]] = []
+        async with self._lock:
+            for key, booth in list(self._booths.items()):
+                if booth_id is not None and key != booth_id:
+                    continue
+                matches = [
+                    p.participant_id
+                    for p in booth.participants.values()
+                    if not p.connected
+                    and (
+                        (user_id is not None and p.user_id == user_id)
+                        or (invite_public_id is not None and p.invite_public_id == invite_public_id)
+                    )
+                ]
+                for participant_id in matches:
+                    self._remove_participant(booth, participant_id)
+                if matches:
+                    changed.append((key, booth.as_public_dict()))
+        return changed
 
     def _remove_participant(self, booth: Booth, participant_id: str) -> None:
         """Take *participant_id* out of *booth* and hand on what they held. Caller holds the lock."""
@@ -693,6 +731,9 @@ class BoothRegistry:
                 new_active = initiator_id
             else:
                 raise ValueError(f"Unexpected handoff state: {booth.handoff_state}")
+            incoming = booth.participants.get(new_active)
+            if incoming is None or not incoming.connected:
+                raise ValueError("That interpreter has disconnected; the mic stays where it is.")
 
             # Flip active interpreter
             booth.active_interpreter_id = new_active
