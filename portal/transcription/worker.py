@@ -121,7 +121,9 @@ class TranscriptionWorkerSession:
             terms = await load_vocabulary_terms(self.event_slug, self.room_id, self.language_code)
             if terms:
                 self.config = dataclasses.replace(self.config, terms=terms)
-                logger.info("[%s][%s] Using %d glossary terms for recognition", self.booth_id, self.session_id, len(terms))
+                logger.info(
+                    "[%s][%s] Using %d glossary terms for recognition", self.booth_id, self.session_id, len(terms)
+                )
             while self.state != State.STOPPING:
                 # Narrow the race window: check STOPPING immediately before spawning ffmpeg
                 if self.state == State.STOPPING:

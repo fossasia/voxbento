@@ -1168,7 +1168,11 @@ async def test_the_glossary_switch_of_a_captions_only_room_is_saved(admin_cookie
         assert (await _room(room.id)).floor_ai_vocabulary_enabled is False
 
         await c.post(
-            url, data={**base, "floor_ai_vocabulary_enabled": "on"}, headers=ORIGIN, cookies=admin_cookie, follow_redirects=False
+            url,
+            data={**base, "floor_ai_vocabulary_enabled": "on"},
+            headers=ORIGIN,
+            cookies=admin_cookie,
+            follow_redirects=False,
         )
         assert (await _room(room.id)).floor_ai_vocabulary_enabled is True
 
