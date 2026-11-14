@@ -12,12 +12,15 @@ import socket
 import subprocess
 import tempfile
 from pathlib import Path, PurePath, PureWindowsPath
-from typing import Any, Callable
+from typing import Any, Callable, TypedDict
 
 import httpx
+import playwright.async_api
 import pytest
 import websockets
 from httpx import ASGITransport, AsyncClient
+from playwright.async_api import Error as PlaywrightError
+from playwright.async_api import async_playwright
 
 from fastapi_app import app
 from portal.auth import create_user_token
@@ -123,16 +126,14 @@ async def find_webkit() -> str | None:
         return env_webkit
 
     try:
-        from playwright.async_api import async_playwright
-
         async with async_playwright() as p:
             try:
                 path = p.webkit.executable_path
                 if path and os.path.exists(path):
                     return "playwright"
-            except Exception:
+            except (PlaywrightError, OSError):
                 pass
-    except (ImportError, Exception):
+    except (PlaywrightError, OSError):
         pass
 
     for name in ("WebKitWebDriver", "/usr/bin/WebKitWebDriver"):
@@ -181,6 +182,20 @@ def terminate_process_tree(proc: subprocess.Popen | Any, timeout: float = 2.0) -
             except (OSError, ProcessLookupError):
                 pass
 
+    # Windows process tree termination via taskkill
+    if os.name == "nt" and hasattr(proc, "pid") and isinstance(proc.pid, int) and proc.pid > 1:
+        try:
+            if proc.pid != os.getpid():
+                subprocess.run(
+                    ["taskkill", "/F", "/T", "/PID", str(proc.pid)],
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                    timeout=timeout,
+                    check=False,
+                )
+        except (OSError, subprocess.SubprocessError):
+            pass
+
     # Graceful SIGTERM
     try:
         if can_kill_group and pgid is not None and hasattr(signal, "SIGTERM"):
@@ -191,14 +206,14 @@ def terminate_process_tree(proc: subprocess.Popen | Any, timeout: float = 2.0) -
                     proc.terminate()
         elif hasattr(proc, "terminate") and proc.poll() is None:
             proc.terminate()
-    except Exception:
+    except (OSError, ProcessLookupError):
         pass
 
     # Wait for process exit
     try:
         if hasattr(proc, "wait"):
             proc.wait(timeout=timeout)
-    except Exception:
+    except (subprocess.TimeoutExpired, subprocess.SubprocessError, OSError):
         pass
 
     # Force SIGKILL if still running
@@ -213,12 +228,12 @@ def terminate_process_tree(proc: subprocess.Popen | Any, timeout: float = 2.0) -
                         proc.kill()
             elif hasattr(proc, "kill") and still_alive:
                 proc.kill()
-        except Exception:
+        except (OSError, ProcessLookupError):
             pass
         try:
             if hasattr(proc, "wait"):
                 proc.wait(timeout=1.0)
-        except Exception:
+        except (subprocess.TimeoutExpired, subprocess.SubprocessError, OSError):
             pass
 
 
@@ -242,7 +257,7 @@ def _read_process_stderr(
                 return stderr.decode(errors="replace").strip()
             if isinstance(stderr, str):
                 return stderr.strip()
-        except Exception:
+        except (OSError, ValueError):
             pass
     return ""
 
@@ -343,7 +358,7 @@ async def wait_for_chrome_page_target(
                         last_error = f"invalid JSON response: {json_err}"
                 else:
                     last_error = f"received HTTP {res.status_code} status"
-            except Exception as exc:
+            except (httpx.HTTPError, OSError) as exc:
                 last_error = f"connection error: {exc}"
 
             await asyncio.sleep(poll_interval)
@@ -428,7 +443,27 @@ def build_geometry_eval_script(viewport_width: int) -> str:
     }})()"""
 
 
-def assert_audio_controls_geometry(metrics: dict[str, Any]) -> None:
+class GeometryMetrics(TypedDict, total=False):
+    cardRight: float
+    cardWidth: float
+    selectLeft: float
+    selectRight: float
+    selectWidth: float
+    btnLeft: float
+    btnRight: float
+    btnWidth: float
+    selectedText: str
+    hasLongLabel: bool
+    cardInsideViewport: bool
+    selectInsideCard: bool
+    btnInsideCard: bool
+    btnInsideViewport: bool
+    btnToRightOfSelect: bool
+    btnVisibleAndReadable: bool
+    error: str
+
+
+def assert_audio_controls_geometry(metrics: GeometryMetrics) -> None:
     """Assert microphone controls remain within the card, within viewport, and do not overlap."""
     assert "error" not in metrics, metrics.get("error")
     assert metrics["hasLongLabel"], f"Long label not found in select: {metrics}"
@@ -506,7 +541,7 @@ async def launch_webkit_webdriver(
                         if res.status_code == 200:
                             return True
                         last_status_err = f"status check returned HTTP {res.status_code}"
-                    except Exception as e:
+                    except (httpx.HTTPError, OSError) as e:
                         last_status_err = f"connection failed: {e}"
                     await asyncio.sleep(poll_interval)
                 diagnostic = f" (last status: {last_status_err})" if last_status_err else ""
@@ -537,7 +572,18 @@ async def launch_webkit_webdriver(
                     pass
                 stderr_path = None
 
-        except Exception as exc:
+        except asyncio.CancelledError:
+            if proc is not None:
+                terminate_process_tree(proc)
+                proc = None
+            if stderr_path and os.path.exists(stderr_path):
+                try:
+                    os.unlink(stderr_path)
+                except OSError:
+                    pass
+                stderr_path = None
+            raise
+        except (RuntimeError, OSError, httpx.HTTPError) as exc:
             if proc is not None:
                 terminate_process_tree(proc)
                 proc = None
@@ -560,11 +606,9 @@ async def render_and_evaluate_webkit(
     html_file: str,
     viewport_width: int,
     viewport_height: int,
-) -> dict[str, Any]:
+) -> GeometryMetrics:
     """Render fixture in WebKit and return geometry metrics."""
     if webkit_runner == "playwright":
-        from playwright.async_api import async_playwright
-
         async with async_playwright() as p:
             browser = await p.webkit.launch(headless=True)
             try:
@@ -584,7 +628,7 @@ async def render_and_evaluate_webkit(
                             raise FileNotFoundError(f"Required project stylesheet not found: {css_file}")
                         try:
                             await page.add_style_tag(path=str(css_file))
-                        except Exception as e:
+                        except (PlaywrightError, OSError) as e:
                             raise RuntimeError(
                                 f"Failed to inject project stylesheet '{css_name}' into WebKit: {e}"
                             ) from e
@@ -711,7 +755,7 @@ class CDPClient:
         except asyncio.CancelledError:
             shutdown_cause = ConnectionError("CDP reader was cancelled")
             raise
-        except Exception as exc:
+        except (websockets.exceptions.WebSocketException, OSError, json.JSONDecodeError) as exc:
             shutdown_cause = exc
         finally:
             if shutdown_cause is None:
@@ -1016,7 +1060,7 @@ async def test_wait_for_chrome_page_target_invalid_json_timeout():
     assert proc.terminated
 
 
-def test_terminate_process_tree_mock():
+def test_terminate_process_tree_mock(monkeypatch: pytest.MonkeyPatch):
     class TrackingMockProc:
         def __init__(self, pid=None):
             self.pid = pid
@@ -1048,6 +1092,20 @@ def test_terminate_process_tree_mock():
     proc_parent = TrackingMockProc(pid=current_pid)
     terminate_process_tree(proc_parent)
     assert proc_parent.terminated
+
+    # 3. Windows taskkill branch: verify taskkill /F /T /PID is invoked for child process
+    taskkill_calls: list[list[str]] = []
+
+    def fake_subprocess_run(cmd: list[str], **kwargs: Any) -> subprocess.CompletedProcess[Any]:
+        taskkill_calls.append(cmd)
+        return subprocess.CompletedProcess(cmd, 0)
+
+    monkeypatch.setattr(os, "name", "nt")
+    monkeypatch.setattr(subprocess, "run", fake_subprocess_run)
+    proc_win = TrackingMockProc(pid=99999)
+    terminate_process_tree(proc_win)
+    assert taskkill_calls == [["taskkill", "/F", "/T", "/PID", "99999"]]
+    assert proc_win.terminated
 
 
 def test_to_file_uri_posix_and_windows(tmp_path: Path):
@@ -1089,7 +1147,7 @@ def test_rewrite_css_links_windows_and_posix():
 
 
 def test_assert_audio_controls_geometry_valid():
-    valid_metrics = {
+    valid_metrics: GeometryMetrics = {
         "hasLongLabel": True,
         "cardInsideViewport": True,
         "selectInsideCard": True,
@@ -1102,7 +1160,7 @@ def test_assert_audio_controls_geometry_valid():
 
 
 def test_assert_audio_controls_geometry_failures():
-    base = {
+    base: GeometryMetrics = {
         "hasLongLabel": True,
         "cardInsideViewport": True,
         "selectInsideCard": True,
@@ -1196,7 +1254,10 @@ async def test_launch_webkit_webdriver_all_attempts_fail_premature_exit():
 
 @pytest.mark.anyio
 async def test_launch_webkit_webdriver_timeout():
-    procs = [_MockProc(returncode=None), _MockProc(returncode=None)]
+    proc1 = _MockProc(returncode=None)
+    proc2 = _MockProc(returncode=None)
+    all_procs = (proc1, proc2)
+    procs = list(all_procs)
 
     def popen_factory(cmd: list[str], **kwargs: Any) -> _MockProc:
         return procs.pop(0)
@@ -1219,7 +1280,38 @@ async def test_launch_webkit_webdriver_timeout():
             popen_factory=popen_factory,
             client_factory=client_factory,
         )
-    assert all(p.terminated for p in procs)
+    assert proc1.terminated
+    assert proc2.terminated
+
+
+@pytest.mark.anyio
+async def test_launch_webkit_webdriver_cancellation():
+    proc = _MockProc(returncode=None)
+
+    def popen_factory(cmd: list[str], **kwargs: Any) -> _MockProc:
+        return proc
+
+    def client_factory(base_url: str) -> httpx.AsyncClient:
+        def handler(request: httpx.Request) -> httpx.Response:
+            return httpx.Response(503, text="Service Unavailable")
+
+        return httpx.AsyncClient(base_url=base_url, transport=httpx.MockTransport(handler))
+
+    task = asyncio.create_task(
+        launch_webkit_webdriver(
+            "WebKitWebDriver",
+            max_retries=1,
+            startup_timeout=5.0,
+            poll_interval=0.01,
+            popen_factory=popen_factory,
+            client_factory=client_factory,
+        )
+    )
+    await asyncio.sleep(0.02)
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    assert proc.terminated
 
 
 @pytest.mark.anyio
@@ -1273,12 +1365,10 @@ async def test_launch_webkit_webdriver_non_200_status_retry_success():
 @pytest.mark.anyio
 async def test_verify_lobby_styles_script_validation():
     """Verify VERIFY_LOBBY_STYLES_SCRIPT catches unstyled and malformed CSS and passes valid rules."""
-    from playwright.async_api import async_playwright
-
     async with async_playwright() as p:
         try:
             browser = await p.webkit.launch(headless=True)
-        except Exception as e:
+        except (PlaywrightError, OSError) as e:
             if os.environ.get("CI"):
                 pytest.fail(f"Playwright WebKit required in CI but failed to launch: {e}")
             pytest.skip("Playwright WebKit not available for style script unit test")
@@ -1354,6 +1444,8 @@ async def test_cdp_client_success_and_lifecycle_event():
     async with CDPClient(ws) as cdp:
         res = await cdp.send("Runtime.evaluate", {"expression": "42"})
         assert res == {"result": {"value": 42}}
+        assert len(ws.sent) == 1
+        assert json.loads(ws.sent[0]) == {"id": 1, "method": "Runtime.evaluate", "params": {"expression": "42"}}
         loader_evt = cdp.get_loader_event("L-123")
         await asyncio.wait_for(loader_evt.wait(), timeout=1.0)
         assert loader_evt.is_set()
@@ -1571,7 +1663,7 @@ async def test_my_booths_audio_controls_do_not_overflow_card(setup_db, browser_e
                                 "returnByValue": True,
                             },
                         )
-                        metrics = res["result"]["value"]
+                        metrics: GeometryMetrics = res["result"]["value"]
                         assert_audio_controls_geometry(metrics)
         finally:
             terminate_process_tree(proc)
