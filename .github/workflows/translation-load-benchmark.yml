@@ -8,9 +8,6 @@ on:
     paths:
       - "portal/translations/**"
       - "portal/database.py"
-      - "tests/translation_load_harness.py"
-      - ".github/workflows/translation-load-benchmark.yml"
-      - ".github/workflows/post-translation-load-report.yml"
 
 permissions:
   contents: read
@@ -106,3 +103,4 @@ jobs:
         with:
           name: translation-load-report
           path: report/
+
