@@ -291,8 +291,11 @@ def release_worker_state(slug: str) -> None:
     """Remove the per-booth queues and semaphores the worker kept for this run's booths.
 
     The worker never removes them itself, so repeated runs in one process would pile them up.
-    Names the worker no longer has (a scheduler may replace them) are skipped.
+    Uses the worker's reset hook when available.
     """
+    if hasattr(worker_module, "reset_worker_state"):
+        worker_module.reset_worker_state(f"{slug}-")
+        return
     prefix = f"{slug}-"
     for name in WORKER_STATE:
         state = getattr(worker_module, name, None)
@@ -529,7 +532,8 @@ def parse_languages(value: str) -> tuple[int, ...]:
 def main(argv: Sequence[str] | None = None) -> int:
     """Run one load test from the command line and print its report.
 
-    Exits 1 when a segment raised out of the worker or a translation got no answer at all.
+    Exits 1 when a segment raised out of the worker, any translation got no answer,
+    or (unless --allow-loss is set) any translation was dropped or failed.
     """
     parser = argparse.ArgumentParser(description="Load-test the translation worker with a fake engine.")
     defaults = LoadConfig()
@@ -550,6 +554,9 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--seed", type=int, default=defaults.seed, help="seed for the latency jitter")
     parser.add_argument("--markdown", action="store_true", help="print a Markdown table (for CI step summaries)")
     parser.add_argument("--verbose", action="store_true", help="show the worker's own log lines")
+    parser.add_argument(
+        "--allow-loss", action="store_true", help="exit 0 even if translations were dropped or failed"
+    )
     args = parser.parse_args(argv)
 
     try:
@@ -577,7 +584,16 @@ def main(argv: Sequence[str] | None = None) -> int:
         if not args.verbose:
             logging.disable(logging.NOTSET)
     print(render(report, markdown=args.markdown), end="")
-    return 1 if report.errors or report.total(MISSING) else 0
+    if args.allow_loss:
+        return 1 if report.errors or report.total(MISSING) else 0
+    return (
+        1
+        if report.errors
+        or report.total(MISSING)
+        or report.total(DROPPED)
+        or report.total(FAILED)
+        else 0
+    )
 
 
 if __name__ == "__main__":

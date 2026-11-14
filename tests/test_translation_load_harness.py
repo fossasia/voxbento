@@ -2,8 +2,9 @@
 
 from __future__ import annotations
 
+import asyncio
 from collections import Counter
-from unittest.mock import patch
+from unittest.mock import AsyncMock, patch
 
 import pytest
 from translation_load_harness import (
@@ -12,6 +13,7 @@ from translation_load_harness import (
     MISSING,
     TRANSLATED,
     WORKER_STATE,
+    ChannelReport,
     LoadConfig,
     LoadReport,
     main,
@@ -56,10 +58,42 @@ def test_release_worker_state_only_removes_this_runs_booths():
     """Other booths' queues and semaphores are left alone."""
     state = {"load-abc-1-floor:fr": 1, "load-abcd-1-floor:fr": 2, "pycon-1-floor:fr": 3}
 
-    with patch.object(worker_module, WORKER_STATE[0], state, create=True):
+    with patch.object(worker_module, WORKER_STATE[0], state):
         release_worker_state("load-abc")
 
     assert state == {"load-abcd-1-floor:fr": 2, "pycon-1-floor:fr": 3}
+
+
+def test_worker_state_and_database_attributes_exist():
+    """Tracked worker state dictionaries and database engine attributes exist."""
+    assert hasattr(database, "_engine"), "_engine missing from database module"
+    assert hasattr(database, "_async_session_factory"), "_async_session_factory missing from database module"
+    for name in WORKER_STATE:
+        assert hasattr(worker_module, name), f"{name} missing from worker module"
+        assert isinstance(getattr(worker_module, name), dict)
+    assert hasattr(worker_module, "reset_worker_state")
+
+
+def test_worker_reset_hook():
+    """The worker's reset hook clears only the matching prefix when given, or all state."""
+    worker_module.reset_worker_state()
+    try:
+        worker_module.LANGUAGE_QUEUES["load-abc-1-floor:fr"] = 1
+        worker_module.LANGUAGE_QUEUES["load-abcd-1-floor:fr"] = 2
+        worker_module.LANGUAGE_QUEUES["pycon-1-floor:fr"] = 3
+        worker_module.LANGUAGE_SEMAPHORES["load-abc-1-floor:fr"] = asyncio.Semaphore(2)
+
+        worker_module.reset_worker_state("load-abc-")
+        assert "load-abc-1-floor:fr" not in worker_module.LANGUAGE_QUEUES
+        assert "load-abc-1-floor:fr" not in worker_module.LANGUAGE_SEMAPHORES
+        assert worker_module.LANGUAGE_QUEUES["load-abcd-1-floor:fr"] == 2
+        assert worker_module.LANGUAGE_QUEUES["pycon-1-floor:fr"] == 3
+
+        worker_module.reset_worker_state()
+        assert not worker_module.LANGUAGE_QUEUES
+        assert not worker_module.LANGUAGE_SEMAPHORES
+    finally:
+        worker_module.reset_worker_state()
 
 
 def test_report_has_a_column_for_translations_that_got_no_answer():
@@ -182,6 +216,49 @@ def test_command_line_prints_a_report(capsys):
 
     assert exit_code == 0
     assert "| room 1 fr | 2 | 2 | 0 | 0 |" in capsys.readouterr().out
+
+
+def test_command_line_fails_on_dropped_failed_or_missing(capsys):
+    """The command line exits 1 when any translation is dropped, failed, missing, or errors."""
+    fake_config = LoadConfig(rooms=1, languages=(1,), segments=1, interval=0.01, latency=0)
+
+    # 1. Dropped
+    channel_dropped = ChannelReport(room=1, language="fr", sent=1, outcomes=Counter({DROPPED: 1}))
+    report_dropped = LoadReport(fake_config, [channel_dropped], 0.1, 1, Counter(), 0)
+
+    with patch("translation_load_harness.run_load_test", new=AsyncMock(return_value=report_dropped)):
+        assert main(["--rooms", "1", "--languages", "1", "--segments", "1"]) == 1
+
+    # 2. Failed
+    channel_failed = ChannelReport(room=1, language="fr", sent=1, outcomes=Counter({FAILED: 1}))
+    report_failed = LoadReport(fake_config, [channel_failed], 0.1, 1, Counter({"pipeline_failed": 1}), 0)
+
+    with patch("translation_load_harness.run_load_test", new=AsyncMock(return_value=report_failed)):
+        assert main(["--rooms", "1", "--languages", "1", "--segments", "1"]) == 1
+
+    # 3. Missing
+    channel_missing = ChannelReport(room=1, language="fr", sent=1, outcomes=Counter({MISSING: 1}))
+    report_missing = LoadReport(fake_config, [channel_missing], 0.1, 1, Counter(), 0)
+
+    with patch("translation_load_harness.run_load_test", new=AsyncMock(return_value=report_missing)):
+        assert main(["--rooms", "1", "--languages", "1", "--segments", "1"]) == 1
+
+    # 4. Errors escaping handle_translation
+    channel_ok = ChannelReport(room=1, language="fr", sent=1, outcomes=Counter({TRANSLATED: 1}))
+    report_errors = LoadReport(fake_config, [channel_ok], 0.1, 1, Counter(), 1)
+
+    with patch("translation_load_harness.run_load_test", new=AsyncMock(return_value=report_errors)):
+        assert main(["--rooms", "1", "--languages", "1", "--segments", "1"]) == 1
+
+    # 5. Allow-loss flag allows dropped/failed but still rejects missing and errors
+    with patch("translation_load_harness.run_load_test", new=AsyncMock(return_value=report_dropped)):
+        assert main(["--rooms", "1", "--languages", "1", "--segments", "1", "--allow-loss"]) == 0
+
+    with patch("translation_load_harness.run_load_test", new=AsyncMock(return_value=report_failed)):
+        assert main(["--rooms", "1", "--languages", "1", "--segments", "1", "--allow-loss"]) == 0
+
+    with patch("translation_load_harness.run_load_test", new=AsyncMock(return_value=report_missing)):
+        assert main(["--rooms", "1", "--languages", "1", "--segments", "1", "--allow-loss"]) == 1
 
 
 @pytest.mark.parametrize(

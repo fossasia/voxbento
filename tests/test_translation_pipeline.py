@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+from contextlib import asynccontextmanager
 from unittest.mock import AsyncMock, patch
 
 import pytest
@@ -835,7 +836,7 @@ async def test_download_status_failure_preserves_inference_timeout(db_data, mock
         else "huggingface_hub.snapshot_download"
     )
     with (
-        patch(target, side_effect=PermissionError("private model path")),
+        patch(target, side_effect=PermissionError("private model path")) as mock_probe,
         patch.object(worker, "_call_llm", new_callable=AsyncMock, return_value="Bonjour"),
         patch("portal.tts.worker.synthesize", new_callable=AsyncMock, return_value=b"audio"),
         patch("portal.websockets.manager.tts_manager.broadcast_bundle", new_callable=AsyncMock) as bundle,
@@ -858,8 +859,66 @@ async def test_download_status_failure_preserves_inference_timeout(db_data, mock
             seq=1,
         )
 
+    assert mock_probe.call_count >= 1
     assert wait_for.call_args_list[0].kwargs["timeout"] == 60.0
     assert bundle.await_count == 2
     assert all(call.args[7] == "Bonjour" and call.args[8] is None for call in bundle.call_args_list)
     assert "PermissionError" in caplog.text
     assert "private model path" not in caplog.text
+
+
+@pytest.mark.anyio
+async def test_handle_translation_releases_session_before_translating(db_data, mock_broadcast):
+    """The initial session that resolves the segment and room must close before inference begins."""
+    worker = TranslationWorker(mock_broadcast)
+    initial_session_active = False
+    initial_session_held_during_inference = False
+    first_call = True
+    recorded_targets = []
+
+    real_get_session = get_session
+
+    @asynccontextmanager
+    async def tracking_get_session():
+        nonlocal initial_session_active, first_call
+        if first_call:
+            first_call = False
+            initial_session_active = True
+            try:
+                async with real_get_session() as s:
+                    yield s
+            finally:
+                initial_session_active = False
+        else:
+            async with real_get_session() as s:
+                yield s
+
+    async def fake_call_llm(*args, **kwargs):
+        nonlocal initial_session_held_during_inference
+        if initial_session_active:
+            initial_session_held_during_inference = True
+        recorded_targets.append(kwargs.get("target_lang_code"))
+        return "Bonjour"
+
+    with (
+        patch("portal.translations.worker.get_session", side_effect=tracking_get_session),
+        patch.object(worker, "_call_llm", new=fake_call_llm),
+        patch("portal.websockets.manager.tts_manager.has_listeners", return_value=True),
+        patch(
+            "portal.websockets.manager.TTSConnectionManager.broadcast_bundle", new_callable=AsyncMock
+        ) as mock_bundle,
+    ):
+        await worker.handle_translation(
+            room_id=db_data["room"].id,
+            segment_id=db_data["segment"].id,
+            text="Hello world",
+            booth_id_str="floor",
+            uuid_segment_id="sess-test",
+            seq=1,
+        )
+
+    # During inference, the initial resolving session must already be closed.
+    assert len(recorded_targets) == 2
+    assert sorted(recorded_targets) == ["es", "fr"]
+    assert not initial_session_held_during_inference
+    assert mock_bundle.await_count >= 1
