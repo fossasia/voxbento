@@ -561,9 +561,19 @@ class TranslationWorker:
                 local_session.add(translation)
                 await local_session.flush()
 
-            # Broadcast Stage 1 (Text Ready) immediately with empty audio
+            # Broadcast Stage 1 (Text Ready) immediately with empty audio. It says whether speech
+            # follows, so a listener who joined after the audience check does not wait for one.
             await tts_manager.broadcast_bundle(
-                room.id, lang_code, booth_id_str, b"", uuid_segment_id, seq, text, translated_text, None
+                room.id,
+                lang_code,
+                booth_id_str,
+                b"",
+                uuid_segment_id,
+                seq,
+                text,
+                translated_text,
+                None,
+                audio_pending=synthesize_audio,
             )
             if target_booth_id:
                 from portal.websockets.manager import listener_manager

@@ -183,6 +183,11 @@ class TranslationScheduler:
             if isinstance(exc, TimeoutError):
                 raise StaleTranslationJob(job.waited) from None
             raise
+        if self.lag_budget and job.waited >= self.lag_budget:
+            # The slot came after the deadline, before the late timeout could fire (the loop ran
+            # late). The job still did not start in time: pass the slot on without running it.
+            self._give_back(state)
+            raise StaleTranslationJob(job.waited)
 
     def _leave(self, job: TranslationJob, *, running: bool) -> None:
         channels = self._rooms[job._room]

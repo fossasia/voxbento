@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import threading
+import time
 from contextlib import asynccontextmanager
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
@@ -543,6 +544,47 @@ async def test_a_job_already_past_the_lag_budget_is_dropped_even_with_a_free_slo
 
     assert scheduler.running == 0
     assert scheduler.admitted("room", "room:fr") == 0
+
+
+async def test_a_job_handed_its_slot_after_the_deadline_is_dropped_even_if_its_timeout_has_not_fired():
+    """A late event loop can wake the waiter with its slot before the timeout callback runs."""
+    scheduler = TranslationScheduler(1, lag_budget=0.05)
+    busy = scheduler.admit("room-1", "room-1:fr")
+    release = asyncio.Event()
+
+    async def hold() -> None:
+        try:
+            async with busy:
+                await release.wait()
+                # Blocks the loop past the waiter's deadline, then frees the slot in the same step,
+                # so the waiter is woken with the slot before its timeout callback gets to run.
+                time.sleep(0.1)
+        finally:
+            busy.close()
+
+    late = scheduler.admit("room-2", "room-2:de")
+    started = False
+
+    async def wait() -> None:
+        nonlocal started
+        try:
+            async with late:
+                started = True
+        finally:
+            late.close()
+
+    holder = asyncio.create_task(hold())
+    await settle()
+    waiter = asyncio.create_task(wait())
+    await settle()
+    release.set()
+
+    with pytest.raises(StaleTranslationJob):
+        await waiter
+    await holder
+    assert not started
+    assert scheduler.running == 0
+    assert scheduler.admitted("room-2", "room-2:de") == 0
 
 
 async def test_a_job_that_starts_within_the_lag_budget_runs():
