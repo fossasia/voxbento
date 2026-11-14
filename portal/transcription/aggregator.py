@@ -87,6 +87,9 @@ class CaptionAggregator:
         if not text.strip():
             return
         state = self._get_state(booth_id)
+        # An interim result means the recogniser is following real speech, so a short
+        # phrase it then settles on ("Thank you.") is not one it invented from silence.
+        state.had_partial = True
         preview = f"{state.current_utterance} {text.strip()}".strip()
         await self.broadcast_callback(
             booth_id, {"type": "caption", "status": "partial", "text": preview,
