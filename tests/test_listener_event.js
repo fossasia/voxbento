@@ -526,15 +526,28 @@ async function run() {
     'an empty translation shows no message, got "' + historyBox.textContent + '"',
   );
 
-  // The queue must already be past the empty segment, or this one would wait behind it.
+  // Skipped so the language catches up with the speaker (#1189): no message either.
   bundles.onmessage({
-    data: bundleFrame({ segment_id: 'b', seq: 2, caption: 'Hello', translation: '', error: 'pipeline_failed' }),
+    data: bundleFrame({ segment_id: 'b', seq: 2, caption: 'So.', translation: '', error: 'stale' }),
+  });
+  assert(historyBox.textContent.includes('So.'), 'the original caption of a skipped segment still shows');
+  assert(
+    !historyBox.textContent.includes('(Translation'),
+    'a skipped segment shows no message, got "' + historyBox.textContent + '"',
+  );
+
+  // The queue must already be past the empty and skipped segments, or this one would wait behind them.
+  bundles.onmessage({
+    data: bundleFrame({ segment_id: 'c', seq: 3, caption: 'Hello', translation: '', error: 'pipeline_failed' }),
   });
   assert(
     !historyBox.textContent.includes('(Translation'),
     'a failed translation shows nothing, got "' + historyBox.textContent + '"',
   );
-  assert(historyBox.textContent.includes('Hello'), 'the original caption of a failed translation still shows');
+  assert(
+    historyBox.textContent.includes('Hello'),
+    'the original caption of a failed translation still shows, right after an empty and a skipped one',
+  );
 
   console.log('\n' + passed + ' passed, ' + failed + ' failed');
   process.exit(failed > 0 ? 1 : 0);

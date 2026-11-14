@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
-from collections.abc import Awaitable, Sequence
+from collections.abc import Awaitable, Callable, Sequence
 from typing import Any
 
 from portal.translations.engine import (
@@ -52,14 +52,29 @@ class ProviderEngine(TranslationEngine):
     and Groq) are still told apart by that name.
     """
 
-    def __init__(self, provider_name: str, provider: TranslationProvider, kind: EngineKind) -> None:
+    def __init__(
+        self,
+        provider_name: str,
+        provider: TranslationProvider,
+        kind: EngineKind,
+        *,
+        max_concurrency: Callable[[], int] | None = None,
+    ) -> None:
         self.provider_name = provider_name
         self.provider = provider
         self._kind = kind
+        # Read when asked, so the limit comes from the settings in force rather than at import.
+        self._max_concurrency = max_concurrency
 
     @property
     def kind(self) -> EngineKind:
         return self._kind
+
+    @property
+    def max_concurrency(self) -> int:
+        if self._max_concurrency is None:
+            return TranslationEngine.max_concurrency
+        return self._max_concurrency()
 
     async def translate_batch(
         self,

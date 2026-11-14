@@ -1,12 +1,23 @@
 from __future__ import annotations
 
 import asyncio
+from contextlib import asynccontextmanager
 from unittest.mock import AsyncMock, patch
 
 import pytest
+from sqlalchemy import select
 
 from portal.database import get_session
-from portal.models import AIVocabularyEntry, DBBooth, Event, Room, RoomTranslationLanguage, TranscriptSegment
+from portal.models import (
+    AIVocabularyEntry,
+    DBBooth,
+    Event,
+    Room,
+    RoomTranslationLanguage,
+    TranscriptSegment,
+    TranscriptTranslation,
+)
+from portal.translations import worker as worker_module
 from portal.translations.worker import TranslationWorker
 
 
@@ -76,7 +87,12 @@ async def test_language_independence(db_data, mock_broadcast):
         synthesized_text[lang_code] = text
         return b"fake_audio"
 
-    with patch.object(worker, "_call_llm", new=fake_call_llm):
+    # The local model runs one translation at a time; with room for two, a slow language
+    # must not hold up the other.
+    with (
+        patch.object(worker_module.ENGINES["local"], "max_concurrency", 2),
+        patch.object(worker, "_call_llm", new=fake_call_llm),
+    ):
         with patch("portal.tts.worker.synthesize", new=fake_synthesize):
             with patch("portal.websockets.manager.tts_manager.has_listeners", return_value=True):
                 with patch(
@@ -280,7 +296,7 @@ async def test_captions_and_tts_share_one_contextual_translation(db_data, mock_b
 
 @pytest.mark.anyio
 async def test_glossary_lookup_does_not_hold_an_inference_slot(db_data, mock_broadcast):
-    """A slow lookup must not occupy one of the two per-language inference slots."""
+    """A slow lookup must not occupy one of the engine's inference slots."""
     from portal.translations import worker as worker_module
 
     worker = TranslationWorker(mock_broadcast)
@@ -292,8 +308,7 @@ async def test_glossary_lookup_does_not_hold_an_inference_slot(db_data, mock_bro
 
     async def slow_lookup(*args, **kwargs):
         # Record how many inference slots are taken while the lookup is in flight.
-        sem = worker_module.LANGUAGE_SEMAPHORES.get("es")
-        held_during_lookup.append(0 if sem is None else 2 - sem._value)
+        held_during_lookup.append(worker_module.scheduler_for("local").running)
         await asyncio.sleep(0.2)
         return []
 
@@ -400,7 +415,7 @@ async def test_source_language_bypass(db_data, mock_broadcast):
 
 @pytest.mark.anyio
 async def test_queue_counter_restored_when_glossary_lookup_cancelled(db_data, mock_broadcast):
-    """Cancelling a task during glossary lookup must not leak the per-language queue slot."""
+    """Cancelling a task during glossary lookup must not leak its place in the language's queue."""
     import asyncio
 
     from portal.translations import worker as worker_module
@@ -408,7 +423,6 @@ async def test_queue_counter_restored_when_glossary_lookup_cancelled(db_data, mo
     worker = TranslationWorker(mock_broadcast)
     lang = "zz-cancel"
     queue_key = f"floor:{lang}"
-    worker_module.LANGUAGE_QUEUES[queue_key] = 0
 
     async with get_session() as s:
         room = await s.get(Room, db_data["room"].id)
@@ -451,7 +465,7 @@ async def test_queue_counter_restored_when_glossary_lookup_cancelled(db_data, mo
         with pytest.raises(asyncio.CancelledError):
             await task
 
-    assert worker_module.LANGUAGE_QUEUES[queue_key] == 0
+    assert worker_module.scheduler_for("local").admitted(room.id, queue_key) == 0
 
     # A subsequent translation for the same language is still accepted.
     with patch.object(worker, "_call_llm", new=fake_call_llm):
@@ -478,7 +492,7 @@ async def test_queue_counter_restored_when_glossary_lookup_cancelled(db_data, mo
                         2,
                     )
     assert bundle.call_count >= 1
-    assert worker_module.LANGUAGE_QUEUES[queue_key] == 0
+    assert worker_module.scheduler_for("local").admitted(room.id, queue_key) == 0
 
 
 @pytest.mark.anyio
@@ -713,7 +727,9 @@ async def test_translate_and_broadcast_queue_full_drops_and_broadcasts_failure(d
 
     worker = TranslationWorker(mock_broadcast)
     queue_key = "floor:fr"
-    worker_module.LANGUAGE_QUEUES[queue_key] = 15
+    scheduler = worker_module.scheduler_for("local")
+    held = [scheduler.admit(db_data["room"].id, queue_key) for _ in range(15)]
+    assert all(held)
 
     try:
         with patch(
@@ -740,9 +756,10 @@ async def test_translate_and_broadcast_queue_full_drops_and_broadcasts_failure(d
         assert args[1] == "fr"
         assert args[5] == 10  # seq
         assert args[8] == "pipeline_failed"  # error status
-        assert worker_module.LANGUAGE_QUEUES[queue_key] == 15  # not incremented
+        assert scheduler.admitted(db_data["room"].id, queue_key) == 15  # not incremented
     finally:
-        worker_module.LANGUAGE_QUEUES[queue_key] = 0
+        for job in held:
+            job.close()
 
 
 def test_accumulate_sentence_combines_fragments_and_punctuation():
@@ -772,7 +789,7 @@ def test_accumulate_sentence_combines_fragments_and_punctuation():
 
 @pytest.mark.anyio
 async def test_process_completed_sentence_orchestrates_tasks():
-    """_process_completed_sentence resolves the job and executes generated tasks."""
+    """_process_completed_sentence executes the tasks built for a resolved job."""
     worker = TranslationWorker(AsyncMock())
     mock_job = _make_resolved_job()
     executed_tasks = []
@@ -780,14 +797,9 @@ async def test_process_completed_sentence_orchestrates_tasks():
     async def fake_task():
         executed_tasks.append("ran")
 
-    with (
-        patch.object(worker, "_resolve_translation_job", new=AsyncMock(return_value=mock_job)),
-        patch.object(worker, "_build_language_tasks", return_value=[fake_task()]),
-    ):
+    with patch.object(worker, "_build_language_tasks", return_value=[fake_task()]):
         tasks = await worker._process_completed_sentence(
-            session=AsyncMock(),
-            room_id=1,
-            segment=AsyncMock(),
+            job=mock_job,
             segment_id=10,
             text="Completed sentence",
             booth_id_str="floor",
@@ -801,27 +813,88 @@ async def test_process_completed_sentence_orchestrates_tasks():
 
 
 @pytest.mark.anyio
-async def test_process_completed_sentence_aborts_when_job_unresolved():
-    """When _resolve_translation_job returns None, _process_completed_sentence returns None and aborts."""
+async def test_handle_translation_aborts_when_job_unresolved(db_data):
+    """When _resolve_translation_job returns None, no translation task is built."""
     worker = TranslationWorker(AsyncMock())
 
     with (
         patch.object(worker, "_resolve_translation_job", new=AsyncMock(return_value=None)),
         patch.object(worker, "_build_language_tasks") as mock_build,
     ):
-        result = await worker._process_completed_sentence(
-            session=AsyncMock(),
-            room_id=1,
-            segment=AsyncMock(),
-            segment_id=10,
+        await worker.handle_translation(
+            room_id=db_data["room"].id,
+            segment_id=db_data["segment"].id,
             text="Completed sentence",
             booth_id_str="floor",
             uuid_segment_id="uuid-1",
             seq=1,
         )
 
-    assert result is None
     mock_build.assert_not_called()
+
+
+@pytest.mark.anyio
+async def test_handle_translation_holds_no_connection_while_translating(db_data, mock_broadcast):
+    """A segment waiting for the engine must not keep a pooled connection (#1188).
+
+    Each translation opens its own session to save its result. When every waiting segment also
+    held one, a busy server ran out of connections and translations timed out saving.
+    """
+    worker = TranslationWorker(mock_broadcast)
+    real_get_session = worker_module.get_session
+    open_sessions = 0
+    open_during_inference = []
+    both_translating = asyncio.Event()
+    translating = 0
+
+    async with real_get_session() as s:
+        room = await s.get(Room, db_data["room"].id)
+        room.floor_ai_vocabulary_enabled = False
+
+    @asynccontextmanager
+    async def counting_session():
+        nonlocal open_sessions
+        open_sessions += 1
+        try:
+            async with real_get_session() as session:
+                yield session
+        finally:
+            open_sessions -= 1
+
+    async def fake_call_llm(provider, model, api_key, text, lang_name, source_lang_name, **kwargs):
+        # Count while both languages are in the engine, before either saves its result.
+        nonlocal translating
+        translating += 1
+        if translating == 2:
+            open_during_inference.append(open_sessions)
+            both_translating.set()
+        # Bounded, so a scheduler that grants only one slot fails here instead of hanging.
+        await asyncio.wait_for(both_translating.wait(), timeout=5)
+        return f"translated {lang_name}"
+
+    with (
+        patch.object(worker_module.ENGINES["local"], "max_concurrency", 2),
+        patch.object(worker_module, "get_session", new=counting_session),
+        patch.object(worker, "_call_llm", new=fake_call_llm),
+        patch("portal.tts.worker.synthesize", new=AsyncMock(return_value=b"audio")),
+        patch("portal.websockets.manager.tts_manager.has_listeners", return_value=True),
+        patch("portal.websockets.manager.TTSConnectionManager.broadcast_bundle", new_callable=AsyncMock) as bundle,
+    ):
+        await worker.handle_translation(
+            room_id=db_data["room"].id,
+            segment_id=db_data["segment"].id,
+            text="Hello world",
+            booth_id_str="floor",
+            uuid_segment_id="uuid-1",
+            seq=1,
+        )
+
+    assert open_during_inference == [0]
+    # Both translations were still saved and delivered.
+    assert sum(1 for call in bundle.call_args_list if call.args[7].startswith("translated")) == 4
+    async with real_get_session() as s:
+        saved = await s.scalars(select(TranscriptTranslation.language_code))
+        assert sorted(saved) == ["es", "fr"]
 
 
 @pytest.mark.anyio
