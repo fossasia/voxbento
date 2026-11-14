@@ -15,12 +15,31 @@ from datetime import datetime, timedelta, timezone
 os.environ["BOOTH_ACCESS_TOKEN"] = ""
 
 import pytest
+from httpx import ASGITransport, AsyncClient
+from sqlalchemy import select
+
+from fastapi_app import app
+from portal.auth import create_user_token, decode_token, generate_admin_csrf_token, hash_password
+from portal.booth_identity import validate_booth_language_code
+from portal.booth_state import BoothRegistry
+from portal.database import (
+    configure,
+    create_booth,
+    create_event,
+    create_room,
+    create_user,
+    dispose,
+    get_booth_by_id,
+    get_session,
+    get_user_by_email,
+    init_db,
+)
+from portal.models import DBBooth, DeveloperAccount, EventMembership, OAuthClient, OAuthToken
+from portal.routers.admin import _create_booth_unless_duplicate
 
 
 @pytest.fixture(autouse=True)
 async def setup_db():
-    from portal.database import configure, dispose, init_db
-
     configure("sqlite+aiosqlite://")
     await init_db()
     yield
@@ -28,19 +47,11 @@ async def setup_db():
 
 
 def _client():
-    from httpx import ASGITransport, AsyncClient
-
-    from fastapi_app import app
-
     return AsyncClient(transport=ASGITransport(app=app), base_url="http://test")
 
 
 @pytest.fixture
 async def seed_data():
-    from portal.auth import hash_password
-    from portal.database import create_event, create_room, create_user, get_session
-    from portal.models import DeveloperAccount, EventMembership, OAuthClient, OAuthToken
-
     async with get_session() as s:
         user = await create_user(s, email="floor@example.com", display_name="Floor", password_hash=hash_password("pw"))
         event = await create_event(s, slug="floor-event", display_name="Floor Event")
@@ -80,11 +91,6 @@ class TestBoothLanguageCodeApi:
     @pytest.mark.anyio
     async def test_create_booth_rejects_floor(self, seed_data):
         """`floor` marks the room floor captions, so it cannot name a real booth."""
-        from sqlalchemy import select
-
-        from portal.database import get_session
-        from portal.models import DBBooth
-
         event, room, token = seed_data
 
         async with _client() as c:
@@ -134,8 +140,6 @@ class TestBoothLanguageCodeApi:
     @pytest.mark.anyio
     async def test_validator_rejects_floor(self):
         """The shared helper is the single place the rule lives."""
-        from portal.booth_identity import validate_booth_language_code
-
         with pytest.raises(ValueError):
             validate_booth_language_code("floor")
         assert validate_booth_language_code("de") == "de"
@@ -145,8 +149,6 @@ class TestBoothLanguageCodeModel:
     @pytest.mark.anyio
     async def test_model_rejects_floor(self):
         """The ORM validator is the backstop: every DBBooth write passes through it."""
-        from portal.models import DBBooth
-
         with pytest.raises(ValueError):
             DBBooth(event_id=1, room_id=1, language_code="floor", language_name="Floor")
 
@@ -157,14 +159,12 @@ class TestBoothLanguageCodeRegistry:
     @pytest.mark.anyio
     async def test_registry_rejects_floor_without_provisioning(self):
         """The legacy registry must raise before it registers or provisions anything."""
-        from portal.booth_state import BoothRegistry
-
         registry = BoothRegistry()
 
         with pytest.raises(ValueError):
             await registry.create_booth(event_slug="some-event", language_code="floor", language="Floor", room_id=1)
 
-        assert registry._booths == {}
+        assert await registry.list_booths_for_event("some-event") == []
 
         created = await registry.create_booth(event_slug="some-event", language_code="de", language="German", room_id=1)
         assert created["language_code"] == "de"
@@ -172,26 +172,18 @@ class TestBoothLanguageCodeRegistry:
     @pytest.mark.anyio
     async def test_registry_get_or_create_rejects_floor(self):
         """Lazy creation on snapshot or join must also reject floor."""
-        from portal.booth_state import BoothRegistry
-
         registry = BoothRegistry()
 
         with pytest.raises(ValueError):
             await registry.snapshot("some-event-1-floor", "Floor", "some/path")
 
-        assert registry._booths == {}
+        assert await registry.list_booths_for_event("some-event") == []
 
 
 class TestBoothLanguageCodeAdmin:
     @pytest.mark.anyio
     async def test_admin_helper_rejects_floor(self, seed_data):
         """The admin creation helper is shared by the setup wizard and the booth form."""
-        from sqlalchemy import select
-
-        from portal.database import get_session
-        from portal.models import DBBooth
-        from portal.routers.admin import _create_booth_unless_duplicate
-
         event, room, _token = seed_data
 
         with pytest.raises(ValueError):
@@ -208,9 +200,6 @@ class TestBoothLanguageCodeAdmin:
     @pytest.mark.anyio
     async def test_admin_create_booth_redirects_with_invalid_language_error(self, seed_data):
         """Admin form submission of floor redirects with invalid_language_code error."""
-        from portal.auth import create_user_token, decode_token, generate_admin_csrf_token
-        from portal.database import get_session, get_user_by_email
-
         event, room, _token = seed_data
         async with get_session() as session:
             user = await get_user_by_email(session, "floor@example.com")
@@ -237,3 +226,55 @@ class TestBoothLanguageCodeAdmin:
             assert b"The reserved code" in page.content
             assert b"floor" in page.content
 
+    @pytest.mark.anyio
+    async def test_admin_edit_booth_rejects_floor_and_preserves_language(self, seed_data):
+        """Admin booth edit rejects 'floor' with 400 and keeps stored language unchanged."""
+        event, room, _token = seed_data
+        async with get_session() as session:
+            user = await get_user_by_email(session, "floor@example.com")
+            user_id = user.id
+            booth = await create_booth(
+                session,
+                event_id=event.id,
+                room_id=room.id,
+                language_code="fr",
+                language_name="French",
+            )
+            booth_id = booth.id
+
+        user_token = create_user_token(user_id=user_id, email="floor@example.com", is_admin=False)
+        session_id = decode_token(user_token)["jti"]
+        csrf_token = generate_admin_csrf_token(session_id)
+        cookies = {"user_token": user_token, "admin_csrf": csrf_token}
+
+        async with _client() as c:
+            resp = await c.post(
+                f"/workspace/events/{event.id}/rooms/{room.id}/booths/{booth_id}/edit",
+                data={"language_code": "floor", "language_name": "Floor", "csrf_token": csrf_token},
+                cookies=cookies,
+                headers={"X-CSRF-Token": csrf_token},
+                follow_redirects=False,
+            )
+            assert resp.status_code == 400
+            assert "floor" in resp.json()["detail"]
+
+            async with get_session() as session:
+                reloaded = await get_booth_by_id(session, booth_id)
+                assert reloaded is not None
+                assert reloaded.language_code == "fr"
+                assert reloaded.language_name == "French"
+
+            resp_valid = await c.post(
+                f"/workspace/events/{event.id}/rooms/{room.id}/booths/{booth_id}/edit",
+                data={"language_code": "de", "language_name": "German", "csrf_token": csrf_token},
+                cookies=cookies,
+                headers={"X-CSRF-Token": csrf_token},
+                follow_redirects=False,
+            )
+            assert resp_valid.status_code == 303
+
+            async with get_session() as session:
+                reloaded = await get_booth_by_id(session, booth_id)
+                assert reloaded is not None
+                assert reloaded.language_code == "de"
+                assert reloaded.language_name == "German"
