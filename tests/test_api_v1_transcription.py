@@ -76,6 +76,23 @@ def running_worker():
         active_workers.pop(booth_id, None)
 
 
+async def _cleanup_test_worker(booth_id: str):
+    """Safely stop and wait for a test-owned worker session before patches unbind."""
+    session = active_workers.get(booth_id)
+    if session is None:
+        return
+    try:
+        from portal.transcription.worker import stop_transcription_worker
+
+        await asyncio.wait_for(stop_transcription_worker(booth_id), timeout=2.0)
+    except (TimeoutError, asyncio.CancelledError, Exception):
+        if hasattr(session, "stop"):
+            session.stop()
+    finally:
+        if active_workers.get(booth_id) is session:
+            active_workers.pop(booth_id, None)
+
+
 # ── stop ──────────────────────────────────────────────────────────────────────
 
 
@@ -681,10 +698,13 @@ async def test_start_external_provider_resolves_api_key(event):
     with (
         patch.object(api_v1.booths, "get_booth_sync", return_value=mock_booth),
         patch.object(api_v1, "start_transcription_worker", start_mock),
-        patch("portal.routers.api.get_api_key", return_value="known-key"),
+        patch("portal.routers.api.get_api_key", return_value="known-key") as mock_get_key,
     ):
         response = await api_v1.start_transcription(EVENT_SLUG, ROOM_ID, "en", db=db, token=object())
 
+    from portal.transcription.providers.base import ProviderEnum
+
+    mock_get_key.assert_called_once_with(event, ProviderEnum.OPENAI)
     assert response == {
         "status": "started",
         "booth_id": "pycon2026-3-en",
@@ -951,18 +971,20 @@ async def test_start_already_running_rotated_api_key_restarts_worker(event):
                 {"openai": MagicMock(sample_rate=16000), "local": MagicMock(sample_rate=16000)},
             ),
         ):
-            response = await api_v1.start_transcription(EVENT_SLUG, ROOM_ID, "en", db=db, token=object())
-
-        assert stopped_called is True
-        assert response == {
-            "status": "started",
-            "booth_id": booth_id,
-            "provider": "openai",
-            "model": "whisper-1",
-        }
-        new_session = active_workers[booth_id]
-        assert new_session is not old_session
-        assert new_session.config.api_key == "new-rotated-key"
+            try:
+                response = await api_v1.start_transcription(EVENT_SLUG, ROOM_ID, "en", db=db, token=object())
+                assert stopped_called is True
+                assert response == {
+                    "status": "started",
+                    "booth_id": booth_id,
+                    "provider": "openai",
+                    "model": "whisper-1",
+                }
+                new_session = active_workers[booth_id]
+                assert new_session is not old_session
+                assert new_session.config.api_key == "new-rotated-key"
+            finally:
+                await _cleanup_test_worker(booth_id)
     finally:
         active_workers.pop(booth_id, None)
 
@@ -991,21 +1013,24 @@ async def test_start_normal_success_with_real_worker_lifecycle(event):
             patch("portal.transcription.worker.FfmpegProcess.__aenter__", dummy_aenter),
             patch("portal.transcription.worker.PROVIDERS", {"local": MagicMock(sample_rate=16000)}),
         ):
-            response = await api_v1.start_transcription(EVENT_SLUG, ROOM_ID, "en", db=db, token=object())
+            try:
+                response = await api_v1.start_transcription(EVENT_SLUG, ROOM_ID, "en", db=db, token=object())
 
-        assert response == {
-            "status": "started",
-            "booth_id": booth_id,
-            "provider": "local",
-            "model": "tiny",
-        }
-        assert booth_id in active_workers
-        session = active_workers[booth_id]
-        assert session.state == State.RUNNING
+                assert response == {
+                    "status": "started",
+                    "booth_id": booth_id,
+                    "provider": "local",
+                    "model": "tiny",
+                }
+                assert booth_id in active_workers
+                session = active_workers[booth_id]
+                assert session.state == State.RUNNING
 
-        status_db = _db(_result(first=event), _result(all_=[SimpleNamespace(language_code="en")]))
-        status_resp = await api_v1.get_transcription_status(EVENT_SLUG, ROOM_ID, db=status_db, token=object())
-        assert status_resp["statuses"]["en"]["transcription_running"] is True
+                status_db = _db(_result(first=event), _result(all_=[SimpleNamespace(language_code="en")]))
+                status_resp = await api_v1.get_transcription_status(EVENT_SLUG, ROOM_ID, db=status_db, token=object())
+                assert status_resp["statuses"]["en"]["transcription_running"] is True
+            finally:
+                await _cleanup_test_worker(booth_id)
     finally:
         active_workers.pop(booth_id, None)
 
@@ -1106,27 +1131,35 @@ async def test_start_concurrent_requests_during_starting_state(event):
             patch("portal.transcription.worker.FfmpegProcess.__aenter__", slow_aenter),
             patch("portal.transcription.worker.PROVIDERS", {"local": MagicMock(sample_rate=16000)}),
         ):
-            db1 = _db(_result(first=event), _result(first=db_booth))
-            db2 = _db(_result(first=event), _result(first=db_booth))
+            try:
+                db1 = _db(_result(first=event), _result(first=db_booth))
+                db2 = _db(_result(first=event), _result(first=db_booth))
 
-            task1 = asyncio.create_task(api_v1.start_transcription(EVENT_SLUG, ROOM_ID, "en", db=db1, token=object()))
-            # Give task1 a tick to enter start_transcription_worker and reach State.STARTING
-            await asyncio.sleep(0.01)
+                task1 = asyncio.create_task(
+                    api_v1.start_transcription(EVENT_SLUG, ROOM_ID, "en", db=db1, token=object())
+                )
+                # Give task1 a tick to enter start_transcription_worker and reach State.STARTING
+                await asyncio.sleep(0.01)
 
-            assert booth_id in active_workers
-            assert active_workers[booth_id].state == State.STARTING
+                assert booth_id in active_workers
+                assert active_workers[booth_id].state == State.STARTING
 
-            task2 = asyncio.create_task(api_v1.start_transcription(EVENT_SLUG, ROOM_ID, "en", db=db2, token=object()))
-            await asyncio.sleep(0.01)
+                task2 = asyncio.create_task(
+                    api_v1.start_transcription(EVENT_SLUG, ROOM_ID, "en", db=db2, token=object())
+                )
+                await asyncio.sleep(0.01)
 
-            # Unblock FFmpeg
-            ready_gate.set()
+                # Unblock FFmpeg
+                ready_gate.set()
 
-            res1, res2 = await asyncio.gather(task1, task2)
-            assert res1["status"] == "started"
-            assert res2["status"] == "already_running"
-            assert res1["booth_id"] == booth_id
-            assert res2["booth_id"] == booth_id
+                res1, res2 = await asyncio.gather(task1, task2)
+                assert res1["status"] == "started"
+                assert res2["status"] == "already_running"
+                assert res1["booth_id"] == booth_id
+                assert res2["booth_id"] == booth_id
+            finally:
+                ready_gate.set()
+                await _cleanup_test_worker(booth_id)
     finally:
         active_workers.pop(booth_id, None)
 
@@ -1252,9 +1285,12 @@ async def test_start_startup_timeout_with_cleanup_timeout_preserves_registry_and
                 return self.process
 
             with patch("portal.transcription.worker.FfmpegProcess.__aenter__", instant_aenter):
-                resp = await api_v1.start_transcription(EVENT_SLUG, ROOM_ID, "en", db=db2, token=object())
-                assert resp["status"] == "started"
-                assert active_workers[booth_id] is not retained_session
+                try:
+                    resp = await api_v1.start_transcription(EVENT_SLUG, ROOM_ID, "en", db=db2, token=object())
+                    assert resp["status"] == "started"
+                    assert active_workers[booth_id] is not retained_session
+                finally:
+                    await _cleanup_test_worker(booth_id)
     finally:
         active_workers.pop(booth_id, None)
 
