@@ -171,6 +171,8 @@ class TranscriptionWorkerSession:
                         if self.state in (State.STOPPING, State.STOPPED) or self.stop_event.is_set():
                             break
                         self.state = State.RUNNING
+                        if not self.ready_event.is_set():
+                            self.ready_event.set()
                         if not self.started_webhook_emitted:
                             await _wh_worker.enqueue_webhook(
                                 "booth.transcription.started",
@@ -181,8 +183,6 @@ class TranscriptionWorkerSession:
                                 },
                             )
                             self.started_webhook_emitted = True
-                        if not self.ready_event.is_set():
-                            self.ready_event.set()
                         actual_language = self.transcription_language or self.language_code
                         if actual_language == "floor":
                             actual_language = ""

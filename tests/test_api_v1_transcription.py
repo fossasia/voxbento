@@ -1594,6 +1594,87 @@ async def test_worker_config_matches_api_key_and_language_edge_cases():
 
 
 @pytest.mark.anyio
+async def test_worker_running_published_together_with_ready_event():
+    """State.RUNNING and ready_event are set back-to-back before webhook enqueue; concurrent starts see ready."""
+    from portal.transcription.providers.base import ProviderConfig
+    from portal.transcription.worker import (
+        State,
+        active_workers,
+        start_transcription_worker,
+        stop_transcription_worker,
+    )
+
+    booth_id = "test-webhook-readiness-booth"
+    webhook_started = asyncio.Event()
+    release_webhook = asyncio.Event()
+    emitted_events = []
+
+    async def blocking_enqueue(event_name, payload):
+        emitted_events.append((event_name, payload))
+        if event_name == "booth.transcription.started":
+            webhook_started.set()
+            await release_webhook.wait()
+
+    async def dummy_aenter(self):
+        self.process = MagicMock(pid=1234)
+        self.stderr_task = MagicMock(done=MagicMock(return_value=True))
+        return self.process
+
+    session = None
+    try:
+        with (
+            patch("portal.transcription.worker.FfmpegProcess.__aenter__", dummy_aenter),
+            patch("portal.transcription.worker.PROVIDERS", {"local": MagicMock(sample_rate=16000)}),
+            patch("portal.webhooks.worker.enqueue_webhook", side_effect=blocking_enqueue),
+        ):
+            res1 = await start_transcription_worker(
+                "pycon2026",
+                "en",
+                booth_id,
+                MagicMock(),
+                "local",
+                "tiny",
+                ProviderConfig(api_key=None),
+                wait_for_ready=False,
+            )
+            assert res1.status == "started"
+            session = active_workers[booth_id]
+
+            await asyncio.wait_for(webhook_started.wait(), timeout=1.0)
+            assert session.state == State.RUNNING
+            assert session.ready_event.is_set()
+
+            res2 = await asyncio.wait_for(
+                start_transcription_worker(
+                    "pycon2026",
+                    "en",
+                    booth_id,
+                    MagicMock(),
+                    "local",
+                    "tiny",
+                    ProviderConfig(api_key=None),
+                    wait_for_ready=True,
+                ),
+                timeout=1.0,
+            )
+            assert res2.status == "already_running"
+
+            release_webhook.set()
+            await asyncio.sleep(0.01)
+
+            started_emitted = [e for e in emitted_events if e[0] == "booth.transcription.started"]
+            assert len(started_emitted) == 1
+    finally:
+        release_webhook.set()
+        if session:
+            try:
+                await asyncio.wait_for(stop_transcription_worker(booth_id), timeout=2.0)
+            except (TimeoutError, asyncio.CancelledError):
+                session.stop()
+        active_workers.pop(booth_id, None)
+
+
+@pytest.mark.anyio
 async def test_webhook_pairing_across_retries():
     """Verify started webhook is emitted once, not re-emitted on retry, and exactly one stopped is emitted."""
     from portal.transcription.providers.base import ProviderConfig
