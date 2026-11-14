@@ -8,13 +8,17 @@ terms that a transcription provider can use to bias recognition.
 
 The terms are looked up once when a transcription worker starts (never per audio chunk) and carried
 to the provider in ``ProviderConfig.terms``. A failed lookup means "no terms", never a failed worker.
+
+Deepgram has its own lookup, ``speech_keyterms`` in ``portal.translations.vocabulary``. The two stay
+separate on purpose: that one reads every booth of the room and spends a token budget, this one reads
+the scope of the worker's own booth and spends a character budget sized for Whisper's prompt window.
+They share the text cleaning (``clean_speech_term``) and the scope helpers of the translation resolver.
 """
 
 from __future__ import annotations
 
 import asyncio
 import logging
-import re
 from collections.abc import Iterable
 
 from sqlalchemy import ColumnElement, case, false, select
@@ -22,7 +26,12 @@ from sqlalchemy.exc import SQLAlchemyError
 
 from portal.database import get_event_by_slug, get_room_by_id, get_session
 from portal.models import AIVocabularyEntry, DBBooth
-from portal.translations.vocabulary import HIGH_PRIORITY_THRESHOLD, vocabulary_scope_filter, vocabulary_scope_rank
+from portal.translations.vocabulary import (
+    HIGH_PRIORITY_THRESHOLD,
+    clean_speech_term,
+    vocabulary_scope_filter,
+    vocabulary_scope_rank,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -34,14 +43,15 @@ VOCABULARY_LOOKUP_TIMEOUT = 2.0
 MAX_ENTRIES_SCANNED = 1000
 
 _SEPARATOR = ", "
-_CONTROL_CHARS = re.compile(r"[\x00-\x1f\x7f]+")
-_WHITESPACE = re.compile(r"\s+")
 
 
 def clean_term(term: str) -> str:
-    """One line of plain text: no control characters or newlines, no commas, single spaces."""
-    text = _CONTROL_CHARS.sub(" ", term).replace(",", " ")
-    return _WHITESPACE.sub(" ", text).strip()
+    """One line of plain text: no control characters or newlines, no commas, single spaces.
+
+    Cleans like ``clean_speech_term`` (the Deepgram keyterm rule) and also drops commas, because
+    faster-whisper takes ``hotwords`` as one comma-joined string.
+    """
+    return clean_speech_term(term.replace(",", " "))
 
 
 def select_terms(
