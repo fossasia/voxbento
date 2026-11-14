@@ -265,3 +265,8 @@ behavior. See `website/docs/api/authentication.mdx` for integration rollout.
 
 `POST /login` requires verified email and uses the `login` rate-limit bucket:
 10 attempts per normalized email per hour. There is no separate admin sign-in form.
+
+`POST /api/auth/magic-link` and `POST /api/auth/forgot-password` send email, so they
+are limited twice: 5 requests per normalized email per hour, and 30 requests per
+client IP per 10 minutes (`magic_link_ip` / `forgot_password_ip` buckets, one per
+route). Going over the IP limit returns 429 with `Retry-After`.

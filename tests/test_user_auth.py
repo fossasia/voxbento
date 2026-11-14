@@ -12,6 +12,7 @@ os.environ["BOOTH_ACCESS_TOKEN"] = ""
 
 import pytest
 
+import portal.rate_limit
 from portal.auth import (
     create_user_token,
     decode_token,
@@ -19,6 +20,7 @@ from portal.auth import (
     hash_password,
     verify_password,
 )
+from portal.routers.auth import EMAIL_REQUESTS_PER_IP
 
 # ---------------------------------------------------------------------------
 # Fixtures
@@ -716,9 +718,6 @@ class TestUserLogin:
     @pytest.mark.parametrize("path", ["/api/auth/magic-link", "/api/auth/forgot-password"])
     async def test_email_sending_routes_are_limited_per_ip(self, setup_db, monkeypatch, path):
         """Rotating the email must not get around the limit on routes that send mail."""
-        import portal.rate_limit
-        from portal.routers.auth import EMAIL_REQUESTS_PER_IP
-
         monkeypatch.setattr(portal.rate_limit, "_rates", {})
         async with _client() as c:
             for i in range(EMAIL_REQUESTS_PER_IP):
@@ -732,9 +731,6 @@ class TestUserLogin:
     @pytest.mark.anyio
     async def test_email_sending_ip_limit_is_per_route(self, setup_db, monkeypatch):
         """Using up the magic link budget does not block password reset requests."""
-        import portal.rate_limit
-        from portal.routers.auth import EMAIL_REQUESTS_PER_IP
-
         monkeypatch.setattr(portal.rate_limit, "_rates", {})
         async with _client() as c:
             for i in range(EMAIL_REQUESTS_PER_IP):
