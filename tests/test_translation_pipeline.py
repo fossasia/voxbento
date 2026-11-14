@@ -838,7 +838,7 @@ async def test_download_status_failure_preserves_inference_timeout(db_data, mock
         patch(target, side_effect=PermissionError("private model path")),
         patch.object(worker, "_call_llm", new_callable=AsyncMock, return_value="Bonjour"),
         patch("portal.tts.worker.synthesize", new_callable=AsyncMock, return_value=b"audio"),
-        patch("portal.websockets.manager.tts_manager.broadcast_bundle", new_callable=AsyncMock) as bundle,
+        patch("portal.websockets.manager.tts_manager.broadcast_bundle", new_callable=AsyncMock),
         patch("portal.translations.worker.asyncio.wait_for", wraps=asyncio.wait_for) as wait_for,
     ):
         await worker._translate_and_broadcast(
