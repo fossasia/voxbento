@@ -297,6 +297,15 @@ jobs:
       - name: Run unit tests
         run: uv run pytest tests/ -v
 
+      - name: Translation load test (small configuration)
+        # An explicit `shell: bash` runs with `-eo pipefail`, so a failing harness fails the
+        # step even though its output is piped through tee.
+        shell: bash
+        run: |
+          uv run python tests/translation_load_harness.py \
+            --rooms 3 --languages 1,4 --segments 6 --interval 0.5 --latency 0.1 --markdown \
+            | tee -a "$GITHUB_STEP_SUMMARY"
+
   overlay-browser:
     runs-on: ubuntu-24.04
     timeout-minutes: 10
