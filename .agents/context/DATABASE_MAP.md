@@ -89,6 +89,8 @@ Cascade: deletes rooms + booths when event is deleted.
 | `transcription_provider` | String(20) | Default `'local'`; validated against `ProviderEnum` |
 | `transcription_model` | String(20) | Default `'tiny'`; validated against `ALLOWED_MODELS` |
 | `broadcast_unlocked` | Boolean | Default False; allows unauthenticated ingest |
+| `active_interpreter_session_key` | String(80) nullable | `booth_session_key` (`user:<id>` or `invite:<sub>`) of the active interpreter, written by `portal/booth_store.py`; reserved for that session for 2 minutes after a restart (#1165). Never a socket `participant_id` |
+| `active_interpreter_since` | DateTime(tz) nullable | When it was stored; entries older than 24 h are ignored and cleared at startup |
 | `translation_enabled` | Boolean | Default False |
 | `translation_provider` | String(50) nullable | — |
 | `translation_model` | String(100) nullable | — |
@@ -283,6 +285,7 @@ Tracks which languages the translation worker should generate for a given room o
 | 039 | `039_add_atlascloud_api_key.py` | AtlasCloud API key setting |
 | 040 | `040_add_last_sign_in_at_to_users.py` | Nullable `users.last_sign_in_at` |
 | 041 | `041_add_interpreter_attendance.py` | `interpreter_attendance` table (#1215) |
+| 042 | `042_add_active_interpreter_to_booths.py` | `booths.active_interpreter_session_key`, `booths.active_interpreter_since` (#1165) |
 
 Run migrations: `uv run alembic upgrade head`
 

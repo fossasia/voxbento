@@ -17,7 +17,7 @@ from starlette.exceptions import HTTPException as StarletteHTTPException
 from starlette.middleware.base import BaseHTTPMiddleware
 from unilimit.integrations.fastapi import RateLimitExceeded, setup
 
-from portal import meeting_source, program_ingest
+from portal import booth_store, meeting_source, program_ingest
 from portal.auth import (
     ADMIN_CSRF_COOKIE,
     generate_admin_csrf_token,
@@ -81,6 +81,9 @@ async def lifespan(app: FastAPI):
 
     pg.shared_http_client = httpx.AsyncClient(timeout=10.0)
 
+    # Remember each booth's active interpreter, so a restart does not hand the slot to whoever joins first (#1165).
+    await booth_store.enable_persistence(pg.booths)
+
     # Generate landing page demo audio in the background on first startup.
     # Uses local Supertonic — no external API key needed.
     async with dg._generation_lock:
@@ -123,6 +126,7 @@ async def lifespan(app: FastAPI):
     for task in tasks_to_cancel:
         task.cancel()
     await asyncio.gather(*tasks_to_cancel, return_exceptions=True)
+    await booths.stop_persistence()
 
     if pg.shared_http_client:
         await pg.shared_http_client.aclose()

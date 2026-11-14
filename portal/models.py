@@ -223,6 +223,11 @@ class DBBooth(Base):
     # Broadcast Lock
     broadcast_unlocked: Mapped[bool] = mapped_column(Boolean, default=False, server_default="0")
 
+    # Who was the active interpreter when the portal last wrote it (see portal.booth_store, #1165).
+    # A booth_session_key (a user or one invite visit), never a socket participant_id.
+    active_interpreter_session_key: Mapped[str | None] = mapped_column(String(80), nullable=True, default=None)
+    active_interpreter_since: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True, default=None)
+
     # Translation Settings
     translation_enabled: Mapped[bool] = mapped_column(Boolean, default=False, server_default="0")
     translation_provider: Mapped[str | None] = mapped_column(String(50), nullable=True, default=None)
