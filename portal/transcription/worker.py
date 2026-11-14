@@ -112,8 +112,8 @@ class TranscriptionWorkerSession:
 
         channel_path = make_mediamtx_path(self.event_slug, self.room_id, self.language_code)
         self.rtsp_url = f"{settings.mediamtx_rtsp_base}/{channel_path}"
-        self.provider = PROVIDERS.get(self.provider_name) or PROVIDERS.get("local")
-        self.sample_rate = str(getattr(self.provider, "sample_rate", 16000))
+        self.provider = PROVIDERS.get(self.provider_name, PROVIDERS["local"])
+        self.sample_rate = str(self.provider.sample_rate)
 
     def start(self):
         if self.task:
@@ -160,14 +160,16 @@ class TranscriptionWorkerSession:
         self.loop_entered = True
         retry_count = 0
         try:
-            while self.state != State.STOPPING:
+            while self.state != State.STOPPING and not self.stop_event.is_set():
                 # Narrow the race window: check STOPPING immediately before spawning ffmpeg
-                if self.state == State.STOPPING:
+                if self.state in (State.STOPPING, State.STOPPED) or self.stop_event.is_set():
                     break
 
                 try:
                     # The context manager entirely encapsulates ffmpeg process lifecycle and cleanup.
                     async with FfmpegProcess(self.rtsp_url, self.sample_rate, self.booth_id) as process:
+                        if self.state in (State.STOPPING, State.STOPPED) or self.stop_event.is_set():
+                            break
                         self.state = State.RUNNING
                         if not self.started_webhook_emitted:
                             await _wh_worker.enqueue_webhook(
@@ -231,7 +233,7 @@ class TranscriptionWorkerSession:
                         break
                     logger.error(f"[{self.booth_id}][{self.session_id}] Transcription error: {e}. Retrying...")
 
-                if self.state == State.STOPPING:
+                if self.state in (State.STOPPING, State.STOPPED) or self.stop_event.is_set():
                     break
 
                 retry_count += 1
@@ -363,7 +365,7 @@ async def start_transcription_worker(
 
             if existing_session.state in (State.STOPPING, State.STOPPED):
                 if existing_session.state == State.STOPPED and (
-                    getattr(existing_session, "task", None) is None or existing_session.task.done()
+                    existing_session.task is None or existing_session.task.done()
                 ):
                     # STOPPED precedes async cleanup; remove only after the task finishes.
                     if active_workers.get(booth_id) is existing_session:

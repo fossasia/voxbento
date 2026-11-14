@@ -42,7 +42,16 @@ def _db(*results):
 
 @pytest.fixture
 def event():
-    return SimpleNamespace(id=1, slug=EVENT_SLUG, transcription_api_enabled=False)
+    return SimpleNamespace(
+        id=1,
+        slug=EVENT_SLUG,
+        transcription_api_enabled=False,
+        encrypted_openai_api_key=None,
+        encrypted_deepgram_api_key=None,
+        encrypted_nvidia_api_key=None,
+        encrypted_elevenlabs_api_key=None,
+        encrypted_atlascloud_api_key=None,
+    )
 
 
 @pytest.fixture(autouse=True)
@@ -811,6 +820,7 @@ async def test_start_already_running_same_config_returns_already_running(event):
         language_code="en",
         config=ProviderConfig(api_key=None),
         state=State.RUNNING,
+        task=None,
         stop=MagicMock(),
         wait_until_stopped=AsyncMock(),
     )
@@ -880,7 +890,10 @@ async def test_start_already_running_rotated_api_key_restarts_worker(event):
             patch.object(api_v1.booths, "get_booth_sync", return_value=mock_booth),
             patch("portal.routers.api.get_api_key", return_value="new-rotated-key"),
             patch("portal.transcription.worker.FfmpegProcess.__aenter__", dummy_aenter),
-            patch("portal.transcription.worker.PROVIDERS", {"openai": MagicMock()}),
+            patch(
+                "portal.transcription.worker.PROVIDERS",
+                {"openai": MagicMock(sample_rate=16000), "local": MagicMock(sample_rate=16000)},
+            ),
         ):
             response = await api_v1.start_transcription(EVENT_SLUG, ROOM_ID, "en", db=db, token=object())
 
@@ -920,7 +933,7 @@ async def test_start_normal_success_with_real_worker_lifecycle(event):
         with (
             patch.object(api_v1.booths, "get_booth_sync", return_value=mock_booth),
             patch("portal.transcription.worker.FfmpegProcess.__aenter__", dummy_aenter),
-            patch("portal.transcription.worker.PROVIDERS", {"local": MagicMock()}),
+            patch("portal.transcription.worker.PROVIDERS", {"local": MagicMock(sample_rate=16000)}),
         ):
             response = await api_v1.start_transcription(EVENT_SLUG, ROOM_ID, "en", db=db, token=object())
 
@@ -962,7 +975,7 @@ async def test_start_startup_timeout_cleans_up_task_and_registry(event):
             patch.object(api_v1.booths, "get_booth_sync", return_value=mock_booth),
             patch("portal.transcription.worker.settings.transcription_startup_timeout_secs", 0.05),
             patch("portal.transcription.worker.FfmpegProcess.__aenter__", hanging_aenter),
-            patch("portal.transcription.worker.PROVIDERS", {"local": MagicMock()}),
+            patch("portal.transcription.worker.PROVIDERS", {"local": MagicMock(sample_rate=16000)}),
         ):
             with pytest.raises(api_v1.HTTPException) as exc_info:
                 await api_v1.start_transcription(EVENT_SLUG, ROOM_ID, "en", db=db, token=object())
@@ -1035,7 +1048,7 @@ async def test_start_concurrent_requests_during_starting_state(event):
         with (
             patch.object(api_v1.booths, "get_booth_sync", return_value=mock_booth),
             patch("portal.transcription.worker.FfmpegProcess.__aenter__", slow_aenter),
-            patch("portal.transcription.worker.PROVIDERS", {"local": MagicMock()}),
+            patch("portal.transcription.worker.PROVIDERS", {"local": MagicMock(sample_rate=16000)}),
         ):
             db1 = _db(_result(first=event), _result(first=db_booth))
             db2 = _db(_result(first=event), _result(first=db_booth))
@@ -1084,7 +1097,7 @@ async def test_start_concurrent_requests_both_fail_if_startup_fails(event):
         with (
             patch.object(api_v1.booths, "get_booth_sync", return_value=mock_booth),
             patch("portal.transcription.worker.FfmpegProcess.__aenter__", failing_aenter),
-            patch("portal.transcription.worker.PROVIDERS", {"local": MagicMock()}),
+            patch("portal.transcription.worker.PROVIDERS", {"local": MagicMock(sample_rate=16000)}),
         ):
             db1 = _db(_result(first=event), _result(first=db_booth))
             db2 = _db(_result(first=event), _result(first=db_booth))
@@ -1144,7 +1157,7 @@ async def test_start_startup_timeout_with_cleanup_timeout_preserves_registry_and
             patch.object(api_v1.booths, "get_booth_sync", return_value=mock_booth),
             patch("portal.transcription.worker.settings.transcription_startup_timeout_secs", 0.05),
             patch("portal.transcription.worker.FfmpegProcess.__aenter__", hanging_aenter),
-            patch("portal.transcription.worker.PROVIDERS", {"local": MagicMock()}),
+            patch("portal.transcription.worker.PROVIDERS", {"local": MagicMock(sample_rate=16000)}),
             patch(
                 "portal.transcription.worker.TranscriptionWorkerSession.wait_until_stopped",
                 slow_wait_until_stopped,
@@ -1166,7 +1179,7 @@ async def test_start_startup_timeout_with_cleanup_timeout_preserves_registry_and
         with (
             patch.object(api_v1.booths, "get_booth_sync", return_value=mock_booth),
             patch("portal.transcription.worker.settings.transcription_startup_timeout_secs", 0.05),
-            patch("portal.transcription.worker.PROVIDERS", {"local": MagicMock()}),
+            patch("portal.transcription.worker.PROVIDERS", {"local": MagicMock(sample_rate=16000)}),
         ):
             # When wait_until_stopped succeeds, next start cleanly succeeds
             if retained_session.task:
@@ -1260,6 +1273,7 @@ async def test_admin_and_api_v1_resolve_identical_configuration(event):
     event.encrypted_deepgram_api_key = None
     event.encrypted_nvidia_api_key = None
     event.encrypted_elevenlabs_api_key = None
+    event.encrypted_atlascloud_api_key = None
 
     db_booth = SimpleNamespace(
         transcription_enabled=True,
@@ -1411,6 +1425,7 @@ async def test_start_worker_stopping_wait_bounded_and_retains_registry():
         transcription_language=None,
         session_id="stuck-session-123",
         state=State.STOPPING,
+        task=None,
         config=ProviderConfig(api_key=None),
         stop=MagicMock(),
         wait_until_stopped=slow_wait,
@@ -1617,7 +1632,7 @@ async def test_start_worker_spawn_failure_wakes_waiter_immediately():
         with (
             patch("portal.transcription.worker._wh_worker.enqueue_webhook", side_effect=mock_enqueue),
             patch("portal.transcription.worker.FfmpegProcess.__aenter__", failing_aenter),
-            patch("portal.transcription.worker.PROVIDERS", {"local": MagicMock()}),
+            patch("portal.transcription.worker.PROVIDERS", {"local": MagicMock(sample_rate=16000)}),
         ):
             result = await start_transcription_worker(
                 "pycon2026",
@@ -1680,3 +1695,43 @@ async def test_start_stopping_timeout_returns_503(event):
         assert exc_info.value.headers is not None
         expected_retry_after = str(math.ceil(api_v1.settings.transcription_startup_timeout_secs))
         assert exc_info.value.headers.get("Retry-After") == expected_retry_after
+
+
+@pytest.mark.anyio
+async def test_worker_run_loop_honors_stop_event_if_cancellation_swallowed():
+    """If FfmpegProcess.__aenter__ swallows CancelledError, _run_loop honors stop_event and exits without endless retry."""
+    from portal.transcription.providers.base import ProviderConfig
+    from portal.transcription.worker import State, TranscriptionWorkerSession
+
+    entered = asyncio.Event()
+
+    async def swallowing_aenter(self):
+        entered.set()
+        try:
+            while True:
+                await asyncio.sleep(0.01)
+        except asyncio.CancelledError:
+            # Swallowing CancelledError simulates a context manager that catches CancelledError
+            return MagicMock()
+
+    session = TranscriptionWorkerSession(
+        "pycon2026",
+        "en",
+        "pycon2026-1-en",
+        MagicMock(),
+        "local",
+        "tiny",
+        ProviderConfig(api_key=None),
+    )
+
+    with (
+        patch("portal.transcription.worker.FfmpegProcess.__aenter__", swallowing_aenter),
+        patch("portal.transcription.worker.PROVIDERS", {"local": MagicMock(sample_rate=16000)}),
+    ):
+        session.start()
+        await asyncio.wait_for(entered.wait(), timeout=1.0)
+        session.stop()
+        await asyncio.wait_for(session.wait_until_stopped(), timeout=2.0)
+
+    assert session.state == State.STOPPED
+    assert session.task is not None and session.task.done()

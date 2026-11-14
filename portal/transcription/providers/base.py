@@ -42,11 +42,11 @@ def get_api_key(event: Event, provider: ProviderEnum) -> str | None:
     from portal.crypto import decrypt_val
 
     key_map = {
-        ProviderEnum.OPENAI: getattr(event, "encrypted_openai_api_key", None),
-        ProviderEnum.DEEPGRAM: getattr(event, "encrypted_deepgram_api_key", None),
-        ProviderEnum.NVIDIA: getattr(event, "encrypted_nvidia_api_key", None),
-        ProviderEnum.ELEVENLABS: getattr(event, "encrypted_elevenlabs_api_key", None),
-        ProviderEnum.ATLASCLOUD: getattr(event, "encrypted_atlascloud_api_key", None),
+        ProviderEnum.OPENAI: event.encrypted_openai_api_key,
+        ProviderEnum.DEEPGRAM: event.encrypted_deepgram_api_key,
+        ProviderEnum.NVIDIA: event.encrypted_nvidia_api_key,
+        ProviderEnum.ELEVENLABS: event.encrypted_elevenlabs_api_key,
+        ProviderEnum.ATLASCLOUD: event.encrypted_atlascloud_api_key,
     }
     encrypted = key_map.get(provider)
     return decrypt_val(encrypted) if encrypted else None
