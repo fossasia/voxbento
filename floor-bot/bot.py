@@ -3,11 +3,12 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
+import math
 import os
 import re
 import subprocess  # nosec B404
 import threading
-from http.server import BaseHTTPRequestHandler, HTTPServer
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Dict
 
 logging.basicConfig(level=logging.INFO)
@@ -19,6 +20,74 @@ SECRET_VALUE = re.compile(
 )
 
 
+def _wait_for_proc(proc: subprocess.Popen, label: str) -> None:
+    """Terminate and wait for a subprocess, falling back to SIGKILL on timeout."""
+    if proc.poll() is None:
+        try:
+            proc.terminate()
+            try:
+                proc.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                logger.warning(f"Graceful stop timed out for {label}; sending SIGKILL")
+                proc.kill()
+                try:
+                    proc.wait(timeout=3)
+                except subprocess.TimeoutExpired:
+                    logger.error(f"Subprocess for {label} did not exit after SIGKILL")
+        except Exception as exc:
+            logger.error(f"Unexpected error stopping subprocess for {label}: {exc}")
+            try:
+                proc.kill()
+                try:
+                    proc.wait(timeout=3)
+                except subprocess.TimeoutExpired:
+                    logger.error(f"Subprocess for {label} did not exit after SIGKILL")
+            except Exception as kill_exc:
+                logger.debug(f"Kill failed for {label}: {kill_exc}")
+
+
+class EmptyRoomTracker:
+    """Track how long the bot is alone in a meeting."""
+
+    def __init__(self, grace_seconds: float):
+        self.grace_seconds = max(0.0, grace_seconds)
+        self.empty_since: float | None = None
+
+    def update(self, participant_count: int | None, now: float) -> bool:
+        if participant_count != 1:
+            self.empty_since = None
+            return False
+
+        if self.empty_since is None:
+            self.empty_since = now
+
+        return now - self.empty_since >= self.grace_seconds
+
+
+DEFAULT_EMPTY_ROOM_GRACE_SECONDS = 90.0
+
+
+def empty_room_grace_seconds(raw: str | None) -> float:
+    """Parse BOT_EMPTY_ROOM_GRACE_SECONDS, falling back to the default for anything unusable.
+
+    float() accepts "nan" and "inf": NaN would make the bot leave at once and
+    infinity would keep it in an empty room forever, so both use the default.
+    """
+    if raw is None or not raw.strip():
+        return DEFAULT_EMPTY_ROOM_GRACE_SECONDS
+    try:
+        value = float(raw)
+    except ValueError:
+        value = math.nan
+    if not math.isfinite(value):
+        print(
+            f"Invalid BOT_EMPTY_ROOM_GRACE_SECONDS; using {DEFAULT_EMPTY_ROOM_GRACE_SECONDS:g} seconds.",
+            flush=True,
+        )
+        return DEFAULT_EMPTY_ROOM_GRACE_SECONDS
+    return max(0.0, value)
+
+
 class SubprocessManager:
     def __init__(self):
         self.rooms: Dict[str, subprocess.Popen] = {}
@@ -28,14 +97,32 @@ class SubprocessManager:
         # Last failure code from the subprocess (join_failed, not_jitsi, redirected, left_meeting, audio_failed).
         self.room_failures: Dict[str, str] = {}
         self.room_meta: Dict[str, dict] = {}
-        self.lock = threading.Lock()
+        self.stopping_threads: Dict[str, threading.Thread] = {}
+        self.lock = threading.RLock()
 
     def start_room(self, event_slug: str, room_id: int, jitsi_url: str, mediamtx_rtsp_base: str):
+        """Start a floor-bot browser subprocess for the given room, waiting for any in-flight teardown."""
         process_key = f"{event_slug}-{room_id}"
-        with self.lock:
-            if process_key in self.rooms:
-                self.stop_room_locked(process_key)
+        while True:
+            to_join = None
+            with self.lock:
+                stop_thread = self.stopping_threads.get(process_key)
+                if stop_thread and stop_thread.is_alive():
+                    to_join = stop_thread
+                elif process_key in self.rooms:
+                    self._stop_room_async_locked(process_key)
+                    to_join = self.stopping_threads.get(process_key)
+                else:
+                    self._spawn_room_locked(process_key, event_slug, room_id, jitsi_url, mediamtx_rtsp_base)
+                    return
+            if to_join and to_join.is_alive():
+                to_join.join()
 
+    def _spawn_room_locked(
+        self, process_key: str, event_slug: str, room_id: int, jitsi_url: str, mediamtx_rtsp_base: str
+    ):
+        """Spawn the browser/ffmpeg subprocess for a room while caller holds self.lock."""
+        with self.lock:
             logger.info(f"Starting subprocess for event: {event_slug}, room: {room_id}")
             env = os.environ.copy()
             env["BOT_EVENT_SLUG"] = event_slug
@@ -52,7 +139,9 @@ import asyncio
 import os
 import signal
 import subprocess
+import time
 from playwright.async_api import async_playwright
+from bot import EmptyRoomTracker, empty_room_grace_seconds
 
 class AgentFailure(Exception):
     pass
@@ -112,6 +201,8 @@ async def run_capture():
     ffmpeg_proc = None
     user_data_dir = None
     exit_code = 0
+    monitor_task = None
+    exit_stage = "leaving"
 
     try:
         import tempfile
@@ -216,8 +307,115 @@ async def run_capture():
 
         print("BOT_STAGE:in_meeting", flush=True)
 
+        grace_seconds = empty_room_grace_seconds(os.environ.get("BOT_EMPTY_ROOM_GRACE_SECONDS"))
+        tracker = EmptyRoomTracker(grace_seconds)
+        previous_join_count = 0
+
+        async def monitor_empty_room():
+            nonlocal previous_join_count
+            while True:
+                await asyncio.sleep(5)
+
+                try:
+                    diagnostic = await page.evaluate('''() => {
+                        const c = window.APP?.conference;
+                        const getValue = (name) => {
+                            const value = c?.[name];
+                            if (typeof value !== "function") {
+                                return value ?? null;
+                            }
+                            try {
+                                return value.call(c) ?? null;
+                            } catch (_) {
+                                return null;
+                            }
+                        };
+
+                        const event = window.JitsiMeetJS?.events?.conference?.USER_JOINED;
+
+                        if (c && typeof c.on === "function" && event) {
+                            window.__floorBotJoinCount ??= 0;
+
+                            if (window.__floorBotJoinListenerConference !== c) {
+                                c.on(event, () => {
+                                    window.__floorBotJoinCount += 1;
+                                });
+                                window.__floorBotJoinListenerConference = c;
+                            }
+                        }
+
+                        return {
+                            membersCount: getValue("membersCount"),
+                            memberIds: getValue("listMembersIds"),
+                            myUserId: getValue("getMyUserId"),
+                            joined: getValue("isJoined"),
+                            joinCount: window.__floorBotJoinCount ?? 0,
+                        };
+                    }''')
+
+                    if diagnostic.get("joined") is not True:
+                        tracker.update(None, time.monotonic())
+                        continue
+
+                    join_count = diagnostic.get("joinCount", 0)
+
+                    if join_count > previous_join_count:
+                        tracker.update(None, time.monotonic())
+
+                    previous_join_count = join_count
+
+                    member_ids = diagnostic.get("memberIds")
+                    my_user_id = diagnostic.get("myUserId")
+
+                    if isinstance(member_ids, list) and my_user_id:
+                        participant_count = len(member_ids)
+                        if my_user_id not in member_ids:
+                            participant_count += 1
+                    else:
+                        participant_count = None
+
+                    should_leave = tracker.update(
+                        participant_count, time.monotonic()
+                    )
+
+                    empty_for = (
+                        time.monotonic() - tracker.empty_since
+                        if tracker.empty_since is not None
+                        else 0
+                    )
+                    print(
+                        f"Jitsi diagnostic: {diagnostic!r}; "
+                        f"participant_count={participant_count}; "
+                        f"empty_for={empty_for:.1f}s",
+                        flush=True,
+                    )
+
+                    if should_leave:
+                        print(
+                            f"Bot alone for {grace_seconds}s; leaving Jitsi.",
+                            flush=True,
+                        )
+                        await page.evaluate('''() => {
+                            const c = window.APP?.conference;
+                            if (typeof c?.hangup === "function") {
+                                c.hangup();
+                            } else if (typeof c?.leaveRoom === "function") {
+                                c.leaveRoom();
+                            }
+                        }''')
+                        return "left_empty_room"
+
+                except Exception as exc:
+                    tracker.update(None, time.monotonic())
+                    print(
+                        f"Could not inspect Jitsi participants: {exc}",
+                        flush=True,
+                    )
+
+        monitor_task = asyncio.create_task(monitor_empty_room())
+
         async def stream_audio():
-            nonlocal ffmpeg_proc
+            nonlocal ffmpeg_proc, exit_stage
             # Retry loop: ffmpeg can exit if RTSP or PulseAudio isn't ready yet
             max_retries = 5
             retry_delay = 3
@@ -253,11 +451,30 @@ async def run_capture():
                             print(f"ffmpeg: {text}", flush=True)
 
                 stderr_task = asyncio.create_task(_drain_stderr(ffmpeg_proc))
+                ffmpeg_wait_task = asyncio.create_task(ffmpeg_proc.wait())
+                done, _ = await asyncio.wait(
+                    {ffmpeg_wait_task, monitor_task},
+                    return_when=asyncio.FIRST_COMPLETED,
+                )
 
-                await ffmpeg_proc.wait()
+                if monitor_task in done:
+                    exit_stage = monitor_task.result()
+
+                    if ffmpeg_proc.returncode is None:
+                        ffmpeg_proc.terminate()
+                        try:
+                            await asyncio.wait_for(
+                                ffmpeg_proc.wait(), timeout=3
+                            )
+                        except asyncio.TimeoutError:
+                            ffmpeg_proc.kill()
+                            await ffmpeg_proc.wait()
+
+                    await stderr_task
+                    return
+
+                rc = ffmpeg_wait_task.result()
                 await stderr_task
-
-                rc = ffmpeg_proc.returncode
                 print(f"ffmpeg exited with code {rc}", flush=True)
 
                 if rc == 0:
@@ -267,7 +484,13 @@ async def run_capture():
 
                 if attempt < max_retries:
                     print(f"Retrying ffmpeg in {retry_delay}s...", flush=True)
-                    await asyncio.sleep(retry_delay)
+                    done, _ = await asyncio.wait(
+                        {monitor_task},
+                        timeout=retry_delay,
+                    )
+                    if monitor_task in done:
+                        exit_stage = monitor_task.result()
+                        return
                     retry_delay = min(retry_delay * 2, 15)
                 else:
                     print("ffmpeg failed after all retries", flush=True)
@@ -296,8 +519,17 @@ async def run_capture():
     except AgentFailure as failure:
         print(f"BOT_FAILURE:{failure}", flush=True)
         exit_code = 3
+
     finally:
-        print("BOT_STAGE:leaving", flush=True)
+        if monitor_task is not None and not monitor_task.done():
+            monitor_task.cancel()
+            try:
+                await monitor_task
+            except asyncio.CancelledError:
+                pass
+
+        print(f"BOT_STAGE:{exit_stage}", flush=True)
+
         if ffmpeg_proc is not None and ffmpeg_proc.returncode is None:
             ffmpeg_proc.terminate()
             try:
@@ -312,10 +544,21 @@ async def run_capture():
                 await asyncio.wait_for(browser.close(), timeout=4)
             except Exception:
                 pass
+
         if pw is not None:
-            await pw.stop()
+            try:
+                await pw.stop()
+            except Exception:
+                pass
+
         if pulse_proc is not None and pulse_proc.poll() is None:
             pulse_proc.terminate()
+            try:
+                pulse_proc.wait(timeout=3)
+            except subprocess.TimeoutExpired:
+                pulse_proc.kill()
+                pulse_proc.wait()
+
         if os.path.exists(pulse_socket):
             try:
                 os.remove(pulse_socket)
@@ -367,29 +610,58 @@ raise SystemExit(asyncio.run(run_capture()))
             self.rooms[process_key] = proc
 
     def stop_room_locked(self, process_key: str):
+        """Synchronously terminate and wait for a room subprocess under lock."""
         if process_key in self.rooms:
             logger.info(f"Terminating subprocess for {process_key}")
             self.room_states[process_key] = "stopping"
-            proc = self.rooms[process_key]
-            if proc.poll() is None:
-                proc.terminate()
-                try:
-                    proc.wait(timeout=5)
-                except subprocess.TimeoutExpired:
-                    logger.warning(f"Graceful stop timed out for {process_key}; sending SIGKILL")
-                    proc.kill()
-                    try:
-                        proc.wait(timeout=3)
-                    except subprocess.TimeoutExpired:
-                        logger.error(f"Subprocess for {process_key} did not exit after SIGKILL")
-            del self.rooms[process_key]
-            self.room_states[process_key] = "stopped"
+            proc = self.rooms.pop(process_key)
             self.room_failures.pop(process_key, None)
             self.room_meta.pop(process_key, None)
+            _wait_for_proc(proc, process_key)
+            self.room_states[process_key] = "stopped"
+
+    def _stop_room_async_locked(self, process_key: str) -> None:
+        if process_key not in self.rooms:
+            return
+        logger.info(f"Terminating subprocess for {process_key} in background")
+        self.room_states[process_key] = "stopping"
+        proc = self.rooms.pop(process_key)
+        self.room_failures.pop(process_key, None)
+        self.room_meta.pop(process_key, None)
+
+        def _teardown():
+            try:
+                _wait_for_proc(proc, process_key)
+            finally:
+                with self.lock:
+                    self.room_states[process_key] = "stopped"
+                    self.stopping_threads.pop(process_key, None)
+
+        t = threading.Thread(target=_teardown, daemon=True)
+        self.stopping_threads[process_key] = t
+        t.start()
+
+    def stop_room_async(self, process_key: str) -> None:
+        """Eagerly remove room from active tracking and perform teardown in a background daemon thread."""
+        with self.lock:
+            self._stop_room_async_locked(process_key)
 
     def stop_room(self, process_key: str):
+        """Synchronously stop a room, awaiting any active background teardown."""
+        stop_thread = None
         with self.lock:
-            self.stop_room_locked(process_key)
+            stop_thread = self.stopping_threads.get(process_key)
+            if process_key in self.rooms:
+                self.stop_room_locked(process_key)
+        if stop_thread and stop_thread.is_alive():
+            stop_thread.join()
+
+    def wait_for_all_stops(self, timeout: float = 10.0):
+        """Wait for all outstanding background teardown threads to complete."""
+        with self.lock:
+            threads = list(self.stopping_threads.values())
+        for t in threads:
+            t.join(timeout=timeout)
 
 
 manager = SubprocessManager()
@@ -426,11 +698,11 @@ class RequestHandler(BaseHTTPRequestHandler):
             if not event_slug or room_id is None:
                 self.send_error(400, "Missing event_slug or room_id")
                 return
-            manager.stop_room(f"{event_slug}-{room_id}")
-            self.send_response(200)
+            manager.stop_room_async(f"{event_slug}-{room_id}")
+            self.send_response(202)
             self.send_header("Content-type", "application/json")
             self.end_headers()
-            self.wfile.write(json.dumps({"status": "stopped", "event_slug": event_slug}).encode())
+            self.wfile.write(json.dumps({"status": "stopping", "event_slug": event_slug}).encode())
         else:
             self.send_error(404, "Not Found")
 
@@ -442,15 +714,28 @@ class RequestHandler(BaseHTTPRequestHandler):
                     stage = manager.room_states.get(process_key, "unknown")
                     meta = manager.room_meta.get(process_key, {})
                     if proc.poll() is not None:
+                        if stage == "left_empty_room" and proc.returncode == 0:
+                            status[process_key] = {
+                                **meta,
+                                "state": "stopped",
+                                "stage": "left_empty_room",
+                                "exit_code": proc.returncode,
+                            }
+                        else:
+                            status[process_key] = {
+                                **meta,
+                                "state": "dead",
+                                "stage": "dead",
+                                "exit_code": proc.returncode,
+                                "failure": manager.room_failures.get(process_key),
+                            }
+                    else:
                         status[process_key] = {
                             **meta,
-                            "state": "dead",
-                            "stage": "dead",
-                            "exit_code": proc.returncode,
-                            "failure": manager.room_failures.get(process_key),
+                            "state": "healthy",
+                            "stage": stage,
+                            "pid": proc.pid,
                         }
-                    else:
-                        status[process_key] = {**meta, "state": "healthy", "stage": stage, "pid": proc.pid}
             self.send_response(200)
             self.send_header("Content-type", "application/json")
             self.end_headers()
@@ -461,7 +746,7 @@ class RequestHandler(BaseHTTPRequestHandler):
 
 if __name__ == "__main__":
     server_address = ("0.0.0.0", 8080)  # nosec B104
-    httpd = HTTPServer(server_address, RequestHandler)
+    httpd = ThreadingHTTPServer(server_address, RequestHandler)
     logger.info("Starting floor-bot on port 8080...")
     try:
         httpd.serve_forever()
@@ -470,4 +755,5 @@ if __name__ == "__main__":
     finally:
         for p_key in list(manager.rooms.keys()):
             manager.stop_room(p_key)
+        manager.wait_for_all_stops()
         httpd.server_close()

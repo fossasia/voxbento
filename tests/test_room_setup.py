@@ -38,6 +38,10 @@ from portal.room_setup import (
     parse_plan,
 )
 from portal.routers import admin
+from portal.transcription.constants import ALLOWED_MODELS, ProviderEnum
+
+# These tests are not about CSRF; their requests carry the token a real page would send.
+pytestmark = pytest.mark.usefixtures("auto_csrf")
 
 ORIGIN = {"origin": "http://test"}
 
@@ -135,6 +139,7 @@ def test_without_keys_only_self_hosted_engines_are_offered():
         "Deepgram",
         "ElevenLabs",
         "OpenAI",
+        "Atlas Cloud",
         "NVIDIA",
         "Anthropic",
         "Google Gemini",
@@ -178,6 +183,30 @@ def test_nvidia_requires_its_function_id(monkeypatch):
     event = _event(encrypted_nvidia_api_key=encrypt_val("k"))
     event.transcription_api_enabled = True
     assert "nvidia" not in {engine.provider for engine in engine_catalog(event).speech}
+
+
+def test_locked_services_are_listed_for_each_kind():
+    event = _event(encrypted_deepgram_api_key=encrypt_val("k"))
+    event.transcription_api_enabled = True
+    catalog = engine_catalog(event)
+    assert "Deepgram" not in catalog.locked_speech
+    assert "ElevenLabs" in catalog.locked_speech
+    assert "Anthropic" in catalog.locked_translation
+    assert "Anthropic" not in catalog.locked_speech
+    assert "ElevenLabs" not in catalog.locked_translation
+    assert set(catalog.locked_speech + catalog.locked_translation) <= set(catalog.locked)
+
+
+def test_booth_speech_models_are_all_accepted_by_a_booth():
+    models = room_setup.booth_speech_models()
+    for provider, options in models.items():
+        accepted = ALLOWED_MODELS[ProviderEnum(provider)]
+        assert options, provider
+        assert all(value in accepted for value, _ in options), provider
+    # Rooms and booths both offer every built-in Whisper size.
+    sizes = ["tiny", "base", "small", "medium", "large-v2", "large-v3"]
+    assert [value for value, _ in models["local"]] == sizes
+    assert [value for value, _ in room_setup.SPEECH_MODELS["local"]] == sizes
 
 
 # ── Reading the form ───────────────────────────────────────────────────────
@@ -274,6 +303,15 @@ def test_unsupported_local_translation_is_explained():
     assert any("The built-in translator doesn't support Azerbaijani" in error for error in errors)
 
 
+def test_local_translation_support_is_checked_by_language_code():
+    """Greek was refused while support was looked up by English name, which two tables spelled differently."""
+    _, errors = _parse(spoken_language="el", languages=["fr", "zh"], delivery_fr=AI_TEXT, delivery_zh=AI_TEXT)
+    assert not errors
+
+    _, errors = _parse(spoken_language="az", languages=["fr", "no"], delivery_fr=AI_TEXT, delivery_no=AI_TEXT)
+    assert any("The built-in translator doesn't support Azerbaijani, Norwegian" in error for error in errors), errors
+
+
 def test_unsupported_ai_voice_is_explained_per_language():
     _, errors = _parse(languages=["th", "fr"], delivery_th=AI_VOICE, delivery_fr=AI_VOICE)
     assert errors == (
@@ -297,6 +335,28 @@ def test_voice_support_is_listed_for_the_form():
     support = engine_catalog(_event(encrypted_deepgram_api_key=encrypt_val("k"))).voice_support
     assert "fr" in support["deepgram"] and "mr" not in support["deepgram"] and "hi" not in support["deepgram"]
     assert "fr" in support["supertonic"]
+
+
+def test_elevenlabs_voice_speaks_thai():
+    """English talks are read aloud in Thai, which no Deepgram Aura voice speaks."""
+    event = _event(encrypted_deepgram_api_key=encrypt_val("k"), encrypted_elevenlabs_api_key=encrypt_val("k"))
+    catalog = engine_catalog(event)
+    assert "th" in catalog.voice_support["elevenlabs"] and "th" not in catalog.voice_support["deepgram"]
+    form = _form(
+        display_name="Main Hall",
+        spoken_language="en",
+        languages=["th"],
+        delivery_th=AI_VOICE,
+        voice_engine="elevenlabs",
+    )
+    plan, errors = parse_plan(form, catalog)
+    assert errors == () and plan.voice_engine == "elevenlabs"
+
+
+def test_elevenlabs_voice_needs_its_key():
+    catalog = engine_catalog(_event(encrypted_deepgram_api_key=encrypt_val("k")))
+    assert catalog.find("voice", "elevenlabs") is None
+    assert "ElevenLabs" in catalog.locked
 
 
 @pytest.mark.anyio
@@ -775,6 +835,125 @@ async def test_unsupported_ai_voice_is_not_saved(admin_cookie, event_room):
 
 
 @pytest.mark.anyio
+async def test_ai_settings_refuse_a_voice_that_cannot_speak_the_rooms_languages(admin_cookie, event_room):
+    """A Thai AI-voice room set up with ElevenLabs cannot be switched to Deepgram, which has no Thai voice."""
+    event, room = event_room
+    async with get_session() as s:
+        saved = await s.get(Event, event.id)
+        saved.encrypted_deepgram_api_key = encrypt_val("dg")
+        saved.encrypted_elevenlabs_api_key = encrypt_val("xi")
+    setup = {
+        "display_name": "Main Hall",
+        "spoken_language": "en",
+        "languages": ["th"],
+        "delivery_th": AI_VOICE,
+        "voice_engine": "elevenlabs",
+    }
+    async with _client() as c:
+        resp = await c.post(
+            f"/admin/events/{event.id}/rooms/{room.id}/setup", data=setup, headers=ORIGIN, cookies=admin_cookie
+        )
+        assert resp.status_code == 303, resp.text
+        assert (await _room(room.id)).floor_tts_provider == "elevenlabs"
+
+        resp = await c.post(
+            f"/admin/events/{event.id}/rooms/{room.id}/edit",
+            data={"form_section": "ai", "floor_tts_provider": "deepgram"},
+            headers={**ORIGIN, "accept": "text/html"},
+            cookies=admin_cookie,
+        )
+    assert resp.status_code == 400
+    assert "Deepgram Aura can&#39;t speak Thai" in resp.text
+    assert (await _room(room.id)).floor_tts_provider == "elevenlabs"
+
+
+@pytest.mark.anyio
+async def test_full_room_form_checks_the_voice_against_languages_added_in_the_same_save(admin_cookie, event_room):
+    """Thai added in the same save as the voice must be checked, though its row is not flushed yet."""
+    event, room = event_room
+    form = {
+        "display_name": "Main Hall",
+        "floor_translation_enabled": "on",
+        "floor_translation_provider": "openai",
+        "floor_translation_model": "gpt-4o-mini",
+        "floor_translation_languages": ["th"],
+        "floor_tts_enabled": "on",
+        "floor_tts_provider": "deepgram",  # unchanged: the room's default
+    }
+    async with _client() as c:
+        resp = await c.post(
+            f"/admin/events/{event.id}/rooms/{room.id}/edit", data=form, headers=ORIGIN, cookies=admin_cookie
+        )
+    assert resp.status_code == 400, resp.text
+    assert "Deepgram can't speak Thai" in resp.text
+    assert await _ai_codes(room.id) == set()
+
+
+@pytest.mark.parametrize(
+    ("saved_enabled", "saved_tts"),
+    [(False, True), (True, True)],
+    ids=["language-enabled-again", "ai-voice-switched-on"],
+)
+@pytest.mark.anyio
+async def test_full_room_form_checks_languages_that_start_being_spoken(
+    admin_cookie, event_room, saved_enabled, saved_tts
+):
+    """A saved Thai row that becomes spoken in this save (enabled again, or AI voice turned on) is checked."""
+    event, room = event_room
+    async with get_session() as s:
+        s.add(
+            RoomTranslationLanguage(
+                room_id=room.id, language_code="th", language_name="Thai", enabled=saved_enabled, tts_enabled=saved_tts
+            )
+        )
+    form = {
+        "display_name": "Main Hall",
+        "floor_translation_enabled": "on",
+        "floor_translation_provider": "openai",
+        "floor_translation_model": "gpt-4o-mini",
+        "floor_translation_languages": ["th"],
+        "floor_tts_enabled": "on",  # off before this save
+        "floor_tts_provider": "deepgram",  # unchanged
+    }
+    async with _client() as c:
+        resp = await c.post(
+            f"/admin/events/{event.id}/rooms/{room.id}/edit", data=form, headers=ORIGIN, cookies=admin_cookie
+        )
+    assert resp.status_code == 400, resp.text
+    assert "Deepgram can't speak Thai" in resp.text
+
+
+@pytest.mark.anyio
+async def test_unchanged_voice_and_languages_still_save(admin_cookie, event_room):
+    """A room already speaking a language its voice lacks (saved before the rule) keeps saving other settings."""
+    event, room = event_room
+    async with get_session() as s:
+        saved = await s.get(Room, room.id)
+        saved.floor_tts_enabled = True
+        saved.floor_translation_enabled = True
+        s.add(RoomTranslationLanguage(room_id=room.id, language_code="th", language_name="Thai", enabled=True))
+    form = {
+        "display_name": "Renamed Hall",
+        "floor_translation_enabled": "on",
+        "floor_translation_provider": "openai",
+        "floor_translation_model": "gpt-4o-mini",
+        "floor_translation_languages": ["th"],
+        "floor_tts_enabled": "on",
+        "floor_tts_provider": "deepgram",
+    }
+    async with _client() as c:
+        resp = await c.post(
+            f"/admin/events/{event.id}/rooms/{room.id}/edit",
+            data=form,
+            headers=ORIGIN,
+            cookies=admin_cookie,
+            follow_redirects=False,
+        )
+    assert resp.status_code == 303, resp.text
+    assert (await _room(room.id)).display_name == "Renamed Hall"
+
+
+@pytest.mark.anyio
 async def test_saving_drops_the_rooms_cached_voice_settings(admin_cookie, event_room):
     from portal.tts import worker
 
@@ -856,6 +1035,27 @@ async def test_ai_settings_never_switch_languages_or_captions(admin_cookie, even
     assert room.floor_ai_interpretation_style is None
     assert room.floor_ai_vocabulary_enabled is False
     assert room.floor_tts_voice == "F2"
+
+
+@pytest.mark.anyio
+async def test_ai_settings_save_larger_built_in_whisper_sizes(admin_cookie, event_room):
+    event, _ = event_room
+    room_id = await _create_ai_room(admin_cookie, event)
+    async with _client() as c:
+        resp = await c.post(
+            f"/admin/events/{event.id}/rooms/{room_id}/edit",
+            data={
+                "form_section": "ai",
+                "floor_transcription_provider": "local",
+                "floor_transcription_model": "large-v3",
+            },
+            headers=ORIGIN,
+            cookies=admin_cookie,
+            follow_redirects=False,
+        )
+    assert resp.status_code == 303
+    room = await _room(room_id)
+    assert room.floor_transcription_provider == "local" and room.floor_transcription_model == "large-v3"
 
 
 @pytest.mark.anyio

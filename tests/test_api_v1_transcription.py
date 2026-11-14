@@ -857,6 +857,7 @@ async def test_start_already_running_rotated_api_key_restarts_worker(event):
             self.config = ProviderConfig(api_key="old-key")
             self.state = State.RUNNING
             self.session_id = "old-session-123"
+            self.task = None
 
         def stop(self):
             nonlocal stopped_called
@@ -1129,6 +1130,7 @@ async def test_start_startup_timeout_with_cleanup_timeout_preserves_registry_and
                 await asyncio.sleep(0.01)
         except asyncio.CancelledError:
             await asyncio.sleep(0.3)
+            raise
 
     # Create a session and track its task manually
     slow_done = asyncio.Event()
@@ -1167,6 +1169,11 @@ async def test_start_startup_timeout_with_cleanup_timeout_preserves_registry_and
             patch("portal.transcription.worker.PROVIDERS", {"local": MagicMock()}),
         ):
             # When wait_until_stopped succeeds, next start cleanly succeeds
+            if retained_session.task:
+                try:
+                    await asyncio.wait_for(retained_session.task, timeout=1.0)
+                except (asyncio.CancelledError, asyncio.TimeoutError):
+                    pass
             retained_session.state = State.STOPPED
             db2 = _db(_result(first=event), _result(first=db_booth))
 

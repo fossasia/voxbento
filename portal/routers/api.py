@@ -23,6 +23,7 @@ from portal.auth import (
     load_membership_scope,
     resolve_booth_role,
     security,
+    user_session_is_valid,
 )
 from portal.booth_identity import make_booth_id, make_mediamtx_path, validate_event_slug, validate_language_code
 from portal.config import settings
@@ -57,9 +58,10 @@ from portal.utils import (
 )
 from portal.websockets.manager import broadcast_transcription
 
+logger = logging.getLogger(__name__)
+
 router = APIRouter(prefix="/api")
 bearer_scheme = HTTPBearer(auto_error=False)
-logger = logging.getLogger(__name__)
 
 
 async def _verify_event_access(
@@ -110,7 +112,7 @@ async def _verify_event_access(
         except (TypeError, ValueError):
             user_id = 0
         user = await get_user_by_id(session, user_id)
-        if user is None or not user.is_active:
+        if not user_session_is_valid(user, payload):
             raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Invalid or inactive user.")
         if user.is_admin:
             return
@@ -545,9 +547,6 @@ async def create_event_booth(
     "/events/{event_slug}/eventyay-rooms/{eventyay_room_id}/booths/{language_code}",
     status_code=status.HTTP_204_NO_CONTENT,
 )
-@router.delete(
-    "/events/{event_slug}/rooms/{eventyay_room_id}/booths/{language_code}", status_code=status.HTTP_204_NO_CONTENT
-)
 async def delete_event_booth(
     request: Request,
     event_slug: str,
@@ -837,6 +836,11 @@ async def api_transcription_start(
     token: str = Query(""),
     credentials: HTTPAuthorizationCredentials | None = Depends(security),
 ):
+    """Start the transcription worker for the specified booth if enabled.
+
+    Validates operator/booth access and verifies that transcription is enabled
+    and configured for the booth before starting the background worker session.
+    """
     booth_id = make_booth_id(event_slug, room_id, language_code)
     async with get_session() as session:
         event = await get_event_by_slug(session, event_slug)
@@ -866,12 +870,10 @@ async def api_transcription_start(
         )
         db_booth = await session.scalar(stmt)
         if not db_booth or not db_booth.transcription_enabled:
-            print(
-                "API START: Transcription disabled for booth",
+            logger.debug(
+                "Transcription disabled for booth %s (db_booth present: %s, enabled: %s)",
                 booth_id,
-                "db_booth=",
-                db_booth,
-                "enabled=",
+                db_booth is not None,
                 getattr(db_booth, "transcription_enabled", None),
             )
             return {"status": "disabled", "message": "Transcription is not enabled for this booth."}
@@ -886,11 +888,11 @@ async def api_transcription_start(
             model_size,
             config,
             room_id=room_id,
+            restart_on_key_change=True,
             wait_for_ready=True,
         )
     except ValueError as e:
         raise HTTPException(status_code=429, detail=str(e))
-
     if isinstance(result, TranscriptionStartResult):
         if result.status == "failed":
             logger.error(f"[{booth_id}] Transcription worker failed to start: {result.error}")
@@ -913,7 +915,7 @@ async def api_transcription_start(
         res_provider = provider
         res_model = model_size
 
-    print("API START: Successfully started worker for booth", booth_id)
+    logger.info("Transcription worker running for booth %s (provider: %s)", booth_id, res_provider)
     return {"status": result_status, "provider": res_provider, "model": res_model}
 
 

@@ -17,6 +17,15 @@
     <span class='program-signal-arrow' aria-hidden='true'>→</span>
     <span class='program-signal-output'>Captions · Translation · Voice</span>
   </div>
+  <div class='program-signal-path' data-mode-panel='rtmps' hidden aria-label='Your streaming tool sends to YouTube and, separately, an RTMPS stream to VoxBento for captions, translations, and speech'>
+    <span class='program-signal-node'>Streaming tool</span>
+    <span class='program-signal-arrow' aria-hidden='true'>→</span>
+    <span class='program-signal-output'>YouTube</span>
+    <span class='program-signal-arrow' aria-hidden='true'>+</span>
+    <span class='program-signal-node program-signal-node--active'>VoxBento</span>
+    <span class='program-signal-arrow' aria-hidden='true'>→</span>
+    <span class='program-signal-output'>Captions · Translation · Voice</span>
+  </div>
   <div class='program-signal-path' data-mode-panel='rtmps_relay' hidden aria-label='OBS sends one RTMPS stream to VoxBento, which relays it to YouTube and produces captions, translations, and speech'>
     <span class='program-signal-node'>OBS</span>
     <span class='program-signal-arrow' aria-hidden='true'>→</span>
@@ -25,13 +34,21 @@
     <span class='program-signal-output'>YouTube + Captions · Translation · Voice</span>
   </div>
 
-  <fieldset class='program-mode-picker'>
+  <fieldset class='program-mode-picker program-mode-picker--three'>
     <legend>How does your stream reach YouTube?</legend>
     <label class='program-mode-option'>
       <input type='radio' name='program-mode' value='whip' checked>
       <span>
         <strong>OBS streams to YouTube itself</strong>
         <small>A second encoder or output sends a separate WHIP stream here for captions. A VoxBento outage never touches YouTube.</small>
+      </span>
+    </label>
+    <label class='program-mode-option'>
+      <input type='radio' name='program-mode' value='rtmps' id='program-mode-rtmps'>
+      <span>
+        <strong>Add VoxBento as an extra destination</strong>
+        <small>StreamYard, Restream, vMix, Zoom/Teams live streaming or an OBS multi-output plugin keep sending to YouTube and also send to VoxBento.</small>
+        <small id='program-rtmps-unavailable' class='program-mode-note' hidden>Not switched on for this server yet. Ask the server operator to run <code>scripts/setup-youtube-relay.sh --ingest-only</code>.</small>
       </span>
     </label>
     <label class='program-mode-option'>
@@ -89,9 +106,10 @@
         <div class='program-section-head'>
           <span class='program-step' data-step='connect' id='program-connect-step'>1</span>
           <div>
-            <h4>Connect OBS</h4>
+            <h4 id='program-connect-title'>Connect OBS</h4>
             <p data-mode-panel='whip'>Choose <strong>WHIP</strong> in OBS, then paste this endpoint and the room token.</p>
             <p data-mode-panel='rtmps_relay' hidden>Create a stream key, then in OBS open <strong>Settings → Stream</strong>, choose <strong>Custom…</strong> and paste the server and stream key.</p>
+            <p data-mode-panel='rtmps' hidden>Create a stream key, then add a <strong>Custom RTMP</strong> destination in your streaming tool and paste the server and stream key. Keep your YouTube destination as it is.</p>
           </div>
         </div>
 
@@ -102,7 +120,7 @@
             <button type='button' class='btn btn-outline' id='program-copy-endpoint'>Copy URL</button>
           </div>
         </div>
-        <div data-mode-panel='rtmps_relay' hidden>
+        <div data-mode-panel='rtmps rtmps_relay' hidden>
           <label for='program-rtmps-server'>Server</label>
           <div class='program-copy-field'>
             <input id='program-rtmps-server' class='input' readonly placeholder='Not configured on this server'>
@@ -128,16 +146,18 @@
             <button type='button' class='btn btn-outline' id='program-reveal'>Show</button>
             <button type='button' class='btn btn-outline' id='program-copy'>Copy</button>
           </div>
-          <div class='program-full-url' id='program-full-url-row' hidden>
-            <label for='program-full-url'>Encoder with a single URL field (vMix, Wirecast, hardware)</label>
-            <div class='program-copy-field'>
-              <input id='program-full-url' class='input' type='password' readonly autocomplete='off'>
-              <button type='button' class='btn btn-outline' id='program-copy-full-url'>Copy full URL</button>
+          <div data-mode-panel='rtmps rtmps_relay' hidden>
+            <div class='program-full-url' id='program-full-url-row' hidden>
+              <label for='program-full-url'>Encoder with a single URL field (vMix, Wirecast, hardware)</label>
+              <div class='program-copy-field'>
+                <input id='program-full-url' class='input' type='password' readonly autocomplete='off'>
+                <button type='button' class='btn btn-outline' id='program-copy-full-url'>Copy full URL</button>
+              </div>
             </div>
           </div>
         </form>
 
-        <details class='program-advanced' data-mode-panel='rtmps_relay' hidden>
+        <details class='program-advanced' data-mode-panel='rtmps rtmps_relay' hidden>
           <summary>Recommended OBS output settings</summary>
           <ul class='program-settings-list'>
             <li><strong>Output → Streaming:</strong> video encoder x264 or a hardware H.264 encoder (NVENC, QuickSync, Apple VT H.264). Not HEVC or AV1.</li>
