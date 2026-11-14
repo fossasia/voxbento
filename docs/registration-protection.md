@@ -54,22 +54,27 @@ Changing keys or encountering an outage never silently disables verification.
 ## Client IPs behind Cloudflare and Caddy
 
 The application uses `request.client.host`; it does **not** read arbitrary
-`X-Forwarded-For` or `CF-Connecting-IP` headers. Before relying on per-client
-limits in production, configure the proxy chain to resolve the real peer:
+`X-Forwarded-For` or `CF-Connecting-IP` headers. Uvicorn resolves the client
+from `X-Forwarded-For`, walking right to left past trusted peers only:
 
-- Restrict origin web access so clients cannot bypass Cloudflare. Keep the
-  portal's existing loopback-only host port binding.
-- Configure Caddy to trust only Cloudflare's published IP ranges for forwarded
-  client identity, and Uvicorn to trust only the immediate reverse proxy's
-  address (`FORWARDED_ALLOW_IPS`, accounting for Docker networking).
-- Verify requests from two distinct client networks resolve to different
-  client IPs, and that a forged forwarding header cannot choose that identity.
-  Without this configuration, the limiter may group visitors under a proxy IP;
-  choose an appropriate allowance while correcting the proxy chain.
-- Do not set unrestricted proxy trust on a publicly reachable server.
+- **Caddy** (`trusted_proxies` on the portal's `reverse_proxy`) keeps `X-Forwarded-For` only
+  from Cloudflare's published ranges and appends the Cloudflare peer. From any
+  other peer, including a direct request to the origin, Caddy replaces the
+  header with that peer's address, so it cannot be forged.
+- **Uvicorn** (`FORWARDED_ALLOW_IPS` in `docker-compose.yml`) trusts the Docker
+  network gateway that Caddy reaches the portal through, then the same
+  Cloudflare ranges. Set `PORTAL_PROXY_GATEWAY` in `.env` to that gateway:
+  `docker network inspect voxbento_default -f '{{(index .IPAM.Config 0).Gateway}}'`.
+  Without it, Uvicorn trusts only `127.0.0.1` and every visitor appears as the
+  gateway, sharing one rate-limit allowance.
+- Keep both Cloudflare lists in sync with <https://www.cloudflare.com/ips/>.
+  Keep the portal's loopback-only host port binding; do not trust broader ranges.
 
-This PR does not change the deployed proxy trust configuration or Cloudflare
-rules. Site-wide bot blocking remains an edge responsibility. Scope browser
+After deploying, confirm the portal access log shows distinct client addresses
+for two networks rather than the gateway, and that sending a forged
+`X-Forwarded-For` straight to the origin does not change the logged address.
+
+Site-wide bot blocking remains an edge responsibility. Scope browser
 challenges carefully so authenticated API clients, WebSocket connections,
 WHIP/WHEP, HLS and Jitsi traffic continue to work. Turnstile reduces signup
 abuse; it does not guarantee that all bots are blocked, nor delete old accounts.

@@ -156,6 +156,25 @@ Compose always uses the `voxbento` project name to retain existing volumes and
 networks. The portal runs source and dependencies from its image, with `.env`
 loaded as container environment variables; rebuild the image to apply code changes.
 
+Caddy imports optional, host-owned route snippets from
+`/etc/caddy/voxbento-routes/*.caddy` inside the `voxbento.com` site. The candidate
+configuration validates those same snippets before deployment. The workflow installs
+the Caddyfile using an atomic rename before reloading Caddy, so readers see a complete
+file. Keep additional services' routes in this directory instead of using watchers
+that rewrite `/etc/caddy/Caddyfile` during deployment.
+
+For a host using the earlier Sentinel watcher, migrate once before deploying:
+
+```bash
+sudo install -d -m 755 /etc/caddy/voxbento-routes
+sudo install -m 644 /etc/caddy/sentinel.caddy /etc/caddy/voxbento-routes/sentinel.caddy
+sudo systemctl disable --now sentinel-caddy.path sentinel-caddy.service
+```
+
+Then deploy the Caddyfile containing the import. Keep Sentinel's container running;
+its `/sentinel` route now comes from the snippet and survives subsequent deployments.
+To remove Sentinel later, remove that snippet and reload Caddy.
+
 You can run the same configuration check manually from the deployment directory:
 
 ```bash

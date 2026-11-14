@@ -12,8 +12,19 @@ from datetime import datetime, timedelta, timezone
 import pytest
 
 from portal.crypto import decrypt_val, encrypt_val
-from portal.database import configure, create_event, create_user, dispose, get_session, init_db
-from portal.models import DeveloperAccount, Event, EventMembership, OAuthClient, OAuthToken
+from portal.database import (
+    configure,
+    create_event,
+    create_room,
+    create_user,
+    dispose,
+    get_session,
+    init_db,
+    set_event_membership,
+    set_room_membership,
+)
+from portal.models import DeveloperAccount, Event, EventMembership, OAuthClient, OAuthToken, Room
+from portal.roles import EVENT_OWNER, ROOM_COORDINATOR
 
 
 @pytest.fixture(autouse=True)
@@ -192,3 +203,198 @@ async def test_app_creating_an_event_for_another_organizer_adds_only_the_organiz
         members = (await session.execute(select(EventMembership).where(EventMembership.event_id == event.id))).scalars().all()
     assert {(m.user_id, m.role) for m in members} == {(organizer_id, "event_owner")}
     assert developer_id not in {m.user_id for m in members}
+
+
+@pytest.fixture
+async def rbac_test_setup():
+    """Setup event, room, and a public OAuth client for RBAC token testing (#853)."""
+    async with get_session() as session:
+        event = await create_event(session, slug="rbac-event", display_name="RBAC Event")
+        room = await create_room(session, event_id=event.id, display_name="RBAC Room")
+        dev_user = await create_user(session, email="dev-rbac@example.com", display_name="Dev")
+        dev_account = DeveloperAccount(user_id=dev_user.id, status="approved")
+        session.add(dev_account)
+        await session.flush()
+
+        client = OAuthClient(
+            developer_account_id=dev_account.id,
+            client_id="rbac-public-client",
+            name="RBAC Public Client",
+            is_confidential=False,
+        )
+        session.add(client)
+        await session.commit()
+        return event, room, client
+
+
+async def _issue_token(client: OAuthClient, user_id: int, event_id: int, scopes: list[str]) -> str:
+    raw_token = f"token-for-user-{user_id}"
+    token_hash = hashlib.sha256(raw_token.encode()).hexdigest()
+    async with get_session() as session:
+        session.add(
+            OAuthToken(
+                client_id=client.id,
+                user_id=user_id,
+                event_id=event_id,
+                scopes=scopes,
+                access_token_hash=token_hash,
+                expires_at=datetime.now(timezone.utc) + timedelta(minutes=10),
+            )
+        )
+        await session.commit()
+    return raw_token
+
+
+@pytest.mark.anyio
+async def test_verify_token_rbac_inactive_admin_forbidden(rbac_test_setup):
+    """Deactivated admin is rejected upfront with 403 detail='User account is inactive' (#853)."""
+    event, room, client = rbac_test_setup
+    async with get_session() as session:
+        user = await create_user(
+            session,
+            email="inactive-admin@example.com",
+            display_name="Inactive Admin",
+            is_admin=True,
+            is_active=False,
+        )
+        user_id = user.id
+
+    token = await _issue_token(client, user_id, event.id, ["events:read"])
+    async with _client() as http:
+        resp = await http.get(f"/api/v1/events/{event.slug}/rooms", headers={"Authorization": f"Bearer {token}"})
+
+    assert resp.status_code == 403
+    assert resp.json()["detail"] == "User account is inactive"
+
+
+@pytest.mark.anyio
+async def test_verify_token_rbac_inactive_event_owner_forbidden(rbac_test_setup):
+    """Deactivated event owner cannot fall through to membership check (#853)."""
+    event, room, client = rbac_test_setup
+    async with get_session() as session:
+        user = await create_user(
+            session,
+            email="inactive-owner@example.com",
+            display_name="Inactive Owner",
+            is_admin=False,
+            is_active=False,
+        )
+        await set_event_membership(session, user_id=user.id, event_id=event.id, role=EVENT_OWNER)
+        user_id = user.id
+
+    token = await _issue_token(client, user_id, event.id, ["events:read"])
+    async with _client() as http:
+        resp = await http.get(f"/api/v1/events/{event.slug}/rooms", headers={"Authorization": f"Bearer {token}"})
+
+    assert resp.status_code == 403
+    assert resp.json()["detail"] == "User account is inactive"
+
+
+@pytest.mark.anyio
+async def test_verify_token_rbac_inactive_room_coordinator_forbidden(rbac_test_setup):
+    """Deactivated room coordinator is rejected upfront on room endpoints (#853)."""
+    event, room, client = rbac_test_setup
+    async with get_session() as session:
+        user = await create_user(
+            session,
+            email="inactive-coord@example.com",
+            display_name="Inactive Coordinator",
+            is_admin=False,
+            is_active=False,
+        )
+        await set_room_membership(session, user_id=user.id, room_id=room.id, role=ROOM_COORDINATOR)
+        user_id = user.id
+
+    token = await _issue_token(client, user_id, event.id, ["booths:read"])
+    async with _client() as http:
+        resp = await http.get(
+            f"/api/v1/events/{event.slug}/rooms/{room.id}/booths",
+            headers={"Authorization": f"Bearer {token}"},
+        )
+
+    assert resp.status_code == 403
+    assert resp.json()["detail"] == "User account is inactive"
+
+
+@pytest.mark.anyio
+async def test_verify_token_rbac_allows_active_admin_without_membership(rbac_test_setup):
+    """Active admin bypasses event-level RBAC check and accesses the resource (#853)."""
+    event, room, client = rbac_test_setup
+    async with get_session() as session:
+        user = await create_user(
+            session,
+            email="active-admin@example.com",
+            display_name="Active Admin",
+            is_admin=True,
+            is_active=True,
+        )
+        user_id = user.id
+
+    token = await _issue_token(client, user_id, event.id, ["events:read"])
+    async with _client() as http:
+        resp = await http.get(f"/api/v1/events/{event.slug}/rooms", headers={"Authorization": f"Bearer {token}"})
+
+    assert resp.status_code == 200
+    assert isinstance(resp.json(), list)
+
+
+@pytest.mark.anyio
+async def test_verify_token_rbac_allows_active_event_owner_and_room_coordinator(rbac_test_setup):
+    """Active event owners and room coordinators retain proper RBAC access (#853)."""
+    event, room, client = rbac_test_setup
+    async with get_session() as session:
+        owner = await create_user(
+            session,
+            email="active-owner@example.com",
+            display_name="Active Owner",
+            is_admin=False,
+            is_active=True,
+        )
+        await set_event_membership(session, user_id=owner.id, event_id=event.id, role=EVENT_OWNER)
+        coord = await create_user(
+            session,
+            email="active-coord@example.com",
+            display_name="Active Coordinator",
+            is_admin=False,
+            is_active=True,
+        )
+        await set_room_membership(session, user_id=coord.id, room_id=room.id, role=ROOM_COORDINATOR)
+        owner_id, coord_id = owner.id, coord.id
+
+    owner_token = await _issue_token(client, owner_id, event.id, ["events:read"])
+    coord_token = await _issue_token(client, coord_id, event.id, ["booths:read"])
+
+    async with _client() as http:
+        owner_resp = await http.get(f"/api/v1/events/{event.slug}/rooms", headers={"Authorization": f"Bearer {owner_token}"})
+        coord_resp = await http.get(
+            f"/api/v1/events/{event.slug}/rooms/{room.id}/booths",
+            headers={"Authorization": f"Bearer {coord_token}"},
+        )
+
+    assert owner_resp.status_code == 200
+    assert isinstance(owner_resp.json(), list)
+    assert coord_resp.status_code == 200
+    assert isinstance(coord_resp.json(), list)
+
+
+@pytest.mark.anyio
+async def test_verify_token_rbac_rejects_active_user_without_access(rbac_test_setup):
+    """Active user who has no membership receives 'User lost RBAC access to this resource' (#853)."""
+    event, room, client = rbac_test_setup
+    async with get_session() as session:
+        user = await create_user(
+            session,
+            email="active-outsider@example.com",
+            display_name="Active Outsider",
+            is_admin=False,
+            is_active=True,
+        )
+        user_id = user.id
+
+    token = await _issue_token(client, user_id, event.id, ["events:read"])
+    async with _client() as http:
+        resp = await http.get(f"/api/v1/events/{event.slug}/rooms", headers={"Authorization": f"Bearer {token}"})
+
+    assert resp.status_code == 403
+    assert resp.json()["detail"] == "User lost RBAC access to this resource"
+

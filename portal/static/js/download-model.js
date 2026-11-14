@@ -9,7 +9,7 @@ const DOWNLOADS = {
     progressUrl: (prefix, model) => `${prefix}/models/download_progress?model=${encodeURIComponent(model)}`,
     trigger: (prefix, model) => fetch(`${prefix}/models/trigger_download`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: { 'Content-Type': 'application/json', 'X-CSRF-Token': csrfToken() },
       body: JSON.stringify({ model }),
     }),
   },
@@ -17,11 +17,15 @@ const DOWNLOADS = {
     wanted: () => document.getElementById('floor_tts_provider')?.value === 'supertonic',
     model: () => '',
     progressUrl: (prefix) => `${prefix}/models/supertonic/download_progress`,
-    trigger: (prefix) => fetch(`${prefix}/models/supertonic/trigger_download`, { method: 'POST' }),
+    trigger: (prefix) => fetch(`${prefix}/models/supertonic/trigger_download`, {
+      method: 'POST',
+      headers: { 'X-CSRF-Token': csrfToken() },
+    }),
   },
 };
 
 const byId = (id) => document.getElementById(id);
+const csrfToken = () => document.querySelector('meta[name="csrf-token"]')?.content || '';
 
 async function isDownloaded(prefix, name) {
   const download = DOWNLOADS[name];

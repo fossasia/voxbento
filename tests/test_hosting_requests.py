@@ -16,7 +16,12 @@ from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 
 from fastapi_app import app
-from portal.auth import create_user_token, hash_password
+from portal.auth import (
+    create_user_token,
+    decode_token,
+    generate_admin_csrf_token,
+    hash_password,
+)
 from portal.database import (
     configure,
     create_hosting_request,
@@ -75,15 +80,42 @@ async def open_requests() -> list[HostingRequest]:
 
 
 async def submit(http: AsyncClient, token: str, data: dict[str, str] | None = None):
+    session_id = str(decode_token(token)["jti"])
+    csrf_token = generate_admin_csrf_token(session_id)
     with patch("portal.routers.auth.queue_notification", new_callable=AsyncMock) as notify:
+        form_data = dict(VALID_FORM if data is None else data)
+        form_data["csrf_token"] = csrf_token
         res = await http.post(
             "/account/hosting-request",
-            data=VALID_FORM if data is None else data,
+            data=form_data,
             headers=SAME_ORIGIN,
-            cookies={"user_token": token},
+            cookies={"user_token": token, "admin_csrf": csrf_token},
             follow_redirects=False,
         )
     return res, notify
+
+
+async def admin_post(
+    http: AsyncClient,
+    path: str,
+    token: str,
+    *,
+    data: dict[str, str] | None = None,
+    follow_redirects: bool = False,
+):
+    session_id = str(decode_token(token)["jti"])
+    csrf_token = generate_admin_csrf_token(session_id)
+
+    headers = {**SAME_ORIGIN, "X-CSRF-Token": csrf_token}
+    cookies = {"user_token": token, "admin_csrf": csrf_token}
+    form_data = {**data, "csrf_token": csrf_token} if data is not None else None
+    return await http.post(
+        path,
+        data=form_data,
+        headers=headers,
+        cookies=cookies,
+        follow_redirects=follow_redirects,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -210,12 +242,13 @@ async def test_submit_rejects_end_before_start():
 @pytest.mark.anyio
 async def test_submit_rejects_cross_origin_post():
     _, token = await make_user()
+    csrf_token = generate_admin_csrf_token(str(decode_token(token)["jti"]))
     async with client() as http:
         res = await http.post(
             "/account/hosting-request",
-            data=VALID_FORM,
+            data={**VALID_FORM, "csrf_token": csrf_token},
             headers={"origin": "https://evil.example"},
-            cookies={"user_token": token},
+            cookies={"user_token": token, "admin_csrf": csrf_token},
         )
     assert res.status_code == 400
     assert await open_requests() == []
@@ -303,10 +336,10 @@ async def test_grant_gives_access_and_moves_person_to_people_with_access():
         await submit(http, token)
         hr = (await open_requests())[0]
         with patch("portal.routers.admin.queue_notification", new_callable=AsyncMock) as granted:
-            res = await http.post(
+            res = await admin_post(
+                http,
                 f"/admin/hosting-access/requests/{hr.id}/grant",
-                headers=SAME_ORIGIN,
-                cookies={"user_token": admin_token},
+                admin_token,
                 follow_redirects=False,
             )
         assert res.status_code == 303
@@ -342,24 +375,25 @@ async def test_decline_requires_reason_then_tells_person_why():
         await submit(http, token)
         hr = (await open_requests())[0]
         with patch("portal.routers.admin.queue_notification", new_callable=AsyncMock) as declined:
-            no_reason = await http.post(
+            no_reason = await admin_post(
+                http,
                 f"/admin/hosting-access/requests/{hr.id}/decline",
+                admin_token,
                 data={"reason": "  "},
-                headers=SAME_ORIGIN,
-                cookies={"user_token": admin_token},
                 follow_redirects=False,
             )
             assert no_reason.headers["location"] == "/admin/hosting-access/requests/?error=decline_reason"
             declined.assert_not_awaited()
             assert len(await open_requests()) == 1
 
-            res = await http.post(
+            res = await admin_post(
+                http,
                 f"/admin/hosting-access/requests/{hr.id}/decline",
+                admin_token,
                 data={"reason": "We can only support events with a confirmed date."},
-                headers=SAME_ORIGIN,
-                cookies={"user_token": admin_token},
                 follow_redirects=False,
             )
+
         assert res.status_code == 303
         assert res.headers["location"] == "/admin/hosting-access/requests/?success=request_declined"
         declined.assert_awaited_once()
@@ -390,19 +424,20 @@ async def test_handled_request_cannot_be_handled_again():
         await submit(http, token)
         hr = (await open_requests())[0]
         with patch("portal.routers.admin.queue_notification", new_callable=AsyncMock):
-            await http.post(
+            await admin_post(
+                http,
                 f"/admin/hosting-access/requests/{hr.id}/grant",
-                headers=SAME_ORIGIN,
-                cookies={"user_token": admin_token},
+                admin_token,
             )
         with patch("portal.routers.admin.queue_notification", new_callable=AsyncMock) as declined:
-            res = await http.post(
+            res = await admin_post(
+                http,
                 f"/admin/hosting-access/requests/{hr.id}/decline",
+                admin_token,
                 data={"reason": "Too late"},
-                headers=SAME_ORIGIN,
-                cookies={"user_token": admin_token},
                 follow_redirects=False,
             )
+
     assert res.headers["location"] == "/admin/hosting-access/requests/?error=request_not_found"
     declined.assert_not_awaited()
 
@@ -414,11 +449,11 @@ async def test_granting_from_user_page_closes_open_request():
     async with client() as http:
         await submit(http, token)
         with patch("portal.routers.admin.queue_notification", new_callable=AsyncMock):
-            await http.post(
+            await admin_post(
+                http,
                 f"/admin/users/{user_id}/hosting",
+                admin_token,
                 data={"action": "grant"},
-                headers=SAME_ORIGIN,
-                cookies={"user_token": admin_token},
             )
     assert await open_requests() == []
 
@@ -524,10 +559,10 @@ async def test_granted_person_can_create_events():
         await submit(http, token)
         hr = (await open_requests())[0]
         with patch("portal.routers.admin.queue_notification", new_callable=AsyncMock):
-            await http.post(
+            await admin_post(
+                http,
                 f"/admin/hosting-access/requests/{hr.id}/grant",
-                headers=SAME_ORIGIN,
-                cookies={"user_token": admin_token},
+                admin_token,
             )
 
         # Same session cookie: access applies without signing out.
@@ -547,10 +582,10 @@ async def test_grant_refused_for_deactivated_requester():
     hr = (await open_requests())[0]
     async with client() as http:
         with patch("portal.routers.admin.queue_notification", new_callable=AsyncMock) as granted:
-            res = await http.post(
+            res = await admin_post(
+                http,
                 f"/admin/hosting-access/requests/{hr.id}/grant",
-                headers=SAME_ORIGIN,
-                cookies={"user_token": admin_token},
+                admin_token,
                 follow_redirects=False,
             )
     assert res.headers["location"] == "/admin/hosting-access/requests/?error=inactive_user"
@@ -566,11 +601,11 @@ async def test_deleting_user_removes_their_requests():
     user_id, token = await make_user()
     async with client() as http:
         await submit(http, token)
-        await http.post(
+        await admin_post(
+            http,
             f"/admin/users/{user_id}/delete",
+            admin_token,
             data={"confirm_email": "priya@example.org"},
-            headers=SAME_ORIGIN,
-            cookies={"user_token": admin_token},
         )
         page = await http.get("/admin/hosting-access/requests/", cookies={"user_token": admin_token})
     assert page.status_code == 200
@@ -597,7 +632,11 @@ async def test_dev_accounts_nav_counts_pending_applications_until_reviewed():
     async with client() as http:
         overview = await http.get("/admin/", cookies={"user_token": admin_token})
         applicant_view = await http.get("/account", cookies={"user_token": applicant_token})
-        await http.post(f"/api/admin/developer-accounts/{account_id}/approve", cookies={"user_token": admin_token})
+        await admin_post(
+            http,
+            f"/api/admin/developer-accounts/{account_id}/approve",
+            admin_token,
+        )
         after = await http.get("/admin/", cookies={"user_token": admin_token})
     # Shown on every Admin page, only to Admins, and gone once the application is reviewed.
     assert badge in overview.text

@@ -39,7 +39,7 @@ WebRTC,all,WebRTC,Protocol name,true,exact,90
 Pull Request,de,Pull Request,Developer term in German,false,phrase,80
 ```
 
-`target_language` accepts `all` or a two-letter ISO 639-1 language code. `case_sensitive` accepts `true`, `false`, `yes`, `no`, `1`, or `0`. `match_type` accepts `exact` or `phrase`. Invalid and duplicate rows are skipped and reported after import. Text cells beginning with spreadsheet formula characters are rejected to prevent CSV injection.
+`target_language` accepts `all` or a two-letter ISO 639-1 language code. `case_sensitive` accepts `true`, `false`, `yes`, `no`, `1`, or `0`. `match_type` accepts `exact` or `phrase`; the local NLLB provider replaces whole words only, even for `phrase` entries. Invalid and duplicate rows are skipped and reported after import. Text cells beginning with spreadsheet formula characters are rejected to prevent CSV injection.
 
 The export action downloads the normalized room glossary in the same format.
 
@@ -60,16 +60,26 @@ This keeps real-time prompts bounded and reduces provider latency and token cost
 - OpenAI-compatible providers receive the shared system and user messages.
 - Gemini receives the same system text through `systemInstruction`.
 - Anthropic receives the same system text through its `system` field.
+- Self-hosted LLM sends the same messages as OpenAI to the operator's own server (`SELF_HOSTED_LLM_BASE_URL`).
 - The local NLLB provider remains deterministic and does not use LLM persona or style instructions.
 
 ### Local provider and interpretation settings
 
-NLLB is a sequence-to-sequence translation model with no system-prompt channel, so persona, style
-and vocabulary **cannot** be applied to it. When a room uses the local provider, those settings are
-accepted and stored but have no effect on the output: the model receives the transcript segment
-unchanged. The room settings page states this, and the worker logs a warning the first time a local
-translation runs with any of them configured. Select a cloud provider for them to take effect.
+NLLB is a sequence-to-sequence translation model with no system-prompt channel, so persona and style
+**cannot** be applied to it. When a room uses the local provider, they are accepted and stored but have
+no effect on the output. The room settings page states this, and the worker logs a warning the first
+time a local translation runs with either configured. Select a cloud provider for them to take effect.
+
+Glossary entries do apply, through term protection: each whole-word match in the segment, even for
+`phrase` entries, is replaced with a numbered placeholder (`[1]`, `[2]`, …) before translation and
+with the entry's target term afterwards. In Chinese, Japanese, Thai and other scripts written without
+spaces, a term is replaced wherever it appears, even inside a longer word: `ブース` (booth) also matches
+the start of `ブースター` (booster), and the fallback cannot detect the wrong translation that results.
+Whole-word matching prevents this in other scripts (`AI` is never replaced inside `said`), so keep
+glossary terms for these scripts specific. If a placeholder comes back missing, duplicated or
+changed, the segment is translated again without the glossary, so listeners never see a placeholder.
+Segments that already contain bracketed numbers are translated without the glossary.
 
 ## Privacy and production guidance
 
-Persona, style, matching vocabulary entries, and transcript text are sent to the selected cloud translation provider. Do not place secrets or personal data in interpretation settings or glossaries. Review provider retention policies and test terminology, tone, pronunciation, and latency before a live event.
+Persona, style, matching vocabulary entries, and transcript text are sent to the selected translation provider: a cloud service, or for Self-hosted LLM the operator's own server. Do not place secrets or personal data in interpretation settings or glossaries. Review provider retention policies and test terminology, tone, pronunciation, and latency before a live event.

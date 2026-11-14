@@ -70,6 +70,7 @@
         <form method="post" action="{{ management_prefix }}/events/{{ event.id }}/rooms/{{ room.id }}/booths/{{ bs.db.id }}/delete"
               class="inline-delete"
               data-confirm="Delete {{ bs.db.language_name }} booth?">
+              <input type="hidden" name="csrf_token" value="{{ request.state.admin_csrf_token }}" />
           <button type="submit" class="btn btn-sm btn-danger">Delete</button>
         </form>
       </td>

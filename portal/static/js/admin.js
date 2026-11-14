@@ -4,6 +4,7 @@
  */
 
 import { initLocalModelDownloader } from './download-model.js';
+import { closeDialog, initDialog, openDialog } from './modal-dialog.js';
 
 function managementPrefix() {
   return document.body.dataset.managementPrefix || '/admin';
@@ -172,7 +173,8 @@ function initAsyncSave() {
             method: form.method || 'POST',
             body: params,
             headers: {
-              'Content-Type': 'application/x-www-form-urlencoded'
+              'Content-Type': 'application/x-www-form-urlencoded',
+              'X-CSRF-Token': document.querySelector('meta[name="csrf-token"]')?.content || ''
             },
             redirect: 'follow'
           });
@@ -283,8 +285,15 @@ function initCustomModal() {
 // API Keys (Embeddable B2B)
 // ---------------------------------------------------------------------------
 
+const API_KEY_DIALOG_FOCUS = {
+  'api-key-modal': 'api-key-name',
+  'api-key-success-modal': 'api-key-copy-btn',
+  'api-key-revoke-modal': 'api-key-revoke-cancel-btn',
+};
+
 window.adminAPIKeys = {
   eventId: null,
+  listRequest: 0,
   
   init() {
     const section = document.getElementById('api-keys-section');
@@ -310,16 +319,25 @@ window.adminAPIKeys = {
         }
       });
     }
+
+    Object.keys(API_KEY_DIALOG_FOCUS).forEach((id) => {
+      const modal = document.getElementById(id);
+      // Generate and Revoke disable the dialog's buttons while their request runs; Escape waits too.
+      if (modal) initDialog(modal, () => !modal.querySelector('button:disabled'));
+    });
   },
 
   async loadKeys() {
     const container = document.getElementById('api-keys-container');
     if (!container || !this.eventId) return;
+    // Only the newest list request draws the table, so an older answer cannot bring back a revoked key.
+    const request = ++this.listRequest;
 
     try {
       const res = await fetch(`${managementPrefix()}/api/events/${this.eventId}/api-keys`);
       if (!res.ok) throw new Error('Failed to load keys');
       const keys = await res.json();
+      if (request !== this.listRequest) return;
       
       const activeKeys = keys.filter(k => k.active !== false);
       
@@ -357,6 +375,7 @@ window.adminAPIKeys = {
       html += '</tbody></table>';
       container.innerHTML = html;
     } catch (err) {
+      if (request !== this.listRequest) return;
       container.innerHTML = '<p class="text-danger">Failed to load API keys.</p>';
       console.error(err);
     }
@@ -370,9 +389,7 @@ window.adminAPIKeys = {
       document.getElementById('api-key-name').value = '';
     }
     
-    modal.hidden = false;
-    void modal.offsetWidth; // force reflow
-    modal.classList.add('active');
+    openDialog(modal, document.getElementById(API_KEY_DIALOG_FOCUS[id]));
   },
 
   showCreateModal() {
@@ -381,23 +398,24 @@ window.adminAPIKeys = {
   
   closeModal(id) {
     const modal = document.getElementById(id);
-    if (!modal) return;
-    
-    modal.classList.remove('active');
-    setTimeout(() => {
-      modal.hidden = true;
-    }, 200);
+    if (!modal) return Promise.resolve();
+    return closeDialog(modal);
   },
 
   async generateKey() {
     const nameInput = document.getElementById('api-key-name').value;
     const btn = document.querySelector('#api-key-form button[type="submit"]');
+    const cancelBtn = document.getElementById('api-key-cancel-btn');
     
     try {
       btn.disabled = true;
+      cancelBtn.disabled = true;
       const res = await fetch(`${managementPrefix()}/api/events/${this.eventId}/api-keys`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: {
+          'Content-Type': 'application/json',
+          'X-CSRF-Token': document.querySelector('meta[name="csrf-token"]')?.content || ''
+        },
         body: JSON.stringify({ name: nameInput })
       });
       
@@ -408,7 +426,7 @@ window.adminAPIKeys = {
       
       const data = await res.json();
       
-      this.closeModal('api-key-modal');
+      await this.closeModal('api-key-modal');
       
       const valEl = document.getElementById('api-key-raw-value');
       valEl.value = data.raw_key;
@@ -425,6 +443,7 @@ window.adminAPIKeys = {
       alert(err.message);
     } finally {
       btn.disabled = false;
+      cancelBtn.disabled = false;
     }
   },
 
@@ -467,20 +486,35 @@ window.adminAPIKeys = {
 
   async confirmRevokeKey() {
     if (!this.revokeKeyId) return;
-    
+    const confirmBtn = document.getElementById('api-key-revoke-confirm-btn');
+    const cancelBtn = document.getElementById('api-key-revoke-cancel-btn');
+    confirmBtn.disabled = true;
+    cancelBtn.disabled = true;
+
     try {
       const res = await fetch(`${managementPrefix()}/api/events/${this.eventId}/api-keys/${this.revokeKeyId}`, {
-        method: 'DELETE'
+        method: 'DELETE',
+        headers: {
+          'X-CSRF-Token': document.querySelector('meta[name="csrf-token"]')?.content || ''
+        }
       });
       if (!res.ok) throw new Error('Failed to revoke');
-      
-      this.closeModal('api-key-revoke-modal');
-      
-      this.loadKeys();
     } catch (err) {
+      // The key stays selected, so Revoke can simply be pressed again.
       alert('Error revoking key: ' + err.message);
+      return;
     } finally {
-      this.revokeKeyId = null;
+      confirmBtn.disabled = false;
+      cancelBtn.disabled = false;
+    }
+
+    // Done before the slower close and reload, so a revoke opened meanwhile keeps its own key.
+    this.revokeKeyId = null;
+    await this.closeModal('api-key-revoke-modal');
+    await this.loadKeys();
+    // The Revoke button that opened the dialog went away with the old table.
+    if (document.activeElement === document.body) {
+      document.getElementById('api-key-generate-btn')?.focus();
     }
   }
 };
