@@ -52,7 +52,7 @@ Attendees receive sub-second audio via WHEP. All coordination flows through Fast
 | `portal/crypto.py` | `encrypt_val`/`decrypt_val` using Fernet |
 | `portal/transcription/` | Transcription subsystem (see `TRANSCRIPTION_MAP.md`) |
 | `portal/translations/` | Translation subsystem — LLM workers, contextual prompts (`prompts.py`), glossaries (`vocabulary.py`) |
-| `portal/tts/` | Direct-push Text-to-Speech (Deepgram Aura & Supertonic ONNX) |
+| `portal/tts/` | Direct-push Text-to-Speech (Deepgram Aura, ElevenLabs v4 & Supertonic ONNX) |
 | `portal/meeting_source.py` | Managed Jitsi floor agent lifecycle reconciler |
 | `portal/program_ingest.py` | Program Stream Ingest floor authorization and reconciliation |
 | `portal/program_relay.py` | YouTube RTMPS destination management and relay convergence |
@@ -151,7 +151,7 @@ Role is NEVER trusted from client data — always read from the server-side `Ses
 
 ### Additional Real-Time Feeds
 - Live captions feed: `/ws/captions/{booth_id}` — receives `caption` (`partial`, `final`, `clear`), `translated_caption`, and `booth:state` messages for listeners (authenticated via `resolve_ws_auth` when `BOOTH_ACCESS_TOKEN` is set). Supports canonical `{event_slug}-{room_id}-{language_code}`.
-- Direct-push TTS feed: `/ws/tts/{room_id}/{language_code}/{booth_id}` — authorized before acceptance; receives structured binary bundle messages (1-byte version, 4-byte header length, JSON metadata header, optional 24 kHz 16-bit mono PCM payload) synthesized via Deepgram Aura or Supertonic ONNX. Translations are delivered concurrently via the caption feed and the TTS bundle header.
+- Direct-push TTS feed: `/ws/tts/{room_id}/{language_code}/{booth_id}` — authorized before acceptance; receives structured binary bundle messages (1-byte version, 4-byte header length, JSON metadata header, optional 24 kHz 16-bit mono PCM payload) synthesized via Deepgram Aura, ElevenLabs v4 or Supertonic ONNX. Translations are delivered concurrently via the caption feed and the TTS bundle header.
 
 ---
 

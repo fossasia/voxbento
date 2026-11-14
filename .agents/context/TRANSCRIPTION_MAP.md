@@ -61,7 +61,7 @@ Jitsi Meet Floor Conference
         ▼
    TTS Worker (tts/worker.py)
    Reads 'final' translated segments → buffers punctuation → routes to TTS provider
-   (Deepgram Aura cloud WebSocket OR Supertonic self-hosted in-process ONNX)
+   (Deepgram Aura cloud WebSocket, ElevenLabs v4 cloud HTTP stream, OR Supertonic self-hosted in-process ONNX)
         │
         ▼
    broadcast_bundle() (WebSocket /ws/tts/{room_id}/{language_code}/{booth_id}) -> AudioScheduler -> Web Audio API
@@ -85,7 +85,7 @@ Jitsi Meet Floor Conference
 | `portal/transcription/providers/local.py` | `LocalProvider` — faster-whisper CPU; model cache + LRU eviction |
 | `portal/transcription/providers/openai.py` | `OpenAIProvider` — whisper-1 (REST) + gpt-4o-realtime (WebSocket) |
 | `portal/transcription/providers/atlascloud.py` | `AtlasCloudProvider` — Seed ASR 2.0 async Audio API |
-| `portal/transcription/providers/deepgram.py` | `DeepgramProvider` — nova-2 WebSocket streaming |
+| `portal/transcription/providers/deepgram.py` | `DeepgramProvider` — nova-3/nova-2 WebSocket streaming; glossary source terms (`speech_keyterms` in `portal/translations/vocabulary.py`, read once per stream, honours `floor_ai_vocabulary_enabled`) sent as nova-3 `keyterm`s or nova-2 `keywords=term:2`; settled chunks collected until `speech_final`/`UtteranceEnd` |
 | `portal/transcription/providers/nvidia.py` | `NVIDIAProvider` — Parakeet-RNNT/CTC via Riva gRPC |
 | `portal/transcription/providers/elevenlabs.py` | `ElevenLabsProvider` — scribe_v2 |
 | `portal/translations/worker.py` | `TranslationWorker`: per-language translation dispatch, timeouts and delivery; `ENGINES` maps each provider to its `TranslationEngine`; `scheduler_for` gives each provider one shared `TranslationScheduler` |
@@ -97,8 +97,8 @@ Jitsi Meet Floor Conference
 | `portal/translations/prompts.py` | Contextual prompt construction incorporating room AI persona and style instructions |
 | `portal/translations/vocabulary.py` | AI interpretation vocabulary & glossary resolution, CSV import/export, and matching |
 | `portal/tts/worker.py` | `TTSWorker`, buffers punctuation, chunks text, routes to a TTS provider, pushes raw PCM binary to `tts_manager` |
-| `portal/tts/providers/` | `TTSProvider` ABC + factory; `DeepgramTTSProvider` (Aura WebSocket) and `SupertonicTTSProvider` (in-process ONNX, 44.1k→24k resample) |
-| `portal/tts/constants.py` | `DEEPGRAM_VOICE_MAPPING` (language→Aura voice) plus Supertonic preset voices, language map, and supported languages |
+| `portal/tts/providers/` | `TTSProvider` ABC + factory; `DeepgramTTSProvider` (Aura WebSocket), `ElevenLabsTTSProvider` (Eleven v4 Turbo → v4 over `/v1/text-to-dialogue/stream`, `pcm_24000`) and `SupertonicTTSProvider` (in-process ONNX, 44.1k→24k resample) |
+| `portal/tts/constants.py` | `DEEPGRAM_VOICE_MAPPING` (language→Aura voice) plus Supertonic preset voices, language map, and supported languages; `ELEVENLABS_DEFAULT_VOICE_ID` and `ELEVENLABS_SUPPORTED_LANGS` (Eleven v4, Thai included) |
 
 ---
 
@@ -109,7 +109,7 @@ Jitsi Meet Floor Conference
 | `local` | `LocalProvider` | `tiny`, `base`, `small`, `medium`, `large-v2`, `large-v3` | None | CPU inference via `faster-whisper` (in thread pool) |
 | `openai` | `OpenAIProvider` | `whisper-1`, `gpt-4o-realtime-preview`, `gpt-4o-mini-realtime-preview` | `openai_api_key` | REST (whisper-1) or WebSocket realtime |
 | `atlascloud` | `AtlasCloudProvider` | `bytedance/seed-asr-2.0` | `atlascloud_api_key` | Async JSON submit + prediction polling |
-| `deepgram` | `DeepgramProvider` | `nova-2` | `deepgram_api_key` | WebSocket streaming (with `numerals=true` for interpretation) |
+| `deepgram` | `DeepgramProvider` | `nova-3`, `nova-2` | `deepgram_api_key` | WebSocket streaming (with `numerals=true` for interpretation) |
 | `nvidia` | `NVIDIAProvider` | `parakeet-rnnt`, `parakeet-ctc` | `nvidia_api_key` | Riva gRPC |
 | `elevenlabs` | `ElevenLabsProvider` | `scribe_v2` | `elevenlabs_api_key` | — |
 
