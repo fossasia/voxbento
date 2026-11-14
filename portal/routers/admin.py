@@ -183,7 +183,7 @@ from portal.transcription.worker import (
     stop_transcription_worker,
     wait_for_worker_start,
 )
-from portal.translations.constants import TRANSLATION_MODELS, TranslationProviderEnum
+from portal.translations.constants import LIBRETRANSLATE_MODEL_ID, TRANSLATION_MODELS, TranslationProviderEnum
 from portal.translations.model_languages import language_support_error
 from portal.translations.vocabulary import (
     VocabularyOverlapIndex,
@@ -1666,6 +1666,9 @@ def _apply_ai_settings(room: Room, form: FormData, catalog: EngineCatalog) -> No
         model = str(form.get("floor_translation_model", "")).strip()[:100]
         if translation.provider == TranslationProviderEnum.SELF_HOSTED.value:
             model = settings.self_hosted_llm_model_or_default(model) or ""
+        elif translation.provider == TranslationProviderEnum.LIBRETRANSLATE.value:
+            # LibreTranslate has no model allow-list; the registry id is its only valid model.
+            model = LIBRETRANSLATE_MODEL_ID if settings.libretranslate_enabled else ""
         model = model or translation.model
         # Only a changed choice is checked, so a room saved before this rule can still save its other settings.
         changed = (translation.provider, model) != (room.floor_translation_provider, room.floor_translation_model)
@@ -1729,6 +1732,11 @@ def _room_translation_choice(form: FormData, form_section: str) -> tuple[bool, s
         if floor_translation_enabled and form_section in ("", "translation") and not settings.self_hosted_llm_enabled:
             raise HTTPException(status_code=400, detail="Self-hosted translation is not configured on this server")
         floor_translation_model = settings.self_hosted_llm_model_or_default(floor_translation_model)
+    elif floor_translation_provider == TranslationProviderEnum.LIBRETRANSLATE.value:
+        # Turning translation off must still work after the server setting is removed.
+        if floor_translation_enabled and form_section in ("", "translation") and not settings.libretranslate_enabled:
+            raise HTTPException(status_code=400, detail="LibreTranslate is not configured on this server")
+        floor_translation_model = LIBRETRANSLATE_MODEL_ID if settings.libretranslate_enabled else None
     return floor_translation_enabled, floor_translation_provider, floor_translation_model
 
 
@@ -1993,9 +2001,12 @@ async def admin_delete_ai_vocabulary(request: Request, event_id: int, room_id: i
 
 @router.get("/api/admin/providers/translation/models", dependencies=[Depends(require_owner_or_coordinator)])
 async def get_translation_models():
-    if not settings.self_hosted_llm_enabled:
-        return TRANSLATION_MODELS
-    return {**TRANSLATION_MODELS, TranslationProviderEnum.SELF_HOSTED.value: list(settings.self_hosted_llm_model_list)}
+    models = dict(TRANSLATION_MODELS)
+    if settings.self_hosted_llm_enabled:
+        models[TranslationProviderEnum.SELF_HOSTED.value] = list(settings.self_hosted_llm_model_list)
+    if settings.libretranslate_enabled:
+        models[TranslationProviderEnum.LIBRETRANSLATE.value] = [LIBRETRANSLATE_MODEL_ID]
+    return models
 
 
 MAX_AUDIO_DELAY_MS = 10_000
@@ -2327,6 +2338,11 @@ async def admin_booth_detail(request: Request, event_id: int, room_id: int, boot
             translation_models[TranslationProviderEnum.SELF_HOSTED.value] = [
                 (model, model) for model in settings.self_hosted_llm_model_list
             ]
+        if settings.libretranslate_enabled:
+            # LibreTranslate has one engine; the booth form offers its single registry id.
+            translation_models[TranslationProviderEnum.LIBRETRANSLATE.value] = [
+                (LIBRETRANSLATE_MODEL_ID, "LibreTranslate")
+            ]
         catalog = engine_catalog(event)
         kept_speech_hint = _kept_speech_hint(event, catalog, db_booth.transcription_provider)
     return templates.TemplateResponse(
@@ -2617,6 +2633,14 @@ async def admin_booth_translation_settings(
                     )
                 if not settings.self_hosted_llm_allows(translation_model):
                     raise HTTPException(status_code=400, detail="That model is not allowed for self-hosted translation")
+            if translation_provider == TranslationProviderEnum.LIBRETRANSLATE.value:
+                if translation_enabled and not settings.libretranslate_enabled:
+                    raise HTTPException(status_code=400, detail="LibreTranslate is not configured on this server")
+                if translation_model != LIBRETRANSLATE_MODEL_ID:
+                    if translation_enabled:
+                        raise HTTPException(status_code=400, detail="That model is not valid for LibreTranslate")
+                    # Pin to the canonical id so a later turn-on doesn't trip the model check.
+                    translation_model = LIBRETRANSLATE_MODEL_ID
             if translation_enabled:
                 _require_translatable(
                     translation_provider, translation_model, (db_booth.language_code, *translation_languages)

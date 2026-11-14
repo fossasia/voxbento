@@ -24,6 +24,7 @@ from portal.database import create_booth, delete_booth, list_booths_for_room
 from portal.models import DBBooth, Event, Room, RoomTranslationLanguage
 from portal.roles import INTERPRETER
 from portal.transcription.constants import ALLOWED_MODELS, ProviderEnum
+from portal.translations.constants import LIBRETRANSLATE_MODEL_ID, TranslationProviderEnum
 from portal.translations.model_languages import supported_languages, unsupported_languages
 from portal.translations.registry import NLLB_200_DISTILLED_600M
 from portal.tts.constants import DEEPGRAM_VOICE_MAPPING, ELEVENLABS_SUPPORTED_LANGS, SUPERTONIC_SUPPORTED_LANGS
@@ -241,6 +242,8 @@ _BRANDS = {
     "gemini": "Google Gemini",
     "groq": "Groq",
     "openrouter": "OpenRouter",
+    "self_hosted": "Self-hosted LLM",
+    "libretranslate": "LibreTranslate",
 }
 
 
@@ -295,6 +298,15 @@ def engine_catalog(event: Event) -> EngineCatalog:
         )
     elif settings.self_hosted_llm_base_url:
         unavailable.append("Self-hosted LLM needs SELF_HOSTED_LLM_MODELS")
+    if settings.libretranslate_enabled:
+        translation.append(
+            Engine(
+                TranslationProviderEnum.LIBRETRANSLATE.value,
+                LIBRETRANSLATE_MODEL_ID,
+                "LibreTranslate",
+                _SERVER_MODEL,
+            )
+        )
 
     if event.encrypted_deepgram_api_key:
         voice.append(Engine("deepgram", "aura", "Deepgram Aura", _KEY_ADDED))

@@ -15,6 +15,12 @@ class TranslationProviderEnum(str, Enum):
     ANTHROPIC = "anthropic"
     GROQ = "groq"
     SELF_HOSTED = "self_hosted"
+    LIBRETRANSLATE = "libretranslate"
+
+
+#: Model id stored on rooms and booths when LibreTranslate is the provider. LibreTranslate
+#: runs one engine, so it has no model allow-list the operator picks from.
+LIBRETRANSLATE_MODEL_ID = "libretranslate"
 
 
 TRANSLATION_MODELS: Dict[str, List[str]] = {

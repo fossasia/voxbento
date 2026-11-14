@@ -400,7 +400,7 @@ async def test_room_page_names_a_removed_self_hosted_service_plainly(admin_room,
     async with _client(cookie) as client:
         page = await client.get(f"/admin/events/{event_id}/rooms/{room_id}/")
     assert page.status_code == 200
-    assert "Self-hosted — not available now, choose another" in page.text
+    assert "Self-hosted LLM — not available now, choose another" in page.text
     assert "Self_hosted" not in page.text
 
 

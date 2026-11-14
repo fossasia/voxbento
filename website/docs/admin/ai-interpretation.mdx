@@ -78,6 +78,7 @@ This keeps real-time prompts compact, minimizing LLM inference latency.
 - **Anthropic**: Persona, style, and glossary terms supplied through the top-level `system` prompt parameter.
 - **Google Gemini**: Applied via `systemInstruction`.
 - **Self-hosted LLM**: Same messages as OpenAI, sent to the operator's own OpenAI-compatible server (see below).
+- **LibreTranslate**: A small machine-translation server (Argos Translate under the hood). Like NLLB it takes no persona, style or glossary (those are stored but not applied), but it runs outside the portal process and supports CUDA, so it scales further than NLLB when the operator has one running.
 - **Local NLLB**: Sequence-to-sequence models take no system prompt, so persona and style are stored but not applied. Glossary terms are applied by term protection: each whole-word match, even for `phrase` entries, is swapped for a numbered placeholder before translation and replaced with its target term afterwards. In Chinese, Japanese, Thai and other scripts written without spaces, a term is replaced wherever it appears, even inside a longer word: `ブース` (booth) also matches the start of `ブースター` (booster), and the fallback cannot detect the wrong translation that results. Whole-word matching prevents this in other scripts (`AI` is never replaced inside `said`), so keep glossary terms for these scripts specific. If the model drops or mangles a placeholder, the segment is translated again without the glossary, so listeners never see a placeholder. Segments that already contain bracketed numbers, such as `[1]`, are translated without the glossary.
 
 ## Self-hosted Translation Server
@@ -132,3 +133,35 @@ Measured on an Apple M5 with Ollama 0.40.15, through VoxBento's own request path
 | `qwen3:0.6b` (reasoning), CPU only | 4.3 s | 3.3 s | 10 s, 3 of 6 timed out |
 
 A single request on CPU can look fast; it is several rooms and languages at once that push CPU-only setups past the limit.
+
+## LibreTranslate
+
+[LibreTranslate](https://libretranslate.com) is a small self-hosted machine-translation server that runs on Argos Translate. It's a simpler alternative to the built-in NLLB model when the operator wants translation off the portal process, and it takes CUDA on machines that have a GPU.
+
+Like NLLB it takes no persona, style or glossary — those fields are stored on the room but not sent. Use it for straight translation; use the self-hosted LLM or a cloud service when you need the room's glossary applied.
+
+The server URL is set only in the server environment. Event owners pick **LibreTranslate** as the service in room setup, the room's **AI settings** tab, or the booth's **Translations** tab. There is only one engine, so there is no model to pick.
+
+1. Start a LibreTranslate container with the languages your events need. Loading every language takes gigabytes, so narrow it to what you use:
+
+   ```bash
+   docker run -d --name libretranslate -p 5000:5000 \
+     libretranslate/libretranslate --load-only en,es,fr,de,zh
+   ```
+
+   On a GPU host, use the `-cuda` image tag and pass `--gpus all` for faster translation.
+
+2. Set the URL (and, when the instance was started with `--api-keys`, the key):
+
+   ```bash
+   LIBRETRANSLATE_BASE_URL=http://localhost:5000
+   LIBRETRANSLATE_API_KEY=
+   ```
+
+   Leave out `/translate`. With Docker Compose, put them in `.env` and run `docker compose up -d portal`. From the Docker portal container, use `http://host.docker.internal:5000` on Docker Desktop; on Linux also add `extra_hosts: ["host.docker.internal:host-gateway"]` to the portal service.
+
+3. Choose **LibreTranslate** as the service. When the URL is unset, the option does not appear.
+
+If you later remove the server, rooms and booths that used it show it as not available and translate nothing until you pick another service. They can still turn translation off.
+
+LibreTranslate uses ISO 639-1 language codes, so a room language the server does not list fails that segment and leaves the others alone. Check the server's `/languages` endpoint for what it supports.
