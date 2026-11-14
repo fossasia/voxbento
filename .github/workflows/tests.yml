@@ -269,12 +269,16 @@ jobs:
           node --check portal/static/js/translation-fit.js
           node --check portal/static/js/modal-dialog.js
           node --check portal/static/js/developer.js
+          node --check portal/static/js/live-demo.js
+          node --check portal/static/js/live-demo-core.js
+          node --check portal/static/js/live-demo-capture.js
           node --check .github/scripts/jules-review.mjs
           node --check .github/scripts/agent-attribution-lib.mjs
       - name: run node tests
         run: |
           node tests/test_audio_scheduler.js
           node tests/test_tts_parser.js
+          node --test tests/test_demo_modal.js
           node tests/test_listener_event.js
           node tests/test_whep_listener.js
           node --test tests/test_whep_lifecycle.js
@@ -290,11 +294,21 @@ jobs:
           node tests/test_tabs.mjs
           node tests/test_translation_fit.mjs
           node tests/test_program_sender_source.mjs
+          node tests/test_live_demo_core.mjs
           node --test tests/test_modal_dialogs.mjs
           node --test tests/test_agent_attribution.mjs
 
       - name: Run unit tests
         run: uv run pytest tests/ -v
+
+      - name: Translation load test (small configuration)
+        # An explicit `shell: bash` runs with `-eo pipefail`, so a failing harness fails the
+        # step even though its output is piped through tee.
+        shell: bash
+        run: |
+          uv run python tests/translation_load_harness.py \
+            --rooms 3 --languages 1,4 --segments 6 --interval 0.5 --latency 0.1 --markdown \
+            | tee -a "$GITHUB_STEP_SUMMARY"
 
   overlay-browser:
     runs-on: ubuntu-24.04

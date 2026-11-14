@@ -13,7 +13,7 @@ import pycountry
 from sqlalchemy import or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from portal.models import AIVocabularyEntry
+from portal.models import AIVocabularyEntry, DBBooth, Room
 from portal.translations.prompts import MAX_DESCRIPTION_CHARS, MAX_TERM_CHARS
 
 REQUIRED_COLUMNS = {"source_term", "target_language", "target_term"}
@@ -469,3 +469,74 @@ def serialize_vocabulary_csv(entries: list[AIVocabularyEntry]) -> str:
             )
         )
     return output.getvalue()
+
+
+# Deepgram allows 500 keyterm tokens per request; the estimate below is deliberately pessimistic,
+# so a glossary near the limit still connects instead of being rejected.
+MAX_KEYTERM_TOKENS = 450
+MAX_KEYTERMS = 100
+
+
+_CONTROL_CHARS = re.compile(r"[\x00-\x1f\x7f]+")
+
+
+def clean_speech_term(term: str) -> str:
+    """One line of plain text with single spaces, as a recogniser expects a term."""
+    return " ".join(_CONTROL_CHARS.sub(" ", term).split())
+
+
+def _estimated_keyterm_tokens(term: str) -> int:
+    # Roughly three characters a token, rounded up; no tokenizer is shared with Deepgram.
+    return max(1, -(-len(term) // 3))
+
+
+async def speech_keyterms(session: AsyncSession, room_id: int) -> list[str]:
+    """The glossary's source terms for a room, to help speech recognition hear them.
+
+    The source terms are what the floor speaker says, whatever language they are translated
+    into, so every event-wide entry and every entry of this room or one of its booths counts.
+    Each term is listed once, the most important first, until Deepgram's budget is used up.
+    Empty when the room has switched its glossary off.
+    """
+    room = (
+        await session.execute(select(Room.event_id, Room.floor_ai_vocabulary_enabled).where(Room.id == room_id))
+    ).first()
+    if room is None or not room.floor_ai_vocabulary_enabled:
+        return []
+    event_id = room.event_id
+    source_terms = await session.scalars(
+        select(AIVocabularyEntry.source_term)
+        .where(
+            AIVocabularyEntry.event_id == event_id,
+            or_(
+                AIVocabularyEntry.room_id == room_id,
+                AIVocabularyEntry.room_id.is_(None) & AIVocabularyEntry.booth_id.is_(None),
+                # A booth entry saved without its room still belongs to the room its booth is in.
+                AIVocabularyEntry.room_id.is_(None)
+                & AIVocabularyEntry.booth_id.in_(select(DBBooth.id).where(DBBooth.room_id == room_id)),
+            ),
+        )
+        # Room entries before event-wide ones of the same priority; oldest first after that.
+        .order_by(
+            AIVocabularyEntry.priority.desc(),
+            AIVocabularyEntry.room_id.is_(None),
+            AIVocabularyEntry.id,
+        )
+    )
+    keyterms: list[str] = []
+    seen: set[str] = set()
+    budget = MAX_KEYTERM_TOKENS
+    for source_term in source_terms:
+        term = clean_speech_term(source_term)
+        folded = term.casefold()
+        if not term or folded in seen:
+            continue
+        cost = _estimated_keyterm_tokens(term)
+        if cost > budget:
+            continue
+        seen.add(folded)
+        keyterms.append(term)
+        budget -= cost
+        if len(keyterms) >= MAX_KEYTERMS:
+            break
+    return keyterms

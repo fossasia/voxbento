@@ -54,6 +54,17 @@ Voxbento uses SQLite by default for zero-configuration local development. For an
 | --- | --- | --- |
 | `DATABASE_URL` | `sqlite+aiosqlite:///./interpretation.db` | Database connection string. For production PostgreSQL, use the format: `postgresql+asyncpg://user:pass@host:5432/dbname`. Database migrations run automatically on startup — no manual steps needed when using Docker Compose. |
 
+## Booth Recovery Variables
+
+These keep a live booth on air when an interpreter's connection drops or the portal restarts during an event. Interpreter audio goes from the browser to MediaMTX directly, so when only the connection to the portal drops, the audio keeps playing while the booth page reconnects. If the interpreter's own network goes down, the audio stops too until it comes back.
+
+| Variable | Default | Description |
+| --- | --- | --- |
+| `BOOTH_RECONNECT_GRACE_SECONDS` | `20` | How long a participant whose booth connection dropped keeps their place, including the active slot. Set `0` to remove them at once. |
+| `BOOTH_STATE_RECOVERY_ENABLED` | `true` | Save each booth's Go Live switch and active interpreter to the database and restore them when the portal starts. |
+| `BOOTH_RESTART_GRACE_SECONDS` | `60` | After a restart, how long the active slot waits for the interpreter who held it to reconnect. |
+| `BOOTH_STATE_MAX_AGE_SECONDS` | `600` | Saved booth state is not restored if it was last saved longer ago than this. A live booth's state is saved when it changes and at least once a minute, so this counts the time since that last save, including any time before the portal stopped. |
+
 ## Jitsi Variables
 
 Voxbento embeds a Jitsi Meet instance so interpreters can monitor the conference floor. These variables configure how the portal connects to and displays Jitsi.
@@ -115,10 +126,19 @@ These variables control external encoder ingest and YouTube RTMPS forwarding.
 | --- | --- | --- |
 | `SUPERTONIC_TOTAL_STEPS` | `4` | Diffusion steps for self-hosted Supertonic ONNX TTS. `4` provides real-time CPU synthesis; `8` offers reference quality. |
 | `SUPERTONIC_INTRA_OP_THREADS` | `0` | Intra-op threads for ONNX Runtime (`0` defaults to all available CPU cores). |
+| `LIVE_DEMO_ENABLED` | `true` | Allows the "Your voice" demo on the home page, where visitors speak and get captions, translations and a voice from this server's own models. The demo stays off until an Admin switches it on at **Admin → Live demo**; `false` keeps it off on this server whatever is saved there. |
+| `LIVE_DEMO_VOICE_ENABLED` | `true` | Speaks the translation aloud with Supertonic. Needs the `supertonic` extra; without it the demo shows captions only. |
+| `LIVE_DEMO_WHISPER_MODEL` | `base` | faster-whisper model for demo captions (`tiny`, `base`, `small`, …). Larger models are more accurate but slower on CPU. |
+| `LIVE_DEMO_TRANSLATION_MODEL` | `nllb-200-distilled-600M` | Self-hosted translation model for the demo. |
+| `LIVE_DEMO_MAX_SESSIONS` | `2` | Demo sessions allowed at once on this server; further visitors are asked to try again shortly. |
+| `LIVE_DEMO_MAX_SESSION_SECONDS` | `120` | Longest single demo run. |
+| `LIVE_DEMO_SESSIONS_PER_IP_PER_HOUR` | `12` | Demo runs one client address may start per hour. |
 | `NVIDIA_FUNCTION_ID` | _(empty)_ | Optional function ID for NVIDIA Cloud Riva integrations. |
 | `SELF_HOSTED_LLM_BASE_URL` | _(empty)_ | Base URL of your own OpenAI-compatible server, for example `http://localhost:11434/v1`, without `/chat/completions`. Must be `http` or `https` with a valid port and no credentials, query string or fragment. Only the server sets it; rooms can't. |
 | `SELF_HOSTED_LLM_MODELS` | _(empty)_ | Comma-separated models rooms and booths may use, spelled exactly as the server names them (for Ollama, as `ollama list` shows them). The first one is the default. Each name can be at most 100 characters. Self-hosted translation is offered only when this and the URL are both set. |
 | `SELF_HOSTED_LLM_API_KEY` | _(empty)_ | Optional bearer token, for servers started with an API key (for example vLLM `--api-key`). |
+
+The other `LIVE_DEMO_*` values are defaults: once an Admin saves **Admin → Live demo**, the saved settings are used instead (`LIVE_DEMO_TRANSLATION_MODEL` stays server-only). The demo runs Whisper, NLLB and, with voice on, Supertonic in the portal process: about 1.2 GB of models, downloaded on first use and kept in memory while in use.
 
 ## Email and Notification Variables
 
