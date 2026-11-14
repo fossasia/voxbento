@@ -99,6 +99,62 @@ async def test_stop_for_an_unknown_event_is_a_404():
     assert exc_info.value.status_code == 404
 
 
+@pytest.mark.anyio
+async def test_delete_booth_stops_transcription_worker_with_correct_booth_id(event):
+    """Deleting a booth stops its transcription worker before deleting the database row."""
+    from portal.booth_identity import make_booth_id
+
+    booth = SimpleNamespace(id=42, room_id=ROOM_ID, language_code="en", event_id=event.id)
+    db = _db(
+        _result(first=event),
+        _result(first=booth),
+    )
+
+    calls = []
+
+    async def mock_stop(booth_id):
+        calls.append(("stop", booth_id))
+
+    async def mock_revoke(db, level, target_id):
+        calls.append(("revoke", level, target_id))
+
+    async def mock_delete(db, booth_id):
+        calls.append(("delete", booth_id))
+
+    with (
+        patch("portal.routers.api_v1.stop_transcription_worker", side_effect=mock_stop),
+        patch("portal.routers.api_v1.revoke_booths_for_deleted_entity", side_effect=mock_revoke),
+        patch("portal.database.delete_booth", side_effect=mock_delete),
+    ):
+        resp = await api_v1.delete_booth_endpoint(EVENT_SLUG, ROOM_ID, "en", db=db, token=object())
+
+    assert resp == {"status": "deleted"}
+    expected_booth_id = make_booth_id(EVENT_SLUG, ROOM_ID, "en")
+    assert calls == [
+        ("stop", expected_booth_id),
+        ("revoke", "booth", 42),
+        ("delete", 42),
+    ]
+
+
+@pytest.mark.anyio
+async def test_delete_booth_succeeds_when_no_worker_running(event):
+    """Deleting a booth succeeds cleanly even when no transcription worker was active."""
+    booth = SimpleNamespace(id=42, room_id=ROOM_ID, language_code="en", event_id=event.id)
+    db = _db(
+        _result(first=event),
+        _result(first=booth),
+    )
+
+    with (
+        patch("portal.routers.api_v1.revoke_booths_for_deleted_entity", AsyncMock()),
+        patch("portal.database.delete_booth", AsyncMock()),
+    ):
+        resp = await api_v1.delete_booth_endpoint(EVENT_SLUG, ROOM_ID, "en", db=db, token=object())
+
+    assert resp == {"status": "deleted"}
+
+
 # ── status ────────────────────────────────────────────────────────────────────
 
 
