@@ -111,6 +111,17 @@ async def lifespan(app: FastAPI):
     meeting_task = asyncio.create_task(meeting_source.reconcile_loop())
     attendance_task = asyncio.create_task(booths.attendance.run())
 
+    # Bring back booths that were live before this restart, then keep saving them (TD-03).
+    recovery_task = None
+    if settings.booth_state_recovery_enabled:
+        from portal import booth_recovery
+        from portal.websockets.manager import schedule_participant_expiry
+
+        restored = await booth_recovery.restore(booths, max_age_seconds=settings.booth_state_max_age_seconds)
+        for booth_id, participant_id in restored:
+            schedule_participant_expiry(booth_id, participant_id, None, settings.booth_restart_grace_seconds)
+        recovery_task = asyncio.create_task(booth_recovery.run(booths))
+
     dg.track_task(asyncio.create_task(_gen()))
 
     logging.getLogger("uvicorn.access").addFilter(_UvicornTokenRedactor())
@@ -120,6 +131,8 @@ async def lifespan(app: FastAPI):
     tasks_to_cancel = [reaper_task, webhook_task, notification_task, rate_limit_cleanup_task, meeting_task, attendance_task]
     if ingest_task:
         tasks_to_cancel.append(ingest_task)
+    if recovery_task:
+        tasks_to_cancel.append(recovery_task)
     for task in tasks_to_cancel:
         task.cancel()
     await asyncio.gather(*tasks_to_cancel, return_exceptions=True)

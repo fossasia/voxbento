@@ -769,6 +769,37 @@ class InterpreterAttendance(Base):
         return f"<InterpreterAttendance id={self.id} event={self.event_id} user={self.user_id}>"
 
 
+class BoothLiveState(Base):
+    """What a live booth needs to survive a portal restart (TD-03).
+
+    One row per booth with something live: Mission Control's Go Live switch and
+    who held the active slot. ``portal.booth_recovery`` keeps it in step with the
+    in-memory ``BoothRegistry`` and restores it at startup. ``booth_id`` is the
+    registry's key, not a foreign key, so a row never blocks deleting a booth.
+    """
+
+    __tablename__ = "booth_live_state"
+
+    booth_id: Mapped[str] = mapped_column(String(200), primary_key=True)
+    language: Mapped[str] = mapped_column(String(100), default="")
+    channel_id: Mapped[str] = mapped_column(String(200), default="")
+    room_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    broadcast_unlocked: Mapped[bool] = mapped_column(Boolean, default=False, server_default="0")
+    active_participant_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    # portal.auth.booth_session_key of the active interpreter: only that session may reclaim the slot.
+    active_session_key: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    active_display_name: Mapped[str | None] = mapped_column(String(200), nullable=True)
+    active_role: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    active_user_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    active_invite_public_id: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    active_mic_active: Mapped[bool] = mapped_column(Boolean, default=False, server_default="0")
+    active_ingest_connected: Mapped[bool] = mapped_column(Boolean, default=False, server_default="0")
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
+
+    def __repr__(self) -> str:
+        return f"<BoothLiveState booth={self.booth_id} unlocked={self.broadcast_unlocked}>"
+
+
 # ---------------------------------------------------------------------------
 # OAuth2 & Developer Platform
 # ---------------------------------------------------------------------------

@@ -85,6 +85,7 @@ VoxBento is a production-grade **browser-first interpretation booth console** fo
 | `portal/program_ingest.py` | Floor authorization and reconciliation for Program Stream Ingest |
 | `portal/program_relay.py` | YouTube RTMPS destination management and relay health convergence |
 | `portal/outage_log.py` | `OutageLog` — reconcile loops log a repeating failure once per outage, not per tick |
+| `portal/booth_recovery.py` | Saves each booth's Go Live switch and active interpreter to `booth_live_state` and restores them at startup (TD-03) |
 | `portal/attendance.py` | `AttendanceTracker` — interpreter visits and interpreting time from booth state, batched writes to `interpreter_attendance` (#1215) |
 | `portal/user_admin.py` | Administrative access rules, user flags (`can_host`, `is_admin`, `is_active`, `email_verified`) |
 | `portal/templates/` | Jinja2 HTML — `base.html`, `interpreter_booth.html`, `listener-event.html`, `admin/` |
