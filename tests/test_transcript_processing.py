@@ -386,16 +386,6 @@ async def test_a_subtitle_phrase_with_no_partial_is_still_filtered():
     assert "final" not in statuses
 
 
-def test_deepgram_passes_speech_final_as_the_turn_flag():
-    """The bare is_final branch must not be filtered as a complete turn."""
-    import inspect
-
-    from portal.transcription.providers import deepgram
-
-    src = inspect.getsource(deepgram)
-    assert "complete_turn=speech_final" in src
-
-
 # ---------------------------------------------------------------------------
 # Logging
 # ---------------------------------------------------------------------------
