@@ -838,7 +838,7 @@ async def test_download_status_failure_preserves_inference_timeout(db_data, mock
         patch(target, side_effect=PermissionError("private model path")),
         patch.object(worker, "_call_llm", new_callable=AsyncMock, return_value="Bonjour"),
         patch("portal.tts.worker.synthesize", new_callable=AsyncMock, return_value=b"audio"),
-        patch("portal.websockets.manager.tts_manager.broadcast_bundle", new_callable=AsyncMock),
+        patch("portal.websockets.manager.tts_manager.broadcast_bundle", new_callable=AsyncMock) as bundle,
         patch("portal.translations.worker.asyncio.wait_for", wraps=asyncio.wait_for) as wait_for,
     ):
         await worker._translate_and_broadcast(
@@ -859,6 +859,10 @@ async def test_download_status_failure_preserves_inference_timeout(db_data, mock
         )
 
     assert wait_for.call_args_list[0].kwargs["timeout"] == 60.0
+    assert bundle.await_count == 2
+    assert all(call.args[7] == "Bonjour" and call.args[8] is None for call in bundle.call_args_list)
+    assert "PermissionError" in caplog.text
+    assert "private model path" not in caplog.text
 
 
 @pytest.mark.anyio
@@ -872,6 +876,7 @@ async def test_handle_translation_releases_session_before_translating(db_data, m
     initial_session_active = False
     initial_session_held_during_inference = False
     first_call = True
+    recorded_targets = []
 
     real_get_session = get_session
 
@@ -894,6 +899,7 @@ async def test_handle_translation_releases_session_before_translating(db_data, m
         nonlocal initial_session_held_during_inference
         if initial_session_active:
             initial_session_held_during_inference = True
+        recorded_targets.append(kwargs.get("target_lang_code"))
         return "Bonjour"
 
     with (
@@ -915,4 +921,5 @@ async def test_handle_translation_releases_session_before_translating(db_data, m
 
     # During inference, the initial resolving session must already be closed.
     assert not initial_session_held_during_inference
+    assert sorted(recorded_targets) == ["es", "fr"]
     assert mock_bundle.await_count >= 1
