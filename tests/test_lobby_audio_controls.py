@@ -12,8 +12,9 @@ import socket
 import subprocess
 import tempfile
 from pathlib import Path, PurePath, PureWindowsPath
-from typing import Any
+from typing import Any, Callable
 
+import httpx
 import pytest
 import websockets
 from httpx import ASGITransport, AsyncClient
@@ -221,6 +222,31 @@ def terminate_process_tree(proc: subprocess.Popen | Any, timeout: float = 2.0) -
             pass
 
 
+def _read_process_stderr(
+    proc: subprocess.Popen | Any,
+    stderr_file: str | Path | None = None,
+) -> str:
+    """Read captured stderr from file or process object if available."""
+    msg = ""
+    if stderr_file and os.path.exists(stderr_file):
+        try:
+            msg = Path(stderr_file).read_text(encoding="utf-8", errors="replace").strip()
+        except OSError:
+            pass
+    if msg:
+        return msg
+    if hasattr(proc, "communicate"):
+        try:
+            _, stderr = proc.communicate()
+            if isinstance(stderr, bytes):
+                return stderr.decode(errors="replace").strip()
+            if isinstance(stderr, str):
+                return stderr.strip()
+        except Exception:
+            pass
+    return ""
+
+
 async def wait_for_devtools_active_port(
     port_file: str | Path,
     proc: subprocess.Popen,
@@ -247,24 +273,9 @@ async def wait_for_devtools_active_port(
 
         # Only treat process exit as fatal if the port file is still missing or invalid
         if proc.poll() is not None:
-            stderr_msg = ""
-            if stderr_file and os.path.exists(stderr_file):
-                try:
-                    stderr_msg = Path(stderr_file).read_text(encoding="utf-8", errors="replace").strip()
-                except OSError:
-                    pass
-            elif hasattr(proc, "communicate"):
-                try:
-                    _, stderr = proc.communicate()
-                    if isinstance(stderr, bytes):
-                        stderr_msg = stderr.decode(errors="replace").strip()
-                    elif isinstance(stderr, str):
-                        stderr_msg = stderr.strip()
-                except Exception:
-                    pass
-            raise RuntimeError(
-                f"Chrome exited prematurely (exit code {proc.returncode}): {stderr_msg}"
-            )
+            stderr_msg = _read_process_stderr(proc, stderr_file)
+            err_suffix = f": {stderr_msg}" if stderr_msg else ""
+            raise RuntimeError(f"Chrome exited prematurely (exit code {proc.returncode}){err_suffix}")
 
         await asyncio.sleep(poll_interval)
 
@@ -281,24 +292,81 @@ async def wait_for_devtools_active_port(
     # Bounded timeout reached: ensure the process and any spawned children are terminated
     terminate_process_tree(proc)
 
-    stderr_msg = ""
-    if stderr_file and os.path.exists(stderr_file):
-        try:
-            stderr_msg = Path(stderr_file).read_text(encoding="utf-8", errors="replace").strip()
-        except OSError:
-            pass
-    elif hasattr(proc, "communicate"):
-        try:
-            _, stderr = proc.communicate()
-            if isinstance(stderr, bytes):
-                stderr_msg = stderr.decode(errors="replace").strip()
-            elif isinstance(stderr, str):
-                stderr_msg = stderr.strip()
-        except Exception:
-            pass
-
+    stderr_msg = _read_process_stderr(proc, stderr_file)
     err_suffix = f": {stderr_msg}" if stderr_msg else ""
     raise TimeoutError(f"Failed to read valid DevToolsActivePort from Chrome within {timeout}s timeout{err_suffix}")
+
+
+async def wait_for_chrome_page_target(
+    port: int,
+    proc: subprocess.Popen | Any,
+    timeout: float = 10.0,
+    poll_interval: float = 0.05,
+    stderr_file: str | Path | None = None,
+    client: AsyncClient | None = None,
+) -> str:
+    """Poll Chrome /json endpoint until a page target with webSocketDebuggerUrl is available.
+
+    Handles connection errors, non-success status codes, invalid JSON, and empty target lists.
+    Immediately stops retrying if the Chrome process exits prematurely.
+    Raises RuntimeError on premature exit, or TimeoutError with diagnostic details on timeout.
+    """
+    loop = asyncio.get_running_loop()
+    deadline = loop.time() + timeout
+    last_error = "no requests attempted"
+
+    async def _poll(http_client: AsyncClient) -> str:
+        nonlocal last_error
+        while loop.time() < deadline:
+            if proc.poll() is not None:
+                stderr_msg = _read_process_stderr(proc, stderr_file)
+                err_detail = f": {stderr_msg}" if stderr_msg else ""
+                raise RuntimeError(
+                    f"Chrome exited prematurely (exit code {proc.returncode}) while waiting for page target{err_detail}"
+                )
+
+            try:
+                res = await http_client.get(f"http://127.0.0.1:{port}/json")
+                if res.status_code == 200:
+                    try:
+                        targets = res.json()
+                        if isinstance(targets, list):
+                            for t in targets:
+                                if isinstance(t, dict) and t.get("type") == "page":
+                                    ws_url = t.get("webSocketDebuggerUrl")
+                                    if ws_url and isinstance(ws_url, str):
+                                        return ws_url
+                            last_error = f"no page target found in target list: {targets}"
+                        else:
+                            last_error = f"expected list from /json, got {type(targets).__name__}"
+                    except (json.JSONDecodeError, ValueError) as json_err:
+                        last_error = f"invalid JSON response: {json_err}"
+                else:
+                    last_error = f"received HTTP {res.status_code} status"
+            except Exception as exc:
+                last_error = f"connection error: {exc}"
+
+            await asyncio.sleep(poll_interval)
+
+        if proc.poll() is not None:
+            stderr_msg = _read_process_stderr(proc, stderr_file)
+            err_detail = f": {stderr_msg}" if stderr_msg else ""
+            raise RuntimeError(
+                f"Chrome exited prematurely (exit code {proc.returncode}) while waiting for page target{err_detail}"
+            )
+
+        terminate_process_tree(proc)
+        stderr_msg = _read_process_stderr(proc, stderr_file)
+        err_detail = f": {stderr_msg}" if stderr_msg else ""
+        raise TimeoutError(
+            f"Chrome page target did not become available on port {port} within {timeout}s timeout "
+            f"(last status: {last_error}){err_detail}"
+        )
+
+    if client is not None:
+        return await _poll(client)
+    async with AsyncClient(timeout=min(2.0, timeout)) as http_client:
+        return await _poll(http_client)
 
 
 def to_file_uri(file_path: Path | PurePath | str) -> str:
@@ -372,6 +440,121 @@ def assert_audio_controls_geometry(metrics: dict[str, Any]) -> None:
     assert metrics["btnVisibleAndReadable"], f"Test button shrunk too small: {metrics}"
 
 
+async def launch_webkit_webdriver(
+    webkit_runner: str,
+    max_retries: int = 3,
+    startup_timeout: float = 5.0,
+    poll_interval: float = 0.05,
+    port_supplier: Callable[[], int] | None = None,
+    popen_factory: Callable[..., subprocess.Popen | Any] | None = None,
+    client_factory: Callable[[str], Any] | None = None,
+) -> tuple[subprocess.Popen | Any, int, str | None]:
+    """Launch WebKitWebDriver with bounded retries to handle port-binding races and premature exit.
+
+    WebKitWebDriver does not support exposing dynamically assigned ports via stdout or files
+    when passed port 0. This function allocates an ephemeral loopback port, attempts to launch
+    the driver, and verifies that the /status endpoint becomes responsive. If the driver
+    exits prematurely (e.g. due to a TOCTOU port-binding collision) or fails to respond within
+    startup_timeout, the process tree is cleaned up immediately and another attempt is made
+    with a fresh port up to max_retries.
+    """
+    attempt_errors: list[str] = []
+
+    for attempt in range(1, max_retries + 1):
+        if port_supplier is not None:
+            port = port_supplier()
+        else:
+            with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
+                sock.bind(("127.0.0.1", 0))
+                port = int(sock.getsockname()[1])
+
+        stderr_file = tempfile.NamedTemporaryFile(prefix=f"webkit_stderr_{port}_", delete=False)
+        stderr_path: str | None = stderr_file.name
+        stderr_file.close()
+
+        proc: Any = None
+        try:
+            with open(stderr_path, "wb") as stderr_f:
+                popen_kwargs: dict[str, Any] = {
+                    "stdout": subprocess.DEVNULL,
+                    "stderr": stderr_f,
+                }
+                if os.name == "posix":
+                    popen_kwargs["start_new_session"] = True
+
+                if popen_factory is not None:
+                    proc = popen_factory([webkit_runner, "-p", str(port)], **popen_kwargs)
+                else:
+                    proc = subprocess.Popen([webkit_runner, "-p", str(port)], **popen_kwargs)
+
+            base_url = f"http://127.0.0.1:{port}"
+            ready = False
+            last_status_err: str | None = None
+            loop = asyncio.get_running_loop()
+            deadline = loop.time() + startup_timeout
+
+            async def _check_status(http: AsyncClient) -> bool:
+                nonlocal last_status_err
+                while loop.time() < deadline:
+                    if proc.poll() is not None:
+                        stderr_msg = _read_process_stderr(proc, stderr_path)
+                        err_detail = f": {stderr_msg}" if stderr_msg else ""
+                        last_status_err = f"process exited prematurely with code {proc.returncode}{err_detail}"
+                        return False
+                    try:
+                        res = await http.get(f"{base_url}/status")
+                        if res.status_code == 200:
+                            return True
+                        last_status_err = f"status check returned HTTP {res.status_code}"
+                    except Exception as e:
+                        last_status_err = f"connection failed: {e}"
+                    await asyncio.sleep(poll_interval)
+                diagnostic = f" (last status: {last_status_err})" if last_status_err else ""
+                last_status_err = f"timed out after {startup_timeout}s without HTTP 200{diagnostic}"
+                return False
+
+            if client_factory is not None:
+                client_obj = client_factory(base_url)
+                if hasattr(client_obj, "__aenter__"):
+                    async with client_obj as http_client:
+                        ready = await _check_status(http_client)
+                else:
+                    ready = await _check_status(client_obj)
+            else:
+                async with AsyncClient(base_url=base_url, timeout=min(2.0, startup_timeout)) as http_client:
+                    ready = await _check_status(http_client)
+
+            if ready:
+                return proc, port, stderr_path
+
+            attempt_errors.append(f"attempt {attempt} (port {port}): {last_status_err}")
+            terminate_process_tree(proc)
+            proc = None
+            if stderr_path and os.path.exists(stderr_path):
+                try:
+                    os.unlink(stderr_path)
+                except OSError:
+                    pass
+                stderr_path = None
+
+        except Exception as exc:
+            if proc is not None:
+                terminate_process_tree(proc)
+                proc = None
+            if stderr_path and os.path.exists(stderr_path):
+                try:
+                    os.unlink(stderr_path)
+                except OSError:
+                    pass
+                stderr_path = None
+            attempt_errors.append(f"attempt {attempt} (port {port}): {exc}")
+
+    errors_summary = "; ".join(attempt_errors)
+    if any("exited prematurely" in err for err in attempt_errors):
+        raise RuntimeError(f"WebKitWebDriver failed to start after {max_retries} attempts ({errors_summary})")
+    raise TimeoutError(f"WebKitWebDriver timed out after {max_retries} attempts ({errors_summary})")
+
+
 async def render_and_evaluate_webkit(
     webkit_runner: str,
     html_file: str,
@@ -417,37 +600,10 @@ async def render_and_evaluate_webkit(
                 await browser.close()
 
     # Otherwise WebKitWebDriver (alternative runner; note: unverified in environments without WebKitWebDriver installed)
-    sock = socket.socket()
-    sock.bind(("127.0.0.1", 0))
-    port = sock.getsockname()[1]
-    sock.close()
-
-    popen_kwargs: dict[str, Any] = {
-        "stdout": subprocess.DEVNULL,
-        "stderr": subprocess.DEVNULL,
-    }
-    if os.name == "posix":
-        popen_kwargs["start_new_session"] = True
-
-    proc = subprocess.Popen(
-        [webkit_runner, "-p", str(port)],
-        **popen_kwargs,
-    )
+    proc, port, stderr_path = await launch_webkit_webdriver(webkit_runner)
     try:
         base_url = f"http://127.0.0.1:{port}"
         async with AsyncClient(base_url=base_url, timeout=10.0) as http:
-            # Poll status
-            for _ in range(50):
-                if proc.poll() is not None:
-                    raise RuntimeError(f"WebKit driver exited prematurely with code {proc.returncode}")
-                try:
-                    res = await http.get("/status")
-                    if res.status_code == 200:
-                        break
-                except Exception:
-                    pass
-                await asyncio.sleep(0.1)
-
             session_res = await http.post(
                 "/session",
                 json={"capabilities": {"alwaysMatch": {}}},
@@ -506,6 +662,11 @@ async def render_and_evaluate_webkit(
                 await http.delete(f"/session/{session_id}")
     finally:
         terminate_process_tree(proc)
+        if stderr_path and os.path.exists(stderr_path):
+            try:
+                os.unlink(stderr_path)
+            except OSError:
+                pass
 
 
 class CDPClient:
@@ -540,9 +701,7 @@ class CDPClient:
                         fut = self._pending_commands.pop(msg["id"], None)
                     if fut and not fut.done():
                         if "error" in msg:
-                            fut.set_exception(
-                                RuntimeError(f"CDP command {msg['id']} failed: {msg['error']}")
-                            )
+                            fut.set_exception(RuntimeError(f"CDP command {msg['id']} failed: {msg['error']}"))
                         else:
                             fut.set_result(msg.get("result"))
                 elif msg.get("method") == "Page.lifecycleEvent":
@@ -624,19 +783,17 @@ def test_lobby_css_has_microphone_sizing_rules():
     content = LOBBY_CSS.read_text(encoding="utf-8")
 
     # .lobby-inline must allow shrinking within the grid
-    assert re.search(
-        r"\.lobby-inline\s*\{[^}]*min-width:\s*0;", content
-    ), ".lobby-inline must declare min-width: 0;"
+    assert re.search(r"\.lobby-inline\s*\{[^}]*min-width:\s*0;", content), ".lobby-inline must declare min-width: 0;"
 
     # .lobby-select must have shrinking constraints (min-width: 0 and width: 0)
-    assert re.search(
-        r"\.lobby-select\s*\{[^}]*min-width:\s*0;[^}]*width:\s*0;", content
-    ), ".lobby-select must declare min-width: 0 and width: 0;"
+    assert re.search(r"\.lobby-select\s*\{[^}]*min-width:\s*0;[^}]*width:\s*0;", content), (
+        ".lobby-select must declare min-width: 0 and width: 0;"
+    )
 
     # .lobby-inline .aa-btn must not shrink
-    assert re.search(
-        r"\.lobby-inline\s+\.aa-btn\s*\{[^}]*flex-shrink:\s*0;", content
-    ), ".lobby-inline .aa-btn must declare flex-shrink: 0;"
+    assert re.search(r"\.lobby-inline\s+\.aa-btn\s*\{[^}]*flex-shrink:\s*0;", content), (
+        ".lobby-inline .aa-btn must declare flex-shrink: 0;"
+    )
 
 
 def test_parse_devtools_active_port():
@@ -652,9 +809,17 @@ def test_parse_devtools_active_port():
 
 
 class _MockProc:
-    def __init__(self, returncode: int | None = None, stderr: bytes | str | None = b"") -> None:
+    def __init__(
+        self,
+        returncode: int | None = None,
+        stderr: bytes | str | None = b"",
+        pid: int | None = None,
+    ) -> None:
         self.returncode = returncode
         self._stderr = stderr
+        self.pid = pid
+        self.terminated = False
+        self.killed = False
 
     def poll(self) -> int | None:
         return self.returncode
@@ -663,10 +828,14 @@ class _MockProc:
         return b"", self._stderr
 
     def terminate(self) -> None:
-        pass
+        self.terminated = True
+        if self.returncode is None:
+            self.returncode = 0
 
     def kill(self) -> None:
-        pass
+        self.killed = True
+        if self.returncode is None:
+            self.returncode = -9
 
     def wait(self, timeout: float | None = None) -> int | None:
         return self.returncode
@@ -737,6 +906,116 @@ async def test_wait_for_devtools_active_port_retry_partial_writes(tmp_path: Path
     assert ws_path == "/devtools/browser/retry-ws"
 
 
+@pytest.mark.anyio
+async def test_wait_for_chrome_page_target_success():
+    proc = _MockProc(returncode=None)
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            json=[
+                {"type": "browser", "webSocketDebuggerUrl": "ws://127.0.0.1:9222/devtools/browser/abc"},
+                {"type": "page", "webSocketDebuggerUrl": "ws://127.0.0.1:9222/devtools/page/xyz"},
+            ],
+        )
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as mock_client:
+        ws_url = await wait_for_chrome_page_target(9222, proc, timeout=1.0, poll_interval=0.01, client=mock_client)
+    assert ws_url == "ws://127.0.0.1:9222/devtools/page/xyz"
+
+
+@pytest.mark.anyio
+async def test_wait_for_chrome_page_target_delayed_availability():
+    proc = _MockProc(returncode=None)
+    call_count = 0
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal call_count
+        call_count += 1
+        if call_count == 1:
+            raise httpx.ConnectError("Connection refused")
+        if call_count == 2:
+            return httpx.Response(503, text="Service Unavailable")
+        if call_count == 3:
+            return httpx.Response(200, text="invalid json {{{")
+        if call_count == 4:
+            return httpx.Response(200, json=[])
+        if call_count == 5:
+            return httpx.Response(200, json=[{"type": "page"}])
+        return httpx.Response(
+            200,
+            json=[{"type": "page", "webSocketDebuggerUrl": "ws://127.0.0.1:9222/devtools/page/target1"}],
+        )
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as mock_client:
+        ws_url = await wait_for_chrome_page_target(9222, proc, timeout=1.0, poll_interval=0.01, client=mock_client)
+    assert ws_url == "ws://127.0.0.1:9222/devtools/page/target1"
+    assert call_count == 6
+
+
+@pytest.mark.anyio
+async def test_wait_for_chrome_page_target_premature_exit():
+    proc = _MockProc(returncode=1, stderr=b"Chrome crashed during startup")
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json=[])
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as mock_client:
+        with pytest.raises(
+            RuntimeError,
+            match=r"Chrome exited prematurely \(exit code 1\) while waiting for page target: Chrome crashed during startup",
+        ):
+            await wait_for_chrome_page_target(9222, proc, timeout=1.0, poll_interval=0.01, client=mock_client)
+
+
+@pytest.mark.anyio
+async def test_wait_for_chrome_page_target_empty_targets_timeout():
+    proc = _MockProc(returncode=None)
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json=[])
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as mock_client:
+        with pytest.raises(
+            TimeoutError,
+            match=r"Chrome page target did not become available.*no page target found in target list: \[\]",
+        ):
+            await wait_for_chrome_page_target(9222, proc, timeout=0.05, poll_interval=0.01, client=mock_client)
+    assert proc.terminated
+
+
+@pytest.mark.anyio
+async def test_wait_for_chrome_page_target_connection_error_timeout():
+    proc = _MockProc(returncode=None)
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        raise httpx.ConnectError("Connection refused")
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as mock_client:
+        with pytest.raises(
+            TimeoutError,
+            match=r"Chrome page target did not become available.*connection error",
+        ):
+            await wait_for_chrome_page_target(9222, proc, timeout=0.05, poll_interval=0.01, client=mock_client)
+    assert proc.terminated
+
+
+@pytest.mark.anyio
+async def test_wait_for_chrome_page_target_invalid_json_timeout():
+    proc = _MockProc(returncode=None)
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, text="not-a-valid-json-string")
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as mock_client:
+        with pytest.raises(
+            TimeoutError,
+            match=r"Chrome page target did not become available.*invalid JSON response",
+        ):
+            await wait_for_chrome_page_target(9222, proc, timeout=0.05, poll_interval=0.01, client=mock_client)
+    assert proc.terminated
+
+
 def test_terminate_process_tree_mock():
     class TrackingMockProc:
         def __init__(self, pid=None):
@@ -791,7 +1070,7 @@ def test_to_file_uri_posix_and_windows(tmp_path: Path):
 def test_rewrite_css_links_windows_and_posix():
     sample_html = (
         '<link rel="stylesheet" href="/static/css/lobby.css?v=20261025">'
-        '<link rel="stylesheet" href=\'/static/css/interpreter.css\'>'
+        "<link rel=\"stylesheet\" href='/static/css/interpreter.css'>"
     )
     # Default STATIC_CSS_DIR
     rewritten_default = rewrite_css_links(sample_html)
@@ -853,6 +1132,145 @@ async def test_find_webkit(monkeypatch: pytest.MonkeyPatch, tmp_path: Path):
 
 
 @pytest.mark.anyio
+async def test_launch_webkit_webdriver_port_conflict_retry_success():
+    proc1 = _MockProc(returncode=1, stderr=b"Address already in use")
+    proc2 = _MockProc(returncode=None)
+    procs = [proc1, proc2]
+    ports = [10001, 10002]
+
+    def popen_factory(cmd: list[str], **kwargs: Any) -> _MockProc:
+        return procs.pop(0)
+
+    def port_supplier() -> int:
+        return ports.pop(0)
+
+    def client_factory(base_url: str) -> httpx.AsyncClient:
+        def handler(request: httpx.Request) -> httpx.Response:
+            return httpx.Response(200, json={"value": {"ready": True}})
+
+        return httpx.AsyncClient(base_url=base_url, transport=httpx.MockTransport(handler))
+
+    proc, port, stderr_path = await launch_webkit_webdriver(
+        "WebKitWebDriver",
+        max_retries=3,
+        startup_timeout=0.1,
+        poll_interval=0.01,
+        port_supplier=port_supplier,
+        popen_factory=popen_factory,
+        client_factory=client_factory,
+    )
+    try:
+        assert proc is proc2
+        assert port == 10002
+        assert proc1.poll() == 1
+    finally:
+        if stderr_path and os.path.exists(stderr_path):
+            try:
+                os.unlink(stderr_path)
+            except OSError:
+                pass
+
+
+@pytest.mark.anyio
+async def test_launch_webkit_webdriver_all_attempts_fail_premature_exit():
+    procs = [
+        _MockProc(returncode=1, stderr=b"Port collision 1"),
+        _MockProc(returncode=1, stderr=b"Port collision 2"),
+    ]
+
+    def popen_factory(cmd: list[str], **kwargs: Any) -> _MockProc:
+        return procs.pop(0)
+
+    with pytest.raises(
+        RuntimeError,
+        match=r"WebKitWebDriver failed to start after 2 attempts.*Port collision 1",
+    ):
+        await launch_webkit_webdriver(
+            "WebKitWebDriver",
+            max_retries=2,
+            startup_timeout=0.1,
+            poll_interval=0.01,
+            popen_factory=popen_factory,
+        )
+
+
+@pytest.mark.anyio
+async def test_launch_webkit_webdriver_timeout():
+    procs = [_MockProc(returncode=None), _MockProc(returncode=None)]
+
+    def popen_factory(cmd: list[str], **kwargs: Any) -> _MockProc:
+        return procs.pop(0)
+
+    def client_factory(base_url: str) -> httpx.AsyncClient:
+        def handler(request: httpx.Request) -> httpx.Response:
+            return httpx.Response(500, text="Internal Server Error")
+
+        return httpx.AsyncClient(base_url=base_url, transport=httpx.MockTransport(handler))
+
+    with pytest.raises(
+        TimeoutError,
+        match=r"WebKitWebDriver timed out after 2 attempts.*status check returned HTTP 500",
+    ):
+        await launch_webkit_webdriver(
+            "WebKitWebDriver",
+            max_retries=2,
+            startup_timeout=0.05,
+            poll_interval=0.01,
+            popen_factory=popen_factory,
+            client_factory=client_factory,
+        )
+    assert all(p.terminated for p in procs)
+
+
+@pytest.mark.anyio
+async def test_launch_webkit_webdriver_non_200_status_retry_success():
+    proc1 = _MockProc(returncode=None)
+    proc2 = _MockProc(returncode=None)
+    procs = [proc1, proc2]
+    ports = [20001, 20002]
+
+    def popen_factory(cmd: list[str], **kwargs: Any) -> _MockProc:
+        return procs.pop(0)
+
+    def port_supplier() -> int:
+        return ports.pop(0)
+
+    attempt = 0
+
+    def client_factory(base_url: str) -> httpx.AsyncClient:
+        nonlocal attempt
+        attempt += 1
+        current_attempt = attempt
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            if current_attempt == 1:
+                return httpx.Response(503, text="Service Unavailable")
+            return httpx.Response(200, json={"value": {"ready": True}})
+
+        return httpx.AsyncClient(base_url=base_url, transport=httpx.MockTransport(handler))
+
+    proc, port, stderr_path = await launch_webkit_webdriver(
+        "WebKitWebDriver",
+        max_retries=2,
+        startup_timeout=0.05,
+        poll_interval=0.01,
+        port_supplier=port_supplier,
+        popen_factory=popen_factory,
+        client_factory=client_factory,
+    )
+    try:
+        assert proc is proc2
+        assert port == 20002
+        assert proc1.terminated
+    finally:
+        if stderr_path and os.path.exists(stderr_path):
+            try:
+                os.unlink(stderr_path)
+            except OSError:
+                pass
+
+
+@pytest.mark.anyio
 async def test_verify_lobby_styles_script_validation():
     """Verify VERIFY_LOBBY_STYLES_SCRIPT catches unstyled and malformed CSS and passes valid rules."""
     from playwright.async_api import async_playwright
@@ -892,7 +1310,6 @@ async def test_verify_lobby_styles_script_validation():
             assert r_styled["ok"], r_styled.get("error")
         finally:
             await browser.close()
-
 
 
 class _MockWS:
@@ -999,9 +1416,7 @@ async def test_cdp_client_ws_send_failure():
 @pytest.mark.anyio
 @pytest.mark.parametrize("browser_engine", ["chrome", "webkit"])
 @pytest.mark.parametrize("viewport_width", [320, 360])
-async def test_my_booths_audio_controls_do_not_overflow_card(
-    setup_db, browser_engine: str, viewport_width: int
-):
+async def test_my_booths_audio_controls_do_not_overflow_card(setup_db, browser_engine: str, viewport_width: int):
     """Render the actual My booths page and verify audio controls stay inside the card."""
     if browser_engine == "chrome":
         chrome = find_chrome()
@@ -1105,16 +1520,14 @@ async def test_my_booths_audio_controls_do_not_overflow_card(
         try:
             port_file = os.path.join(profile_dir, "DevToolsActivePort")
             try:
-                port, _ = await wait_for_devtools_active_port(
-                    port_file, proc, timeout=15.0, stderr_file=stderr_log
-                )
+                port, _ = await wait_for_devtools_active_port(port_file, proc, timeout=15.0, stderr_file=stderr_log)
             except (RuntimeError, TimeoutError) as e:
                 pytest.fail(f"Chrome failed to start: {e}")
 
-            async with AsyncClient(timeout=3.0) as http_client:
-                targets_res = await http_client.get(f"http://127.0.0.1:{port}/json")
-                targets = targets_res.json()
-            ws_url = [t for t in targets if t.get("type") == "page"][0]["webSocketDebuggerUrl"]
+            try:
+                ws_url = await wait_for_chrome_page_target(port, proc, timeout=10.0, stderr_file=stderr_log)
+            except (RuntimeError, TimeoutError) as e:
+                pytest.fail(f"Chrome page target discovery failed: {e}")
 
             async with asyncio.timeout(10.0):
                 async with websockets.connect(ws_url, open_timeout=3.0) as ws:
