@@ -892,8 +892,14 @@ async def api_transcription_start(
     if isinstance(result, TranscriptionStartResult):
         if result.status == "failed":
             logger.error(f"[{booth_id}] Transcription worker failed to start: {result.error}")
+            is_stopping_timeout = getattr(
+                result, "error_code", None
+            ) == "stopping_timeout" or "existing worker to stop" in (result.error or "")
+            status_code = (
+                status.HTTP_503_SERVICE_UNAVAILABLE if is_stopping_timeout else status.HTTP_500_INTERNAL_SERVER_ERROR
+            )
             raise HTTPException(
-                status_code=500,
+                status_code=status_code,
                 detail="Failed to start transcription worker",
             )
         result_status = result.status

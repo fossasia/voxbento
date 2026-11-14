@@ -31,6 +31,7 @@ from portal.roles import EVENT_OWNER
 from portal.routers.api import broadcast_transcription, resolve_transcription_config
 from portal.transcription.constants import ProviderEnum
 from portal.transcription.worker import (
+    ERROR_CODE_STOPPING_TIMEOUT,
     State,
     TranscriptionStartResult,
     active_workers,
@@ -974,10 +975,11 @@ async def start_transcription(
 
     if result.status == "failed":
         logger.error(f"[{booth_id}] Transcription worker failed to start: {result.error}")
+        is_stopping_timeout = getattr(
+            result, "error_code", None
+        ) == ERROR_CODE_STOPPING_TIMEOUT or "existing worker to stop" in (result.error or "")
         status_code = (
-            status.HTTP_503_SERVICE_UNAVAILABLE
-            if "existing worker to stop" in (result.error or "")
-            else status.HTTP_500_INTERNAL_SERVER_ERROR
+            status.HTTP_503_SERVICE_UNAVAILABLE if is_stopping_timeout else status.HTTP_500_INTERNAL_SERVER_ERROR
         )
         raise HTTPException(
             status_code=status_code,
@@ -1030,7 +1032,18 @@ async def get_transcription_status(
     for b in booths_list:
         bid = make_booth_id(event_slug, target_room_id, b.language_code)
         worker = active_workers.get(bid)
-        is_running = worker is not None and getattr(worker, "state", None) not in (State.STOPPING, State.STOPPED)
+        if worker is None:
+            is_running = False
+        elif hasattr(worker, "is_running"):
+            is_running = bool(worker.is_running)
+        elif hasattr(worker, "state"):
+            is_running = (
+                worker.state == State.RUNNING
+                and getattr(worker, "start_error", None) is None
+                and not (getattr(worker, "task", None) and getattr(worker.task, "done", lambda: False)())
+            )
+        else:
+            is_running = getattr(worker, "state", None) not in (State.STOPPING, State.STOPPED)
         statuses[b.language_code] = {
             "is_active": booths.get_booth_sync(bid) is not None,
             # Running transcription is tracked by the worker registry, not on the

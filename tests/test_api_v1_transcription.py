@@ -148,6 +148,87 @@ async def test_status_for_a_room_with_no_booths_is_empty(event):
     assert response == {"room_id": ROOM_ID, "statuses": {}}
 
 
+@pytest.mark.anyio
+async def test_status_reports_false_for_stopping_and_stopped_workers(event):
+    """Workers in STOPPING or STOPPED state are not reported as transcription_running."""
+    booth_en = "pycon2026-3-en"
+    booth_fr = "pycon2026-3-fr"
+    booths_in_room = [SimpleNamespace(language_code="en"), SimpleNamespace(language_code="fr")]
+    db = _db(_result(first=event), _result(all_=booths_in_room))
+
+    stopping_worker = SimpleNamespace(state=api_v1.State.STOPPING, is_running=False)
+    stopped_worker = SimpleNamespace(state=api_v1.State.STOPPED, is_running=False)
+    active_workers[booth_en] = stopping_worker
+    active_workers[booth_fr] = stopped_worker
+
+    try:
+        response = await api_v1.get_transcription_status(EVENT_SLUG, ROOM_ID, db=db, token=object())
+        assert response["statuses"]["en"]["transcription_running"] is False
+        assert response["statuses"]["fr"]["transcription_running"] is False
+    finally:
+        active_workers.pop(booth_en, None)
+        active_workers.pop(booth_fr, None)
+
+
+@pytest.mark.anyio
+async def test_status_reports_false_for_starting_worker_with_error_or_dead_task(event):
+    """A worker in STARTING state, with a recorded start_error, or whose task has exited is not running."""
+    booth_en = "pycon2026-3-en"
+    booth_fr = "pycon2026-3-fr"
+    booth_es = "pycon2026-3-es"
+    booths_in_room = [
+        SimpleNamespace(language_code="en"),
+        SimpleNamespace(language_code="fr"),
+        SimpleNamespace(language_code="es"),
+    ]
+    db = _db(_result(first=event), _result(all_=booths_in_room))
+
+    done_task = MagicMock()
+    done_task.done.return_value = True
+
+    starting_worker = SimpleNamespace(state=api_v1.State.STARTING, start_error=None, task=None)
+    errored_worker = SimpleNamespace(state=api_v1.State.STARTING, start_error="ffmpeg failed", task=None)
+    dead_task_worker = SimpleNamespace(state=api_v1.State.RUNNING, start_error=None, task=done_task)
+
+    active_workers[booth_en] = starting_worker
+    active_workers[booth_fr] = errored_worker
+    active_workers[booth_es] = dead_task_worker
+
+    try:
+        response = await api_v1.get_transcription_status(EVENT_SLUG, ROOM_ID, db=db, token=object())
+        assert response["statuses"]["en"]["transcription_running"] is False
+        assert response["statuses"]["fr"]["transcription_running"] is False
+        assert response["statuses"]["es"]["transcription_running"] is False
+    finally:
+        active_workers.pop(booth_en, None)
+        active_workers.pop(booth_fr, None)
+        active_workers.pop(booth_es, None)
+
+
+@pytest.mark.anyio
+async def test_status_reports_true_for_running_session(event):
+    """An active session with State.RUNNING, no start error, and live task reports True."""
+    booth_en = "pycon2026-3-en"
+    booths_in_room = [SimpleNamespace(language_code="en")]
+    db = _db(_result(first=event), _result(all_=booths_in_room))
+
+    live_task = MagicMock()
+    live_task.done.return_value = False
+    running_worker = SimpleNamespace(
+        state=api_v1.State.RUNNING,
+        start_error=None,
+        task=live_task,
+        is_running=True,
+    )
+    active_workers[booth_en] = running_worker
+
+    try:
+        response = await api_v1.get_transcription_status(EVENT_SLUG, ROOM_ID, db=db, token=object())
+        assert response["statuses"]["en"]["transcription_running"] is True
+    finally:
+        active_workers.pop(booth_en, None)
+
+
 # ── status against a real database ────────────────────────────────────────
 
 
@@ -1534,7 +1615,7 @@ async def test_start_worker_spawn_failure_wakes_waiter_immediately():
 
 @pytest.mark.anyio
 async def test_start_stopping_timeout_returns_503(event):
-    """When start_transcription_worker fails due to existing worker stop timeout, route returns 503."""
+    """When start_transcription_worker fails due to stop timeout, route returns 503 via error_code or message."""
     mock_booth = MagicMock()
     db_booth = SimpleNamespace(
         transcription_enabled=True,
@@ -1542,22 +1623,43 @@ async def test_start_stopping_timeout_returns_503(event):
         transcription_model="tiny",
         event=event,
     )
-    db = _db(_result(first=event), _result(first=db_booth))
 
-    from portal.transcription.worker import TranscriptionStartResult
+    from portal.transcription.worker import ERROR_CODE_STOPPING_TIMEOUT, TranscriptionStartResult
 
-    mock_failed_result = TranscriptionStartResult(
+    # 1. Via structured error_code
+    db1 = _db(_result(first=event), _result(first=db_booth))
+    mock_failed_by_code = TranscriptionStartResult(
         status="failed",
         provider="local",
         model="tiny",
-        error="Timed out waiting for existing worker to stop",
+        error="Custom teardown timeout error message",
+        error_code=ERROR_CODE_STOPPING_TIMEOUT,
     )
 
     with (
         patch.object(api_v1.booths, "get_booth_sync", return_value=mock_booth),
-        patch("portal.routers.api_v1.start_transcription_worker", return_value=mock_failed_result),
+        patch("portal.routers.api_v1.start_transcription_worker", return_value=mock_failed_by_code),
     ):
         with pytest.raises(api_v1.HTTPException) as exc_info:
-            await api_v1.start_transcription(EVENT_SLUG, ROOM_ID, "en", db=db, token=object())
+            await api_v1.start_transcription(EVENT_SLUG, ROOM_ID, "en", db=db1, token=object())
+        assert exc_info.value.status_code == 503
+        assert exc_info.value.detail == "Failed to start transcription worker"
+
+    # 2. Via backwards-compatible substring fallback when error_code is None
+    db2 = _db(_result(first=event), _result(first=db_booth))
+    mock_failed_by_str = TranscriptionStartResult(
+        status="failed",
+        provider="local",
+        model="tiny",
+        error="Timed out waiting for existing worker to stop",
+        error_code=None,
+    )
+
+    with (
+        patch.object(api_v1.booths, "get_booth_sync", return_value=mock_booth),
+        patch("portal.routers.api_v1.start_transcription_worker", return_value=mock_failed_by_str),
+    ):
+        with pytest.raises(api_v1.HTTPException) as exc_info:
+            await api_v1.start_transcription(EVENT_SLUG, ROOM_ID, "en", db=db2, token=object())
         assert exc_info.value.status_code == 503
         assert exc_info.value.detail == "Failed to start transcription worker"

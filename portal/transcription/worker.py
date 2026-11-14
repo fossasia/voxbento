@@ -36,6 +36,11 @@ class State(Enum):
     STOPPED = "STOPPED"
 
 
+ERROR_CODE_STOPPING_TIMEOUT = "stopping_timeout"
+ERROR_CODE_STARTUP_TIMEOUT = "startup_timeout"
+ERROR_CODE_SPAWN_FAILED = "spawn_failed"
+
+
 class TranscriptionStartResult:
     def __init__(
         self,
@@ -43,17 +48,22 @@ class TranscriptionStartResult:
         provider: str,
         model: str,
         error: str | None = None,
+        error_code: str | None = None,
     ):
         self.status = status  # "started", "already_running", "failed"
         self.provider = provider
         self.model = model
         self.error = error
+        self.error_code = error_code
 
     def __bool__(self) -> bool:
         return self.status in ("started", "already_running")
 
     def __repr__(self) -> str:
-        return f"<TranscriptionStartResult status={self.status!r} provider={self.provider!r} model={self.model!r} error={self.error!r}>"
+        return (
+            f"<TranscriptionStartResult status={self.status!r} provider={self.provider!r} "
+            f"model={self.model!r} error={self.error!r} error_code={self.error_code!r}>"
+        )
 
 
 class TranscriptionWorkerSession:
@@ -118,6 +128,18 @@ class TranscriptionWorkerSession:
                 pass
             except Exception as e:
                 logger.error(f"[{self.booth_id}][{self.session_id}] Task ended with exception: {e}")
+
+    @property
+    def is_running(self) -> bool:
+        """A session is actively running only when it is in RUNNING state,
+        has not encountered a startup error, and its background task is active."""
+        if self.state != State.RUNNING:
+            return False
+        if self.start_error is not None:
+            return False
+        if self.task is not None and self.task.done():
+            return False
+        return True
 
     async def _run_loop(self):
         self.loop_entered = True
@@ -355,6 +377,7 @@ async def start_transcription_worker(
                 provider=provider,
                 model=model_size,
                 error="Timed out waiting for existing worker to stop",
+                error_code=ERROR_CODE_STOPPING_TIMEOUT,
             )
 
     if wait_for_ready and session_to_wait is not None:
@@ -379,6 +402,7 @@ async def start_transcription_worker(
                 provider=provider,
                 model=model_size,
                 error=session_to_wait.start_error,
+                error_code=ERROR_CODE_STARTUP_TIMEOUT,
             )
 
         if session_to_wait.start_error:
@@ -387,6 +411,7 @@ async def start_transcription_worker(
                 provider=provider,
                 model=model_size,
                 error=session_to_wait.start_error,
+                error_code=ERROR_CODE_SPAWN_FAILED,
             )
 
     return TranscriptionStartResult(
