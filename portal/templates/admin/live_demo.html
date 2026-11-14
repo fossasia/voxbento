@@ -13,7 +13,7 @@
 <div class="page-header">
   <div>
     <h1>Live demo</h1>
-    <p>The "Your voice" demo on the home page lets visitors speak and get captions, translations and a voice from this server's own models. Turn it off when the server can't spare the CPU.</p>
+    <p>The "Your voice" demo on the home page lets visitors speak and get captions, translations and a voice, from this server's own models or from an event room's AI services. Turn it off when the server can't spare the CPU or the services' cost.</p>
   </div>
 </div>
 
@@ -31,6 +31,10 @@
     <span>Speech, translation{% if demo.voice %} and voice{% endif %} models</span>
   </div>
   <div class="card">
+    <strong>{{ minutes_used_today }} / {{ demo.daily_minutes }} min</strong>
+    <span>Visitor audio today (UTC)</span>
+  </div>
+  <div class="card">
     <strong>{{ glossary_count }}</strong>
     <span>Site glossary entries</span>
   </div>
@@ -38,6 +42,9 @@
 
 {% if not demo.server_allowed %}
 <p class="alert alert-warning" role="status">The server sets <code>LIVE_DEMO_ENABLED=false</code>, so the demo stays off whatever is saved here.</p>
+{% endif %}
+{% if demo.problem %}
+<p class="alert alert-warning" role="status">The demo can't run on its room yet, so the home page shows the recording: {{ demo.problem }}</p>
 {% endif %}
 {% if error %}
 <p class="alert alert-danger" role="alert">{{ error }}</p>
@@ -69,17 +76,58 @@
       <input type="hidden" name="voice_enabled" value="on" />
       {% endif %}
       <small id="voice-help" class="live-demo-help">
-        {% if voice_installed %}Uses Supertonic on the CPU. Turn it off to save CPU; captions and translations keep working.{% else %}Supertonic isn't installed on this server, so the demo shows captions only.{% endif %}
+        With built-in models: {% if voice_installed %}Supertonic on the CPU.{% else %}Supertonic isn't installed on this server, so captions only.{% endif %}
+        With a room: the room's voice, if it has one. Turn it off to save CPU or cost; captions and translations keep working.
       </small>
-      <div class="form-group">
-        <label for="whisper_model">Speech recognition model</label>
-        <select id="whisper_model" name="whisper_model" aria-describedby="whisper-help">
-          {% for value, label in whisper_models.items() %}
-          <option value="{{ value }}"{% if form.whisper_model == value %} selected{% endif %}>{{ label }}</option>
-          {% endfor %}
-        </select>
-        <small id="whisper-help">A new model loads on the next try or when you press "Load models now".</small>
-      </div>
+    </div>
+  </section>
+
+  <section class="card live-demo-card">
+    <div class="card-header">
+      <h2>AI engines</h2>
+      <p>Where the demo's captions, translations and voice come from.</p>
+    </div>
+    <div class="live-demo-card-body">
+      <fieldset class="live-demo-choice">
+        <legend class="visually-hidden">AI engines</legend>
+        <label class="live-demo-check">
+          <input type="radio" name="ai_source" value="built_in"{% if form.ai_source != 'room' %} checked{% endif %} aria-describedby="built-in-help" />
+          This server's built-in models
+        </label>
+        <small id="built-in-help" class="live-demo-help">Free and needs no keys: Whisper, NLLB and Supertonic on this server's CPU.</small>
+        <div class="form-group live-demo-indent">
+          <label for="whisper_model">Speech recognition model</label>
+          <select id="whisper_model" name="whisper_model" aria-describedby="whisper-help">
+            {% for value, label in whisper_models.items() %}
+            <option value="{{ value }}"{% if form.whisper_model == value %} selected{% endif %}>{{ label }}</option>
+            {% endfor %}
+          </select>
+          <small id="whisper-help">A new model loads on the next try or when you press "Load models now".</small>
+        </div>
+
+        <label class="live-demo-check">
+          <input type="radio" name="ai_source" value="room"{% if form.ai_source == 'room' %} checked{% endif %} aria-describedby="room-help" />
+          An event room's AI settings
+        </label>
+        <small id="room-help" class="live-demo-help">
+          Uses that room's speech recognition, translation and voice, with its event's API keys, its interpreter persona and style, and its glossary.
+          Choose or change them in the room's settings. Hosted services are billed to those keys, so set the daily limit below.
+        </small>
+        <div class="form-group live-demo-indent">
+          <label for="room_id">Room</label>
+          <select id="room_id" name="room_id" aria-describedby="room-id-help">
+            <option value="">Choose a room…</option>
+            {% for choice in room_choices %}
+            <option value="{{ choice.room_id }}"{% if form.room_id is not none and form.room_id|string == choice.room_id|string %} selected{% endif %}>{{ choice.label }} — {{ choice.summary }}</option>
+            {% endfor %}
+          </select>
+          <small id="room-id-help">
+            {% if not room_choices %}No rooms yet: create one in an event first.
+            {% elif demo.room %}Now using {{ demo.room.label }}: {{ demo.room.summary }}.
+            {% else %}The demo uses no room yet.{% endif %}
+          </small>
+        </div>
+      </fieldset>
     </div>
   </section>
 
@@ -107,6 +155,11 @@
         <label for="max_targets">Languages per try</label>
         <input id="max_targets" name="max_targets" type="number" inputmode="numeric" required min="{{ limits.max_targets[0] }}" max="{{ limits.max_targets[1] }}" value="{{ form.max_targets }}" aria-describedby="targets-help" />
         <small id="targets-help">Each extra language adds a translation for every sentence.</small>
+      </div>
+      <div class="form-group">
+        <label for="daily_minutes">Demo minutes per day</label>
+        <input id="daily_minutes" name="daily_minutes" type="number" inputmode="numeric" required min="{{ limits.daily_minutes[0] }}" max="{{ limits.daily_minutes[1] }}" value="{{ form.daily_minutes }}" aria-describedby="daily-help" />
+        <small id="daily-help">Visitor audio across everyone, per UTC day; then the demo rests until tomorrow. {{ minutes_used_today }} used today.</small>
       </div>
     </div>
   </section>

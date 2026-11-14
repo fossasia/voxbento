@@ -20,6 +20,25 @@ normally. Tick it again when the server has room.
 A server that should never run it can set `LIVE_DEMO_ENABLED=false`; the page then says
 the demo is off on this server, whatever is saved.
 
+## AI engines
+
+The demo runs on one of two sources, chosen under **AI engines**:
+
+- **This server's built-in models.** Whisper, NLLB and Supertonic on the server's CPU. Free
+  and needs no keys; pick the Whisper size here.
+- **An event room's AI settings.** Pick a room, and the demo uses that room's speech
+  recognition, translation and voice services with the API keys its event already holds,
+  along with the room's interpreter persona, style and glossary. Visitors hear exactly what
+  that room's listeners would. Set the services up, or change them, in the room's own settings;
+  nothing about them is stored on this page.
+
+The room list shows each room's services. If the chosen room cannot run the demo, for example
+because its event has no key for one of the services, the page says why and the home page
+shows the recorded demo until it is fixed. The demo's captions are never saved to the room or
+sent to its listeners.
+
+Hosted services are billed to the event's keys. Use **Demo minutes per day** to cap them.
+
 ## Limits
 
 | Setting | What it does |
@@ -28,7 +47,8 @@ the demo is off on this server, whatever is saved.
 | Time limit per try | Longest single try, in seconds. |
 | Tries per visitor per hour | Counted per network address. |
 | Languages per try | How many languages a visitor can translate into. Each one adds a translation for every sentence. |
-| Speech recognition model | Tiny is fastest, Small most accurate. Base suits most CPUs. |
+| Demo minutes per day | Visitor audio accepted per UTC day, across everyone. Once used up, the demo rests until the next day and a try in progress ends. |
+| Speech recognition model | Built-in models only. Tiny is fastest, Small most accurate. Base suits most CPUs. |
 | Speak the translations aloud | Turn off to save CPU; captions and translations keep working. |
 
 ## Site glossary

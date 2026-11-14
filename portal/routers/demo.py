@@ -132,6 +132,9 @@ async def ws_live_demo(websocket: WebSocket) -> None:
     if not demo.live:
         await _refuse(websocket, "disabled", "The live demo is switched off right now.", 1008)
         return
+    if live_demo.daily_limit_reached(demo):
+        await _refuse(websocket, "daily_limit", "That's all the demo time for today. Please come back tomorrow.", 1008)
+        return
     if not live_demo.try_admit(demo.max_sessions):
         await _refuse(websocket, "busy", "The demo is busy with other visitors. Try again in a minute.", 1013)
         return
@@ -168,13 +171,13 @@ async def ws_live_demo(websocket: WebSocket) -> None:
             return
 
         session = live_demo.LiveDemoSession(
-            request, websocket.send_json, websocket.send_bytes, engines=live_demo.LOCAL_ENGINES
+            request, websocket.send_json, websocket.send_bytes, engines=live_demo.engines_for(demo)
         )
         session.start()
         max_seconds = demo.max_session_seconds
         await websocket.send_json({"type": "ready", "max_seconds": max_seconds})
 
-        reason = await _pump(websocket, session, time.monotonic() + max_seconds)
+        reason = await _pump(websocket, session, time.monotonic() + max_seconds, demo)
         if reason is None:
             return
         try:
@@ -195,7 +198,9 @@ async def ws_live_demo(websocket: WebSocket) -> None:
         live_demo.release()
 
 
-async def _pump(websocket: WebSocket, session: live_demo.LiveDemoSession, deadline: float) -> str | None:
+async def _pump(
+    websocket: WebSocket, session: live_demo.LiveDemoSession, deadline: float, demo: live_demo.DemoSettings
+) -> str | None:
     """Feed the session until the visitor stops, goes quiet or runs out of time.
 
     Returns why the run ended, or None when the browser disconnected.
@@ -204,6 +209,8 @@ async def _pump(websocket: WebSocket, session: live_demo.LiveDemoSession, deadli
         remaining = deadline - time.monotonic()
         if remaining <= 0:
             return "time_limit"
+        if live_demo.daily_limit_reached(demo):
+            return "daily_limit"
         try:
             message = await asyncio.wait_for(websocket.receive(), min(remaining, live_demo.IDLE_TIMEOUT_SECONDS))
         except TimeoutError:

@@ -24,7 +24,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import joinedload
 from starlette.datastructures import FormData
 
-from portal import live_demo, meeting_source
+from portal import live_demo, live_demo_room, meeting_source
 from portal import roles as roles_module
 from portal.auth import (
     ADMIN_CSRF_COOKIE,
@@ -391,6 +391,9 @@ async def admin_live_demo(
         "sessions_per_ip_per_hour": demo.sessions_per_ip_per_hour,
         "max_targets": demo.max_targets,
         "glossary": demo.glossary_text,
+        "ai_source": demo.ai_source,
+        "room_id": demo.room_id,
+        "daily_minutes": demo.daily_minutes,
     }
     return templates.TemplateResponse(
         request,
@@ -405,6 +408,8 @@ async def admin_live_demo(
             "models_loading": live_demo.models_loading(),
             "voice_installed": live_demo.voice_installed(),
             "glossary_count": len(demo.glossary),
+            "room_choices": await live_demo_room.room_choices(db),
+            "minutes_used_today": round(live_demo.minutes_used_today(), 1),
             "error": error,
         },
         status_code=status.HTTP_400_BAD_REQUEST if error else status.HTTP_200_OK,
@@ -422,6 +427,9 @@ async def admin_live_demo_save(
     sessions_per_ip_per_hour: str = Form(""),
     max_targets: str = Form(""),
     glossary: str = Form(""),
+    ai_source: str = Form(live_demo.AI_BUILT_IN),
+    room_id: str = Form(""),
+    daily_minutes: str = Form(""),
     user: dict = Depends(require_user),
     db: AsyncSession = Depends(get_db_session),
 ):
@@ -436,6 +444,9 @@ async def admin_live_demo_save(
         "sessions_per_ip_per_hour": sessions_per_ip_per_hour,
         "max_targets": max_targets,
         "glossary": glossary,
+        "ai_source": ai_source,
+        "room_id": room_id,
+        "daily_minutes": daily_minutes,
     }
     try:
         await live_demo.save_settings(db, **form, editor_id=int(user["sub"]))

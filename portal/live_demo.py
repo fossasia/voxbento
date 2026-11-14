@@ -29,8 +29,9 @@ import importlib.util
 import logging
 import re
 import time
-from collections.abc import AsyncIterator, Awaitable, Callable, Sequence
+from collections.abc import AsyncIterator, Awaitable, Callable, Iterable, Sequence
 from dataclasses import dataclass, field
+from datetime import date, datetime, timezone
 from typing import Any
 
 import numpy as np
@@ -40,12 +41,15 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from portal.config import settings
 from portal.database import get_session
+from portal.live_demo_room import RoomAI, load_room_ai
 from portal.models import LiveDemoSettings
+from portal.room_setup import voice_languages_for
 from portal.transcription.aggregator import CaptionAggregator
 from portal.transcription.providers.base import BoothTranscriptionState, ProviderConfig
 from portal.transcription.providers.local import LocalProvider as LocalWhisper
 from portal.transcription.providers.local import get_model as get_whisper_model
 from portal.transcription.providers.local import is_model_loaded as whisper_loaded
+from portal.transcription.worker import PROVIDERS as SPEECH_PROVIDERS
 from portal.translations.engine import Language, TranslationContext
 from portal.translations.providers.local import LocalProvider as LocalTranslator
 from portal.translations.providers.local import get_model_and_tokenizer
@@ -58,7 +62,8 @@ from portal.translations.vocabulary import (
     clean_speech_term,
     validate_vocabulary_entry,
 )
-from portal.tts.constants import SUPERTONIC_SUPPORTED_LANGS
+from portal.translations.worker import ENGINES as TRANSLATION_ENGINES
+from portal.tts.providers.base import TTSProvider, get_tts_provider
 from portal.tts.providers.supertonic import SupertonicTTSProvider
 
 logger = logging.getLogger(__name__)
@@ -92,7 +97,12 @@ SETTING_LIMITS: dict[str, tuple[int, int]] = {
     "max_session_seconds": (15, 600),
     "sessions_per_ip_per_hour": (1, 500),
     "max_targets": (1, 5),
+    "daily_minutes": (1, 1440),
 }
+
+#: Where the demo's speech, translation and voice come from.
+AI_BUILT_IN = "built_in"
+AI_ROOM = "room"
 
 #: Audio is transcribed exactly as a booth's local Whisper captions are
 #: (``portal.transcription.providers.local``): 3 s chunks, each heard with the last second
@@ -192,15 +202,47 @@ class DemoSettings:
     glossary: tuple[VocabularyEntryInput, ...] = ()
     #: False when ``LIVE_DEMO_ENABLED`` switches the demo off on this server.
     server_allowed: bool = True
+    ai_source: str = AI_BUILT_IN
+    room_id: int | None = None
+    daily_minutes: int = 120
+    #: The chosen room's AI settings and keys, loaded with the settings (room mode only).
+    room: RoomAI | None = field(default=None, repr=False)
+
+    @property
+    def problem(self) -> str | None:
+        """Why the chosen AI cannot run the demo, or None."""
+        if self.ai_source != AI_ROOM:
+            return None
+        if self.room is None:
+            return "The room the demo uses no longer exists. Choose another one."
+        return " ".join(self.room.problems) or None
 
     @property
     def live(self) -> bool:
-        return self.enabled and self.server_allowed
+        return self.enabled and self.server_allowed and self.problem is None
 
     @property
     def voice(self) -> bool:
-        """Whether translations are spoken: switched on and the Supertonic package installed."""
-        return self.voice_enabled and voice_installed()
+        """Whether translations are spoken: switched on, and the room has a voice (room mode)
+        or the Supertonic package is installed (built-in)."""
+        if not self.voice_enabled:
+            return False
+        if self.ai_source == AI_ROOM:
+            provider = self.room.voice_provider if self.room else None
+            # A room's built-in voice needs the Supertonic package here too.
+            return provider is not None and (provider != "supertonic" or voice_installed())
+        return voice_installed()
+
+    def voice_languages(self) -> frozenset[str]:
+        """Languages the voice can speak."""
+        if not self.voice:
+            return frozenset()
+        provider = self.room.voice_provider if self.ai_source == AI_ROOM and self.room else "supertonic"
+        return frozenset(voice_languages_for(provider))
+
+    @property
+    def translation_provider(self) -> str:
+        return self.room.translation_provider if self.ai_source == AI_ROOM and self.room else "local"
 
 
 def voice_installed() -> bool:
@@ -222,7 +264,7 @@ def env_defaults() -> DemoSettings:
     )
 
 
-def settings_from_row(row: LiveDemoSettings | None) -> DemoSettings:
+def settings_from_row(row: LiveDemoSettings | None, room: RoomAI | None = None) -> DemoSettings:
     if row is None:
         return env_defaults()
     glossary, _ = parse_glossary(row.glossary or "")
@@ -237,7 +279,17 @@ def settings_from_row(row: LiveDemoSettings | None) -> DemoSettings:
         glossary_text=row.glossary or "",
         glossary=tuple(glossary),
         server_allowed=settings.live_demo_enabled,
+        ai_source=row.ai_source if row.ai_source in {AI_BUILT_IN, AI_ROOM} else AI_BUILT_IN,
+        room_id=row.room_id,
+        daily_minutes=row.daily_minutes,
+        room=room,
     )
+
+
+async def _read(session: AsyncSession) -> DemoSettings:
+    row = await session.get(LiveDemoSettings, 1)
+    room = await load_room_ai(session, row.room_id) if row is not None and row.ai_source == AI_ROOM else None
+    return settings_from_row(row, room)
 
 
 #: Settings are read for every home-page view, so they are cached briefly; saving replaces the cache.
@@ -253,8 +305,7 @@ async def current_settings() -> DemoSettings:
         return _cached_settings[1]
     try:
         async with get_session() as session:
-            row = await session.get(LiveDemoSettings, 1)
-            value = settings_from_row(row)
+            value = await _read(session)
     except SQLAlchemyError:
         logger.exception("[LiveDemo] Could not read the demo settings; using the last known ones")
         return _cached_settings[1] if _cached_settings else env_defaults()
@@ -269,7 +320,7 @@ def forget_cached_settings() -> None:
 
 async def load_settings(session: AsyncSession) -> DemoSettings:
     """The saved settings, read fresh (for the admin page)."""
-    return settings_from_row(await session.get(LiveDemoSettings, 1))
+    return await _read(session)
 
 
 def _bounded_int(name: str, raw: Any, label: str) -> int:
@@ -295,6 +346,9 @@ async def save_settings(
     max_targets: Any,
     glossary: str,
     editor_id: int,
+    ai_source: str = AI_BUILT_IN,
+    room_id: Any = None,
+    daily_minutes: Any = 120,
 ) -> DemoSettings:
     """Validate and save the Admin's settings. Nothing is changed when any value is refused.
 
@@ -310,7 +364,20 @@ async def save_settings(
             "sessions_per_ip_per_hour", sessions_per_ip_per_hour, "Tries per visitor per hour"
         ),
         "max_targets": _bounded_int("max_targets", max_targets, "Languages per try"),
+        "daily_minutes": _bounded_int("daily_minutes", daily_minutes, "Demo minutes per day"),
     }
+    if ai_source not in {AI_BUILT_IN, AI_ROOM}:
+        raise DemoSettingsError("Choose where the demo's AI comes from.")
+    room: RoomAI | None = None
+    chosen_room: int | None = None
+    if ai_source == AI_ROOM:
+        try:
+            chosen_room = int(str(room_id).strip())
+        except ValueError:
+            raise DemoSettingsError("Choose the room whose AI settings the demo uses.") from None
+        room = await load_room_ai(session, chosen_room)
+        if room is None:
+            raise DemoSettingsError("That room no longer exists. Choose another one.")
     glossary = glossary.replace("\r\n", "\n").strip()
     _, errors = parse_glossary(glossary)
     if errors:
@@ -326,11 +393,14 @@ async def save_settings(
     for name, value in values.items():
         setattr(row, name, value)
     row.glossary = glossary
+    row.ai_source = ai_source
+    # Kept in built-in mode too, so switching back to the room needs no new choice.
+    row.room_id = chosen_room if ai_source == AI_ROOM else row.room_id
     row.updated_by_id = editor_id
     await session.flush()
 
     global _cached_settings
-    value = settings_from_row(row)
+    value = settings_from_row(row, room)
     _cached_settings = (time.monotonic(), value)
     return value
 
@@ -475,13 +545,23 @@ def speech_hints(glossary: Sequence[VocabularyEntryInput]) -> tuple[str, ...]:
 # ── Requests ──────────────────────────────────────────────────────────────────
 
 
-def demo_languages(voice: bool) -> list[DemoLanguage]:
-    """The languages the demo can caption and translate, with whether each can be spoken."""
+def demo_languages(voice_languages: Iterable[str] = (), translation_provider: str = "local") -> list[DemoLanguage]:
+    """The languages the demo can caption and translate, with whether each can be spoken.
+
+    The built-in translator (NLLB) covers a fixed list; a hosted or self-hosted LLM is asked by
+    prompt and is not limited.
+    """
+    voiced = set(voice_languages)
+    fixed = translation_provider == "local"
     return [
-        DemoLanguage(code, name, voice and code in SUPERTONIC_SUPPORTED_LANGS)
+        DemoLanguage(code, name, code in voiced)
         for code, name in DEMO_LANGUAGES
-        if NLLB_200_DISTILLED_600M.engine_code(code)
+        if not fixed or NLLB_200_DISTILLED_600M.engine_code(code)
     ]
+
+
+def languages_for(demo: DemoSettings) -> list[DemoLanguage]:
+    return demo_languages(demo.voice_languages(), demo.translation_provider)
 
 
 def public_config(demo: DemoSettings) -> dict[str, Any]:
@@ -490,15 +570,14 @@ def public_config(demo: DemoSettings) -> dict[str, Any]:
         return {"enabled": False}
     return {
         "enabled": True,
-        "languages": [
-            {"code": lang.code, "name": lang.name, "voice": lang.voice} for lang in demo_languages(demo.voice)
-        ],
+        "languages": [{"code": lang.code, "name": lang.name, "voice": lang.voice} for lang in languages_for(demo)],
         "max_targets": demo.max_targets,
         "max_seconds": demo.max_session_seconds,
         "sample_rate": SAMPLE_RATE,
         "max_glossary": MAX_VISITOR_GLOSSARY,
         "glossary": [
-            {"term": e.source_term, "lang": e.target_language, "translation": e.target_term} for e in demo.glossary
+            {"term": e.source_term, "lang": e.target_language, "translation": e.target_term}
+            for e in merge_glossaries(demo.glossary, demo.room.glossary if demo.room else ())
         ],
     }
 
@@ -508,7 +587,7 @@ class DemoRequest:
     source: DemoLanguage
     targets: tuple[DemoLanguage, ...]
     listen: str | None
-    #: Visitor entries first, then the visitor's names, then the site glossary.
+    #: Visitor entries first, then the visitor's names, the site glossary, then the room's (room mode).
     glossary: tuple[VocabularyEntryInput, ...] = ()
     whisper_model: str = "base"
 
@@ -523,7 +602,7 @@ def parse_start(message: dict[str, Any], demo: DemoSettings) -> DemoRequest:
     Raises:
         DemoRequestError: an unknown language, too many targets or a malformed glossary.
     """
-    by_code = {lang.code: lang for lang in demo_languages(demo.voice)}
+    by_code = {lang.code: lang for lang in languages_for(demo)}
     source = by_code.get(str(message.get("source") or ""))
     if source is None:
         raise DemoRequestError("Choose a language to speak.")
@@ -552,7 +631,7 @@ def parse_start(message: dict[str, Any], demo: DemoSettings) -> DemoRequest:
         source=source,
         targets=tuple(targets),
         listen=_listen_code(message.get("listen"), targets),
-        glossary=merge_glossaries(visitor, names, demo.glossary),
+        glossary=merge_glossaries(visitor, names, demo.glossary, demo.room.glossary if demo.room else ()),
         whisper_model=demo.whisper_model,
     )
 
@@ -694,13 +773,52 @@ Transcribe = Callable[[bytes, DemoRequest, BoothTranscriptionState], Awaitable[s
 #: Translates one caption into every target; returns the text per language code.
 Translate = Callable[[str, DemoRequest, Sequence[DemoLanguage]], Awaitable[dict[str, str]]]
 Synthesize = Callable[[str, str], Awaitable[bytes]]
+#: Receives the aggregator's caption messages, or a status line, as a room's broadcast does.
+CaptionCallback = Callable[[str, Any], Awaitable[None]]
+#: Runs a speech service over the visitor's audio as a room's transcription worker does.
+StreamTranscribe = Callable[["AudioPipe", CaptionCallback, DemoRequest], Awaitable[None]]
 
 
 @dataclass(frozen=True)
 class Engines:
-    transcribe: Transcribe
+    transcribe: Transcribe | None
     translate: Translate
-    synthesize: Synthesize
+    synthesize: Synthesize | None
+    #: Set in room mode: the service reads the audio as a stream instead of chunk by chunk.
+    stream: StreamTranscribe | None = None
+    #: The PCM rate ``stream`` expects (OpenAI's realtime models take 24 kHz).
+    stream_rate: int = SAMPLE_RATE
+
+
+class AudioPipe:
+    """Stands in for the ffmpeg process a room's transcription reads: the visitor's PCM goes
+    into ``stdout``, and each speech service's own ``run_stream`` reads it as it would the
+    floor audio. It "exits" once the audio has ended and been read."""
+
+    def __init__(self) -> None:
+        self.stdout = asyncio.StreamReader()
+
+    @property
+    def returncode(self) -> int | None:
+        return 0 if self.stdout.at_eof() else None
+
+    def write(self, pcm: bytes) -> None:
+        if not self.stdout.at_eof():
+            self.stdout.feed_data(pcm)
+
+    def close(self) -> None:
+        if not self.stdout.at_eof():
+            self.stdout.feed_eof()
+
+
+def resample_pcm(pcm: bytes, source_rate: int, target_rate: int) -> bytes:
+    """16-bit mono PCM at another rate, by linear interpolation (speech does not need better)."""
+    if source_rate == target_rate or not pcm:
+        return pcm
+    samples = np.frombuffer(pcm[: len(pcm) // 2 * 2], dtype=np.int16).astype(np.float32)
+    length = max(1, round(samples.size * target_rate / source_rate))
+    resampled = np.interp(np.linspace(0, samples.size - 1, length), np.arange(samples.size), samples)
+    return np.clip(resampled, -32768, 32767).astype(np.int16).tobytes()
 
 
 _whisper = LocalWhisper()
@@ -750,6 +868,11 @@ async def _local_translate(text: str, request: DemoRequest, targets: Sequence[De
 
 
 async def _local_synthesize(text: str, language: str) -> bytes:
+    return await _speak(SupertonicTTSProvider(), text, language, "")
+
+
+async def _speak(provider: TTSProvider, text: str, language: str, voice: str) -> bytes:
+    """One translation as 24 kHz PCM, through any voice provider's streaming interface."""
     chunks: list[bytes] = []
 
     async def collect(audio: bytes) -> None:
@@ -758,27 +881,96 @@ async def _local_synthesize(text: str, language: str) -> bytes:
     async def one_text() -> AsyncIterator[str]:
         yield text
 
-    await SupertonicTTSProvider().synthesize_stream(
-        text_chunks=one_text(), language_code=language, voice="", on_audio=collect
-    )
+    await provider.synthesize_stream(text_chunks=one_text(), language_code=language, voice=voice, on_audio=collect)
     return b"".join(chunks)
 
 
 LOCAL_ENGINES = Engines(transcribe=_local_transcribe, translate=_local_translate, synthesize=_local_synthesize)
 
 
+def room_engines(room: RoomAI) -> Engines:
+    """The room's own services, called as its workers call them, with its event's keys."""
+    speech = SPEECH_PROVIDERS[room.speech_provider]
+
+    async def stream(pipe: AudioPipe, on_message: CaptionCallback, request: DemoRequest) -> None:
+        hints = request.hints
+        config = ProviderConfig(
+            api_key=room.speech_key,
+            prompt=f"Glossary: {', '.join(hints)}." if hints else None,
+            keyterms=hints,
+        )
+        # No room id: the demo's captions are not saved to the room or sent to its listeners.
+        await speech.run_stream(pipe, request.source.code, room.speech_model, config, on_message, _STREAM, None)
+
+    async def translate(text: str, request: DemoRequest, targets: Sequence[DemoLanguage]) -> dict[str, str]:
+        engine = TRANSLATION_ENGINES[room.translation_provider]
+        rows = await engine.translate_batch(
+            Language(request.source.code, request.source.name),
+            [Language(target.code, target.name) for target in targets],
+            [text],
+            TranslationContext(
+                persona=room.persona,
+                style=room.style,
+                vocabulary={target.code: entries_for(request.glossary, target.code) for target in targets},
+            ),
+            model=room.translation_model,
+            api_key=room.translation_key,
+        )
+        return {target.code: translated or "" for target, translated in zip(targets, rows[0], strict=True)}
+
+    synthesize: Synthesize | None = None
+    if room.voice_provider:
+        voice_provider = room.voice_provider
+
+        async def synthesize(text: str, language: str) -> bytes:
+            provider = get_tts_provider(
+                voice_provider, deepgram_api_key=room.voice_key, elevenlabs_api_key=room.voice_key
+            )
+            return await _speak(provider, text, language, room.voice)
+
+    return Engines(
+        transcribe=None,
+        translate=translate,
+        synthesize=synthesize,
+        stream=stream,
+        stream_rate=getattr(speech, "sample_rate", SAMPLE_RATE),
+    )
+
+
+def engines_for(demo: DemoSettings) -> Engines:
+    """The room's services in room mode, otherwise this server's built-in models."""
+    if demo.ai_source == AI_ROOM and demo.room is not None:
+        return room_engines(demo.room)
+    return LOCAL_ENGINES
+
+
 _warm_lock = asyncio.Lock()
 
 
+def _local_models(demo: DemoSettings) -> tuple[str | None, str | None, bool]:
+    """The built-in models the demo needs: Whisper size, NLLB model, and whether Supertonic."""
+    if demo.ai_source == AI_ROOM:
+        room = demo.room
+        if room is None:
+            return None, None, False
+        return (
+            room.speech_model if room.speech_provider == "local" else None,
+            room.translation_model if room.translation_provider == "local" else None,
+            demo.voice and room.voice_provider == "supertonic",
+        )
+    return demo.whisper_model, settings.live_demo_translation_model, demo.voice
+
+
 def models_ready(demo: DemoSettings) -> bool:
-    """Whether every model the demo needs is in memory now.
+    """Whether every built-in model the demo needs is in memory now (hosted ones need none).
 
     Asked of the providers each time, because they evict a model left idle for an hour.
     """
+    whisper, nllb, voice = _local_models(demo)
     return (
-        whisper_loaded(demo.whisper_model)
-        and translator_loaded(settings.live_demo_translation_model)
-        and (not demo.voice or SupertonicTTSProvider.engine_loaded())
+        (whisper is None or whisper_loaded(whisper))
+        and (nllb is None or translator_loaded(nllb))
+        and (not voice or SupertonicTTSProvider.engine_loaded())
     )
 
 
@@ -796,9 +988,12 @@ async def warm_up(demo: DemoSettings) -> None:
     async with _warm_lock:
         if models_ready(demo):
             return
-        await asyncio.to_thread(get_whisper_model, demo.whisper_model)
-        await asyncio.to_thread(get_model_and_tokenizer, settings.live_demo_translation_model)
-        if demo.voice:
+        whisper, nllb, voice = _local_models(demo)
+        if whisper:
+            await asyncio.to_thread(get_whisper_model, whisper)
+        if nllb:
+            await asyncio.to_thread(get_model_and_tokenizer, nllb)
+        if voice:
             # A short synthesis loads the engine and the English voice style.
             await _local_synthesize("Hello.", "en")
 
@@ -819,8 +1014,9 @@ class LiveDemoSession:
 
     Captions follow the booth pipeline: overlapping chunks go to Whisper once each, and
     ``CaptionAggregator`` shows the words so far and finishes a caption at each sentence end.
-    Transcription and translation run in separate loops so the next sentence is captioned
-    while the previous one is translated and spoken.
+    In room mode the room's speech service reads the audio through an ``AudioPipe`` as its
+    worker reads the floor. Transcription and translation run in separate loops so the next
+    sentence is captioned while the previous one is translated and spoken.
     """
 
     request: DemoRequest
@@ -842,12 +1038,16 @@ class LiveDemoSession:
         self._captions: asyncio.Queue[tuple[int, str] | None] = asyncio.Queue()
         self._aggregator = CaptionAggregator(self._on_caption)
         self._whisper_state = BoothTranscriptionState(booth_id=_STREAM)
+        self._pipe = AudioPipe() if self.engines.stream else None
+        #: Words a streaming service is still working on, captioned if the audio ends first.
+        self._pending_partial = ""
         self._closing = False
         self._tasks: list[asyncio.Task[None]] = []
 
     def start(self) -> None:
+        captions = self._stream_loop() if self._pipe else self._transcription_loop()
         self._tasks = [
-            asyncio.create_task(self._transcription_loop()),
+            asyncio.create_task(captions),
             asyncio.create_task(self._translation_loop()),
         ]
 
@@ -869,6 +1069,10 @@ class LiveDemoSession:
             self._note_dropped("audio arriving faster than real time")
             return
         self._received += len(frame)
+        record_usage(len(frame) / BYTES_PER_SECOND)
+        if self._pipe is not None:
+            self._pipe.write(resample_pcm(frame, SAMPLE_RATE, self.engines.stream_rate))
+            return
         chunk = self.chunker.push(frame)
         if chunk is None:
             return
@@ -887,15 +1091,52 @@ class LiveDemoSession:
         if self._closing:
             return
         self._closing = True
-        last = self.chunker.flush()
-        if last is not None:
-            self._chunks.put_nowait(last)
-        self._chunks.put_nowait(None)
+        if self._pipe is not None:
+            self._pipe.close()
+        else:
+            last = self.chunker.flush()
+            if last is not None:
+                self._chunks.put_nowait(last)
+            self._chunks.put_nowait(None)
         await asyncio.gather(*self._tasks, return_exceptions=True)
 
     def cancel(self) -> None:
+        if self._pipe is not None:
+            # Ends the service's own reader tasks, which cancelling ours does not reach.
+            self._pipe.close()
         for task in self._tasks:
             task.cancel()
+
+    async def _stream_loop(self) -> None:
+        """Run the room's speech service over the visitor's audio until the audio ends."""
+        try:
+            await self.engines.stream(self._pipe, self._on_stream_message, self.request)
+        except Exception:  # a failing service must end with a message, not leave the visitor waiting
+            logger.exception("[LiveDemo] The room's speech service failed")
+            await self._send({"type": "notice", "message": "The speech service stopped. Press the mic to try again."})
+        finally:
+            # Services finish a caption on a pause, not when the audio simply ends.
+            if self._pending_partial:
+                await self._on_caption(_STREAM, {"status": "final", "text": self._pending_partial})
+            await self._captions.put(None)
+
+    async def _on_stream_message(self, _stream: str, message: Any) -> None:
+        """A room service's broadcast: caption messages, or a status line in brackets."""
+        if isinstance(message, str):
+            logger.info("[LiveDemo] Speech service: %s", message)
+            await self._send({"type": "notice", "message": message.strip("[] ")})
+            return
+        status = message.get("status")
+        if status in ("partial", "final") and not clean_transcript(message.get("text") or ""):
+            # Whisper's "You" or "Thank you." from silence: not something the visitor said.
+            if status == "final":
+                self._pending_partial = ""
+            return
+        if status == "partial":
+            self._pending_partial = message.get("text") or ""
+        elif status == "final":
+            self._pending_partial = ""
+        await self._on_caption(_stream, message)
 
     async def _on_caption(self, _stream: str, message: dict[str, Any]) -> None:
         """Turn the aggregator's caption messages into the demo protocol."""
@@ -992,7 +1233,7 @@ class LiveDemoSession:
         for target in heard + others:
             translated = (await self._run_translate(text, [target]))[target.code]
             await self._send({"type": "translation", "id": caption_id, "lang": target.code, "text": translated})
-            if target.code == listen and translated:
+            if target.code == listen and translated and self.engines.synthesize is not None:
                 audio = await self._run_synthesize(translated, listen)
                 # Skip it if the visitor switched language while it was being made.
                 if audio and listen == self.listen:
@@ -1020,6 +1261,26 @@ class LiveDemoSession:
 # ── Admission ────────────────────────────────────────────────────────────────
 
 _active_sessions = 0
+
+#: Visitor audio accepted today (UTC), for the daily cap. In memory: one portal replica.
+_usage_day: date | None = None
+_usage_seconds = 0.0
+
+
+def record_usage(seconds: float) -> None:
+    global _usage_day, _usage_seconds
+    today = datetime.now(timezone.utc).date()
+    if _usage_day != today:
+        _usage_day, _usage_seconds = today, 0.0
+    _usage_seconds += seconds
+
+
+def minutes_used_today() -> float:
+    return _usage_seconds / 60 if _usage_day == datetime.now(timezone.utc).date() else 0.0
+
+
+def daily_limit_reached(demo: DemoSettings) -> bool:
+    return minutes_used_today() >= demo.daily_minutes
 
 
 def try_admit(limit: int) -> bool:

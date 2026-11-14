@@ -1037,6 +1037,12 @@ class LiveDemoSettings(Base):
     max_targets: Mapped[int] = mapped_column(Integer, default=3, server_default="3")
     # One entry per line: "term", "term = translation" or "term = fr: translation".
     glossary: Mapped[str] = mapped_column(Text, default="", server_default="")
+    # "built_in": this server's own models. "room": the speech, translation and voice services
+    # of ``room_id``, with its event's API keys, persona, style and glossary.
+    ai_source: Mapped[str] = mapped_column(String(20), default="built_in", server_default="built_in")
+    room_id: Mapped[int | None] = mapped_column(ForeignKey("rooms.id", ondelete="SET NULL"), nullable=True)
+    # Visitor audio the demo accepts per UTC day, in minutes; caps hosted-service spend.
+    daily_minutes: Mapped[int] = mapped_column(Integer, default=120, server_default="120")
     updated_by_id: Mapped[int | None] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now, onupdate=utc_now)
 
