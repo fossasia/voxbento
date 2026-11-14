@@ -8,8 +8,8 @@
 
 import { syncTranslationOptions } from './translation-fit.js';
 
-const root = document.getElementById('room-setup');
-const form = document.getElementById('room-setup-form');
+const root = typeof document !== 'undefined' ? document.getElementById('room-setup') : null;
+const form = typeof document !== 'undefined' ? document.getElementById('room-setup-form') : null;
 
 function readJson(value, fallback) {
   try {
@@ -20,8 +20,118 @@ function readJson(value, fallback) {
   }
 }
 
+export function getDraftStorageKey(isCreate, fromSetup, eventId) {
+  return (isCreate && fromSetup && eventId) ? `voxbento_setup_room_draft_${eventId}` : null;
+}
+
+export function saveRoomDraft(storage, key, draft) {
+  if (!key || !storage) return false;
+  storage.setItem(key, JSON.stringify(draft));
+  return true;
+}
+
+export function loadRoomDraft(storage, key) {
+  if (!key || !storage) return null;
+  try {
+    const raw = storage.getItem(key);
+    if (!raw) return null;
+    return JSON.parse(raw);
+  } catch (_) {
+    return null;
+  }
+}
+
+export function clearRoomDraft(storage, key) {
+  if (!key || !storage) return;
+  try {
+    storage.removeItem(key);
+  } catch (_) {}
+}
+
+export function buildDraftFromForm({
+  form,
+  spokenSelect,
+  chosenCodes = [],
+  deliveryOf = () => '',
+  captionsWanted = false,
+  currentStep = 0,
+}) {
+  const deliveries = {};
+  chosenCodes.forEach((code) => {
+    const d = deliveryOf(code);
+    if (d) deliveries[code] = d;
+  });
+  return {
+    roomName: form?.querySelector('#rs-name')?.value || '',
+    spokenLanguage: spokenSelect?.value || '',
+    listenerLanguages: chosenCodes,
+    deliveries,
+    captionsWanted,
+    speechEngine: form?.querySelector('#rs-speech')?.value || '',
+    translationEngine: form?.querySelector('#rs-translation')?.value || '',
+    voiceEngine: form?.querySelector('#rs-voice')?.value || '',
+    currentStep,
+  };
+}
+
+export function applyDraftToForm({
+  form,
+  draft,
+  chipsBox,
+  moreSelect,
+  spokenSelect,
+  addChip = () => {},
+}) {
+  if (!draft || typeof draft !== 'object') return;
+  const nameInput = form?.querySelector('#rs-name');
+  if (nameInput && typeof draft.roomName === 'string') {
+    nameInput.value = draft.roomName;
+  }
+  if (spokenSelect && draft.spokenLanguage && spokenSelect.querySelector(`option[value="${draft.spokenLanguage}"]`)) {
+    spokenSelect.value = draft.spokenLanguage;
+  }
+  if (Array.isArray(draft.listenerLanguages) && chipsBox) {
+    chipsBox.querySelectorAll('input').forEach((input) => { input.checked = false; });
+    draft.listenerLanguages.forEach((code) => {
+      let input = chipsBox.querySelector(`[data-rs-chip="${code}"] input`);
+      if (!input) {
+        const opt = moreSelect?.querySelector(`option[value="${code}"]`);
+        if (opt) {
+          addChip(code, opt.textContent.trim());
+          input = chipsBox.querySelector(`[data-rs-chip="${code}"] input`);
+        }
+      }
+      if (input) input.checked = true;
+    });
+  }
+  ['speech', 'translation', 'voice'].forEach((kind) => {
+    const select = form?.querySelector(`#rs-${kind}`);
+    const val = draft[`${kind}Engine`];
+    if (select && val && select.querySelector(`option[value="${val}"]`)) {
+      select.value = val;
+    }
+  });
+}
+
 if (root && form) {
   const isCreate = root.dataset.mode === 'create';
+  const fromSetup = root.dataset.fromSetup === 'true';
+  const eventId = root.dataset.eventId || '';
+  const draftKey = getDraftStorageKey(isCreate, fromSetup, eventId);
+  if (draftKey) {
+    let draftToken = '';
+    try {
+      draftToken = sessionStorage.getItem(`voxbento_setup_room_draft_token_${eventId}`) || '';
+      if (!draftToken) {
+        draftToken = (typeof crypto !== 'undefined' && crypto.randomUUID)
+          ? crypto.randomUUID()
+          : 'draft-' + Date.now() + '-' + Math.random().toString(36).slice(2);
+        sessionStorage.setItem(`voxbento_setup_room_draft_token_${eventId}`, draftToken);
+      }
+    } catch (_) {}
+    const tokenInput = form.querySelector('#rs-draft-token');
+    if (tokenInput && draftToken) tokenInput.value = draftToken;
+  }
   const boothCodes = readJson(root.dataset.boothCodes || '[]', []);
   const liveCodes = new Set(readJson(root.dataset.liveCodes || '[]', []));
   const deliveryLabels = readJson(root.dataset.deliveryLabels || '{}', {});
@@ -407,6 +517,122 @@ if (root && form) {
       legend.tabIndex = -1;
       legend.focus();
     }
+    saveDraft();
+  }
+
+  function showStorageWarning() {
+    let warn = root.querySelector('#rs-storage-warning');
+    if (!warn) {
+      warn = document.createElement('div');
+      warn.id = 'rs-storage-warning';
+      warn.className = 'alert alert-warning';
+      warn.setAttribute('role', 'alert');
+      warn.textContent = 'Storage is unavailable or full. Your in-progress room setup cannot be saved as a draft if you navigate away.';
+      const card = root.querySelector('.wizard-card') || root;
+      card.insertBefore(warn, card.firstChild);
+    }
+    warn.hidden = false;
+  }
+
+  function hideStorageWarning() {
+    const warn = root.querySelector('#rs-storage-warning');
+    if (warn) warn.hidden = true;
+  }
+
+  function saveDraft() {
+    if (!draftKey) return;
+    try {
+      const draft = buildDraftFromForm({
+        form,
+        spokenSelect,
+        chosenCodes: chosenCodes(),
+        deliveryOf,
+        captionsWanted,
+        currentStep: current,
+      });
+      saveRoomDraft(sessionStorage, draftKey, draft);
+      hideStorageWarning();
+    } catch (err) {
+      console.warn('Room setup draft not saved', err);
+      showStorageWarning();
+    }
+  }
+
+  function loadDraft() {
+    if (!draftKey) return false;
+    if (root.querySelector('.alert-danger')) return false;
+    try {
+      const draft = loadRoomDraft(sessionStorage, draftKey);
+      if (!draft || typeof draft !== 'object') return false;
+
+      const nameInput = form.querySelector('#rs-name');
+      if (nameInput && typeof draft.roomName === 'string' && draft.roomName) {
+        nameInput.value = draft.roomName;
+      }
+      if (spokenSelect && draft.spokenLanguage && spokenSelect.querySelector(`option[value="${draft.spokenLanguage}"]`)) {
+        spokenSelect.value = draft.spokenLanguage;
+      }
+
+      if (Array.isArray(draft.listenerLanguages)) {
+        chipInputs().forEach((input) => { input.checked = false; });
+        draft.listenerLanguages.forEach((code) => {
+          let input = chipsBox.querySelector(`[data-rs-chip="${code}"] input`);
+          if (!input) {
+            const opt = moreSelect?.querySelector(`option[value="${code}"]`);
+            if (opt) {
+              addChip(code, opt.textContent.trim());
+              input = chipsBox.querySelector(`[data-rs-chip="${code}"] input`);
+            }
+          }
+          if (input) input.checked = true;
+        });
+      }
+
+      syncSpoken();
+      syncDeliveryRows();
+
+      if (draft.deliveries && typeof draft.deliveries === 'object') {
+        Object.entries(draft.deliveries).forEach(([code, delivery]) => {
+          const row = rowOf(code);
+          const radio = row?.querySelector(`input[type="radio"][value="${delivery}"]`);
+          if (radio) radio.checked = true;
+        });
+      }
+
+      if (typeof draft.captionsWanted === 'boolean') {
+        captionsWanted = draft.captionsWanted;
+        captionsBox.checked = captionsWanted;
+      }
+
+      ['speech', 'translation', 'voice'].forEach((kind) => {
+        const select = form.querySelector(`#rs-${kind}`);
+        const val = draft[`${kind}Engine`];
+        if (select && val && select.querySelector(`option[value="${val}"]`)) {
+          select.value = val;
+        }
+      });
+
+      syncAll();
+
+      let targetStep = 0;
+      if (typeof draft.currentStep === 'number' && draft.currentStep >= 0 && draft.currentStep < steps.length) {
+        let canAdvance = true;
+        for (let i = 0; i < draft.currentStep; i += 1) {
+          if (stepProblem(i)) {
+            canAdvance = false;
+            targetStep = i;
+            break;
+          }
+        }
+        if (canAdvance) {
+          targetStep = draft.currentStep;
+        }
+      }
+      return targetStep;
+    } catch (err) {
+      console.debug('Failed to restore room setup draft', err);
+      return false;
+    }
   }
 
   function next() {
@@ -436,32 +662,48 @@ if (root && form) {
   form.noValidate = true;
   reviewFallback.hidden = true;
 
-  spokenSelect.addEventListener('change', syncAll);
-  chipsBox.addEventListener('change', syncAll);
+  spokenSelect.addEventListener('change', () => {
+    syncAll();
+    saveDraft();
+  });
+  chipsBox.addEventListener('change', () => {
+    syncAll();
+    saveDraft();
+  });
   moreSelect.addEventListener('change', () => {
     const code = moreSelect.value;
     if (!code) return;
     if (code !== spokenSelect.value || boothCodes.includes(code)) addChip(code, selectedText(moreSelect));
     moreSelect.value = '';
     syncAll();
+    saveDraft();
   });
   deliveryList.addEventListener('change', (event) => {
     // A new choice replaces any earlier "AI voice can't be used" error on this language.
     event.target.closest('[data-rs-delivery-row]')?.querySelectorAll('input[type="radio"]')
       .forEach((radio) => radio.setCustomValidity(''));
     syncAll();
+    saveDraft();
   });
   captionsBox.addEventListener('change', () => {
     captionsWanted = captionsBox.checked;
     captionsBox.setCustomValidity('');
     syncAll();
+    saveDraft();
   });
   form.querySelectorAll('[data-rs-engines] select, #rs-name').forEach((el) => {
-    el.addEventListener('input', renderReview);
+    el.addEventListener('input', () => {
+      renderReview();
+      saveDraft();
+    });
     el.addEventListener('change', () => {
       voiceSelect?.setCustomValidity('');
       syncAll();
+      saveDraft();
     });
+  });
+  document.querySelectorAll('.stepper a, a[href*="setup"]').forEach((a) => {
+    a.addEventListener('click', saveDraft);
   });
 
   form.addEventListener('submit', (event) => {
@@ -481,17 +723,23 @@ if (root && form) {
       }
     }
     captionsValueForSubmit();
+    const submitBtn = form.querySelector('button[type="submit"]');
+    if (submitBtn) {
+      submitBtn.disabled = true;
+      setTimeout(() => { submitBtn.disabled = false; }, 4000);
+    }
   });
 
   form.querySelectorAll(isCreate ? '[data-rs-nav]' : '[data-rs-edit-nav]').forEach((el) => { el.hidden = false; });
   form.querySelectorAll('[data-rs-next]').forEach((btn) => btn.addEventListener('click', next));
   form.querySelectorAll('[data-rs-back]').forEach((btn) => btn.addEventListener('click', () => show(isCreate ? current - 1 : 0)));
   if (progress) progress.hidden = false;
-  // After a rejected submit, open on the first step that needs attention.
-  const firstProblem = root.querySelector('.alert-danger') ? steps.findIndex((_, i) => stepProblem(i)) : -1;
+  const restoredStep = loadDraft();
   syncAll();
   // A rejected POST contains submitted answers, not the saved room baseline.
   initialReview = root.querySelector('.alert-danger') ? null : reviewValues();
   renderChanges();
-  show(firstProblem >= 0 ? firstProblem : 0, { focus: false });
+  const firstProblem = root.querySelector('.alert-danger') ? steps.findIndex((_, i) => stepProblem(i)) : -1;
+  const initialStep = firstProblem >= 0 ? firstProblem : (restoredStep !== false ? restoredStep : 0);
+  show(initialStep, { focus: false });
 }

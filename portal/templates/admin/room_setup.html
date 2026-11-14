@@ -28,6 +28,8 @@
 
 <div class="wizard rs" id="room-setup"
      data-mode="{{ 'edit' if is_edit else 'create' }}"
+     data-event-id="{{ event.id }}"
+     data-from-setup="{{ 'true' if from_setup else 'false' }}"
      data-booth-codes='{{ booth_codes | tojson }}'
      data-live-codes='{{ live_codes | tojson }}'
      data-voice-support='{{ catalog.voice_support | tojson }}'
@@ -67,6 +69,8 @@
 
     <form method="post" action="{{ form_action }}" id="room-setup-form">
       <input type="hidden" name="csrf_token" value="{{ request.state.admin_csrf_token }}" />
+      <input type="hidden" name="submission_id" value="{{ submission_id|default('', true) }}" />
+      <input type="hidden" name="setup_draft_token" id="rs-draft-token" value="" />
       {% if from_setup %}<input type="hidden" name="from" value="setup">{% endif %}
 
       {# ── Step 1: the room ───────────────────────────────────── #}

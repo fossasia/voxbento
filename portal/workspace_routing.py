@@ -91,6 +91,10 @@ async def should_redirect_organizer(request: Request) -> bool:
             event_id = int(event_match.group("event_id"))
             return event_id in principal["owned_event_ids"]
 
+        raw_id = request.query_params.get("eventId") or request.query_params.get("event_id")
+        if raw_id and raw_id.isdigit():
+            return int(raw_id) in principal["owned_event_ids"]
+
         return principal["can_host"] or bool(principal["owned_event_ids"])
 
 

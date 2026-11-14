@@ -189,9 +189,57 @@ async def get_event_by_slug(session: AsyncSession, slug: str) -> Event | None:
     return result.scalar_one_or_none()
 
 
+async def get_event_by_slug_any(session: AsyncSession, slug: str) -> Event | None:
+    """Look up an event by slug across all records, including soft-deleted ones."""
+    result = await session.execute(select(Event).where(Event.slug == slug))
+    return result.scalar_one_or_none()
+
+
 async def get_event_by_id(session: AsyncSession, event_id: int) -> Event | None:
     result = await session.execute(select(Event).where(Event.id == event_id, Event.deleted_at.is_(None)))
     return result.scalar_one_or_none()
+
+
+async def update_event(
+    session: AsyncSession,
+    event_id: int,
+    display_name: str,
+    *,
+    slug: str | None = None,
+    expected_display_name: str | None = None,
+) -> Event | None:
+    event = await get_event_by_id(session, event_id)
+    if event is None:
+        return None
+    if slug is not None and slug != event.slug:
+        raise ValueError("The URL slug cannot be changed once the event is created.")
+
+    if expected_display_name is not None:
+        if event.display_name != expected_display_name:
+            raise ValueError("This event was modified by another organizer.")
+        stmt = (
+            update(Event)
+            .where(
+                Event.id == event_id,
+                Event.deleted_at.is_(None),
+                Event.display_name == expected_display_name,
+            )
+            .values(display_name=display_name)
+        )
+        result = await session.execute(stmt)
+        if result.rowcount == 0:
+            current = await get_event_by_id(session, event_id)
+            if current is None:
+                return None
+            raise ValueError("This event was modified by another organizer.")
+        await session.flush()
+        await session.refresh(event)
+        return event
+
+    event.display_name = display_name
+    session.add(event)
+    await session.flush()
+    return event
 
 
 def escape_event_search_term(value: str) -> str:

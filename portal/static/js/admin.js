@@ -519,7 +519,69 @@ window.adminAPIKeys = {
   }
 };
 
+function getSafeSessionStorage() {
+  try {
+    return typeof sessionStorage !== 'undefined' ? sessionStorage : null;
+  } catch (err) {
+    console.warn('sessionStorage is not accessible', err);
+    return null;
+  }
+}
+
+export function initSetupDraftCleanup(customStorage) {
+  const storage = customStorage !== undefined ? customStorage : getSafeSessionStorage();
+  if (!storage) return;
+  const clearEl = document.querySelector('[data-clear-room-draft]');
+  if (clearEl?.dataset.clearRoomDraft) {
+    const eventId = clearEl.dataset.clearRoomDraft;
+    const token = clearEl.dataset.clearRoomDraftToken;
+    try {
+      const storedToken = storage.getItem(`voxbento_setup_room_draft_token_${eventId}`);
+      if (!token || !storedToken || token === storedToken) {
+        storage.removeItem(`voxbento_setup_room_draft_${eventId}`);
+        storage.removeItem(`voxbento_setup_room_draft_token_${eventId}`);
+      }
+    } catch (err) {
+      console.warn('Failed to clear room draft via element attribute for event ' + eventId, err);
+    }
+  }
+
+  const match = typeof document !== 'undefined' && document.cookie ? document.cookie.match(/(?:^|;\s*)room_created_token=([^;]+)/) : null;
+  if (match) {
+    let val = '';
+    try {
+      val = decodeURIComponent(match[1]);
+    } catch (_) {
+      val = match[1];
+    }
+    const [eventId, token] = val.split(':');
+    try {
+      const storedToken = storage.getItem(`voxbento_setup_room_draft_token_${eventId}`);
+      if (!token || !storedToken || token === storedToken) {
+        storage.removeItem(`voxbento_setup_room_draft_${eventId}`);
+        storage.removeItem(`voxbento_setup_room_draft_token_${eventId}`);
+        document.cookie = 'room_created_token=; Path=/; Max-Age=0; SameSite=Lax';
+        document.cookie = 'room_created=; Path=/; Max-Age=0; SameSite=Lax';
+      }
+    } catch (err) {
+      console.warn('Failed to remove room draft from storage for event ' + eventId + '; retaining cleanup cookie for retry', err);
+    }
+  }
+
+  const finishEl = document.querySelector('[data-clear-setup-draft]');
+  if (finishEl?.dataset.clearSetupDraft) {
+    const eventId = finishEl.dataset.clearSetupDraft;
+    try {
+      storage.removeItem(`voxbento_setup_room_draft_${eventId}`);
+      storage.removeItem(`voxbento_setup_room_draft_token_${eventId}`);
+    } catch (err) {
+      console.warn('Failed to clear setup draft on finish for event ' + eventId, err);
+    }
+  }
+}
+
 document.addEventListener('DOMContentLoaded', () => {
+  initSetupDraftCleanup();
   if (window.adminAPIKeys) {
     window.adminAPIKeys.init();
   }

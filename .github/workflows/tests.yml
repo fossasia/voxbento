@@ -291,6 +291,7 @@ jobs:
           node tests/test_tabs.mjs
           node tests/test_translation_fit.mjs
           node tests/test_program_sender_source.mjs
+          node tests/test_room_setup_draft.mjs
           node --test tests/test_modal_dialogs.mjs
           node --test tests/test_agent_attribution.mjs
 
