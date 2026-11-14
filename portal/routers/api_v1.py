@@ -992,9 +992,14 @@ async def delete_booth_endpoint(
     target_room_id = _extract_room_id(room, room_id)
     language_code = _validate_lang(language_code)
 
+    try:
+        canonical_language = validate_language_code(language_code)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
     result = await db.execute(
         select(DBBooth).where(
-            DBBooth.room_id == target_room_id, DBBooth.language_code == language_code, DBBooth.event_id == event.id
+            DBBooth.room_id == target_room_id, DBBooth.language_code == canonical_language, DBBooth.event_id == event.id
         )
     )
     booth = result.scalars().first()
@@ -1003,7 +1008,7 @@ async def delete_booth_endpoint(
 
     from portal.database import delete_booth
 
-    booth_id = make_booth_id(event_slug, target_room_id, language_code)
+    booth_id = make_booth_id(event_slug, target_room_id, canonical_language)
     await stop_transcription_worker(booth_id)
 
     await revoke_booths_for_deleted_entity(db, level="booth", target_id=booth.id)

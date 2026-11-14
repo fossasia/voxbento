@@ -155,6 +155,34 @@ async def test_delete_booth_stops_transcription_worker_with_correct_booth_id(eve
 
 
 @pytest.mark.anyio
+async def test_delete_booth_canonicalizes_uppercase_language(event):
+    """Deleting a booth with uppercase language canonicalizes it and stops the canonical booth ID."""
+    from portal.booth_identity import make_booth_id
+
+    booth = SimpleNamespace(id=42, room_id=ROOM_ID, language_code="en", event_id=event.id)
+    db = _db(
+        _result(first=event),
+        _result(first=booth),
+    )
+
+    calls = []
+
+    async def mock_stop(booth_id):
+        calls.append(("stop", booth_id))
+
+    with (
+        patch("portal.routers.api_v1.stop_transcription_worker", side_effect=mock_stop),
+        patch("portal.routers.api_v1.revoke_booths_for_deleted_entity", AsyncMock()),
+        patch("portal.database.delete_booth", AsyncMock()),
+    ):
+        resp = await api_v1.delete_booth_endpoint(EVENT_SLUG, ROOM_ID, "EN", db=db, token=object())
+
+    assert resp == {"status": "deleted"}
+    expected_booth_id = make_booth_id(EVENT_SLUG, ROOM_ID, "en")
+    assert calls == [("stop", expected_booth_id)]
+
+
+@pytest.mark.anyio
 async def test_delete_booth_succeeds_when_no_worker_running(event):
     """Deleting a booth succeeds cleanly even when no transcription worker was active."""
     booth = SimpleNamespace(id=42, room_id=ROOM_ID, language_code="en", event_id=event.id)
@@ -1908,3 +1936,85 @@ async def test_worker_run_loop_honors_stop_event_if_cancellation_swallowed():
 
     assert session.state == State.STOPPED
     assert session.task is not None and session.task.done()
+
+
+@pytest.mark.anyio
+async def test_started_webhook_enqueue_failure_does_not_abort_worker():
+    """enqueue_webhook raises RuntimeError -> worker still reaches RUNNING, ready_event stays set,
+    start_transcription_worker returns 'started', worker not restarted, and no 'stopped' webhook is emitted."""
+    from portal.transcription.providers.base import ProviderConfig
+    from portal.transcription.worker import (
+        State,
+        active_workers,
+        start_transcription_worker,
+        stop_transcription_worker,
+    )
+
+    booth_id = "test-webhook-failure-isolation-booth"
+    emitted_events = []
+    ffmpeg_enter_count = 0
+
+    async def failing_enqueue(event_name, payload):
+        emitted_events.append((event_name, payload))
+        if event_name == "booth.transcription.started":
+            raise RuntimeError("webhook backend unreachable")
+
+    async def counting_aenter(self):
+        nonlocal ffmpeg_enter_count
+        ffmpeg_enter_count += 1
+        self.process = MagicMock(pid=9999)
+        self.stderr_task = MagicMock(done=MagicMock(return_value=True))
+        return self.process
+
+    async def counting_aexit(self, exc_type, exc_val, exc_tb):
+        return None
+
+    dummy_provider = MagicMock()
+    dummy_provider.sample_rate = 16000
+
+    async def dummy_run_stream(*args, **kwargs):
+        # Keep worker alive until stopped
+        while True:
+            await asyncio.sleep(0.05)
+
+    dummy_provider.run_stream = dummy_run_stream
+
+    session = None
+    try:
+        with (
+            patch("portal.transcription.worker.FfmpegProcess.__aenter__", counting_aenter),
+            patch("portal.transcription.worker.FfmpegProcess.__aexit__", counting_aexit),
+            patch("portal.transcription.worker.PROVIDERS", {"local": dummy_provider}),
+            patch("portal.webhooks.worker.enqueue_webhook", side_effect=failing_enqueue),
+        ):
+            res = await start_transcription_worker(
+                "pycon2026",
+                "en",
+                booth_id,
+                MagicMock(),
+                "local",
+                "tiny",
+                ProviderConfig(api_key=None),
+                wait_for_ready=True,
+            )
+
+            assert res.status == "started"
+            session = active_workers.get(booth_id)
+            assert session is not None
+            assert session.state == State.RUNNING
+            assert session.ready_event.is_set() is True
+            assert session.started_webhook_emitted is False
+            assert ffmpeg_enter_count == 1
+
+            # Give a brief moment to ensure no background restart happens
+            await asyncio.sleep(0.1)
+            assert ffmpeg_enter_count == 1
+            assert session.state == State.RUNNING
+
+            # Stop worker and confirm no stopped webhook is emitted
+            await stop_transcription_worker(booth_id)
+            assert session.state == State.STOPPED
+            stopped_webhooks = [e for e in emitted_events if e[0] == "booth.transcription.stopped"]
+            assert len(stopped_webhooks) == 0
+    finally:
+        await _cleanup_test_worker(booth_id)
