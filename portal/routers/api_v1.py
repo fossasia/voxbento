@@ -1013,7 +1013,12 @@ async def delete_booth_endpoint(
     await revoke_booths_for_deleted_entity(db, level="booth", target_id=booth.id)
     await delete_booth(db, booth.id)
     await db.commit()
-    await stop_transcription_worker(booth_id)
+    stopped = await stop_transcription_worker(booth_id)
+    if not stopped:
+        logger.warning(
+            "[%s] Booth was deleted but transcription worker shutdown timed out; teardown continues in background.",
+            booth_id,
+        )
     return {"status": "deleted"}
 
 

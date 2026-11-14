@@ -878,7 +878,18 @@ async def api_transcription_start(
             )
             return {"status": "disabled", "message": "Transcription is not enabled for this booth."}
         provider, model_size, config = resolve_transcription_config(db_booth)
+        if booths.get_booth_sync(booth_id) is None:
+            await booths.snapshot(
+                booth_id=booth_id,
+                language=getattr(db_booth, "language_name", None) or language_code,
+                channel_id=make_mediamtx_path(event_slug, room_id, language_code),
+                room_id=room_id,
+            )
     try:
+
+        def _revalidate_active() -> bool:
+            return booths.get_booth_sync(booth_id) is not None
+
         result = await start_transcription_worker(
             event_slug,
             language_code,
@@ -890,6 +901,7 @@ async def api_transcription_start(
             room_id=room_id,
             restart_on_key_change=True,
             wait_for_ready=True,
+            revalidate_active=_revalidate_active,
         )
     except ValueError as e:
         raise HTTPException(status_code=429, detail=str(e))

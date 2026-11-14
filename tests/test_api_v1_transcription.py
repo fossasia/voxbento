@@ -9,18 +9,40 @@ from __future__ import annotations
 
 import asyncio
 import math
+import time
 from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+from fastapi import FastAPI
+from fastapi.testclient import TestClient
 from pydantic import ValidationError
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
 import portal.routers.api_v1 as api_v1
+from portal.auth import require_oauth_scope
+from portal.booth_identity import make_booth_id
+from portal.config import Settings, settings
+from portal.crypto import encrypt_val
 from portal.database import create_booth, create_event, create_room
-from portal.models import Base, TranscriptSegment, TranscriptTranslation
-from portal.transcription.worker import State, TranscriptionWorkerSession, active_workers
+from portal.models import Base, OAuthToken, TranscriptSegment, TranscriptTranslation
+from portal.transcription.providers.base import ProviderConfig, ProviderEnum, get_api_key
+from portal.transcription.providers.local import _active_booths_per_model
+from portal.transcription.worker import (
+    ERROR_CODE_SPAWN_FAILED,
+    ERROR_CODE_STOPPING_TIMEOUT,
+    State,
+    TranscriptionStartResult,
+    TranscriptionWorkerSession,
+    _effective_language,
+    _languages_match,
+    _worker_config_matches,
+    active_workers,
+    active_workers_lock,
+    start_transcription_worker,
+    stop_transcription_worker,
+)
 
 EVENT_SLUG = "pycon2026"
 ROOM_ID = 3
@@ -87,7 +109,8 @@ async def _cleanup_test_worker(booth_id: str):
 
     stopped_cleanly = False
     try:
-        await asyncio.wait_for(stop_transcription_worker(booth_id), timeout=2.0)
+        stopped = await asyncio.wait_for(stop_transcription_worker(booth_id), timeout=2.0)
+        assert stopped is True, f"stop_transcription_worker returned False for {booth_id}"
         task = getattr(session, "task", None)
         if task is not None and task.done():
             if not task.cancelled():
@@ -629,9 +652,6 @@ async def test_export_normalizes_naive_timestamps_in_translations(event):
 
 def test_export_rejects_empty_target_lang():
     """Empty target_lang query param fails validation with HTTP 422."""
-    from fastapi import FastAPI
-    from fastapi.testclient import TestClient
-
     app = FastAPI()
     app.include_router(api_v1.router)
     route = next(r for r in api_v1.router.routes if getattr(r, "path", "").endswith("/transcripts/export"))
@@ -754,8 +774,6 @@ async def test_start_external_provider_resolves_api_key(event):
     ):
         response = await api_v1.start_transcription(EVENT_SLUG, ROOM_ID, "en", db=db, token=object())
 
-    from portal.transcription.providers.base import ProviderEnum
-
     mock_get_key.assert_called_once_with(event, ProviderEnum.OPENAI)
     assert response == {
         "status": "started",
@@ -859,9 +877,6 @@ async def test_start_missing_rbac_raises_403(event):
 
 def test_start_transcription_missing_auth_returns_401():
     """Unauthenticated requests without a bearer token fail with HTTP 401."""
-    from fastapi import FastAPI
-    from fastapi.testclient import TestClient
-
     app = FastAPI()
     app.include_router(api_v1.router)
 
@@ -873,8 +888,6 @@ def test_start_transcription_missing_auth_returns_401():
 @pytest.mark.anyio
 async def test_start_transcription_scope_checker_rejects_missing_scope():
     """OAuth dependency requires sessions:manage scope and rejects tokens without it."""
-    from portal.auth import require_oauth_scope
-    from portal.models import OAuthToken
 
     dep = require_oauth_scope("sessions:manage")
     mock_token = OAuthToken(
@@ -930,7 +943,6 @@ async def test_start_ffmpeg_launch_failure_returns_500_and_not_counted_running(e
 @pytest.mark.anyio
 async def test_start_already_running_same_config_returns_already_running(event):
     """When a worker is already running with identical config, route returns already_running status."""
-    from portal.transcription.providers.base import ProviderConfig
 
     booth_id = "pycon2026-3-en"
     mock_booth = MagicMock()
@@ -973,7 +985,6 @@ async def test_start_already_running_same_config_returns_already_running(event):
 @pytest.mark.anyio
 async def test_start_already_running_rotated_api_key_restarts_worker(event):
     """When a worker is running but API key is rotated, worker is restarted with new settings."""
-    from portal.transcription.providers.base import ProviderConfig
 
     booth_id = "pycon2026-3-en"
     event.transcription_api_enabled = True
@@ -1127,8 +1138,6 @@ async def test_start_startup_timeout_cleans_up_task_and_registry(event):
 @pytest.mark.anyio
 async def test_start_language_code_and_transcription_language_equivalence(event):
     """transcription_language=None with language_code='en' matches language_code='floor' with transcription_language='en'."""
-    from portal.transcription.providers.base import ProviderConfig
-    from portal.transcription.worker import _worker_config_matches
 
     dummy_session = SimpleNamespace(
         provider_name="local",
@@ -1415,9 +1424,8 @@ async def test_start_aborts_if_db_commit_fails(event):
 
 @pytest.mark.anyio
 async def test_shared_transcription_config_resolution_matches_admin_pattern(event):
-    """resolve_transcription_config produces identical provider, model, API key, and language matching admin pattern."""
-    from portal.crypto import encrypt_val
-    from portal.transcription.worker import _worker_config_matches
+    """api_transcription_start and api_v1.start_transcription resolve identical config and invoke start_transcription_worker with matching arguments."""
+    import portal.routers.api as api_admin
 
     event.transcription_api_enabled = True
     event.encrypted_openai_api_key = encrypt_val("sk-shared-test-key")
@@ -1427,62 +1435,73 @@ async def test_shared_transcription_config_resolution_matches_admin_pattern(even
     event.encrypted_atlascloud_api_key = None
 
     db_booth = SimpleNamespace(
+        id=42,
         transcription_enabled=True,
         transcription_provider="openai",
         transcription_model="whisper-1",
         language_code="fr",
         room_id=ROOM_ID,
+        event_id=event.id,
         event=event,
     )
 
-    # API v1 resolution
-    provider_v1, model_v1, config_v1 = api_v1.resolve_transcription_config(db_booth, event=event)
-    canonical_lang_v1 = api_v1.validate_language_code("fr")
+    mock_booth = MagicMock()
+    start_result = TranscriptionStartResult(status="started", provider="openai", model="whisper-1")
 
-    # Admin route resolution (from admin.py lines 2419-2428)
-    from portal.transcription import ProviderConfig, ProviderEnum, get_api_key
+    # 1. Call api_v1.start_transcription and capture worker arguments
+    db_v1 = _db(_result(first=event), _result(first=db_booth))
+    v1_mock = AsyncMock(return_value=start_result)
+    with (
+        patch.object(api_v1.booths, "get_booth_sync", return_value=mock_booth),
+        patch.object(api_v1, "start_transcription_worker", v1_mock),
+    ):
+        res_v1 = await api_v1.start_transcription(EVENT_SLUG, ROOM_ID, "fr", db=db_v1, token=object())
+    assert res_v1["status"] == "started"
+    v1_mock.assert_awaited_once()
+    v1_args, v1_kwargs = v1_mock.await_args
 
-    provider_admin = db_booth.transcription_provider
-    model_admin = db_booth.transcription_model
-    api_key_admin = get_api_key(event, ProviderEnum(provider_admin))
-    config_admin = ProviderConfig(api_key=api_key_admin)
-    lang_admin = db_booth.language_code
+    # 2. Call api_admin.api_transcription_start and capture worker arguments
+    admin_mock = AsyncMock(return_value=start_result)
+    mock_request = MagicMock()
 
-    # Assert identical resolved values
-    assert provider_v1 == provider_admin == "openai"
-    assert model_v1 == model_admin == "whisper-1"
-    assert config_v1.api_key == config_admin.api_key == "sk-shared-test-key"
-    assert canonical_lang_v1 == lang_admin == "fr"
+    class DummySessionContext:
+        async def __aenter__(self):
+            session = MagicMock()
+            session.scalar = AsyncMock(return_value=db_booth)
+            return session
 
-    # Simulate worker started by admin
-    admin_session = SimpleNamespace(
-        provider_name=provider_admin,
-        model_size=model_admin,
-        config=config_admin,
-        language_code=lang_admin,
-        transcription_language=None,
-    )
+        async def __aexit__(self, exc_type, exc_val, exc_tb):
+            pass
 
-    # API v1 sees admin worker as matching config
-    assert (
-        _worker_config_matches(
-            admin_session,
-            provider_v1,
-            model_v1,
-            config_v1,
-            transcription_language=None,
-            language_code=canonical_lang_v1,
-        )
-        is True
-    )
+    with (
+        patch.object(api_admin, "get_session", return_value=DummySessionContext()),
+        patch.object(api_admin, "get_event_by_slug", AsyncMock(return_value=event)),
+        patch.object(api_admin, "_verify_resource_access", AsyncMock()),
+        patch.object(api_admin, "_require_same_origin_for_cookies", MagicMock()),
+        patch.object(api_admin.booths, "get_booth_sync", return_value=mock_booth),
+        patch.object(api_admin, "start_transcription_worker", admin_mock),
+    ):
+        res_admin = await api_admin.api_transcription_start(EVENT_SLUG, ROOM_ID, "fr", request=mock_request)
+    assert res_admin["status"] == "started"
+    admin_mock.assert_awaited_once()
+    admin_args, admin_kwargs = admin_mock.await_args
+
+    # Compare arguments received by start_transcription_worker from both routes
+    # (event_slug, language_code, booth_id, broadcast_callback, provider, model_size, config)
+    assert v1_args[0] == admin_args[0] == EVENT_SLUG
+    assert v1_args[1] == admin_args[1] == "fr"
+    assert v1_args[2] == admin_args[2] == make_booth_id(EVENT_SLUG, ROOM_ID, "fr")
+    assert v1_args[4] == admin_args[4] == "openai"
+    assert v1_args[5] == admin_args[5] == "whisper-1"
+    assert v1_args[6].api_key == admin_args[6].api_key == "sk-shared-test-key"
+    assert v1_kwargs.get("room_id") == admin_kwargs.get("room_id") == ROOM_ID
+    assert v1_kwargs.get("restart_on_key_change") == admin_kwargs.get("restart_on_key_change") is True
+    assert v1_kwargs.get("wait_for_ready") == admin_kwargs.get("wait_for_ready") is True
 
 
 @pytest.mark.anyio
 async def test_different_configuration_parameters_not_ignored():
     """Genuinely different provider, model, API key, or language returns False and is not ignored."""
-    from portal.transcription.providers.base import ProviderConfig
-    from portal.transcription.worker import _worker_config_matches
-
     base_session = SimpleNamespace(
         provider_name="openai",
         model_size="whisper-1",
@@ -1543,7 +1562,6 @@ async def test_different_configuration_parameters_not_ignored():
 @pytest.mark.anyio
 async def test_floor_caller_booth_id_isolation():
     """Floor callers and interpreter booth callers never collide on booth_id."""
-    from portal.booth_identity import make_booth_id
 
     event_slug = "pycon2026"
     room_id = 42
@@ -1560,9 +1578,6 @@ async def test_floor_caller_booth_id_isolation():
 @pytest.mark.anyio
 async def test_start_worker_stopping_wait_bounded_and_retains_registry():
     """When a session is stuck in STOPPING, a second start call returns failed within bound and retains old session."""
-    from portal.config import settings
-    from portal.transcription.providers.base import ProviderConfig
-    from portal.transcription.worker import start_transcription_worker
 
     booth_id = "test-stopping-timeout-booth"
 
@@ -1606,8 +1621,6 @@ async def test_start_worker_stopping_wait_bounded_and_retains_registry():
 @pytest.mark.anyio
 async def test_worker_config_matches_api_key_and_language_edge_cases():
     """Verify _worker_config_matches handles None vs empty API keys, mixed case, and None vs empty languages safely."""
-    from portal.transcription.providers.base import ProviderConfig
-    from portal.transcription.worker import _worker_config_matches
 
     session = SimpleNamespace(
         provider_name="openai",
@@ -1691,13 +1704,6 @@ async def test_worker_config_matches_api_key_and_language_edge_cases():
 @pytest.mark.anyio
 async def test_worker_running_published_together_with_ready_event():
     """State.RUNNING and ready_event are set back-to-back before webhook enqueue; concurrent starts see ready."""
-    from portal.transcription.providers.base import ProviderConfig
-    from portal.transcription.worker import (
-        State,
-        active_workers,
-        start_transcription_worker,
-        stop_transcription_worker,
-    )
 
     booth_id = "test-webhook-readiness-booth"
     webhook_started = asyncio.Event()
@@ -1767,7 +1773,6 @@ async def test_worker_running_published_together_with_ready_event():
 @pytest.mark.anyio
 async def test_webhook_pairing_across_retries():
     """Verify started webhook is emitted once, not re-emitted on retry, and exactly one stopped is emitted."""
-    from portal.transcription.providers.base import ProviderConfig
 
     booth_id = "test-webhook-pairing-booth"
     emitted_events = []
@@ -1843,10 +1848,6 @@ async def test_webhook_pairing_across_retries():
 @pytest.mark.anyio
 async def test_start_worker_spawn_failure_wakes_waiter_immediately():
     """When FFmpegProcess fails to spawn, waiter is woken immediately (<1s), registry is clean, and no stopped webhook."""
-    import time
-
-    from portal.transcription.providers.base import ProviderConfig
-    from portal.transcription.worker import start_transcription_worker
 
     booth_id = "test-spawn-failure-booth"
     emitted_events = []
@@ -1904,8 +1905,6 @@ async def test_start_stopping_timeout_returns_503(event):
         event=event,
     )
 
-    from portal.transcription.worker import ERROR_CODE_STOPPING_TIMEOUT, TranscriptionStartResult
-
     db = _db(_result(first=event), _result(first=db_booth))
     mock_failed_by_code = TranscriptionStartResult(
         status="failed",
@@ -1931,8 +1930,6 @@ async def test_start_stopping_timeout_returns_503(event):
 @pytest.mark.anyio
 async def test_worker_run_loop_honors_stop_event_if_cancellation_swallowed():
     """If FfmpegProcess.__aenter__ swallows CancelledError, _run_loop honors stop_event and exits without endless retry."""
-    from portal.transcription.providers.base import ProviderConfig
-    from portal.transcription.worker import State, TranscriptionWorkerSession
 
     entered = asyncio.Event()
 
@@ -1972,13 +1969,6 @@ async def test_worker_run_loop_honors_stop_event_if_cancellation_swallowed():
 async def test_started_webhook_enqueue_failure_does_not_abort_worker():
     """enqueue_webhook raises RuntimeError -> worker still reaches RUNNING, ready_event stays set,
     start_transcription_worker returns 'started', worker not restarted, and no 'stopped' webhook is emitted."""
-    from portal.transcription.providers.base import ProviderConfig
-    from portal.transcription.worker import (
-        State,
-        active_workers,
-        start_transcription_worker,
-        stop_transcription_worker,
-    )
 
     booth_id = "test-webhook-failure-isolation-booth"
     emitted_events = []
@@ -2064,30 +2054,38 @@ async def test_start_missing_db_booth_returns_404(event):
 
 
 def test_transcription_startup_timeout_setting_validation():
-    """Settings enforces transcription_startup_timeout_secs > 0 via Pydantic validation."""
-    from portal.config import Settings
-
+    """Settings enforces positive numeric values for startup and shutdown timeouts."""
+    # transcription_startup_timeout_secs validation
     with pytest.raises(ValidationError):
         Settings(transcription_startup_timeout_secs=0.0)
 
     with pytest.raises(ValidationError):
         Settings(transcription_startup_timeout_secs=-2.5)
 
-    valid = Settings(transcription_startup_timeout_secs=3.5)
-    assert valid.transcription_startup_timeout_secs == 3.5
+    with pytest.raises(ValidationError):
+        Settings(transcription_startup_timeout_secs="invalid")
+
+    valid_startup = Settings(transcription_startup_timeout_secs=3.5)
+    assert valid_startup.transcription_startup_timeout_secs == 3.5
+
+    # transcription_shutdown_timeout_secs validation
+    with pytest.raises(ValidationError):
+        Settings(transcription_shutdown_timeout_secs=0.0)
+
+    with pytest.raises(ValidationError):
+        Settings(transcription_shutdown_timeout_secs=-5.0)
+
+    with pytest.raises(ValidationError):
+        Settings(transcription_shutdown_timeout_secs="invalid")
+
+    valid_shutdown = Settings(transcription_shutdown_timeout_secs=12.0)
+    assert valid_shutdown.transcription_shutdown_timeout_secs == 12.0
 
 
 @pytest.mark.anyio
 async def test_provider_initialization_fails_before_readiness():
     """When provider initialization fails before readiness, start_transcription_worker returns failed
     without entering infinite retries and cleans up registry."""
-    from portal.transcription.providers.base import ProviderConfig
-    from portal.transcription.worker import (
-        ERROR_CODE_SPAWN_FAILED,
-        active_workers,
-        start_transcription_worker,
-    )
-
     booth_id = "test-provider-init-fail-booth"
 
     class FailingInitProvider:
@@ -2136,13 +2134,6 @@ async def test_provider_initialization_fails_before_readiness():
 async def test_stopped_webhook_failure_does_not_prevent_cleanup_and_model_decrement():
     """Failure while enqueueing booth.transcription.stopped webhook must not prevent model-reference decrement
     or registry cleanup."""
-    from portal.transcription.providers.base import ProviderConfig
-    from portal.transcription.providers.local import _active_booths_per_model
-    from portal.transcription.worker import (
-        active_workers,
-        start_transcription_worker,
-        stop_transcription_worker,
-    )
 
     booth_id = "test-stopped-webhook-failure-booth"
     model = "tiny"
@@ -2203,13 +2194,6 @@ async def test_stopped_webhook_failure_does_not_prevent_cleanup_and_model_decrem
 @pytest.mark.anyio
 async def test_local_model_ref_decremented_exactly_once():
     """Repeated stop requests or multiple teardown steps must decrement local model ref exactly once."""
-    from portal.transcription.providers.base import ProviderConfig
-    from portal.transcription.providers.local import _active_booths_per_model
-    from portal.transcription.worker import (
-        active_workers,
-        start_transcription_worker,
-        stop_transcription_worker,
-    )
 
     booth_id = "test-single-decrement-booth"
     model = "tiny"
@@ -2269,13 +2253,6 @@ async def test_local_model_ref_decremented_exactly_once():
 @pytest.mark.anyio
 async def test_old_worker_cleanup_cannot_remove_replacement_session():
     """An old session completing teardown cannot pop a newer replacement session from active_workers."""
-    from portal.transcription.providers.base import ProviderConfig
-    from portal.transcription.worker import (
-        State,
-        TranscriptionWorkerSession,
-        active_workers,
-        active_workers_lock,
-    )
 
     booth_id = "test-replacement-ownership-booth"
 
@@ -2315,11 +2292,6 @@ async def test_old_worker_cleanup_cannot_remove_replacement_session():
 @pytest.mark.anyio
 async def test_shutdown_timeout_preserves_registry_ownership():
     """When stop_transcription_worker times out, worker remains in active_workers and returns False."""
-    from portal.transcription.worker import (
-        State,
-        active_workers,
-        stop_transcription_worker,
-    )
 
     booth_id = "test-shutdown-timeout-retention-booth"
 
@@ -2345,12 +2317,6 @@ async def test_shutdown_timeout_preserves_registry_ownership():
 @pytest.mark.anyio
 async def test_concurrent_stop_requests_are_safe():
     """Concurrent stop requests for the same booth both complete cleanly without errors."""
-    from portal.transcription.providers.base import ProviderConfig
-    from portal.transcription.worker import (
-        active_workers,
-        start_transcription_worker,
-        stop_transcription_worker,
-    )
 
     booth_id = "test-concurrent-stop-booth"
 
@@ -2403,9 +2369,6 @@ async def test_concurrent_stop_requests_are_safe():
 @pytest.mark.anyio
 async def test_start_versus_booth_deletion():
     """When revalidate_active reports false (booth deleted in DB/memory), start_transcription_worker aborts."""
-    from portal.transcription.providers.base import ProviderConfig
-    from portal.transcription.worker import active_workers, start_transcription_worker
-
     booth_id = "test-revalidate-deleted-booth"
 
     res = await start_transcription_worker(
@@ -2421,6 +2384,49 @@ async def test_start_versus_booth_deletion():
     assert res.status == "failed"
     assert res.error_code == "booth_deleted"
     assert booth_id not in active_workers
+
+
+@pytest.mark.anyio
+async def test_admin_start_versus_booth_deletion(event):
+    """When booth is removed from in-memory registry before registration, admin api_transcription_start registers no worker."""
+    import portal.routers.api as api_admin
+
+    booth_id = make_booth_id(EVENT_SLUG, ROOM_ID, "en")
+    db_booth = SimpleNamespace(
+        id=77,
+        transcription_enabled=True,
+        transcription_provider="local",
+        transcription_model="tiny",
+        language_code="en",
+        room_id=ROOM_ID,
+        event_id=event.id,
+        event=event,
+    )
+
+    class DummySessionContext:
+        async def __aenter__(self):
+            session = MagicMock()
+            session.scalar = AsyncMock(return_value=db_booth)
+            return session
+
+        async def __aexit__(self, exc_type, exc_val, exc_tb):
+            pass
+
+    mock_request = MagicMock()
+
+    # When booth is removed from memory, booths.get_booth_sync returns None
+    with (
+        patch.object(api_admin, "get_session", return_value=DummySessionContext()),
+        patch.object(api_admin, "get_event_by_slug", AsyncMock(return_value=event)),
+        patch.object(api_admin, "_verify_resource_access", AsyncMock()),
+        patch.object(api_admin, "_require_same_origin_for_cookies", MagicMock()),
+        patch.object(api_admin.booths, "get_booth_sync", return_value=None),
+    ):
+        with pytest.raises(api_admin.HTTPException) as exc_info:
+            await api_admin.api_transcription_start(EVENT_SLUG, ROOM_ID, "en", request=mock_request)
+        assert exc_info.value.status_code == 500
+        assert exc_info.value.detail == "Failed to start transcription worker"
+        assert booth_id not in active_workers
 
 
 @pytest.mark.anyio
@@ -2449,12 +2455,6 @@ async def test_booth_deletion_rollback_does_not_stop_worker(event):
 
 def test_floor_language_matching_all_edge_cases():
     """Verify _languages_match and _effective_language cover all edge cases deterministically."""
-    from portal.transcription.providers.base import ProviderConfig
-    from portal.transcription.worker import (
-        TranscriptionWorkerSession,
-        _effective_language,
-        _languages_match,
-    )
 
     # 1. Normal booth
     assert _effective_language("en", None) == "en"

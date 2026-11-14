@@ -194,6 +194,7 @@ class Settings(BaseSettings):
     # Transcription Settings
     nvidia_function_id: str = ""
     transcription_startup_timeout_secs: float = Field(default=5.0, gt=0)
+    transcription_shutdown_timeout_secs: float = Field(default=10.0, gt=0)
 
     # Self-hosted translation: an OpenAI-compatible server (Ollama, llama.cpp, vLLM) run by
     # the operator. Only the server sets this URL, so event owners can't aim requests at

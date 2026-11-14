@@ -614,7 +614,9 @@ async def stop_transcription_worker(booth_id: str, timeout: float | None = None)
     if session is None:
         return True
 
-    effective_timeout = timeout if timeout is not None else getattr(settings, "transcription_startup_timeout_secs", 5.0)
+    effective_timeout = (
+        timeout if timeout is not None else getattr(settings, "transcription_shutdown_timeout_secs", 10.0)
+    )
     try:
         await asyncio.wait_for(session.wait_until_stopped(), timeout=effective_timeout)
     except TimeoutError:
