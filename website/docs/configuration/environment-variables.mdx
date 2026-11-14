@@ -119,6 +119,8 @@ These variables control external encoder ingest and YouTube RTMPS forwarding.
 | `SELF_HOSTED_LLM_BASE_URL` | _(empty)_ | Base URL of your own OpenAI-compatible server, for example `http://localhost:11434/v1`, without `/chat/completions`. Must be `http` or `https` with a valid port and no credentials, query string or fragment. Only the server sets it; rooms can't. |
 | `SELF_HOSTED_LLM_MODELS` | _(empty)_ | Comma-separated models rooms and booths may use, spelled exactly as the server names them (for Ollama, as `ollama list` shows them). The first one is the default. Each name can be at most 100 characters. Self-hosted translation is offered only when this and the URL are both set. |
 | `SELF_HOSTED_LLM_API_KEY` | _(empty)_ | Optional bearer token, for servers started with an API key (for example vLLM `--api-key`). |
+| `SELF_HOSTED_LLM_CONCURRENCY` | `4` | Most translation requests sent to the self-hosted server at once, across all rooms. Set it to what the server runs in parallel (for Ollama, `OLLAMA_NUM_PARALLEL`). Further requests wait, with rooms taking turns. |
+| `TRANSLATION_API_CONCURRENCY` | `32` | Most translation requests sent at once to each hosted provider (OpenAI, OpenRouter, Groq, Gemini, Anthropic), across all rooms. Further requests wait, with rooms taking turns. The local model needs no setting: it runs one translation at a time. |
 
 ## Email and Notification Variables
 
