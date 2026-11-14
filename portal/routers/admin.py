@@ -31,6 +31,7 @@ from portal.auth import (
     INVALID_DISPLAY_NAME,
     clean_display_name,
     coordinates_room,
+    display_name_left_blank,
     get_access_flags,
     get_accessible_event_ids,
     get_current_user,
@@ -3212,9 +3213,11 @@ async def admin_invite_user(request: Request):
 
     if not raw_email or "@" not in raw_email or "." not in raw_email.split("@")[-1]:
         raise HTTPException(status_code=400, detail="Invalid email address.")
-    # The name is optional. Check the raw value, so strip() can't remove controls before the check.
+    # The name is optional, but a control-only value (e.g. a lone tab) is not "left blank".
     display_name = ""
-    if str(raw_display_name).strip() and not (display_name := clean_display_name(raw_display_name)):
+    if not display_name_left_blank(raw_display_name) and not (
+        display_name := clean_display_name(raw_display_name)
+    ):
         raise HTTPException(status_code=400, detail=INVALID_DISPLAY_NAME)
 
     async with get_session() as session:

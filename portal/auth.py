@@ -94,6 +94,12 @@ def clean_display_name(raw) -> str | None:
     return name
 
 
+def display_name_left_blank(raw) -> bool:
+    """True when an optional name field was left empty. Only plain spaces count as empty, so a
+    value made of control characters (e.g. a lone tab) is still checked and refused."""
+    return raw is None or (isinstance(raw, str) and not raw.strip(" "))
+
+
 def password_too_long(password: str) -> bool:
     return len(password.encode()) > PASSWORD_MAX_BYTES
 

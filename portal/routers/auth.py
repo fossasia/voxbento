@@ -29,6 +29,7 @@ from portal.auth import (
     create_token,
     create_user_token,
     decode_token,
+    display_name_left_blank,
     generate_admin_csrf_token,
     get_current_user,
     hash_password,
@@ -1076,7 +1077,7 @@ async def invite_accept_submit(request: Request, token: str):
                 raw_confirm = form.get("password_confirm", "")
                 raw_display_name = form.get("display_name", "")
                 display_name = clean_display_name(raw_display_name)
-                if str(raw_display_name).strip() and display_name is None:
+                if not display_name_left_blank(raw_display_name) and display_name is None:
                     raise HTTPException(status_code=400, detail=INVALID_DISPLAY_NAME)
                 if len(submitted_password) < 8:
                     raise HTTPException(status_code=400, detail="Password must be at least 8 characters.")

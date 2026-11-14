@@ -2044,7 +2044,9 @@ async def test_get_access_flags_room_coordinator_on_event_page():
 
 
 @pytest.mark.anyio
-@pytest.mark.parametrize("name", ["x" * 201, "bell\x07name", "c1\x85name", "\x85Organizer"])
+@pytest.mark.parametrize(
+    "name", ["x" * 201, "bell\x07name", "c1\x85name", "\x85Organizer", "\t", " \x07 "]
+)
 async def test_admin_invite_rejects_invalid_display_name(name):
     async with get_session() as session:
         admin = await create_user(session, email="admin@example.com", display_name="Admin", is_admin=True)
@@ -2065,7 +2067,7 @@ async def test_admin_invite_rejects_invalid_display_name(name):
 
 
 @pytest.mark.anyio
-@pytest.mark.parametrize("name", ["x" * 201, "bell\x07name"])
+@pytest.mark.parametrize("name", ["x" * 201, "bell\x07name", "\t", " \x07 "])
 async def test_invite_acceptance_rejects_invalid_display_name(name):
     async with get_session() as session:
         user = await create_user(
