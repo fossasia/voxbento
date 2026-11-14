@@ -370,6 +370,48 @@ async def test_source_accepts_a_two_letter_code_directly(libre, libre_server):
     assert json.loads(requests[0].content)["source"] == "es"
 
 
+@pytest.mark.anyio
+async def test_source_prefers_the_callers_language_code(libre, libre_server):
+    requests, _ = libre_server
+    # The code wins over a name that would resolve differently, or not at all.
+    assert await _translate(source_lang_code="fr") == "Hallo Welt"
+    assert json.loads(requests[0].content)["source"] == "fr"
+
+
+@pytest.mark.anyio
+async def test_blank_source_code_falls_back_to_the_name(libre, libre_server):
+    requests, _ = libre_server
+    assert await _translate(source_lang_code="") == "Hallo Welt"
+    assert json.loads(requests[0].content)["source"] == "en"
+
+
+@pytest.mark.anyio
+async def test_non_json_body_fails_the_segment(libre, caplog):
+    previous = pg.shared_http_client
+    pg.shared_http_client = httpx.AsyncClient(
+        transport=httpx.MockTransport(lambda request: httpx.Response(200, text="<html>proxy error</html>"))
+    )
+    try:
+        assert await _translate() is None
+    finally:
+        pg.shared_http_client = previous
+    assert "Translation via LibreTranslate failed for German" in caplog.text
+
+
+@pytest.mark.anyio
+async def test_unexpected_errors_are_not_swallowed(libre):
+    def broken(request: httpx.Request) -> httpx.Response:
+        raise RuntimeError("bug in the transport")
+
+    previous = pg.shared_http_client
+    pg.shared_http_client = httpx.AsyncClient(transport=httpx.MockTransport(broken))
+    try:
+        with pytest.raises(RuntimeError, match="bug in the transport"):
+            await _translate()
+    finally:
+        pg.shared_http_client = previous
+
+
 # ── Room engine list ───────────────────────────────────────────────────────
 
 

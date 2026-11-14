@@ -78,6 +78,7 @@ class LibreTranslateProvider(TranslationProvider):
         persona: str | None = None,
         style: str | None = None,
         vocabulary_entries: Sequence[Any] = (),
+        source_lang_code: str = "",
     ) -> str | None:
         endpoint = libretranslate_endpoint()
         if not endpoint:
@@ -88,9 +89,10 @@ class LibreTranslateProvider(TranslationProvider):
         if not target:
             logger.error("LibreTranslate: missing target language code for %r", target_lang_name)
             return None
-        # Unknown source names use LibreTranslate's "auto" detection rather than silently
-        # claiming the text is English; the server guesses and returns detectedLanguage.
-        source = language_to_iso(source_lang_name) or "auto"
+        # Prefer the caller's ISO code when it sends one; otherwise resolve the name. Unknown
+        # sources use LibreTranslate's "auto" detection rather than silently claiming the text
+        # is English; the server guesses and returns detectedLanguage.
+        source = language_to_iso(source_lang_code) or language_to_iso(source_lang_name) or "auto"
 
         payload: _LibreTranslateRequest = {
             "q": text,
@@ -110,7 +112,9 @@ class LibreTranslateProvider(TranslationProvider):
             res = await client.post(endpoint, json=payload, timeout=timeout)
             res.raise_for_status()
             body = res.json()
-        except Exception as e:
+        # httpx.HTTPError covers network failures, timeouts and raise_for_status; ValueError
+        # covers a body that isn't JSON. Anything else is a bug and should surface.
+        except (httpx.HTTPError, ValueError) as e:
             logger.error("Translation via LibreTranslate failed for %s: %r", target_lang_name, e)
             return None
 
