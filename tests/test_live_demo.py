@@ -225,62 +225,25 @@ def test_speech_hints_fit_whispers_prompt():
     assert hints[0] == "term number 0"
 
 
-def test_split_sentences():
-    assert live_demo.split_sentences("Welcome to Eventyay. Visit us!  Thanks?  ") == [
-        "Welcome to Eventyay.",
-        "Visit us!",
-        "Thanks?",
-    ]
-    assert live_demo.split_sentences("こんにちは。 ようこそ。") == ["こんにちは。", "ようこそ。"]
-
-
 @pytest.mark.anyio
-async def test_local_translate_sends_one_sentence_at_a_time_with_that_languages_glossary(monkeypatch):
+async def test_local_translate_uses_the_engine_with_each_languages_glossary(monkeypatch):
     calls = []
 
     class FakeTranslator:
-        async def translate(self, **kwargs):
-            calls.append(kwargs)
-            return f"<{kwargs['text']}>"
+        async def translate_batch(self, source, targets, texts, context, *, model, api_key=None):
+            calls.append((source, targets, texts, context, model))
+            return [[f"{texts[0]} ({target.code})" if target.code != "ja" else None for target in targets]]
 
     monkeypatch.setattr(live_demo, "_translator", lambda: FakeTranslator())
-    request = live_demo.DemoRequest(
-        source=lang("en"),
-        targets=(lang("fr"),),
-        listen=None,
-        glossary=(VocabularyEntryInput("keynote", "fr", "plénière"), VocabularyEntryInput("keynote", "es", "plenaria")),
-    )
-    result = await live_demo._local_translate("Welcome. The keynote starts.", request, lang("fr"))
-    assert result == "<Welcome.> <The keynote starts.>"
-    assert [call["text"] for call in calls] == ["Welcome.", "The keynote starts."]
-    assert [e.target_term for e in calls[1]["vocabulary_entries"]] == ["plénière"]
-
-
-@pytest.mark.anyio
-async def test_local_translate_retries_clause_by_clause_when_a_glossary_term_is_lost(monkeypatch):
-    calls = []
-
-    class DroppingTranslator:
-        """Like NLLB on a long sentence: the part with the term goes missing."""
-
-        async def translate(self, **kwargs):
-            text = kwargs["text"]
-            calls.append(text)
-            if "," in text:
-                return "Bienvenue"
-            return "Eventyay" if "Eventyay" in text else "Bienvenue"
-
-    monkeypatch.setattr(live_demo, "_translator", lambda: DroppingTranslator())
-    request = live_demo.DemoRequest(source=lang("en"), targets=(lang("ja"),), listen=None, glossary=(keep("Eventyay"),))
-    result = await live_demo._local_translate("Welcome, see you at Eventyay", request, lang("ja"))
-    assert result == "Bienvenue Eventyay"
-    assert calls == ["Welcome, see you at Eventyay", "Welcome,", "see you at Eventyay"]
-
-
-def test_missing_terms_counts_terms_said_but_not_kept():
-    glossary = [keep("VoxBento"), VocabularyEntryInput("keynote", "fr", "plénière"), keep("Eventyay")]
-    assert live_demo.missing_terms("The VoxBento keynote", "La plénière de ヴォックスベント", glossary) == 1
-    assert live_demo.missing_terms("The VoxBento keynote", "La plénière VoxBento", glossary) == 0
+    glossary = (VocabularyEntryInput("keynote", "fr", "plénière"), keep("VoxBento"))
+    request = live_demo.DemoRequest(source=lang("en"), targets=(lang("fr"), lang("ja")), listen=None, glossary=glossary)
+    result = await live_demo._local_translate("The keynote.", request, request.targets)
+    assert result == {"fr": "The keynote. (fr)", "ja": ""}
+    source, targets, texts, context, model = calls[0]
+    assert (source.code, [t.code for t in targets], texts) == ("en", ["fr", "ja"], ["The keynote."])
+    assert [e.target_term for e in context.vocabulary["fr"]] == ["plénière", "VoxBento"]
+    assert [e.target_term for e in context.vocabulary["ja"]] == ["VoxBento"]
+    assert model == settings.live_demo_translation_model
 
 
 # ── Settings ──────────────────────────────────────────────────────────────────
@@ -314,57 +277,95 @@ def test_server_switch_overrides_saved_settings(monkeypatch):
     assert [e.source_term for e in demo.glossary] == ["VoxBento"]
 
 
-# ── Segmentation ──────────────────────────────────────────────────────────────
+# ── Chunking ──────────────────────────────────────────────────────────────────
 
 
-def test_segmenter_keeps_only_a_short_preroll_while_nobody_speaks():
-    seg = live_demo.Segmenter()
-    for _ in range(30):
-        assert seg.push(silence_frame()) is None
-    assert seg.seconds == pytest.approx(live_demo.PREROLL_SECONDS)
-    assert seg.flush() is None
+def frames(count: int, make=speech_frame) -> list[bytes]:
+    return [make() for _ in range(count)]
 
 
-def test_segmenter_ends_an_utterance_after_a_pause():
-    seg = live_demo.Segmenter()
-    for _ in range(10):
-        assert seg.push(speech_frame()) is None
-    result = None
-    for _ in range(10):
-        result = seg.push(silence_frame()) or result
-    assert result is not None
-    assert len(result) / live_demo.BYTES_PER_SECOND >= 1.0
-    assert not seg.has_speech
-    assert seg.seconds <= live_demo.PREROLL_SECONDS
+def test_chunker_cuts_three_second_chunks_while_someone_talks():
+    chunker = live_demo.Chunker()
+    chunks = [c for f in frames(90) if (c := chunker.push(f))]
+    assert len(chunks) == 3
+    assert all(len(c.audio) == live_demo.Chunker.CHUNK_BYTES and c.has_speech for c in chunks)
+    assert not any(c.ends_utterance for c in chunks)
 
 
-def test_segmenter_cuts_someone_who_never_pauses():
-    seg = live_demo.Segmenter()
-    cuts = [seg.push(speech_frame()) for _ in range(int(live_demo.HARD_CUT_SECONDS / FRAME_SECONDS))]
-    assert sum(cut is not None for cut in cuts) == 1
+def test_chunker_marks_silent_chunks_and_needs_no_flush_for_them():
+    chunker = live_demo.Chunker()
+    chunks = [c for f in frames(30, silence_frame) if (c := chunker.push(f))]
+    assert chunks == [live_demo.Chunk(silence_frame() * 30, has_speech=False)]
+    assert chunker.flush() is None
 
 
-def test_segmenter_ignores_steady_background_noise():
-    seg = live_demo.Segmenter()
+def test_chunker_finishes_the_caption_at_a_pause():
+    chunker = live_demo.Chunker()
+    for f in frames(8):
+        assert chunker.push(f) is None
+    ended = [c for f in frames(10, silence_frame) if (c := chunker.push(f))]
+    assert len(ended) == 1
+    assert ended[0].ends_utterance and ended[0].has_speech
+    assert len(ended[0].audio) == 15 * len(speech_frame())
+
+
+def test_chunker_ignores_steady_background_noise():
+    chunker = live_demo.Chunker()
     for _ in range(50):
-        seg.push(speech_frame(amplitude=200))
-    assert not seg.has_speech
+        chunker.push(speech_frame(amplitude=200))
+    assert not chunker.speaking
+
+
+def test_merged_chunks_keep_all_audio_in_order():
+    first = live_demo.Chunk(b"aaaa", has_speech=False)
+    second = live_demo.Chunk(b"bbbb", has_speech=True, ends_utterance=True)
+    assert first.merged_with(second) == live_demo.Chunk(b"aaaabbbb", True, True)
+
+
+def test_prompt_echo_is_recognised():
+    hints = ("Eventyay", "VoxBento", "Arnav", "Fossasia")
+    assert live_demo.is_prompt_echo("Arnav, Eventyay, Voxbento, Fossasia.", hints)
+    assert live_demo.is_prompt_echo("Glossary: Eventyay.", hints)
+    assert not live_demo.is_prompt_echo("Welcome to Eventyay.", hints)
+    assert not live_demo.is_prompt_echo("Welcome.", ())
+
+
+@pytest.mark.anyio
+async def test_local_transcribe_uses_the_booth_whisper_with_a_glossary_prompt(monkeypatch):
+    outputs = ["Welcome to Eventyay.", "Eventyay, VoxBento."]
+    calls = []
+
+    class FakeWhisper:
+        async def process_chunk(self, chunk, language, model, config, booth_state=None, *, prompt=None):
+            calls.append((language, model, booth_state, prompt))
+            return outputs.pop(0)
+
+    monkeypatch.setattr(live_demo, "_whisper", FakeWhisper())
+    request = live_demo.DemoRequest(
+        source=lang("en"), targets=(lang("fr"),), listen=None, glossary=(keep("Eventyay"), keep("VoxBento"))
+    )
+    state = live_demo.BoothTranscriptionState(booth_id="x")
+    assert await live_demo._local_transcribe(b"\0\0", request, state) == "Welcome to Eventyay."
+    # Whisper only repeated its prompt: nothing was said.
+    assert await live_demo._local_transcribe(b"\0\0", request, state) == ""
+    assert calls[0] == ("en", "base", state, "Glossary: Eventyay, VoxBento.")
 
 
 # ── Session pipeline ──────────────────────────────────────────────────────────
 
 
 class FakeEngines:
-    def __init__(self) -> None:
+    def __init__(self, texts: list[str] | None = None) -> None:
         self.calls: list[tuple[str, object]] = []
+        self.texts = texts
 
-    async def transcribe(self, audio: bytes, request: live_demo.DemoRequest, partial: bool) -> str:
-        self.calls.append(("transcribe", partial))
-        return "hello world"
+    async def transcribe(self, audio: bytes, request: live_demo.DemoRequest, state) -> str:
+        self.calls.append(("transcribe", len(audio)))
+        return self.texts.pop(0) if self.texts else "hello world"
 
-    async def translate(self, text: str, request: live_demo.DemoRequest, target: live_demo.DemoLanguage) -> str:
-        self.calls.append(("translate", target.code))
-        return f"{text} [{target.code}]"
+    async def translate(self, text: str, request: live_demo.DemoRequest, targets) -> dict[str, str]:
+        self.calls.append(("translate", tuple(t.code for t in targets)))
+        return {target.code: f"{text} [{target.code}]" for target in targets}
 
     async def synthesize(self, text: str, language: str) -> bytes:
         self.calls.append(("synthesize", language))
@@ -400,8 +401,9 @@ async def test_session_sends_caption_translations_and_voice_for_the_listened_lan
     finals = [m for m in sent if isinstance(m, dict) and m["type"] == "final"]
     assert finals == [{"type": "final", "id": 1, "text": "hello world"}]
     translations = [(m["lang"], m["text"]) for m in sent if isinstance(m, dict) and m["type"] == "translation"]
-    # The language being heard is translated first.
+    # The language being heard is translated first, on its own, so its voice can start.
     assert translations == [("ja", "hello world [ja]"), ("es", "hello world [es]")]
+    assert [c[0] for c in fake.calls if c[0] != "transcribe"] == ["translate", "synthesize", "translate"]
     # Only the language being listened to is spoken; its header comes right before its audio.
     audio_index = next(i for i, m in enumerate(sent) if isinstance(m, dict) and m["type"] == "audio")
     assert sent[audio_index]["lang"] == "ja"
@@ -425,24 +427,80 @@ async def test_session_skips_voice_after_switching_to_a_captions_only_language()
 
 
 @pytest.mark.anyio
-async def test_a_failing_translation_leaves_the_row_blank_and_the_rest_continue():
-    fake = FakeEngines()
+async def test_a_failing_translation_leaves_the_rows_blank_and_captions_continue():
+    fake = FakeEngines(["One sentence here.", "Another one."])
 
-    async def broken_translate(text, request, target):
-        if target.code == "es":
-            raise RuntimeError("model crashed")
-        return "ok"
+    async def broken_translate(text, request, targets):
+        raise RuntimeError("model crashed")
 
     sent, send_json, send_bytes = collector()
     request = live_demo.DemoRequest(source=lang("en"), targets=(lang("es"), lang("fr")), listen=None)
     engines = live_demo.Engines(fake.transcribe, broken_translate, fake.synthesize)
     session = live_demo.LiveDemoSession(request, send_json, send_bytes, engines=engines)
     session.start()
-    for _ in range(5):
-        session.push_audio(speech_frame())
+    for f in frames(5):
+        session.push_audio(f)
     await session.finish()
-    translations = {m["lang"]: m["text"] for m in sent if isinstance(m, dict) and m["type"] == "translation"}
-    assert translations == {"es": "", "fr": "ok"}
+    rows = [(m["lang"], m["text"]) for m in sent if isinstance(m, dict) and m["type"] == "translation"]
+    assert rows == [("es", ""), ("fr", "")]
+    assert [m["text"] for m in sent if isinstance(m, dict) and m["type"] == "final"] == ["One sentence here."]
+
+
+@pytest.mark.anyio
+async def test_captions_finish_at_each_sentence_while_someone_keeps_talking():
+    fake = FakeEngines(["Welcome to the summit, everyone.", "Our first speaker", "joins us on stage now."])
+    sent, send_json, send_bytes = collector()
+    request = live_demo.DemoRequest(source=lang("en"), targets=(lang("es"),), listen=None)
+    session = live_demo.LiveDemoSession(request, send_json, send_bytes, engines=fake.engines())
+    session.start()
+
+    def finals():
+        return [m["text"] for m in sent if isinstance(m, dict) and m["type"] == "final"]
+
+    for _ in range(2):
+        for f in frames(30):
+            session.push_audio(f)
+        await asyncio.sleep(0.05)
+    # The first sentence is finished while the visitor is still talking; the rest shows as words so far.
+    assert finals() == ["Welcome to the summit, everyone."]
+    assert {"type": "partial", "id": 2, "text": "Our first speaker"} in sent
+
+    for f in frames(30):
+        session.push_audio(f)
+    await asyncio.sleep(0.05)
+    assert finals() == ["Welcome to the summit, everyone.", "Our first speaker joins us on stage now."]
+    await session.finish()
+
+
+@pytest.mark.anyio
+async def test_waiting_chunks_are_transcribed_in_one_call():
+    fake = FakeEngines()
+    sent, send_json, send_bytes = collector()
+    request = live_demo.DemoRequest(source=lang("en"), targets=(lang("es"),), listen=None)
+    session = live_demo.LiveDemoSession(request, send_json, send_bytes, engines=fake.engines())
+    session.start()
+    for f in frames(60):
+        session.push_audio(f)
+    await session.finish()
+    # Two waiting chunks (and the pause that ends them): six seconds of audio, transcribed once.
+    assert [c for c in fake.calls if c[0] == "transcribe"] == [("transcribe", 6 * live_demo.BYTES_PER_SECOND)]
+
+
+@pytest.mark.anyio
+async def test_older_captions_are_skipped_when_they_pile_up():
+    fake = FakeEngines()
+    sent, send_json, send_bytes = collector()
+    request = live_demo.DemoRequest(source=lang("en"), targets=(lang("es"),), listen="es")
+    session = live_demo.LiveDemoSession(request, send_json, send_bytes, engines=fake.engines())
+    session.start()
+    for text in ("One.", "Two.", "Three."):
+        await session._on_caption("stream", {"status": "final", "text": text})
+    await session.finish()
+    spoken = [m["id"] for m in sent if isinstance(m, dict) and m["type"] == "audio"]
+    translated = [m["id"] for m in sent if isinstance(m, dict) and m["type"] == "translation"]
+    # Rows show only the latest caption: the backlog is skipped, not translated late.
+    assert translated == [3]
+    assert spoken == [3]
 
 
 def test_admission_is_capped():

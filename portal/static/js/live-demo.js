@@ -324,7 +324,7 @@ function setRowText(code, text) {
   const row = els.rows.querySelector(`[data-lang="${code}"] [data-role="text"]`);
   if (!row) return;
   renderHighlighted(row, text, glossaryTerms(run?.glossary || [], code));
-  row.dataset.kind = text === '…' ? 'placeholder' : 'final';
+  row.dataset.kind = 'final';
 }
 
 /** Show a caption with its glossary terms marked, built from text nodes (never as HTML). */
@@ -563,7 +563,10 @@ function onMessage(r, raw) {
       if (msg.text) {
         setSourceText(msg.text, 'final');
         setStatus('');
-        state.targets.forEach((code) => setRowText(code, '…'));
+        // Keep the last translation readable, dimmed, until this caption's arrives.
+        els.rows.querySelectorAll('[data-role="text"][data-kind="final"]').forEach((row) => {
+          row.dataset.kind = 'stale';
+        });
       }
       break;
     case 'translation':

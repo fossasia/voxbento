@@ -641,9 +641,16 @@
   font-style: italic;
 }
 
-.live-demo__text[data-kind='final'] {
+.live-demo__text[data-kind='final'],
+.live-demo__text[data-kind='stale'] {
   color: var(--ld-ink);
   font-weight: 700;
+}
+
+/* The previous caption's translation, while the next one is on its way. */
+.live-demo__text[data-kind='stale'] {
+  opacity: 0.55;
+  transition: opacity 0.2s ease;
 }
 
 .live-demo__row--target[aria-pressed='true'] .live-demo__text {

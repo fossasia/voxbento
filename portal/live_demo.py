@@ -1,17 +1,18 @@
 """Home-page live demo: speak into the browser, get captions, translations and a voice back.
 
-Everything runs on the server's own models, so the demo needs no provider keys:
+It runs the booth pipeline's own pieces on the server's own models, so it needs no
+provider keys and behaves as a room's AI captions do:
 
     browser mic (16 kHz PCM over /ws/demo/live)
-      -> energy VAD cuts the speech into utterances
-      -> faster-whisper  (partial captions while speaking, a final caption per utterance)
-      -> NLLB             (one translation per chosen language, sentence by sentence)
-      -> Supertonic       (spoken audio for the language the visitor is listening to)
+      -> 3 s chunks, silence skipped, a pause finishes the caption
+      -> local Whisper (``transcription.providers.local``, as for rooms)
+      -> CaptionAggregator (words so far, a finished caption at each sentence end)
+      -> local NLLB engine (``translations.providers.local.translate_batch``)
+      -> Supertonic (the voice for the language the visitor is listening to)
 
-A glossary steers both models: its terms are given to Whisper as hints so it hears them,
-and NLLB keeps them (or uses their set translation) through the glossary placeholders the
-booth pipeline already uses. The glossary combines the Admin's site-wide list with the
-names and translations a visitor types in.
+The glossary combines the Admin's site-wide list with the names and translations a visitor
+types in. Whisper gets its terms as a prompt so it spells them as written; NLLB keeps them,
+or uses their set translation, through the translation context as a room's glossary does.
 
 Admins switch the demo on or off and set its limits at /admin/live-demo/ (one
 ``live_demo_settings`` row). The ``LIVE_DEMO_*`` environment variables are the defaults
@@ -40,8 +41,11 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from portal.config import settings
 from portal.database import get_session
 from portal.models import LiveDemoSettings
+from portal.transcription.aggregator import CaptionAggregator
+from portal.transcription.providers.base import BoothTranscriptionState, ProviderConfig
+from portal.transcription.providers.local import LocalProvider as LocalWhisper
 from portal.transcription.providers.local import get_model as get_whisper_model
-from portal.translations.constants import TranslationProviderEnum
+from portal.translations.engine import Language, TranslationContext
 from portal.translations.providers.local import LocalProvider as LocalTranslator
 from portal.translations.providers.local import get_model_and_tokenizer
 from portal.translations.registry import NLLB_200_DISTILLED_600M
@@ -50,7 +54,6 @@ from portal.translations.vocabulary import (
     VocabularyOverlapIndex,
     VocabularyRowError,
     clean_speech_term,
-    find_term_spans,
     validate_vocabulary_entry,
 )
 from portal.tts.constants import SUPERTONIC_SUPPORTED_LANGS
@@ -89,18 +92,18 @@ SETTING_LIMITS: dict[str, tuple[int, int]] = {
     "max_targets": (1, 5),
 }
 
-#: Audio kept from before speech starts, so the first syllable is not clipped.
-PREROLL_SECONDS = 0.3
-#: Silence that ends an utterance.
+#: Audio is transcribed exactly as a booth's local Whisper captions are
+#: (``portal.transcription.providers.local``): 3 s chunks, each heard with the last second
+#: of the one before, keeping only the words that end after that second.
+CHUNK_SECONDS = 3.0
+OVERLAP_BYTES = BYTES_PER_SECOND  # the provider's one-second overlap
+#: Silence that ends what the visitor was saying, so its caption is finished at once.
 END_SILENCE_SECONDS = 0.7
-#: After this much audio a shorter pause is enough to end the utterance.
-SOFT_CUT_SECONDS = 6.0
-SOFT_CUT_SILENCE_SECONDS = 0.25
-#: An utterance is cut here even mid-word, so captions keep flowing for someone who never pauses.
-HARD_CUT_SECONDS = 10.0
-#: Voiced audio needed before a partial caption is worth computing.
-MIN_PARTIAL_SPEECH_SECONDS = 0.5
-PARTIAL_INTERVAL_SECONDS = 0.9
+#: When transcription falls behind, waiting chunks are transcribed together up to this length.
+MAX_MERGED_SECONDS = 9.0
+#: Someone who never pauses or punctuates still gets a finished caption this often.
+FORCE_FINAL_WORDS = 25
+FORCE_FINAL_SECONDS = 8.0
 #: A session closes after this long without any message from the browser.
 IDLE_TIMEOUT_SECONDS = 20.0
 
@@ -148,10 +151,6 @@ _NOISE_TRANSCRIPTS = frozenset(
     }
 )
 
-#: Where one sentence ends and the next begins, in Latin and CJK punctuation.
-_SENTENCE_BREAK = re.compile(r"(?<=[.!?。！？])\s+")
-#: Where a long sentence can be cut into clauses when its glossary terms got lost.
-_CLAUSE_BREAK = re.compile(r"(?<=[,;:、，；])\s*")
 _LANGUAGE_PREFIX = re.compile(r"^([A-Za-z]{2})\s*:\s*(.*)$")
 
 
@@ -458,20 +457,6 @@ def speech_hints(glossary: Sequence[VocabularyEntryInput]) -> tuple[str, ...]:
     return tuple(hints)
 
 
-def split_sentences(text: str) -> list[str]:
-    return [part for part in (piece.strip() for piece in _SENTENCE_BREAK.split(text)) if part]
-
-
-def split_clauses(sentence: str) -> list[str]:
-    return [part for part in (piece.strip() for piece in _CLAUSE_BREAK.split(sentence)) if part]
-
-
-def missing_terms(source: str, translated: str, glossary: Sequence[VocabularyEntryInput]) -> int:
-    """How many glossary terms said in ``source`` are not in ``translated`` as the glossary wants them."""
-    folded = translated.casefold()
-    return sum(1 for entry in glossary if find_term_spans(entry, source) and entry.target_term.casefold() not in folded)
-
-
 # ── Requests ──────────────────────────────────────────────────────────────────
 
 
@@ -595,69 +580,88 @@ def clean_transcript(text: str) -> str:
     return "" if text.casefold() in _NOISE_TRANSCRIPTS else text
 
 
-class Segmenter:
-    """Energy-based voice activity detection that cuts incoming PCM into utterances.
+def is_prompt_echo(text: str, hints: Sequence[str]) -> bool:
+    """Whether Whisper only repeated its glossary prompt, as it does on noise or silence."""
+    words = re.findall(r"\w+", text.casefold())
+    if not words or words[0] == "glossary":
+        return True
+    hint_words = {word for hint in hints for word in re.findall(r"\w+", hint.casefold())}
+    return bool(hint_words) and all(word in hint_words for word in words)
 
-    Feed frames with :meth:`push`; it returns a finished utterance when one ends. The noise
-    floor adapts to the room so a fan or laptop hum does not count as speech.
+
+@dataclass(frozen=True)
+class Chunk:
+    """New audio since the last chunk. Silent chunks are not transcribed, but still become the
+    next chunk's overlap. ``ends_utterance`` finishes the caption (the visitor paused)."""
+
+    audio: bytes
+    has_speech: bool = False
+    ends_utterance: bool = False
+
+    def merged_with(self, later: Chunk) -> Chunk:
+        """This chunk followed by a later one, so both are transcribed in one call."""
+        return Chunk(self.audio + later.audio, self.has_speech or later.has_speech, later.ends_utterance)
+
+
+class Chunker:
+    """Cuts incoming PCM into chunks for Whisper, and marks where the visitor paused.
+
+    Speech is told from silence by level against a noise floor that adapts to the room,
+    so a fan or laptop hum does not count.
     """
 
+    CHUNK_BYTES = int(CHUNK_SECONDS * BYTES_PER_SECOND)
+
     def __init__(self) -> None:
-        self.buffer = bytearray()
-        self.speech_seconds = 0.0
+        self.pending = bytearray()
+        self.pending_speech = False
+        #: Speech heard since the caption was last finished.
+        self.speaking = False
         self.trailing_silence = 0.0
         self.noise_floor = 120.0
 
-    @property
-    def seconds(self) -> float:
-        return len(self.buffer) / BYTES_PER_SECOND
-
-    @property
-    def has_speech(self) -> bool:
-        return self.speech_seconds > 0
-
-    def push(self, frame: bytes) -> bytes | None:
-        duration = len(frame) / BYTES_PER_SECOND
+    def is_speech(self, frame: bytes) -> bool:
         rms = frame_rms(frame)
-        threshold = max(MIN_SPEECH_RMS, self.noise_floor * 3.0)
-        is_speech = rms >= threshold
-        if not is_speech:
-            self.noise_floor = 0.95 * self.noise_floor + 0.05 * rms
+        if rms >= max(MIN_SPEECH_RMS, self.noise_floor * 3.0):
+            return True
+        self.noise_floor = 0.95 * self.noise_floor + 0.05 * rms
+        return False
 
-        self.buffer.extend(frame)
-        if is_speech:
-            self.speech_seconds += duration
+    def push(self, frame: bytes) -> Chunk | None:
+        self.pending.extend(frame)
+        if self.is_speech(frame):
+            self.pending_speech = True
+            self.speaking = True
             self.trailing_silence = 0.0
-        elif self.has_speech:
-            self.trailing_silence += duration
-        else:
-            # Nothing said yet: keep only a short pre-roll.
-            excess = len(self.buffer) - int(PREROLL_SECONDS * BYTES_PER_SECOND)
-            if excess > 0:
-                del self.buffer[: excess - excess % 2]
-            return None
-
-        if (
-            self.trailing_silence >= END_SILENCE_SECONDS
-            or (self.seconds >= SOFT_CUT_SECONDS and self.trailing_silence >= SOFT_CUT_SILENCE_SECONDS)
-            or self.seconds >= HARD_CUT_SECONDS
-        ):
+        elif self.speaking:
+            self.trailing_silence += len(frame) / BYTES_PER_SECOND
+        if self.speaking and self.trailing_silence >= END_SILENCE_SECONDS:
             return self.flush()
+        if len(self.pending) >= self.CHUNK_BYTES:
+            return self._cut(ends_utterance=False)
         return None
 
-    def flush(self) -> bytes | None:
-        """End the current utterance now; None when it held no speech."""
-        audio = bytes(self.buffer) if self.has_speech else None
-        self.buffer.clear()
-        self.speech_seconds = 0.0
+    def flush(self) -> Chunk | None:
+        """Whatever audio is waiting, finishing the caption; None when nothing was said."""
+        if not self.speaking and not self.pending_speech:
+            return None
+        self.speaking = False
         self.trailing_silence = 0.0
-        return audio
+        return self._cut(ends_utterance=True)
+
+    def _cut(self, *, ends_utterance: bool) -> Chunk:
+        chunk = Chunk(bytes(self.pending), self.pending_speech, ends_utterance)
+        self.pending.clear()
+        self.pending_speech = False
+        return chunk
 
 
 # ── Engines ───────────────────────────────────────────────────────────────────
 
-Transcribe = Callable[[bytes, DemoRequest, bool], Awaitable[str]]
-Translate = Callable[[str, DemoRequest, DemoLanguage], Awaitable[str | None]]
+
+Transcribe = Callable[[bytes, DemoRequest, BoothTranscriptionState], Awaitable[str]]
+#: Translates one caption into every target; returns the text per language code.
+Translate = Callable[[str, DemoRequest, Sequence[DemoLanguage]], Awaitable[dict[str, str]]]
 Synthesize = Callable[[str, str], Awaitable[bytes]]
 
 
@@ -668,27 +672,26 @@ class Engines:
     synthesize: Synthesize
 
 
-async def _local_transcribe(audio: bytes, request: DemoRequest, partial: bool) -> str:
+_whisper = LocalWhisper()
+
+
+async def _local_transcribe(audio: bytes, request: DemoRequest, state: BoothTranscriptionState) -> str:
+    """One chunk through the booth pipeline's local Whisper, with the glossary as its prompt.
+
+    The prompt is the one addition: rooms' local Whisper has none. It keeps names spelled as
+    the glossary has them ("Event IA" became "Eventyay", "Vox Bento" "VoxBento").
+    """
     hints = request.hints
-
-    def run() -> str:
-        model = get_whisper_model(request.whisper_model)
-        samples = np.frombuffer(audio, np.int16).astype(np.float32) / 32768.0
-        # A glossary prompt keeps the punctuation and spelling; hotwords make Whisper favour
-        # the terms themselves. Together they caught names neither caught alone.
-        segments, _ = model.transcribe(
-            samples,
-            language=request.source.code,
-            beam_size=1 if partial else 5,
-            vad_filter=True,
-            condition_on_previous_text=False,
-            initial_prompt=f"Glossary: {', '.join(hints)}." if hints else None,
-            hotwords=" ".join(hints) if hints else None,
-            no_speech_threshold=0.6,
-        )
-        return " ".join(segment.text.strip() for segment in segments)
-
-    return clean_transcript(await asyncio.to_thread(run))
+    text = await _whisper.process_chunk(
+        audio,
+        request.source.code,
+        request.whisper_model,
+        ProviderConfig(api_key=None),
+        booth_state=state,
+        prompt=f"Glossary: {', '.join(hints)}." if hints else None,
+    )
+    text = clean_transcript(text)
+    return "" if text and is_prompt_echo(text, hints) else text
 
 
 _translator_instance: LocalTranslator | None = None
@@ -702,41 +705,17 @@ def _translator() -> LocalTranslator:
     return _translator_instance
 
 
-async def _local_translate(text: str, request: DemoRequest, target: DemoLanguage) -> str | None:
-    """Translate one sentence at a time, and a sentence clause by clause if it lost a glossary term.
-
-    Given several sentences at once, NLLB-600M often leaves one out, and a missing part takes
-    its glossary placeholder with it, so the whole caption would fall back to a translation
-    without the glossary. Shorter pieces keep every part and every term.
-    """
-    glossary = entries_for(request.glossary, target.code)
-
-    async def translate(piece: str) -> str:
-        translated = await _translator().translate(
-            provider_name=TranslationProviderEnum.LOCAL.value,
-            text=piece,
-            target_lang_name=target.name,
-            target_lang_code=target.code,
-            source_lang_name=request.source.name,
-            source_lang_code=request.source.code,
-            model=settings.live_demo_translation_model,
-            api_key=None,
-            vocabulary_entries=glossary,
-        )
-        return translated or ""
-
-    parts: list[str] = []
-    for sentence in split_sentences(text):
-        translated = await translate(sentence)
-        lost = missing_terms(sentence, translated, glossary) if glossary else 0
-        clauses = split_clauses(sentence) if lost else []
-        if len(clauses) > 1:
-            retry = " ".join(part for part in [await translate(clause) for clause in clauses] if part)
-            if missing_terms(sentence, retry, glossary) < lost:
-                translated = retry
-        if translated:
-            parts.append(translated)
-    return " ".join(parts)
+async def _local_translate(text: str, request: DemoRequest, targets: Sequence[DemoLanguage]) -> dict[str, str]:
+    """Translate as the booth pipeline does: the local engine's ``translate_batch``, with the
+    glossary for each language in the translation context."""
+    rows = await _translator().translate_batch(
+        Language(request.source.code, request.source.name),
+        [Language(target.code, target.name) for target in targets],
+        [text],
+        TranslationContext(vocabulary={target.code: entries_for(request.glossary, target.code) for target in targets}),
+        model=settings.live_demo_translation_model,
+    )
+    return {target.code: translated or "" for target, translated in zip(targets, rows[0], strict=True)}
 
 
 async def _local_synthesize(text: str, language: str) -> bytes:
@@ -799,35 +778,36 @@ SendJson = Callable[[dict[str, Any]], Awaitable[None]]
 SendBytes = Callable[[bytes], Awaitable[None]]
 
 
-@dataclass
-class _Utterance:
-    id: int
-    audio: bytes
+#: The aggregator keys its state by booth; a session has one stream.
+_STREAM = "live-demo"
 
 
 @dataclass
 class LiveDemoSession:
     """One visitor's demo run: audio in, caption/translation/voice events out.
 
+    Captions follow the booth pipeline: overlapping chunks go to Whisper once each, and
+    ``CaptionAggregator`` shows the words so far and finishes a caption at each sentence end.
     Transcription and translation run in separate loops so the next sentence is captioned
-    while the previous one is still being translated and spoken.
+    while the previous one is translated and spoken.
     """
 
     request: DemoRequest
     send_json: SendJson
     send_bytes: SendBytes
     engines: Engines = LOCAL_ENGINES
-    segmenter: Segmenter = field(default_factory=Segmenter)
+    chunker: Chunker = field(default_factory=Chunker)
 
     def __post_init__(self) -> None:
         self.listen = self.request.listen
         self._next_id = 1
         self._send_lock = asyncio.Lock()
-        self._finals: asyncio.Queue[_Utterance | None] = asyncio.Queue()
+        self._chunks: asyncio.Queue[Chunk | None] = asyncio.Queue()
         self._captions: asyncio.Queue[tuple[int, str] | None] = asyncio.Queue()
-        self._partial: _Utterance | None = None
-        self._wake = asyncio.Event()
-        self._last_partial = 0.0
+        self._aggregator = CaptionAggregator(self._on_caption)
+        # The provider drops words inside the first second of every chunk (the overlap), so
+        # the stream starts with a second of silence for the first words to survive.
+        self._whisper_state = BoothTranscriptionState(booth_id=_STREAM, overlap_buffer=bytes(OVERLAP_BYTES))
         self._closing = False
         self._tasks: list[asyncio.Task[None]] = []
 
@@ -850,86 +830,113 @@ class LiveDemoSession:
     def push_audio(self, frame: bytes) -> None:
         if self._closing:
             return
-        utterance = self.segmenter.push(frame)
-        if utterance is not None:
-            self._queue_final(utterance)
-            return
-        now = time.monotonic()
-        if (
-            self.segmenter.speech_seconds >= MIN_PARTIAL_SPEECH_SECONDS
-            and now - self._last_partial >= PARTIAL_INTERVAL_SECONDS
-        ):
-            self._last_partial = now
-            self._partial = _Utterance(self._next_id, bytes(self.segmenter.buffer))
-            self._wake.set()
-
-    def _queue_final(self, audio: bytes) -> None:
-        self._finals.put_nowait(_Utterance(self._next_id, audio))
-        self._next_id += 1
-        self._partial = None
-        self._wake.set()
+        chunk = self.chunker.push(frame)
+        if chunk is not None:
+            self._chunks.put_nowait(chunk)
 
     async def finish(self) -> None:
         """Caption whatever is still being said, then wait for every result to be sent."""
         if self._closing:
             return
         self._closing = True
-        remaining = self.segmenter.flush()
-        if remaining is not None:
-            self._queue_final(remaining)
-        self._finals.put_nowait(None)
-        self._wake.set()
+        last = self.chunker.flush()
+        if last is not None:
+            self._chunks.put_nowait(last)
+        self._chunks.put_nowait(None)
         await asyncio.gather(*self._tasks, return_exceptions=True)
 
     def cancel(self) -> None:
         for task in self._tasks:
             task.cancel()
 
-    async def _transcription_loop(self) -> None:
-        while True:
-            await self._wake.wait()
-            self._wake.clear()
-            while not self._finals.empty():
-                utterance = self._finals.get_nowait()
-                if utterance is None:
-                    await self._captions.put(None)
-                    return
-                text = await self._run_transcribe(utterance.audio, partial=False)
-                await self._send({"type": "final", "id": utterance.id, "text": text})
-                if text:
-                    await self._captions.put((utterance.id, text))
-            partial = self._partial
-            if partial is not None and partial.id == self._next_id:
-                self._partial = None
-                text = await self._run_transcribe(partial.audio, partial=True)
-                # The utterance may have ended while this ran; its final caption replaces it.
-                if text and partial.id == self._next_id and not self._closing:
-                    await self._send({"type": "partial", "id": partial.id, "text": text})
+    async def _on_caption(self, _stream: str, message: dict[str, Any]) -> None:
+        """Turn the aggregator's caption messages into the demo protocol."""
+        text = message.get("text") or ""
+        if message.get("status") == "partial":
+            await self._send({"type": "partial", "id": self._next_id, "text": text})
+        elif message.get("status") == "final" and text:
+            caption_id = self._next_id
+            self._next_id += 1
+            await self._send({"type": "final", "id": caption_id, "text": text})
+            await self._captions.put((caption_id, text))
 
-    async def _run_transcribe(self, audio: bytes, *, partial: bool) -> str:
+    async def _transcription_loop(self) -> None:
+        carry: Chunk | None = None
+        while True:
+            chunk = carry if carry is not None else await self._chunks.get()
+            carry = None
+            if chunk is None:
+                await self._aggregator.handle_clear(_STREAM)
+                await self._captions.put(None)
+                return
+            # Behind? Transcribe the chunks already waiting together, once, instead of dropping
+            # audio as the booth pipeline does when it lags: a visitor wants every word.
+            while not chunk.ends_utterance and not self._chunks.empty():
+                later = self._chunks.get_nowait()
+                if later is None or len(chunk.audio) + len(later.audio) > MAX_MERGED_SECONDS * BYTES_PER_SECOND:
+                    carry = later
+                    break
+                chunk = chunk.merged_with(later)
+            if chunk.has_speech:
+                text = await self._run_transcribe(chunk.audio)
+            else:
+                # Not worth a model call; it is still the audio the next chunk overlaps.
+                self._whisper_state.overlap_buffer = (self._whisper_state.overlap_buffer + chunk.audio)[-OVERLAP_BYTES:]
+                text = ""
+            # As in the booth pipeline: words extend the caption, and nothing heard finishes it.
+            if text:
+                await self._aggregator.handle_chunk(_STREAM, text)
+                await self._finish_long_caption()
+            if not text or chunk.ends_utterance:
+                await self._aggregator.handle_clear(_STREAM)
+
+    async def _finish_long_caption(self) -> None:
+        """Finish a caption that has run long without a full stop, so translation can start."""
+        state = self._aggregator.states.get(_STREAM)
+        if state is None or not state.current_utterance:
+            return
+        if state.current_word_count >= FORCE_FINAL_WORDS or time.time() - state.utterance_start_time >= (
+            FORCE_FINAL_SECONDS
+        ):
+            await self._aggregator.handle_final(_STREAM, "")
+
+    async def _run_transcribe(self, audio: bytes) -> str:
         try:
-            return await self.engines.transcribe(audio, self.request, partial)
+            return await self.engines.transcribe(audio, self.request, self._whisper_state)
         except Exception:  # one failed chunk must not end the visitor's demo
             logger.exception("[LiveDemo] Transcription failed")
             return ""
 
     async def _translation_loop(self) -> None:
+        """Translate and speak each caption with the booth pipeline's engines.
+
+        Work runs one model at a time beside Whisper, in the order a listener notices it: the
+        language being heard, its voice, then the other languages, one call each. Run at once
+        they slowed Whisper below real time. Each row shows only the latest caption, so when
+        captions arrive faster than the CPU keeps up, the older ones are skipped and the rows
+        and the voice stay with the speaker.
+        """
         while True:
             item = await self._captions.get()
-            if item is None:
+            ended = item is None
+            while not ended and not self._captions.empty():
+                newer = self._captions.get_nowait()
+                ended = newer is None
+                item = item if ended else newer
+            if item is not None:
+                await self._translate_and_speak(*item)
+            if ended:
                 return
-            caption_id, text = item
-            listen = self.listen
-            # The language being heard goes first, and its voice is made while the others translate.
-            ordered = sorted(self.request.targets, key=lambda target: target.code != listen)
-            speech: asyncio.Task[bytes] | None = None
-            for target in ordered:
-                translated = await self._run_translate(text, target)
-                await self._send({"type": "translation", "id": caption_id, "lang": target.code, "text": translated})
-                if translated and target.code == listen:
-                    speech = asyncio.create_task(self._run_synthesize(translated, target.code))
-            if speech is not None:
-                audio = await speech
+
+    async def _translate_and_speak(self, caption_id: int, text: str) -> None:
+        listen = self.listen
+        heard = [target for target in self.request.targets if target.code == listen]
+        others = [target for target in self.request.targets if target.code != listen]
+        for target in heard + others:
+            translated = (await self._run_translate(text, [target]))[target.code]
+            await self._send({"type": "translation", "id": caption_id, "lang": target.code, "text": translated})
+            if target.code == listen and translated:
+                audio = await self._run_synthesize(translated, listen)
                 # Skip it if the visitor switched language while it was being made.
                 if audio and listen == self.listen:
                     await self._send(
@@ -937,12 +944,13 @@ class LiveDemoSession:
                         audio,
                     )
 
-    async def _run_translate(self, text: str, target: DemoLanguage) -> str:
+    async def _run_translate(self, text: str, targets: Sequence[DemoLanguage]) -> dict[str, str]:
+        empty = {target.code: "" for target in targets}
         try:
-            return (await self.engines.translate(text, self.request, target)) or ""
-        except Exception:  # a failed language shows as blank, the others continue
-            logger.exception("[LiveDemo] Translation into %s failed", target.code)
-            return ""
+            return {**empty, **await self.engines.translate(text, self.request, targets)}
+        except Exception:  # a failed translation shows as blank rows; captions carry on
+            logger.exception("[LiveDemo] Translation failed")
+            return empty
 
     async def _run_synthesize(self, text: str, language: str) -> bytes:
         try:

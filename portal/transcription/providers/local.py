@@ -101,7 +101,11 @@ class LocalProvider(TranscriptionProvider):
         model_variant: str,
         config: ProviderConfig,
         booth_state: BoothTranscriptionState | None = None,
+        *,
+        prompt: str | None = None,
     ) -> str:
+        """Transcribe one chunk. ``prompt`` is text Whisper reads as preceding speech, e.g.
+        glossary terms so it spells them as written; None (the default) gives no prompt."""
         if booth_state:
             # Append overlap buffer (last 1.0s) to current 3.0s chunk -> 4.0s total
             overlap_audio = booth_state.overlap_buffer + chunk
@@ -117,10 +121,17 @@ class LocalProvider(TranscriptionProvider):
             overlap_audio = chunk
 
         audio_data = np.frombuffer(overlap_audio, np.int16).astype(np.float32) / 32768.0
-        return await asyncio.to_thread(self._run_inference, audio_data, language_code, model_variant, booth_state)
+        return await asyncio.to_thread(
+            self._run_inference, audio_data, language_code, model_variant, booth_state, prompt
+        )
 
     def _run_inference(
-        self, audio_data: np.ndarray, language_code: str, model_size: str, booth_state: BoothTranscriptionState | None
+        self,
+        audio_data: np.ndarray,
+        language_code: str,
+        model_size: str,
+        booth_state: BoothTranscriptionState | None,
+        prompt: str | None = None,
     ) -> str:
         model = get_model(model_size)
         segments, _ = model.transcribe(
@@ -133,6 +144,7 @@ class LocalProvider(TranscriptionProvider):
             no_speech_threshold=0.6,
             log_prob_threshold=-1.0,
             condition_on_previous_text=False,
+            initial_prompt=prompt,
         )
 
         valid_words = []
