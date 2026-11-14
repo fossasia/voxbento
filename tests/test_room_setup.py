@@ -868,6 +868,28 @@ async def test_ai_settings_refuse_a_voice_that_cannot_speak_the_rooms_languages(
 
 
 @pytest.mark.anyio
+async def test_full_room_form_checks_the_voice_against_languages_added_in_the_same_save(admin_cookie, event_room):
+    """Thai added in the same save as the voice must be checked, though its row is not flushed yet."""
+    event, room = event_room
+    form = {
+        "display_name": "Main Hall",
+        "floor_translation_enabled": "on",
+        "floor_translation_provider": "openai",
+        "floor_translation_model": "gpt-4o-mini",
+        "floor_translation_languages": ["th"],
+        "floor_tts_enabled": "on",
+        "floor_tts_provider": "deepgram",  # unchanged: the room's default
+    }
+    async with _client() as c:
+        resp = await c.post(
+            f"/admin/events/{event.id}/rooms/{room.id}/edit", data=form, headers=ORIGIN, cookies=admin_cookie
+        )
+    assert resp.status_code == 400, resp.text
+    assert "Deepgram can't speak Thai" in resp.text
+    assert await _ai_codes(room.id) == set()
+
+
+@pytest.mark.anyio
 async def test_saving_drops_the_rooms_cached_voice_settings(admin_cookie, event_room):
     from portal.tts import worker
 

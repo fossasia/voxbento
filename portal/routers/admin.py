@@ -1600,14 +1600,23 @@ def _require_translatable(provider: str | None, model: str | None, language_code
 
 
 def _require_speakable(room: Room, provider: str, label: str) -> None:
-    """Refuse a voice service that cannot speak a language the room reads aloud, keeping the current one."""
-    if provider == room.floor_tts_provider or not room.floor_tts_enabled:
+    """Refuse a voice service that cannot speak a language the room reads aloud, keeping the current one.
+
+    Only a changed service or a language added in this save is checked, so a room saved before
+    this rule can still save its other settings.
+    """
+    if not room.floor_tts_enabled:
         return
+    changed = provider != room.floor_tts_provider
     supported = voice_languages_for(provider)
     unsupported = [
         room_language_name(lang.language_code)
         for lang in room.translation_languages
-        if lang.enabled and lang.tts_enabled and lang.language_code not in supported
+        if lang.enabled
+        and lang.tts_enabled
+        and lang.language_code not in supported
+        # Not flushed yet: added by the translation section earlier in this same save.
+        and (changed or lang.id is None)
     ]
     if unsupported:
         raise TranslationLanguageError(
@@ -1758,9 +1767,11 @@ def _process_room_translation_section(session: AsyncSession, room: Room, form: F
             lang_obj = pycountry.languages.get(alpha_2=code)
             lang_name = lang_obj.name if lang_obj else code
             new_lang = RoomTranslationLanguage(
-                room_id=room.id, language_code=code, language_name=lang_name, enabled=True
+                room_id=room.id, language_code=code, language_name=lang_name, enabled=True, tts_enabled=True
             )
             session.add(new_lang)
+            # Also on the relationship, so checks later in the same save (the voice service) see it.
+            room.translation_languages.append(new_lang)
 
 
 def _process_room_tts_section(room: Room, form: FormData) -> None:
