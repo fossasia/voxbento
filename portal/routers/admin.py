@@ -156,6 +156,7 @@ from portal.room_setup import (
     room_audio_choice,
     server_unavailable_reason,
     summarize,
+    voice_languages_for,
 )
 from portal.room_setup import ALL_LANGUAGES as ROOM_ALL_LANGUAGES
 from portal.room_setup import COMMON_LANGUAGES as ROOM_COMMON_LANGUAGES
@@ -1598,6 +1599,24 @@ def _require_translatable(provider: str | None, model: str | None, language_code
         raise TranslationLanguageError(status_code=400, detail=error)
 
 
+def _require_speakable(room: Room, provider: str, label: str) -> None:
+    """Refuse a voice service that cannot speak a language the room reads aloud, keeping the current one."""
+    if provider == room.floor_tts_provider or not room.floor_tts_enabled:
+        return
+    supported = voice_languages_for(provider)
+    unsupported = [
+        room_language_name(lang.language_code)
+        for lang in room.translation_languages
+        if lang.enabled and lang.tts_enabled and lang.language_code not in supported
+    ]
+    if unsupported:
+        raise TranslationLanguageError(
+            status_code=400,
+            detail=f"{label} can't speak {', '.join(unsupported)}. Choose a voice service that can, "
+            "or set that language to AI captions in the room setup.",
+        )
+
+
 def _enabled_codes(translation_languages) -> list[str]:
     """The ISO codes of enabled target languages for a room."""
     return [lang.language_code for lang in translation_languages if lang.enabled]
@@ -1638,6 +1657,7 @@ def _apply_ai_settings(room: Room, form: FormData, catalog: EngineCatalog) -> No
 
     voice = catalog.find("voice", str(form.get("floor_tts_provider", "")))
     if voice:
+        _require_speakable(room, voice.provider, voice.label)
         room.floor_tts_provider = voice.provider
         preset = str(form.get("floor_tts_voice", "")).strip().upper()
         if preset in {value for value, _ in ROOM_VOICE_PRESETS}:
@@ -1748,6 +1768,7 @@ def _process_room_tts_section(room: Room, form: FormData) -> None:
     floor_tts_provider = (form.get("floor_tts_provider", "deepgram") or "deepgram").strip().lower() or "deepgram"
     if floor_tts_provider not in {"deepgram", "supertonic", "elevenlabs"}:
         floor_tts_provider = "deepgram"
+    _require_speakable(room, floor_tts_provider, brand_name(floor_tts_provider))
     room.floor_tts_provider = floor_tts_provider
 
     floor_tts_voice = (form.get("floor_tts_voice", "M1") or "M1").strip().upper() or "M1"

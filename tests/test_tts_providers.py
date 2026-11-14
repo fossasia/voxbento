@@ -240,6 +240,24 @@ async def test_elevenlabs_auth_failure_gives_no_audio(elevenlabs_api):
 
 
 @pytest.mark.anyio
+async def test_elevenlabs_stream_broken_mid_phrase_is_raised(monkeypatch):
+    """Half a phrase must not be played as if it were complete: the caller drops it on the error."""
+    monkeypatch.setattr(elevenlabs, "_refused_models", set())
+
+    async def broken_stream():
+        yield b"\x00\x01"
+        raise httpx.ReadError("connection reset")
+
+    client = httpx.AsyncClient(
+        transport=httpx.MockTransport(lambda request: httpx.Response(200, content=broken_stream()))
+    )
+    monkeypatch.setattr(elevenlabs, "get_http_client", lambda: client)
+
+    with pytest.raises(httpx.ReadError):
+        await _speak("สวัสดี")
+
+
+@pytest.mark.anyio
 async def test_elevenlabs_skips_empty_text(elevenlabs_api):
     requests, _ = elevenlabs_api
     assert await _speak("  ") == []

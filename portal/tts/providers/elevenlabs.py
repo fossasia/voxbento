@@ -59,13 +59,17 @@ class ElevenLabsTTSProvider(TTSProvider):
             _refused_models.add(model)
 
     async def _stream(self, model: str, text: str, language: str, on_audio: AudioCallback) -> bool:
-        """Stream one phrase's audio. True when the API refused this model, so the next can try."""
+        """Stream one phrase's audio. True when the API refused this model, so the next can try.
+
+        Raises ``httpx.HTTPError`` when the stream breaks after audio was sent.
+        """
         body = {
             "inputs": [{"text": text, "voice_id": self.voice_id}],
             "model_id": model,
             "language_code": language,
         }
         leftover = b""
+        emitted = False
         try:
             async with get_http_client().stream(
                 "POST",
@@ -92,9 +96,14 @@ class ElevenLabsTTSProvider(TTSProvider):
                     usable = len(data) - len(data) % 2
                     leftover = data[usable:]
                     if usable:
+                        emitted = True
                         await on_audio(data[:usable])
         except httpx.HTTPStatusError as e:
             logger.error("[TTS] ElevenLabs error for lang %s: HTTP %s", language, e.response.status_code)
         except httpx.HTTPError as e:
+            if emitted:
+                # Part of the phrase is already out: report the failure so the caller drops the
+                # partial audio, instead of playing half a sentence as if it were complete.
+                raise
             logger.error("[TTS] ElevenLabs request failed for lang %s: %s", language, type(e).__name__)
         return False

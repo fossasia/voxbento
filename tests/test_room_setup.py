@@ -835,6 +835,39 @@ async def test_unsupported_ai_voice_is_not_saved(admin_cookie, event_room):
 
 
 @pytest.mark.anyio
+async def test_ai_settings_refuse_a_voice_that_cannot_speak_the_rooms_languages(admin_cookie, event_room):
+    """A Thai AI-voice room set up with ElevenLabs cannot be switched to Deepgram, which has no Thai voice."""
+    event, room = event_room
+    async with get_session() as s:
+        saved = await s.get(Event, event.id)
+        saved.encrypted_deepgram_api_key = encrypt_val("dg")
+        saved.encrypted_elevenlabs_api_key = encrypt_val("xi")
+    setup = {
+        "display_name": "Main Hall",
+        "spoken_language": "en",
+        "languages": ["th"],
+        "delivery_th": AI_VOICE,
+        "voice_engine": "elevenlabs",
+    }
+    async with _client() as c:
+        resp = await c.post(
+            f"/admin/events/{event.id}/rooms/{room.id}/setup", data=setup, headers=ORIGIN, cookies=admin_cookie
+        )
+        assert resp.status_code == 303, resp.text
+        assert (await _room(room.id)).floor_tts_provider == "elevenlabs"
+
+        resp = await c.post(
+            f"/admin/events/{event.id}/rooms/{room.id}/edit",
+            data={"form_section": "ai", "floor_tts_provider": "deepgram"},
+            headers={**ORIGIN, "accept": "text/html"},
+            cookies=admin_cookie,
+        )
+    assert resp.status_code == 400
+    assert "Deepgram Aura can&#39;t speak Thai" in resp.text
+    assert (await _room(room.id)).floor_tts_provider == "elevenlabs"
+
+
+@pytest.mark.anyio
 async def test_saving_drops_the_rooms_cached_voice_settings(admin_cookie, event_room):
     from portal.tts import worker
 
