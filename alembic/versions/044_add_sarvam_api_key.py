@@ -1,7 +1,7 @@
 """add Sarvam API key
 
-Revision ID: 042
-Revises: 041
+Revision ID: 044
+Revises: 043
 """
 
 from __future__ import annotations
@@ -12,8 +12,8 @@ import sqlalchemy as sa
 
 from alembic import op
 
-revision: str = "042"
-down_revision: Union[str, Sequence[str], None] = "041"
+revision: str = "044"
+down_revision: Union[str, Sequence[str], None] = "043"
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
 
