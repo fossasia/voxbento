@@ -80,7 +80,7 @@ VoxBento is a production-grade **browser-first interpretation booth console** fo
 | `portal/crypto.py` | `encrypt_val` / `decrypt_val` (Fernet, SHA-256 key derivation) |
 | `portal/transcription/` | Transcription subsystem — see `TRANSCRIPTION_MAP.md` |
 | `portal/translations/` | Translation subsystem — LLM workers, contextual prompts (`prompts.py`), glossaries (`vocabulary.py`) |
-| `portal/tts/` | Text-to-speech subsystem — direct-push Deepgram Aura and Supertonic ONNX |
+| `portal/tts/` | Text-to-speech subsystem — direct-push Deepgram Aura, ElevenLabs v4 and Supertonic ONNX |
 | `portal/meeting_source.py` | Managed Jitsi floor agent lifecycle reconciler |
 | `portal/program_ingest.py` | Floor authorization and reconciliation for Program Stream Ingest |
 | `portal/program_relay.py` | YouTube RTMPS destination management and relay health convergence |
@@ -204,7 +204,7 @@ Direct-push TTS feed: `/ws/tts/{room_id}/{language_code}/{booth_id}` — pre-aut
 MediaMTX RTSP (8554) → ffmpeg PCM → TranscriptionProvider → CaptionAggregator → WebSocket broadcast
 ```
 
-Providers: `local` (faster-whisper, CPU), `openai` (whisper-1/realtime), `deepgram` (nova-2), `atlascloud` (Seed ASR 2.0 async predictions), `nvidia` (Parakeet), `elevenlabs` (scribe_v2).
+Providers: `local` (faster-whisper, CPU), `openai` (whisper-1/realtime), `deepgram` (nova-3/nova-2), `atlascloud` (Seed ASR 2.0 async predictions), `nvidia` (Parakeet), `elevenlabs` (scribe_v2).
 Worker lifecycle: `start_transcription_worker` / `stop_transcription_worker` in `portal/transcription/worker.py`.
 Max concurrent workers: 10 (`MAX_TOTAL_WORKERS`).
 
