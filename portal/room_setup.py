@@ -24,7 +24,8 @@ from portal.database import create_booth, delete_booth, list_booths_for_room
 from portal.models import DBBooth, Event, Room, RoomTranslationLanguage
 from portal.roles import INTERPRETER
 from portal.transcription.constants import ALLOWED_MODELS, ProviderEnum
-from portal.translations.constants import NLLB_LANGUAGE_MAP
+from portal.translations.model_languages import supported_languages, unsupported_languages
+from portal.translations.registry import NLLB_200_DISTILLED_600M
 from portal.tts.constants import DEEPGRAM_VOICE_MAPPING, SUPERTONIC_SUPPORTED_LANGS
 from portal.utils import _make_jitsi_url
 
@@ -128,11 +129,40 @@ class EngineCatalog:
     # The part of `locked` that is a speech or a translation service, for the pages that show only one kind.
     locked_speech: tuple[str, ...] = ()
     locked_translation: tuple[str, ...] = ()
+    # Why a provider the server can't run is missing, by provider, so a saved booth can say so.
+    unavailable_reasons: dict[str, str] = field(default_factory=dict)
 
     @property
     def voice_support(self) -> dict[str, list[str]]:
         """The languages each available voice service can speak, for the setup form."""
         return {engine.provider: sorted(voice_languages_for(engine.provider)) for engine in self.voice}
+
+    @property
+    def translation_support(self) -> dict[str, list[str]]:
+        """The languages of each translation service that has a fixed list, for the setup form.
+
+        A service that is missing here translates any language.
+        """
+        support = {engine.provider: supported_languages(engine.provider, engine.model) for engine in self.translation}
+        return {provider: codes for provider, codes in support.items() if codes is not None}
+
+    def translation_unfit(self, language_codes: Iterable[str | None]) -> set[str]:
+        """The translation services that cannot handle every one of these languages."""
+        codes = list(language_codes)
+        return {
+            engine.provider
+            for engine in self.translation
+            if unsupported_languages(engine.provider, engine.model, codes)
+        }
+
+    def translation_hidden(self, language_codes: Iterable[str | None]) -> set[str]:
+        """The unfit services a settings page leaves out of its service picker.
+
+        None when no service fits: hiding them all would leave the picker empty, and saving
+        one still explains which language it cannot translate.
+        """
+        unfit = self.translation_unfit(language_codes)
+        return unfit if len(unfit) < len(self.translation) else set()
 
     def find(self, kind: str, provider: str) -> Engine | None:
         return next((e for e in getattr(self, kind) if e.provider == provider), None)
@@ -149,7 +179,7 @@ _SERVER_MODEL = "runs on this server's own AI model"
 # (provider, default model, label, event key attribute). Cloud first: they are faster
 # and more accurate than the self-hosted fallback when the event has a key for them.
 _SPEECH_ENGINES = (
-    ("deepgram", "nova-2", "Deepgram Nova", "encrypted_deepgram_api_key"),
+    ("deepgram", "nova-3", "Deepgram Nova", "encrypted_deepgram_api_key"),
     ("elevenlabs", "scribe_v2_realtime", "ElevenLabs Scribe", "encrypted_elevenlabs_api_key"),
     ("openai", "whisper-1", "OpenAI Whisper", "encrypted_openai_api_key"),
     ("atlascloud", "bytedance/seed-asr-2.0", "Atlas Cloud Seed ASR", "encrypted_atlascloud_api_key"),
@@ -166,7 +196,10 @@ _TRANSLATION_ENGINES = (
 
 # The caption models each speech service offers, with a plain description, recommended first.
 SPEECH_MODELS: dict[str, tuple[tuple[str, str], ...]] = {
-    "deepgram": (("nova-2", "Nova 2"),),
+    "deepgram": (
+        ("nova-3", "Nova 3, most accurate, uses the glossary"),
+        ("nova-2", "Nova 2"),
+    ),
     "elevenlabs": (("scribe_v2_realtime", "Scribe v2, streaming"),),
     "openai": (
         ("whisper-1", "Whisper"),
@@ -207,6 +240,18 @@ _BRANDS = {
 }
 
 
+def brand_name(provider: str) -> str:
+    """The proper name of a provider ("OpenAI", "ElevenLabs"), for a provider that is no longer offered."""
+    return _BRANDS.get(provider, provider.capitalize())
+
+
+def server_unavailable_reason(provider: str) -> str | None:
+    """Why this server cannot run a speech service whatever the event's keys are, or None when it can."""
+    if provider == "nvidia" and (find_spec("riva") is None or not settings.nvidia_function_id):
+        return "NVIDIA needs the server's nvidia extra and NVIDIA_FUNCTION_ID"
+    return None
+
+
 def engine_catalog(event: Event) -> EngineCatalog:
     """List the engines this event can use, so the setup only offers choices that will work."""
     speech: list[Engine] = []
@@ -216,10 +261,13 @@ def engine_catalog(event: Event) -> EngineCatalog:
     locked_speech: list[str] = []
     locked_translation: list[str] = []
     unavailable: list[str] = []
+    unavailable_reasons: dict[str, str] = {}
 
     for provider, model, label, key_attr in _SPEECH_ENGINES:
-        if provider == "nvidia" and (find_spec("riva") is None or not settings.nvidia_function_id):
-            unavailable.append("NVIDIA needs the server's nvidia extra and NVIDIA_FUNCTION_ID")
+        reason = server_unavailable_reason(provider)
+        if reason:
+            unavailable.append(reason)
+            unavailable_reasons[provider] = reason
             continue
         # Cloud speech recognition also needs the event's switch (see program_ingest.pipeline_problem).
         if getattr(event, key_attr) and event.transcription_api_enabled:
@@ -235,7 +283,7 @@ def engine_catalog(event: Event) -> EngineCatalog:
         else:
             locked.append(_BRANDS[provider])
             locked_translation.append(_BRANDS[provider])
-    translation.append(Engine("local", "nllb-200-distilled-600M", "NLLB (built in)", _SELF_HOSTED))
+    translation.append(Engine("local", NLLB_200_DISTILLED_600M.id, "NLLB (built in)", _SELF_HOSTED))
     # After NLLB so new rooms keep the built-in default; the operator's server may be slow or stopped.
     if settings.self_hosted_llm_enabled:
         translation.append(
@@ -261,6 +309,7 @@ def engine_catalog(event: Event) -> EngineCatalog:
         tuple(unavailable),
         tuple(locked_speech),
         tuple(locked_translation),
+        unavailable_reasons,
     )
 
 
@@ -436,12 +485,13 @@ def parse_plan(
             f"AI voice isn't available for {', '.join(language_name(code) for code in plan.voice_languages)}: "
             "no voice service is set up for this event. Choose AI captions, or add a Deepgram key on API keys."
         )
-    if ai_languages and plan.translation_engine == "local":
+    chosen_translation = catalog.find("translation", plan.translation_engine)
+    if ai_languages and chosen_translation:
         unsupported = [
             language_name(code)
-            for code in dict.fromkeys((plan.spoken_language, *plan.ai_languages))
-            if not pycountry.languages.get(alpha_2=code)
-            or pycountry.languages.get(alpha_2=code).name not in NLLB_LANGUAGE_MAP
+            for code in unsupported_languages(
+                chosen_translation.provider, chosen_translation.model, (plan.spoken_language, *plan.ai_languages)
+            )
         ]
         if unsupported:
             errors.append(

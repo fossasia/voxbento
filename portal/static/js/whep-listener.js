@@ -29,6 +29,7 @@ function createWhepClient() {
   let _audioDelayMs = 0;
   let currentStream = null;
   let playOnTrack = true;
+  let playbackBlocked = false;
   let delayedAudio = {
     context: null,
     source: null,
@@ -54,6 +55,29 @@ function createWhepClient() {
         (!delayedAudio.output || delayedAudio.context.state === 'running')),
       whepUrl:        _whepUrl,
       retrying:       retrying,
+      playbackBlocked: isPlaybackBlocked(),
+    });
+  }
+
+  function isPlaybackBlocked() {
+    return playbackBlocked || Boolean(delayedAudio.context && delayedAudio.context.state === 'suspended');
+  }
+
+  function playAudioEl() {
+    const current = attempt;
+    const audio = _audioEl;
+    const stream = audio.srcObject;
+    audio.play().then(() => {
+      if (attempt !== current || audio !== _audioEl || stream !== audio.srcObject) return;
+      playbackBlocked = false;
+      emitState();
+    }).catch((err) => {
+      if (attempt !== current || audio !== _audioEl || stream !== audio.srcObject) return;
+      log('Autoplay blocked: ' + err.message);
+      if (err && err.name === 'NotAllowedError') {
+        playbackBlocked = true;
+        emitState();
+      }
     });
   }
 
@@ -142,7 +166,7 @@ function createWhepClient() {
 
   function playAudio(autoplay) {
     if (!autoplay) return;
-    _audioEl.play().then(emitState).catch((err) => log('Autoplay blocked: ' + err.message));
+    playAudioEl();
   }
 
   function attachDirectStream(stream, autoplay = true) {
@@ -370,6 +394,7 @@ function createWhepClient() {
     if (closeDelayedContext) {
       if (_audioEl) _audioEl.srcObject = null;
       currentStream = null;
+      playbackBlocked = false;
       cleanupDelayedGraph(true);
     }
   }
@@ -416,10 +441,18 @@ function createWhepClient() {
       emitState();
     },
 
+    resume() {
+      resumeDelayedContext();
+      if (_audioEl && _audioEl.srcObject && _audioEl.paused) {
+        playAudioEl();
+      }
+    },
+
     /** Tear down the session. */
     stop() {
       cleanup();
       retrying = false;
+      playbackBlocked = false;
       emitState();
     },
   };

@@ -19,14 +19,19 @@ for (const [saveStatus, triggerStatus] of [[400, 200], [500, 200], [200, 500], [
   const form = elements.get('room_ai_form');
   form.getAttribute = () => '/save';
   const context = vm.createContext({
-    document: { body: { dataset: {} }, getElementById: (id) => elements.get(id) },
+    document: {
+      body: { dataset: {} },
+      getElementById: (id) => elements.get(id),
+      querySelector: (selector) => (selector === 'meta[name="csrf-token"]' ? { content: 'csrf-test' } : null),
+    },
     FormData: class {},
     console: { error() {}, debug() {} },
     alert: (message) => alerts.push(message),
     window: { location: { reload() { assert.fail('A failed save must preserve the form'); } } },
     setInterval: (callback) => intervals.push(callback),
-    fetch: async (url) => {
+    fetch: async (url, options = {}) => {
       calls.push(url);
+      if (url.includes('trigger_download')) assert.equal(options.headers['X-CSRF-Token'], 'csrf-test');
       const status = url === '/save' ? saveStatus : url.includes('trigger_download') ? triggerStatus : 200;
       return { ok: status === 200, status, json: async () => ({ status: 'missing' }) };
     },
@@ -47,7 +52,7 @@ for (const [saveStatus, triggerStatus] of [[400, 200], [500, 200], [200, 500], [
 const roomDetailSource = readFileSync(new URL('../portal/static/js/room-detail.js', import.meta.url), 'utf8');
 // The room page shares one tab implementation with the booth page instead of keeping its own.
 assert.match(roomDetailSource, /import \{ initTabs \} from '\.\/tabs\.js';/);
-assert.doesNotMatch(roomDetailSource, /function initTabs/);
+assert.doesNotMatch(roomDetailSource, /\bfunction\s+initTabs\b/);
 // vm scripts cannot import, so run the page code without its import line (tabs.js has its own tests).
 const roomDetail = roomDetailSource.replace(/^import .*$/m, '');
 for (const details of [null, { hidden: false }]) {

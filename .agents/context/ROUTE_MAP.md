@@ -55,7 +55,7 @@ credential remains usable alongside a revoked account cookie.
 |---|---|---|---|---|
 | GET | `/interpreter/{event_slug}/{language_code}` | session or user | `interpreter_booth.html` | **Preferred URL**; resolves Jitsi URL, relay WHEP, mediamtx path |
 | GET | `/interpreter/{booth_id}` | session or user | `interpreter_booth.html` | Legacy free-form booth ID; no event scope |
-| GET | `/listener/{event_slug}` | current user session or valid listener join code | `listener-event.html` | Lists rooms/booths for event with WHEP URLs; revoked user cookies fall back to the join form |
+| GET | `/listener/{event_slug}` | current user session or valid listener join code | `listener-event.html` | Lists rooms/booths for event with WHEP URLs; optional `room` and `lang` query params preselect a room and language (kept through the join form); revoked user cookies fall back to the join form |
 | GET | `/overlay/{event_slug}/{room_id}/{language_code}` | join code or current user session | `overlay.html` | Transparent OBS/vMix subtitle layer; booths, floor, and translation-only channels |
 | GET | `/overlay/{event_slug}/{room_id}/{language_code}/session` | join code or current user session | JSON | Revalidates access/channel and issues a fresh caption token; no-store |
 
@@ -74,6 +74,8 @@ credential remains usable alongside a revoked account cookie.
 | GET | `/api/events/{event_slug}/booths/{language_code}/whip-url` | configured token/Bearer | `{whip_url, channel_id, booth_id}` | Validates event ownership first; production protected |
 | POST | `/api/events/{event_slug}/rooms/{room_id}/booths/{language_code}/transcription/start` / `stop` | configured token/Bearer, or user/session whose booth role can go live (cookie-only requests must be same-origin) | `{status, …}` | Booth page calls these when the interpreter goes live or off live. An interpreter can stop only while live or when nobody is live (checked against the session that joined the live participant) |
 | GET | `/api/interpreter/status/{channel_id:path}` | open | `{channel_id, state, reachable}` | MediaMTX reachability (preflight check) |
+| DELETE | `/api/events/{event_slug}/rooms/{room_id}/booths/{language_code}` | configured token/Bearer, or event owner/admin | 204 No Content | Deletes booth by integer internal `Room.id`; stops worker; production protected |
+| DELETE | `/api/events/{event_slug}/eventyay-rooms/{eventyay_room_id}/booths/{language_code}` | configured token/Bearer, or event owner/admin | 204 No Content | Deletes booth by external string `Room.eventyay_room_id`; stops worker; production protected |
 
 ---
 

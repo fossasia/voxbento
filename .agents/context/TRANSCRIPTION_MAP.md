@@ -18,7 +18,7 @@ Active interpreter Go Live
         │
         ▼
    ffmpeg (spawned by transcription worker)
-   -rtsp_transport tcp → PCM s16le 16kHz mono → stdout pipe
+   -rtsp_transport tcp → PCM s16le mono at provider.sample_rate (16kHz, 24kHz for OpenAI) → stdout pipe
 ```
 
 ### 2. Floor Audio Pipeline
@@ -85,11 +85,14 @@ Jitsi Meet Floor Conference
 | `portal/transcription/providers/local.py` | `LocalProvider` — faster-whisper CPU; model cache + LRU eviction |
 | `portal/transcription/providers/openai.py` | `OpenAIProvider` — whisper-1 (REST) + gpt-4o-realtime (WebSocket) |
 | `portal/transcription/providers/atlascloud.py` | `AtlasCloudProvider` — Seed ASR 2.0 async Audio API |
-| `portal/transcription/providers/deepgram.py` | `DeepgramProvider` — nova-2 WebSocket streaming |
+| `portal/transcription/providers/deepgram.py` | `DeepgramProvider` — nova-3/nova-2 WebSocket streaming; glossary source terms (`speech_keyterms` in `portal/translations/vocabulary.py`, read once per stream, honours `floor_ai_vocabulary_enabled`) sent as nova-3 `keyterm`s or nova-2 `keywords=term:2`; settled chunks collected until `speech_final`/`UtteranceEnd` |
 | `portal/transcription/providers/nvidia.py` | `NVIDIAProvider` — Parakeet-RNNT/CTC via Riva gRPC |
 | `portal/transcription/providers/elevenlabs.py` | `ElevenLabsProvider` — scribe_v2 |
-| `portal/translations/worker.py` | `start_translation_worker()`, LLM translation loop, multithreaded translation dispatch |
-| `portal/translations/constants.py` | Translation models enum mapped to Anthropic, OpenAI, Groq, Gemini, etc. |
+| `portal/translations/worker.py` | `TranslationWorker`: per-language translation dispatch, timeouts and delivery; `ENGINES` maps each provider to its `TranslationEngine` |
+| `portal/translations/engine.py` | `TranslationEngine` interface (`translate_batch`, `translate_text`), `Language`, `TranslationContext`, `EngineKind`; the worker calls engines only through it |
+| `portal/translations/providers/` | Backends: `LocalProvider` (NLLB, an engine itself) and the prompt-based cloud providers, wrapped by `ProviderEngine` in `base.py` |
+| `portal/translations/constants.py` | Translation providers and the hosted models offered for each; the self-hosted list comes from the registry |
+| `portal/translations/registry.py` | `TranslationModel`: one entry per self-hosted model (engine kind, pinned Hugging Face repo and revision, ISO 639-1 to model language codes, memory, capabilities, licence); `get_translation_model()` |
 | `portal/translations/prompts.py` | Contextual prompt construction incorporating room AI persona and style instructions |
 | `portal/translations/vocabulary.py` | AI interpretation vocabulary & glossary resolution, CSV import/export, and matching |
 | `portal/tts/worker.py` | `TTSWorker`, buffers punctuation, chunks text, routes to a TTS provider, pushes raw PCM binary to `tts_manager` |
@@ -105,7 +108,7 @@ Jitsi Meet Floor Conference
 | `local` | `LocalProvider` | `tiny`, `base`, `small`, `medium`, `large-v2`, `large-v3` | None | CPU inference via `faster-whisper` (in thread pool) |
 | `openai` | `OpenAIProvider` | `whisper-1`, `gpt-4o-realtime-preview`, `gpt-4o-mini-realtime-preview` | `openai_api_key` | REST (whisper-1) or WebSocket realtime |
 | `atlascloud` | `AtlasCloudProvider` | `bytedance/seed-asr-2.0` | `atlascloud_api_key` | Async JSON submit + prediction polling |
-| `deepgram` | `DeepgramProvider` | `nova-2` | `deepgram_api_key` | WebSocket streaming (with `numerals=true` for interpretation) |
+| `deepgram` | `DeepgramProvider` | `nova-3`, `nova-2` | `deepgram_api_key` | WebSocket streaming (with `numerals=true` for interpretation) |
 | `nvidia` | `NVIDIAProvider` | `parakeet-rnnt`, `parakeet-ctc` | `nvidia_api_key` | Riva gRPC |
 | `elevenlabs` | `ElevenLabsProvider` | `scribe_v2` | `elevenlabs_api_key` | — |
 
@@ -129,7 +132,7 @@ External provider use requires `event.transcription_api_enabled = True`.
 ### `transcription_worker(...)` (internal)
 
 1. Builds the canonical MediaMTX path with `make_mediamtx_path(event_slug, room_id, language_code)` and prefixes it with `settings.mediamtx_rtsp_base`, producing `rtsp://mediamtx:8554/{event_slug}/{room_id}/{language_code}`.
-2. Spawns ffmpeg: PCM s16le 16kHz mono via subprocess pipe.
+2. Spawns ffmpeg: PCM s16le mono at `provider.sample_rate` (16kHz, 24kHz for OpenAI) via subprocess pipe.
 3. Starts `stderr_task` to drain ffmpeg stderr (debug log only).
 4. Calls `provider.run_stream(process, ...)` — blocks until stream ends.
 5. `finally`: kills ffmpeg, removes from `active_workers`/`active_processes`.
@@ -142,7 +145,7 @@ Cancels the asyncio Task and awaits it; removes from state dicts.
 
 ## Audio Chunking (default `run_stream` in `base.py`)
 
-- Chunk size: `16000 * 2 * 3 = 96000 bytes` = 3 seconds of PCM.
+- Chunk size: `self.sample_rate * 2 * 3` bytes = 3 seconds of PCM (96000 bytes at 16kHz).
 - Reader queues chunks into `asyncio.Queue(maxsize=2)`.
 - Queue full → oldest chunk dropped; `booth_state.chunks_dropped_total` incremented.
 - `consecutive_drops >= 3` → sends `[Server overloaded…]` error.
