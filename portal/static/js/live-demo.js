@@ -328,11 +328,11 @@ function setSourceText(text, kind) {
   els.sourceText.dataset.kind = kind;
 }
 
-function setRowText(code, text) {
+function setRowText(code, text, kind) {
   const row = els.rows.querySelector(`[data-lang="${code}"] [data-role="text"]`);
   if (!row) return;
   renderHighlighted(row, text, glossaryTerms(run?.glossary || [], code));
-  row.dataset.kind = 'final';
+  row.dataset.kind = kind;
 }
 
 /** Show a caption with its glossary terms marked, built from text nodes (never as HTML). */
@@ -585,7 +585,8 @@ function onMessage(r, raw) {
     case 'translation':
       if (msg.text && msg.id >= (r.shown[msg.lang] || 0)) {
         r.shown[msg.lang] = msg.id;
-        setRowText(msg.lang, msg.text);
+        // A late translation of an earlier caption stays dimmed until the current one's arrives.
+        setRowText(msg.lang, msg.text, msg.id === r.lastFinal ? 'final' : 'stale');
       }
       break;
     case 'audio':

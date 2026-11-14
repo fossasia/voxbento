@@ -596,12 +596,18 @@ def clean_transcript(text: str) -> str:
 
 
 def is_prompt_echo(text: str, hints: Sequence[str]) -> bool:
-    """Whether Whisper only repeated its glossary prompt, as it does on noise or silence."""
-    words = re.findall(r"\w+", text.casefold())
-    if not words or words[0] == "glossary":
-        return True
+    """Whether Whisper only repeated its glossary prompt, as it does on noise or silence.
+
+    That is text made only of glossary terms, optionally after the prompt's "Glossary" label.
+    Without a glossary there is no prompt to repeat, so nothing counts as an echo.
+    """
     hint_words = {word for hint in hints for word in re.findall(r"\w+", hint.casefold())}
-    return bool(hint_words) and all(word in hint_words for word in words)
+    if not hint_words:
+        return False
+    words = re.findall(r"\w+", text.casefold())
+    if words[:1] == ["glossary"] and "glossary" not in hint_words:
+        words = words[1:]
+    return all(word in hint_words for word in words)
 
 
 @dataclass(frozen=True)
@@ -825,9 +831,7 @@ class LiveDemoSession:
         self._chunks: asyncio.Queue[Chunk | None] = asyncio.Queue()
         self._captions: asyncio.Queue[tuple[int, str] | None] = asyncio.Queue()
         self._aggregator = CaptionAggregator(self._on_caption)
-        # The provider drops words inside the first second of every chunk (the overlap), so
-        # the stream starts with a second of silence for the first words to survive.
-        self._whisper_state = BoothTranscriptionState(booth_id=_STREAM, overlap_buffer=bytes(OVERLAP_BYTES))
+        self._whisper_state = BoothTranscriptionState(booth_id=_STREAM)
         self._closing = False
         self._tasks: list[asyncio.Task[None]] = []
 
@@ -896,9 +900,15 @@ class LiveDemoSession:
 
     async def _transcription_loop(self) -> None:
         carry: Chunk | None = None
+        #: The end of the stream was taken off the queue while merging chunks.
+        stream_ended = False
         while True:
-            chunk = carry if carry is not None else await self._chunks.get()
-            carry = None
+            if carry is not None:
+                chunk, carry = carry, None
+            elif stream_ended:
+                chunk = None
+            else:
+                chunk = await self._chunks.get()
             if chunk is None:
                 await self._aggregator.handle_clear(_STREAM)
                 await self._captions.put(None)
@@ -907,7 +917,10 @@ class LiveDemoSession:
             # audio as the booth pipeline does when it lags: a visitor wants every word.
             while not chunk.ends_utterance and not self._chunks.empty():
                 later = self._chunks.get_nowait()
-                if later is None or len(chunk.audio) + len(later.audio) > MAX_MERGED_SECONDS * BYTES_PER_SECOND:
+                if later is None:
+                    stream_ended = True
+                    break
+                if len(chunk.audio) + len(later.audio) > MAX_MERGED_SECONDS * BYTES_PER_SECOND:
                     carry = later
                     break
                 chunk = chunk.merged_with(later)

@@ -342,6 +342,9 @@ def test_prompt_echo_is_recognised():
     assert live_demo.is_prompt_echo("Arnav, Eventyay, Voxbento, Fossasia.", hints)
     assert live_demo.is_prompt_echo("Glossary: Eventyay.", hints)
     assert not live_demo.is_prompt_echo("Welcome to Eventyay.", hints)
+    # Real speech that only starts with the word is kept, with or without a glossary.
+    assert not live_demo.is_prompt_echo("Glossary entries help translators.", hints)
+    assert not live_demo.is_prompt_echo("Glossary entries help translators.", ())
     assert not live_demo.is_prompt_echo("Welcome.", ())
 
 
@@ -361,6 +364,9 @@ async def test_local_transcribe_uses_the_booth_whisper_with_a_glossary_prompt(mo
     )
     state = live_demo.BoothTranscriptionState(booth_id="x")
     assert await live_demo._local_transcribe(b"\0\0", request, state) == "Welcome to Eventyay."
+    no_glossary = live_demo.DemoRequest(source=lang("en"), targets=(lang("fr"),), listen=None)
+    outputs.insert(0, "Glossary entries help translators.")
+    assert await live_demo._local_transcribe(b"\0\0", no_glossary, state) == "Glossary entries help translators."
     # Whisper only repeated its prompt: nothing was said.
     assert await live_demo._local_transcribe(b"\0\0", request, state) == ""
     assert calls[0] == ("en", "base", state, "Glossary: Eventyay, VoxBento.")
@@ -545,6 +551,20 @@ def test_chunks_beyond_the_queue_limit_are_dropped():
     for f in frames(30 * (live_demo.MAX_QUEUED_CHUNKS + 3)):
         session.push_audio(f)
     assert session._chunks.qsize() == live_demo.MAX_QUEUED_CHUNKS
+
+
+@pytest.mark.anyio
+async def test_a_try_that_ends_in_silence_finishes_at_once():
+    fake = FakeEngines()
+    sent, send_json, send_bytes = collector()
+    request = live_demo.DemoRequest(source=lang("en"), targets=(lang("es"),), listen=None)
+    session = live_demo.LiveDemoSession(request, send_json, send_bytes, engines=fake.engines(), audio_lead_seconds=FAST)
+    session.start()
+    # Three seconds of silence queue a silent chunk; stopping then queues the end right behind it.
+    for f in frames(30, silence_frame):
+        session.push_audio(f)
+    await asyncio.wait_for(session.finish(), 1)
+    assert [c for c in fake.calls if c[0] == "transcribe"] == []
 
 
 def test_admission_is_capped():
