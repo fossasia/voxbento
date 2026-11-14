@@ -61,7 +61,7 @@ This keeps real-time prompts bounded and reduces provider latency and token cost
 - Gemini receives the same system text through `systemInstruction`.
 - Anthropic receives the same system text through its `system` field.
 - Self-hosted LLM sends the same messages as OpenAI to the operator's own server (`SELF_HOSTED_LLM_BASE_URL`).
-- The local NLLB provider remains deterministic and does not use LLM persona or style instructions.
+- The local NLLB provider remains deterministic and does not use LLM persona or style instructions. It runs only the models the operator lists in `LOCAL_TRANSLATION_MODELS`, and only Admins download them.
 
 ### Local provider and interpretation settings
 

@@ -25,7 +25,6 @@ from portal.models import DBBooth, Event, Room, RoomTranslationLanguage
 from portal.roles import INTERPRETER
 from portal.transcription.constants import ALLOWED_MODELS, ProviderEnum
 from portal.translations.model_languages import supported_languages, unsupported_languages
-from portal.translations.registry import NLLB_200_DISTILLED_600M
 from portal.tts.constants import DEEPGRAM_VOICE_MAPPING, ELEVENLABS_SUPPORTED_LANGS, SUPERTONIC_SUPPORTED_LANGS
 from portal.utils import _make_jitsi_url
 
@@ -178,6 +177,7 @@ def voice_languages_for(provider: str) -> Iterable[str]:
 
 _KEY_ADDED = "uses your API key"
 _SELF_HOSTED = "free, downloads the first time it's used"
+_ADMIN_DOWNLOADS = "free, an Admin downloads it first"
 _SERVER_MODEL = "runs on this server's own AI model"
 
 # (provider, default model, label, event key attribute). Cloud first: they are faster
@@ -287,7 +287,13 @@ def engine_catalog(event: Event) -> EngineCatalog:
         else:
             locked.append(_BRANDS[provider])
             locked_translation.append(_BRANDS[provider])
-    translation.append(Engine("local", NLLB_200_DISTILLED_600M.id, "NLLB (built in)", _SELF_HOSTED))
+    default_local_model = settings.local_translation_model_or_default(None)
+    if default_local_model:
+        translation.append(Engine("local", default_local_model, "NLLB (built in)", _ADMIN_DOWNLOADS))
+    else:
+        reason = "NLLB (built in) needs LOCAL_TRANSLATION_MODELS"
+        unavailable.append(reason)
+        unavailable_reasons["local"] = reason
     # After NLLB so new rooms keep the built-in default; the operator's server may be slow or stopped.
     if settings.self_hosted_llm_enabled:
         translation.append(
@@ -578,7 +584,7 @@ async def apply_plan(
     if ai_codes:
         translation = catalog.find("translation", plan.translation_engine)
         # Keep a model chosen on the Captions tab while the provider stays the same, unless the
-        # operator has since taken that model off the self-hosted allow list.
+        # operator has since taken that model off the self-hosted or built-in allow list.
         if translation and (
             translation.provider != room.floor_translation_provider
             or not room.floor_translation_model
@@ -586,6 +592,7 @@ async def apply_plan(
                 translation.provider == "self_hosted"
                 and not settings.self_hosted_llm_allows(room.floor_translation_model)
             )
+            or (translation.provider == "local" and not settings.local_translation_allows(room.floor_translation_model))
         ):
             room.floor_translation_provider = translation.provider
             room.floor_translation_model = translation.model

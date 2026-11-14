@@ -259,11 +259,6 @@
           </select>
         </div>
       </details>
-      <div id="nllb_download_progress_container" class="download-progress" hidden>
-        <span id="nllb_download_speed" class="download-speed">-- MB/s</span>
-        <div class="progress-track"><div id="nllb_download_bar" class="progress-fill"></div></div>
-        <span id="nllb_download_percent" class="download-percent">0%</span>
-      </div>
 
       <details class="room-more" data-translation-instructions {% if room.floor_ai_interpreter_persona or room.floor_ai_interpretation_style %}open{% endif %}>
         <summary>Instructions for the AI translator <span class="rs-label-note">optional</span></summary>
@@ -463,30 +458,6 @@
 </section>
 {% endif %}
 
-</div>
-
-<div id="nllb_download_modal" class="model-modal-overlay" hidden>
-  <div class="model-modal">
-    <h3>Download the built-in translator?</h3>
-    <p>The built-in translator runs on this server. The first time, it has to download a large file, which can take several minutes. Translation starts once it's ready.</p>
-    <div class="model-modal-actions">
-      <button type="button" class="btn btn-secondary" id="nllb_cancel_btn">Cancel</button>
-      <button type="button" class="btn btn-primary" id="nllb_proceed_btn">Download and save</button>
-    </div>
-  </div>
-</div>
-
-<div id="nllb_success_modal" class="model-modal-overlay" hidden>
-  <div class="model-modal model-modal--success">
-    <div class="model-modal-icon">
-      ✓
-    </div>
-    <h3>Translator ready</h3>
-    <p>The built-in translator is downloaded and ready.</p>
-    <div class="model-modal-actions">
-      <button type="button" class="btn btn-primary btn-modal-dismiss" id="nllb_success_got_it_btn">Got it</button>
-    </div>
-  </div>
 </div>
 
 <div id="supertonic_download_modal" class="model-modal-overlay" hidden>

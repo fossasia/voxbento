@@ -19,6 +19,7 @@ import pycountry
 from huggingface_hub.utils import LocalEntryNotFoundError
 from tqdm.auto import tqdm
 
+from portal.config import settings
 from portal.translations.constants import TranslationProviderEnum
 from portal.translations.engine import (
     EngineKind,
@@ -106,6 +107,9 @@ def trigger_download(model_size: str):
             self._custom_model_id = model_size
 
     with _progress_lock:
+        # Checked and set under the lock, so a second request for the same model starts no second download.
+        if _download_progress.get(model_size, {}).get("status") == "downloading":
+            return
         _download_progress[model_size] = {"n": 0, "total": 100, "rate": 0, "status": "downloading"}
 
     try:
@@ -128,6 +132,10 @@ def get_download_progress(model_size: str):
         prog = _download_progress.get(model_size)
         if prog:
             return dict(prog)
+
+    # An operator's own build loaded from a folder is already on the server, as get_model_and_tokenizer treats it.
+    if os.path.exists(model_size):
+        return {"status": "completed", "n": 1, "total": 1, "rate": 0}
 
     # If not in active download, check if it exists on disk
     try:
@@ -190,33 +198,12 @@ def get_model_and_tokenizer(model_size: str):
         import transformers
         from huggingface_hub import snapshot_download
 
-        if not os.path.exists(model_size):
-            try:
-                logger.info(f"Starting download of {model_size} from HuggingFace. This may take a few minutes...")
-
-                class ScopedTqdm(ModelDownloadTqdm):
-                    def __init__(self, *args, **kwargs):
-                        super().__init__(*args, **kwargs)
-                        self._custom_model_id = model_size
-
-                with _progress_lock:
-                    _download_progress[model_size] = {"n": 0, "total": 100, "rate": 0, "status": "downloading"}
-
-                hf_repo_id, rev = _hf_source(model_size)
-
-                local_model_path = snapshot_download(repo_id=hf_repo_id, revision=rev, tqdm_class=ScopedTqdm)
-                with _progress_lock:
-                    _download_progress[model_size]["status"] = "completed"
-                logger.info(f"Successfully downloaded {model_size} to {local_model_path}")
-            except Exception as e:
-                logger.error(f"Failed to download {model_size} from HuggingFace: {e}")
-                with _progress_lock:
-                    _download_progress[model_size] = {"status": "error"}
-                local_model_path = model_size
-        else:
+        if os.path.exists(model_size):
             local_model_path = model_size
-            with _progress_lock:
-                _download_progress[model_size] = {"status": "completed"}
+        else:
+            # Only an Admin downloads a model (#1191), so a room translating never fetches one.
+            hf_repo_id, rev = _hf_source(model_size)
+            local_model_path = snapshot_download(repo_id=hf_repo_id, revision=rev, local_files_only=True)
 
         tokenizer = transformers.AutoTokenizer.from_pretrained(local_model_path, src_lang="eng_Latn", revision="main")  # nosec
         cpu_count = os.cpu_count() or 4
@@ -328,6 +315,10 @@ class LocalProvider(TranslationProvider, TranslationEngine):
             f"[NLLB] translate called: source='{source_lang_name}' -> target='{target_lang_name}' "
             f"model='{model}' text_len={len(text)}"
         )
+        # A room left on a model the operator no longer offers stops here.
+        if not settings.local_translation_allows(model):
+            logger.error("[NLLB] Model %r is not offered on this server (LOCAL_TRANSLATION_MODELS)", model)
+            return None
         # NLLB is sequence-to-sequence and has no system-prompt channel, so persona and style
         # cannot be applied here (glossary terms are, through placeholders). Say so once per
         # process rather than letting configured settings look active.
@@ -395,6 +386,12 @@ class LocalProvider(TranslationProvider, TranslationEngine):
             translated_text = tokenizer.decode(tokenizer.convert_tokens_to_ids(target))
             return translated_text.strip()
 
+        except LocalEntryNotFoundError:
+            logger.error(
+                "[NLLB] Model %r is not downloaded. An Admin must download it on the Translation models page.",
+                model_size,
+            )
+            return None
         except Exception as e:
             import traceback
 

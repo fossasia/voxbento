@@ -566,11 +566,11 @@ def _apply_floor_settings(room, payload_dict: dict):
         room.floor_translation_model = payload_dict["translation_model"]
 
 
-def _check_self_hosted_translation(payload_dict: dict, room: Room | None) -> None:
-    """Reject self-hosted translation this server can't run, before anything is written.
+def _check_server_translation(payload_dict: dict, room: Room | None) -> None:
+    """Reject self-hosted or built-in translation this server can't run, before anything is written.
 
-    An explicit model must be on the allow list; when the model is left out, the room keeps an
-    allowed model it already has or gets the default one. An update that turns translation off is
+    An explicit model must be on the server's allow list; when the model is left out, the room keeps
+    an allowed model it already has or gets the default one. An update that turns translation off is
     never rejected, so it still works after the server or a model is removed.
     """
     if not {"translation_provider", "translation_model", "enable_translation"} & payload_dict.keys():
@@ -578,18 +578,31 @@ def _check_self_hosted_translation(payload_dict: dict, room: Room | None) -> Non
     if payload_dict.get("enable_translation") is False:
         return
     current_provider = room.floor_translation_provider if room else None
-    if payload_dict.get("translation_provider", current_provider) != TranslationProviderEnum.SELF_HOSTED.value:
+    provider = payload_dict.get("translation_provider", current_provider)
+    if provider == TranslationProviderEnum.SELF_HOSTED.value:
+        if not settings.self_hosted_llm_enabled:
+            raise HTTPException(status_code=422, detail="Self-hosted translation is not configured on this server")
+        allows, model_or_default, name = (
+            settings.self_hosted_llm_allows,
+            settings.self_hosted_llm_model_or_default,
+            "self-hosted",
+        )
+    elif provider == TranslationProviderEnum.LOCAL.value:
+        if not settings.local_translation_model_list:
+            raise HTTPException(status_code=422, detail="Built-in translation is not offered on this server")
+        allows, model_or_default, name = (
+            settings.local_translation_allows,
+            settings.local_translation_model_or_default,
+            "built-in",
+        )
+    else:
         return
-    if not settings.self_hosted_llm_enabled:
-        raise HTTPException(status_code=422, detail="Self-hosted translation is not configured on this server")
     model = payload_dict.get("translation_model")
     if model is not None:
-        if not settings.self_hosted_llm_allows(model):
-            raise HTTPException(status_code=422, detail="translation_model is not allowed for self-hosted translation")
+        if not allows(model):
+            raise HTTPException(status_code=422, detail=f"translation_model is not allowed for {name} translation")
         return
-    payload_dict["translation_model"] = settings.self_hosted_llm_model_or_default(
-        room.floor_translation_model if room else None
-    )
+    payload_dict["translation_model"] = model_or_default(room.floor_translation_model if room else None)
 
 
 _TRANSLATION_SETUP_FIELDS = {
@@ -671,7 +684,7 @@ async def upsert_room(
     room = room_res.scalars().first()
 
     payload_dict = payload.model_dump(exclude_unset=True)
-    _check_self_hosted_translation(payload_dict, room)
+    _check_server_translation(payload_dict, room)
     await _check_translation_languages(db, payload_dict, room)
 
     if room:

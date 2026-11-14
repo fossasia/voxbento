@@ -1,18 +1,8 @@
-// Built-in models (the NLLB translator and the Supertonic voice) download on first use.
-// When the room's AI settings choose one that isn't on the server yet, saving asks first,
-// then saves, starts the download and shows its progress.
+// The built-in Supertonic voice downloads on first use. When the room's AI settings choose it
+// and it isn't on the server yet, saving asks first, then saves, starts the download and shows
+// its progress. Built-in translation models are downloaded by Admins only (#1191).
 
 const DOWNLOADS = {
-  nllb: {
-    wanted: () => document.getElementById('floor_translation_provider')?.value === 'local',
-    model: () => document.getElementById('floor_translation_model')?.value || 'nllb-200-distilled-600M',
-    progressUrl: (prefix, model) => `${prefix}/models/download_progress?model=${encodeURIComponent(model)}`,
-    trigger: (prefix, model) => fetch(`${prefix}/models/trigger_download`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json', 'X-CSRF-Token': csrfToken() },
-      body: JSON.stringify({ model }),
-    }),
-  },
   supertonic: {
     wanted: () => document.getElementById('floor_tts_provider')?.value === 'supertonic',
     model: () => '',
