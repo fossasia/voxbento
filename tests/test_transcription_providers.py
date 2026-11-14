@@ -620,3 +620,44 @@ class TestTranscriptionProviders:
             assert kwargs.get("log_prob_threshold") == -1.0
             assert kwargs.get("condition_on_previous_text") is False
             assert kwargs.get("vad_filter") is True
+
+
+class _Word:
+    def __init__(self, word: str, end: float) -> None:
+        self.word, self.end = word, end
+
+
+class _Segment:
+    def __init__(self, *words: _Word) -> None:
+        self.words = list(words)
+        self.text = " ".join(w.word for w in words)
+
+
+@pytest.mark.anyio
+async def test_local_whisper_drops_only_the_overlap_it_actually_heard_again():
+    """Words in the overlap are dropped by its real length: none for a first chunk, and a
+    chunk shorter than a second does not shorten the next overlap."""
+    from portal.transcription.providers.base import BoothTranscriptionState
+    from portal.transcription.providers.local import OVERLAP_BYTES, LocalProvider
+
+    heard: list[float] = []
+    words = [_Segment(_Word("early", 0.5), _Word("late", 1.5))]
+
+    class FakeModel:
+        def transcribe(self, audio, **kwargs):
+            heard.append(len(audio) / 16000)
+            return words, None
+
+    provider = LocalProvider()
+    state = BoothTranscriptionState(booth_id="b")
+    config = ProviderConfig(api_key=None)
+    with patch("portal.transcription.providers.local.get_model", return_value=FakeModel()):
+        # The first chunk has no overlap: a word ending at 0.5 s is new speech.
+        assert await provider.process_chunk(b"\0" * 64000, "en", "tiny", config, state) == "early late"
+        assert len(state.overlap_buffer) == OVERLAP_BYTES
+        # A 0.4 s chunk is heard after the full 1 s overlap, and the next overlap is still 1 s.
+        assert await provider.process_chunk(b"\0" * 12800, "en", "tiny", config, state) == "late"
+        assert heard[-1] == pytest.approx(1.4)
+        assert len(state.overlap_buffer) == OVERLAP_BYTES
+        # Without session state there is no overlap at all.
+        assert await provider.process_chunk(b"\0" * 64000, "en", "tiny", config) == "early late"

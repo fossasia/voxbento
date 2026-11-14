@@ -13,6 +13,7 @@
 | GET | `/local` | open | `local.html` | VoxBento Local desktop console download page with client OS detection & release links |
 | GET | `/sitemap.xml` | open | — | XML sitemap; canonical URLs use `PUBLIC_BASE_URL` (default `https://voxbento.com`), not request `Host`; trailing slashes stripped, path prefix preserved, URLs XML-escaped |
 | GET | `/healthz` | open | — | JSON: `{ok, server, mediamtx_ok}` |
+| GET | `/api/demo/live/config` | open | — | Home-page live demo settings from `live_demo_settings` (cached ~10 s): `{enabled, languages:[{code,name,voice}], max_targets, max_seconds, sample_rate, max_glossary, glossary:[{term,lang,translation}]}`, or only `{enabled:false}` when it is off; `no-store` (`portal/live_demo.py`) |
 | GET | `/register` | open | `register.html` | Redirects to `/account` if already logged in |
 | POST | `/register` | open | `register.html` | Creates user, sets `user_token` cookie → `/account`; if `password` is set, `password_confirm` must match (422 otherwise) |
 | GET | `/login` | open | `login.html` | Redirects to `/account` or `?next=` if logged in |
@@ -102,6 +103,7 @@ return 404; successful deletion returns 204.
 | `/ws/booth/{booth_id}` | optional JWT via `?token=` + cookies (`session_token` or `user_token`) | See WebSocket Protocol in `REPOSITORY_CONTEXT.md` |
 | `/ws/captions/{booth_id}` | optional JWT via `?token=` (always validated; user tokens must belong to an active account issued after its session cutoff); listener token, join code (cookie or `?code=`), or current user session required when event has `listener_join_code`; events without a join code retain public caption access with an anonymous connection cap | Receives `booth:state` (listener-safe live/lock status, sent on connect and on change), `caption`, and `translated_caption` messages; listener captions feed. Supports `{event_slug}-{room_id}-{language_code}` (`floor-{room_id}` allowed only in unauthenticated dev). Closes 1011 when the session lookup fails so clients can retry |
 | `/ws/tts/{room_id}/{language_code}/{booth_id}` | JWT query param, session/user token, or listener join code cookie (a cookie code spends the shared join-code budget when connecting); current account state and session cutoff checked for user tokens, credentials rechecked at most every 5 s while bundles are sent (a listener-code recheck only compares the code and spends no budget); a failed DB check withholds the bundle | Receives framed binary bundle messages (1-byte version `0x01`, 4-byte big-endian header length `L`, `L`-byte UTF-8 JSON header, optional 24 kHz 16-bit mono PCM payload) |
+| `/ws/demo/live` | none; same-origin `Origin` required (else 403/4003); refused (close 1008) when the Admin or `LIVE_DEMO_ENABLED=false` switched it off; per-server session cap (close 1013), per-IP hourly budget by ASGI client address (close 1008) and time limit, all from `/admin/live-demo/` (env defaults until saved) | Home-page live demo on local models (faster-whisper → NLLB → Supertonic). Client sends JSON `start` `{source, targets (≤ admin limit), listen, names, glossary:[{term, lang (all or a target), translation}] (≤10)}`, then binary 16 kHz s16le mono frames (≤1 s each), optional `listen`, and `stop`. Server sends `status`, `ready`, `partial`/`final` captions, `translation`, `audio` header followed by one binary 24 kHz PCM frame, `error`, and `done` before closing |
 
 ---
 
@@ -172,6 +174,9 @@ with `?error=invalid_role&role=…` and the page explains why.
 | POST | `/admin/emails/{key}/draft` | — | Admin + same-origin; validates allowed placeholders and saves a draft |
 | POST | `/admin/emails/{key}/publish` | — | Admin + same-origin; publishes the draft and records a revision |
 | POST | `/admin/emails/{key}/test` | — | Admin + same-origin; queues a safe example message to the signed-in Admin |
+| GET | `/admin/live-demo/` | `admin/live_demo.html` | Admin-only settings for the home-page live demo: on/off, voice, speech model, limits, site glossary; shows visitors using it now and whether models are loaded |
+| POST | `/admin/live-demo/` | — | Admin + same-origin; validates ranges and every glossary line, saves the `live_demo_settings` row and replaces the cached settings; 400 re-renders with the error |
+| POST | `/admin/live-demo/warm-up` | — | Admin + same-origin; loads (first time: downloads) the demo's models in a background task |
 | GET | `/admin/hosting-access/` | `admin/hosting_access.html` | "People with access" tab: hosts and pending hosting invitations, events owned, Remove access / Cancel invitation (#768) |
 | GET | `/admin/hosting-access/requests/` | `admin/hosting_access.html` | "Requests" tab: open hosting requests, newest first |
 | POST | `/admin/hosting-access/requests/{request_id}/grant` | — | Same-origin; sets `can_host`, closes request as `granted`, emails the person |

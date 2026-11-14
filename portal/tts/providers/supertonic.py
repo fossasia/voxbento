@@ -107,6 +107,11 @@ class SupertonicTTSProvider(TTSProvider):
                     logger.info("[TTS] Supertonic engine ready.")
         return cls._tts
 
+    @classmethod
+    def engine_loaded(cls) -> bool:
+        """Whether the shared engine has been built (it stays for the life of the process)."""
+        return cls._tts is not None
+
     def _resolve_voice(self, voice: str, language_code: str) -> str:
         if voice in SUPERTONIC_PRESET_VOICES:
             return voice

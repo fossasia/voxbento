@@ -269,6 +269,9 @@ jobs:
           node --check portal/static/js/translation-fit.js
           node --check portal/static/js/modal-dialog.js
           node --check portal/static/js/developer.js
+          node --check portal/static/js/live-demo.js
+          node --check portal/static/js/live-demo-core.js
+          node --check portal/static/js/live-demo-capture.js
           node --check .github/scripts/jules-review.mjs
           node --check .github/scripts/agent-attribution-lib.mjs
       - name: run node tests
@@ -291,6 +294,7 @@ jobs:
           node tests/test_tabs.mjs
           node tests/test_translation_fit.mjs
           node tests/test_program_sender_source.mjs
+          node tests/test_live_demo_core.mjs
           node --test tests/test_modal_dialogs.mjs
           node --test tests/test_agent_attribution.mjs
 
