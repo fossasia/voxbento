@@ -32,7 +32,12 @@ from portal.rate_limit import auth_rate_limiter
 from portal.roles import EVENT_OWNER
 from portal.transcription.constants import ProviderEnum
 from portal.transcription.providers.sarvam import is_supported_sarvam_language
-from portal.transcription.worker import active_workers, start_transcription_worker, stop_transcription_worker
+from portal.transcription.worker import (
+    active_workers,
+    is_worker_running,
+    start_transcription_worker,
+    stop_transcription_worker,
+)
 from portal.translations.constants import TranslationProviderEnum
 from portal.translations.model_languages import language_support_error
 from portal.websockets.revocation import revoke_booths_for_deleted_entity
@@ -1094,7 +1099,7 @@ async def get_transcription_status(
             "is_active": booths.get_booth_sync(bid) is not None,
             # Running transcription is tracked by the worker registry, not on the
             # in-memory Booth, which has no transcription_task attribute.
-            "transcription_running": bid in active_workers,
+            "transcription_running": is_worker_running(active_workers.get(bid)),
         }
 
     return {"room_id": target_room_id, "statuses": statuses}

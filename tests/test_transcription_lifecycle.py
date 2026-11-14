@@ -742,3 +742,18 @@ async def test_worker_retries_on_normal_eof_return(mock_providers):
     assert calls == 2
     await stop_transcription_worker("evt-1-en-eof")
     assert active_workers.get("evt-1-en-eof") is None
+
+
+@pytest.mark.anyio
+async def test_is_worker_running_distinguishes_states():
+    """Verify is_worker_running accurately reflects session states."""
+    from types import SimpleNamespace
+
+    from portal.transcription.worker import State, is_worker_running
+
+    assert is_worker_running(None) is False
+    assert is_worker_running(SimpleNamespace(state=State.STOPPED)) is False
+    assert is_worker_running(SimpleNamespace(state=State.STOPPING)) is False
+    assert is_worker_running(SimpleNamespace(state=State.RUNNING)) is True
+    assert is_worker_running(SimpleNamespace(state=State.STARTING)) is True
+    assert is_worker_running(object()) is True

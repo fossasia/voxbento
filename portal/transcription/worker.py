@@ -218,6 +218,16 @@ class TranscriptionWorkerSession:
 active_workers: Dict[str, TranscriptionWorkerSession] = {}
 
 
+def is_worker_running(session: object | None) -> bool:
+    """Return True when a worker registry entry is actively starting or running."""
+    if session is None:
+        return False
+    state = getattr(session, "state", None)
+    if isinstance(state, State):
+        return state in (State.STARTING, State.RUNNING)
+    return True
+
+
 async def start_transcription_worker(
     event_slug: str,
     language_code: str,
