@@ -721,6 +721,16 @@ async def reconcile_processing(
         room_id=room.id,
         restart_on_key_change=True,
     )
+    if started.status == "failed":
+        logger.warning(
+            "program_ingest transcription_start_failed room_id=%s booth_id=%s error_code=%s",
+            room.id,
+            booth_id,
+            getattr(started, "error_code", None),
+        )
+        current.state, current.reason = "degraded", "Transcription worker is stopping; retry shortly."
+        current.processing_state, current.processing_reason = current.state, current.reason
+        return
     current.worker_config = config
     if started.status == "started" or current.worker_started_at is None:
         # Read the clock again: replacing the old worker can take a while, and the grace period starts now.

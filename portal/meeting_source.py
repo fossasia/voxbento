@@ -436,6 +436,15 @@ async def reconcile_room(
         room_id=room.id,
         restart_on_key_change=True,
     )
+    if started.status == "failed":
+        logger.warning(
+            "meeting_agent transcription_start_failed room_id=%s booth_id=%s error_code=%s",
+            room.id,
+            booth_id,
+            getattr(started, "error_code", None),
+        )
+        current.state, current.reason = "degraded", "Transcription worker is stopping; retry shortly."
+        return
     current.worker_config = config
     if started.status == "started":
         current.healthy_since = None
