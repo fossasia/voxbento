@@ -64,6 +64,10 @@
         <input type="checkbox" name="voice_enabled"{% if form.voice_enabled %} checked{% endif %}{% if not voice_installed %} disabled{% endif %} aria-describedby="voice-help" />
         Speak the translations aloud
       </label>
+      {% if not voice_installed and form.voice_enabled %}
+      {# A disabled checkbox is not submitted; keep the saved choice for when Supertonic is installed. #}
+      <input type="hidden" name="voice_enabled" value="on" />
+      {% endif %}
       <small id="voice-help" class="live-demo-help">
         {% if voice_installed %}Uses Supertonic on the CPU. Turn it off to save CPU; captions and translations keep working.{% else %}Supertonic isn't installed on this server, so the demo shows captions only.{% endif %}
       </small>

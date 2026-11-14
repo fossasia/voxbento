@@ -160,8 +160,9 @@ async def ws_live_demo(websocket: WebSocket) -> None:
         await websocket.send_json({"type": "status", "state": "warming"})
         try:
             await live_demo.warm_up(demo)
-        except Exception:
-            # Model download or load failures surface as many exception types (OSError, RuntimeError, HF errors).
+        except (OSError, RuntimeError, ValueError):
+            # Downloads fail with OSError (Hugging Face's HTTP errors are OSErrors); CTranslate2 and
+            # ONNX Runtime raise RuntimeError or ValueError for a model they cannot load.
             logger.exception("[LiveDemo] Models could not be loaded")
             await _refuse(websocket, "unavailable", "The speech models aren't ready on this server yet.", 1011)
             return
@@ -182,9 +183,12 @@ async def ws_live_demo(websocket: WebSocket) -> None:
             logger.warning("[LiveDemo] Session results did not finish in %ss", _FINISH_TIMEOUT_SECONDS)
         await websocket.send_json({"type": "done", "reason": reason})
         await websocket.close(code=1000)
-    except (WebSocketDisconnect, RuntimeError):
-        # The visitor closed the tab; RuntimeError is Starlette's "send after close".
-        pass
+    except WebSocketDisconnect:
+        pass  # the visitor closed the tab
+    except RuntimeError as exc:
+        # Starlette raises this for a send after the socket closed. Logged, so any other
+        # RuntimeError from the session is still visible.
+        logger.debug("[LiveDemo] Socket closed: %s", exc)
     finally:
         if session is not None:
             session.cancel()

@@ -45,9 +45,11 @@ from portal.transcription.aggregator import CaptionAggregator
 from portal.transcription.providers.base import BoothTranscriptionState, ProviderConfig
 from portal.transcription.providers.local import LocalProvider as LocalWhisper
 from portal.transcription.providers.local import get_model as get_whisper_model
+from portal.transcription.providers.local import is_model_loaded as whisper_loaded
 from portal.translations.engine import Language, TranslationContext
 from portal.translations.providers.local import LocalProvider as LocalTranslator
 from portal.translations.providers.local import get_model_and_tokenizer
+from portal.translations.providers.local import is_model_loaded as translator_loaded
 from portal.translations.registry import NLLB_200_DISTILLED_600M
 from portal.translations.vocabulary import (
     VocabularyEntryInput,
@@ -101,6 +103,11 @@ OVERLAP_BYTES = BYTES_PER_SECOND  # the provider's one-second overlap
 END_SILENCE_SECONDS = 0.7
 #: When transcription falls behind, waiting chunks are transcribed together up to this length.
 MAX_MERGED_SECONDS = 9.0
+#: Audio is accepted at most this far ahead of real time. A browser sends it as it records;
+#: a client sending faster would only queue work and memory.
+MAX_AUDIO_LEAD_SECONDS = 3.0
+#: Chunks waiting for Whisper beyond which new ones are dropped (24 s of audio).
+MAX_QUEUED_CHUNKS = 8
 #: Someone who never pauses or punctuates still gets a finished caption this often.
 FORCE_FINAL_WORDS = 25
 FORCE_FINAL_SECONDS = 8.0
@@ -201,8 +208,10 @@ def voice_installed() -> bool:
 
 
 def env_defaults() -> DemoSettings:
+    """The settings before an Admin has saved any: off, so an upgrade never exposes the demo
+    (and its model loads) on a server nobody chose to run it on."""
     return DemoSettings(
-        enabled=settings.live_demo_enabled,
+        enabled=False,
         voice_enabled=settings.live_demo_voice_enabled,
         whisper_model=settings.live_demo_whisper_model,
         max_sessions=settings.live_demo_max_sessions,
@@ -743,16 +752,18 @@ LOCAL_ENGINES = Engines(transcribe=_local_transcribe, translate=_local_translate
 
 
 _warm_lock = asyncio.Lock()
-#: (speech model, translation model, voice) combinations already loaded in this process.
-_warmed: set[tuple[str, str, bool]] = set()
-
-
-def _warm_key(demo: DemoSettings) -> tuple[str, str, bool]:
-    return (demo.whisper_model, settings.live_demo_translation_model, demo.voice)
 
 
 def models_ready(demo: DemoSettings) -> bool:
-    return _warm_key(demo) in _warmed
+    """Whether every model the demo needs is in memory now.
+
+    Asked of the providers each time, because they evict a model left idle for an hour.
+    """
+    return (
+        whisper_loaded(demo.whisper_model)
+        and translator_loaded(settings.live_demo_translation_model)
+        and (not demo.voice or SupertonicTTSProvider.engine_loaded())
+    )
 
 
 def models_loading() -> bool:
@@ -764,18 +775,16 @@ async def warm_up(demo: DemoSettings) -> None:
 
     Otherwise the first sentence would wait for a download mid-run.
     """
-    key = _warm_key(demo)
-    if key in _warmed:
+    if models_ready(demo):
         return
     async with _warm_lock:
-        if key in _warmed:
+        if models_ready(demo):
             return
         await asyncio.to_thread(get_whisper_model, demo.whisper_model)
         await asyncio.to_thread(get_model_and_tokenizer, settings.live_demo_translation_model)
         if demo.voice:
             # A short synthesis loads the engine and the English voice style.
             await _local_synthesize("Hello.", "en")
-        _warmed.add(key)
 
 
 # ── Session ──────────────────────────────────────────────────────────────────
@@ -803,9 +812,14 @@ class LiveDemoSession:
     send_bytes: SendBytes
     engines: Engines = LOCAL_ENGINES
     chunker: Chunker = field(default_factory=Chunker)
+    audio_lead_seconds: float = MAX_AUDIO_LEAD_SECONDS
+    clock: Callable[[], float] = time.monotonic
 
     def __post_init__(self) -> None:
         self.listen = self.request.listen
+        self._started = self.clock()
+        self._received = 0
+        self._dropped = False
         self._next_id = 1
         self._send_lock = asyncio.Lock()
         self._chunks: asyncio.Queue[Chunk | None] = asyncio.Queue()
@@ -836,9 +850,23 @@ class LiveDemoSession:
     def push_audio(self, frame: bytes) -> None:
         if self._closing:
             return
+        allowed = (self.clock() - self._started + self.audio_lead_seconds) * BYTES_PER_SECOND
+        if self._received + len(frame) > allowed:
+            self._note_dropped("audio arriving faster than real time")
+            return
+        self._received += len(frame)
         chunk = self.chunker.push(frame)
-        if chunk is not None:
-            self._chunks.put_nowait(chunk)
+        if chunk is None:
+            return
+        if self._chunks.qsize() >= MAX_QUEUED_CHUNKS:
+            self._note_dropped("transcription too far behind")
+            return
+        self._chunks.put_nowait(chunk)
+
+    def _note_dropped(self, reason: str) -> None:
+        if not self._dropped:
+            self._dropped = True
+            logger.warning("[LiveDemo] Dropping audio: %s", reason)
 
     async def finish(self) -> None:
         """Caption whatever is still being said, then wait for every result to be sent."""

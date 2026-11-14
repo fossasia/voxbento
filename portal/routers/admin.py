@@ -450,16 +450,9 @@ async def admin_live_demo_warm_up(request: Request, db: AsyncSession = Depends(g
     if not verify_same_origin(request):
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Invalid request origin.")
     demo = await live_demo.load_settings(db)
-
-    async def warm() -> None:
-        try:
-            await live_demo.warm_up(demo)
-        except Exception:
-            # Downloads and model loads fail in many ways (OSError, RuntimeError, Hugging Face errors).
-            logger.exception("[LiveDemo] Loading the models from the admin page failed")
-
     if not live_demo.models_ready(demo):
-        track_task(asyncio.create_task(warm()))
+        # track_task logs a failed load.
+        track_task(asyncio.create_task(live_demo.warm_up(demo), name="live-demo-warm-up"))
     return safe_redirect(url="/admin/live-demo/?loading=1", status_code=status.HTTP_303_SEE_OTHER)
 
 

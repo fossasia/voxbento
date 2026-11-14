@@ -41,6 +41,12 @@ def decrement_model_ref(model_size: str):
             _active_booths_per_model[model_size] = max(0, _active_booths_per_model[model_size] - 1)
 
 
+def is_model_loaded(model_size: str) -> bool:
+    """Whether ``model_size`` is in memory now (idle models are evicted after an hour)."""
+    with _model_lock:
+        return model_size in _loaded_models
+
+
 def get_model(model_size: str):
     with _model_lock:
         if model_size in _loaded_models:

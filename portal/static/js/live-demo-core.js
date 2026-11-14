@@ -208,3 +208,23 @@ export function addGlossaryEntry(entries, entry, max) {
   if (rest.length >= max) return { entries, error: `You can add up to ${max} entries.` };
   return { entries: [...rest, next], error: '' };
 }
+
+/** Stop every track of a media stream; safe to call with null. */
+export function stopTracks(stream) {
+  stream?.getTracks().forEach((track) => track.stop());
+}
+
+/**
+ * Keep a microphone stream for a run, or stop it at once when the run ended while the
+ * permission prompt was open (the visitor pressed Stop, or switched tabs).
+ *
+ * @returns {boolean} whether the run took the stream
+ */
+export function adoptStream(run, stream) {
+  if (run.finished) {
+    stopTracks(stream);
+    return false;
+  }
+  run.stream = stream;
+  return true;
+}

@@ -11,16 +11,22 @@ import numpy as np
 import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
+from httpx import ASGITransport, AsyncClient
 from starlette.websockets import WebSocketDisconnect
 
 from portal import live_demo, rate_limit
+from portal.auth import create_user_token, hash_password
 from portal.config import settings
+from portal.database import configure, create_user, dispose, get_session, init_db
+from portal.models import LiveDemoSettings
 from portal.routers.demo import router as demo_router
 from portal.translations.vocabulary import VocabularyEntryInput
 
 FRAME_SECONDS = 0.1
 FRAME_SAMPLES = int(live_demo.SAMPLE_RATE * FRAME_SECONDS)
 ORIGIN = {"origin": "http://testserver"}
+#: Lets a test push audio faster than real time.
+FAST = float("inf")
 
 DEMO = live_demo.DemoSettings(
     enabled=True,
@@ -259,16 +265,15 @@ async def test_local_translate_uses_the_engine_with_each_languages_glossary(monk
 # ── Settings ──────────────────────────────────────────────────────────────────
 
 
-def test_env_defaults_apply_before_anything_is_saved(monkeypatch):
+def test_env_defaults_apply_before_anything_is_saved_and_the_demo_starts_off(monkeypatch):
     monkeypatch.setattr(settings, "live_demo_max_sessions", 4)
     demo = live_demo.settings_from_row(None)
     assert demo.max_sessions == 4
-    assert demo.live
+    # An upgrade never exposes the demo: an Admin switches it on.
+    assert demo.server_allowed and not demo.live
 
 
 def test_server_switch_overrides_saved_settings(monkeypatch):
-    from portal.models import LiveDemoSettings
-
     monkeypatch.setattr(settings, "live_demo_enabled", False)
     row = LiveDemoSettings(
         id=1,
@@ -402,7 +407,7 @@ async def test_session_sends_caption_translations_and_voice_for_the_listened_lan
     fake = FakeEngines()
     sent, send_json, send_bytes = collector()
     request = live_demo.DemoRequest(source=lang("en"), targets=(lang("es"), lang("ja")), listen="ja")
-    session = live_demo.LiveDemoSession(request, send_json, send_bytes, engines=fake.engines())
+    session = live_demo.LiveDemoSession(request, send_json, send_bytes, engines=fake.engines(), audio_lead_seconds=FAST)
     session.start()
     for _ in range(8):
         session.push_audio(speech_frame())
@@ -426,7 +431,7 @@ async def test_session_skips_voice_after_switching_to_a_captions_only_language()
     fake = FakeEngines()
     sent, send_json, send_bytes = collector()
     request = live_demo.DemoRequest(source=lang("en"), targets=(lang("es"), lang("th")), listen="es")
-    session = live_demo.LiveDemoSession(request, send_json, send_bytes, engines=fake.engines())
+    session = live_demo.LiveDemoSession(request, send_json, send_bytes, engines=fake.engines(), audio_lead_seconds=FAST)
     session.set_listen("th")
     assert session.listen is None
     session.start()
@@ -446,7 +451,7 @@ async def test_a_failing_translation_leaves_the_rows_blank_and_captions_continue
     sent, send_json, send_bytes = collector()
     request = live_demo.DemoRequest(source=lang("en"), targets=(lang("es"), lang("fr")), listen=None)
     engines = live_demo.Engines(fake.transcribe, broken_translate, fake.synthesize)
-    session = live_demo.LiveDemoSession(request, send_json, send_bytes, engines=engines)
+    session = live_demo.LiveDemoSession(request, send_json, send_bytes, engines=engines, audio_lead_seconds=FAST)
     session.start()
     for f in frames(5):
         session.push_audio(f)
@@ -461,7 +466,7 @@ async def test_captions_finish_at_each_sentence_while_someone_keeps_talking():
     fake = FakeEngines(["Welcome to the summit, everyone.", "Our first speaker", "joins us on stage now."])
     sent, send_json, send_bytes = collector()
     request = live_demo.DemoRequest(source=lang("en"), targets=(lang("es"),), listen=None)
-    session = live_demo.LiveDemoSession(request, send_json, send_bytes, engines=fake.engines())
+    session = live_demo.LiveDemoSession(request, send_json, send_bytes, engines=fake.engines(), audio_lead_seconds=FAST)
     session.start()
 
     def finals():
@@ -487,7 +492,7 @@ async def test_waiting_chunks_are_transcribed_in_one_call():
     fake = FakeEngines()
     sent, send_json, send_bytes = collector()
     request = live_demo.DemoRequest(source=lang("en"), targets=(lang("es"),), listen=None)
-    session = live_demo.LiveDemoSession(request, send_json, send_bytes, engines=fake.engines())
+    session = live_demo.LiveDemoSession(request, send_json, send_bytes, engines=fake.engines(), audio_lead_seconds=FAST)
     session.start()
     for f in frames(60):
         session.push_audio(f)
@@ -501,7 +506,7 @@ async def test_older_captions_are_skipped_when_they_pile_up():
     fake = FakeEngines()
     sent, send_json, send_bytes = collector()
     request = live_demo.DemoRequest(source=lang("en"), targets=(lang("es"),), listen="es")
-    session = live_demo.LiveDemoSession(request, send_json, send_bytes, engines=fake.engines())
+    session = live_demo.LiveDemoSession(request, send_json, send_bytes, engines=fake.engines(), audio_lead_seconds=FAST)
     session.start()
     for text in ("One.", "Two.", "Three."):
         await session._on_caption("stream", {"status": "final", "text": text})
@@ -511,6 +516,35 @@ async def test_older_captions_are_skipped_when_they_pile_up():
     # Rows show only the latest caption: the backlog is skipped, not translated late.
     assert translated == [3]
     assert spoken == [3]
+
+
+@pytest.mark.anyio
+async def test_audio_faster_than_real_time_is_dropped():
+    fake = FakeEngines()
+    sent, send_json, send_bytes = collector()
+    now = [100.0]
+    request = live_demo.DemoRequest(source=lang("en"), targets=(lang("es"),), listen=None)
+    session = live_demo.LiveDemoSession(request, send_json, send_bytes, engines=fake.engines(), clock=lambda: now[0])
+    # Ten seconds of audio sent in an instant: only the allowed lead (3 s) is taken.
+    for f in frames(100):
+        session.push_audio(f)
+    assert session._received == 3 * live_demo.BYTES_PER_SECOND
+    # As real time passes, audio is accepted again.
+    now[0] += 2.0
+    for f in frames(20):
+        session.push_audio(f)
+    assert session._received == 5 * live_demo.BYTES_PER_SECOND
+
+
+def test_chunks_beyond_the_queue_limit_are_dropped():
+    fake = FakeEngines()
+    sent, send_json, send_bytes = collector()
+    request = live_demo.DemoRequest(source=lang("en"), targets=(lang("es"),), listen=None)
+    session = live_demo.LiveDemoSession(request, send_json, send_bytes, engines=fake.engines(), audio_lead_seconds=FAST)
+    # Not started, so nothing takes chunks off the queue.
+    for f in frames(30 * (live_demo.MAX_QUEUED_CHUNKS + 3)):
+        session.push_audio(f)
+    assert session._chunks.qsize() == live_demo.MAX_QUEUED_CHUNKS
 
 
 def test_admission_is_capped():
@@ -623,23 +657,37 @@ def test_socket_ends_the_run_at_the_time_limit(client, demo_config):
 
 
 @pytest.mark.anyio
-async def test_warm_up_loads_each_model_once_per_choice(monkeypatch):
+async def test_warm_up_loads_what_is_not_in_memory_and_reports_it(monkeypatch):
+    loaded: set[str] = set()
     loads: list[str] = []
-    monkeypatch.setattr(live_demo, "_warmed", set())
-    monkeypatch.setattr(live_demo, "get_whisper_model", lambda name: loads.append(f"whisper:{name}"))
-    monkeypatch.setattr(live_demo, "get_model_and_tokenizer", lambda name: loads.append(f"nllb:{name}"))
+
+    def load(name):
+        loads.append(name)
+        loaded.add(name)
 
     async def fake_synthesize(text, language):
-        loads.append("voice")
+        load("voice")
         return b""
 
+    monkeypatch.setattr(live_demo, "get_whisper_model", lambda name: load(f"whisper:{name}"))
+    monkeypatch.setattr(live_demo, "get_model_and_tokenizer", lambda name: load(f"nllb:{name}"))
+    monkeypatch.setattr(live_demo, "whisper_loaded", lambda name: f"whisper:{name}" in loaded)
+    monkeypatch.setattr(live_demo, "translator_loaded", lambda name: f"nllb:{name}" in loaded)
+    monkeypatch.setattr(live_demo.SupertonicTTSProvider, "engine_loaded", classmethod(lambda cls: "voice" in loaded))
     monkeypatch.setattr(live_demo, "_local_synthesize", fake_synthesize)
-    await asyncio.gather(live_demo.warm_up(DEMO), live_demo.warm_up(DEMO))
     nllb = f"nllb:{settings.live_demo_translation_model}"
+
+    assert not live_demo.models_ready(DEMO)
+    await asyncio.gather(live_demo.warm_up(DEMO), live_demo.warm_up(DEMO))
     assert loads == ["whisper:base", nllb, "voice"]
     assert live_demo.models_ready(DEMO)
-    await live_demo.warm_up(dataclasses.replace(DEMO, whisper_model="tiny", voice_enabled=False))
-    assert loads[3:] == ["whisper:tiny", nllb]
+
+    # The provider evicted an idle model: the demo is no longer ready and loads it again.
+    loaded.discard("whisper:base")
+    assert not live_demo.models_ready(DEMO)
+    await live_demo.warm_up(DEMO)
+    assert loads[3:] == ["whisper:base", nllb, "voice"]
+    assert live_demo.models_ready(DEMO)
 
 
 # ── Admin page ────────────────────────────────────────────────────────────────
@@ -647,11 +695,9 @@ async def test_warm_up_loads_each_model_once_per_choice(monkeypatch):
 
 @pytest.fixture
 async def admin_http(auto_csrf):
-    from httpx import ASGITransport, AsyncClient
-
+    # Imported here, not at the top: importing the app builds every router and its settings,
+    # which the other tests in this module do not need.
     from fastapi_app import app
-    from portal.auth import create_user_token, hash_password
-    from portal.database import configure, create_user, dispose, get_session, init_db
 
     configure("sqlite+aiosqlite://")
     await init_db()
@@ -732,6 +778,19 @@ async def test_admin_form_refuses_bad_values_without_saving(admin_http, field, v
 
 
 @pytest.mark.anyio
+async def test_saving_without_supertonic_keeps_the_voice_choice(admin_http, monkeypatch):
+    http, tokens = admin_http
+    http.cookies.set("user_token", tokens["admin"])
+    assert (await http.post("/admin/live-demo/", data=FORM)).status_code == 303
+    monkeypatch.setattr(live_demo, "voice_installed", lambda: False)
+    page = await http.get("/admin/live-demo/")
+    # The checkbox is disabled, so the page carries the saved choice in a hidden field.
+    assert '<input type="hidden" name="voice_enabled" value="on" />' in page.text
+    async with get_session() as session:
+        assert (await session.get(LiveDemoSettings, 1)).voice_enabled is True
+
+
+@pytest.mark.anyio
 async def test_only_admins_reach_the_settings(admin_http):
     http, tokens = admin_http
     http.cookies.set("user_token", tokens["member"])
@@ -751,7 +810,7 @@ async def test_admin_can_load_the_models_ahead_of_visitors(admin_http, monkeypat
         warmed.set()
 
     monkeypatch.setattr(live_demo, "warm_up", fake_warm_up)
-    monkeypatch.setattr(live_demo, "_warmed", set())
+    monkeypatch.setattr(live_demo, "models_ready", lambda demo: False)
     response = await http.post("/admin/live-demo/warm-up")
     assert response.status_code == 303
     await asyncio.wait_for(warmed.wait(), 1)

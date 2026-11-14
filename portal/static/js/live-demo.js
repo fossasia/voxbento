@@ -9,6 +9,7 @@ import {
   CLOSE_MESSAGES,
   SCRIPTS,
   addGlossaryEntry,
+  adoptStream,
   doneMessage,
   findTermRanges,
   formatClock,
@@ -16,6 +17,7 @@ import {
   glossaryTerms,
   pickListen,
   routeSummary,
+  stopTracks,
   toggleTarget,
 } from './live-demo-core.js';
 
@@ -83,6 +85,8 @@ const state = {
 
 /** The current run, or null when idle. */
 let run = null;
+/** A finished run whose last translated sentences are still playing, or null. */
+let draining = null;
 
 // ── Setup ─────────────────────────────────────────────────────────────────────
 
@@ -200,8 +204,9 @@ function setMode(mode) {
   els.recording.hidden = voice;
   if (voice) {
     pauseRecording();
-  } else if (run) {
-    stop();
+  } else {
+    if (run) stop();
+    silenceDraining();
   }
 }
 
@@ -261,12 +266,15 @@ function renderRows() {
       const canSpeak = voiced.has(code);
       row.disabled = !canSpeak;
       row.setAttribute('aria-pressed', String(code === state.listen));
-      row.setAttribute(
-        'aria-label',
-        canSpeak ? `${names.get(code)}: listen to this language` : `${names.get(code)}: captions only`,
-      );
+      row.title = canSpeak ? `Listen in ${names.get(code)}` : `${names.get(code)}: captions only`;
+
+      // The row's accessible name is the language and its caption, e.g. "Korean: 안녕하세요".
+      const name = document.createElement('span');
+      name.className = 'live-demo__sr';
+      name.textContent = canSpeak ? `${names.get(code)}: ` : `${names.get(code)}, captions only: `;
 
       const label = document.createElement('span');
+      label.setAttribute('aria-hidden', 'true');
       label.className = 'live-demo__code';
       label.innerHTML = canSpeak ? SPEAKER_ICON : '';
       label.append(code.toUpperCase());
@@ -277,7 +285,7 @@ function renderRows() {
       text.dataset.kind = 'placeholder';
       text.textContent = canSpeak ? 'ready' : 'ready · captions only';
 
-      row.append(label, text);
+      row.append(name, label, text);
       row.addEventListener('click', () => setListen(code));
       return row;
     }),
@@ -442,6 +450,7 @@ function setListen(code) {
 
 async function start() {
   if (run) return;
+  silenceDraining();
   setStatus('');
   const r = {
     ready: false,
@@ -463,13 +472,16 @@ async function start() {
   renderRunState();
 
   try {
-    r.stream = await navigator.mediaDevices.getUserMedia({
+    const stream = await navigator.mediaDevices.getUserMedia({
       audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true, channelCount: 1 },
     });
+    // Stopped while the permission prompt was open: release the microphone straight away.
+    if (!adoptStream(r, stream)) return;
     await r.ctx.audioWorklet.addModule(els.panel.dataset.workletUrl);
     await r.ctx.resume();
   } catch (err) {
     console.warn('[live-demo] Microphone could not be opened', err);
+    stopTracks(r.stream);
     finish(r);
     setStatus(
       err?.name === 'NotAllowedError'
@@ -478,7 +490,8 @@ async function start() {
     );
     return;
   }
-  if (run !== r) {
+  if (run !== r || r.finished) {
+    stopTracks(r.stream);
     finish(r);
     return;
   }
@@ -638,7 +651,7 @@ function stop() {
 }
 
 function releaseMic(r) {
-  r.stream?.getTracks().forEach((track) => track.stop());
+  stopTracks(r.stream);
   r.input?.disconnect();
   r.node?.disconnect();
   if (r.node) r.node.port.onmessage = null;
@@ -654,14 +667,29 @@ function finish(r) {
   if (r.ws && r.ws.readyState <= WebSocket.OPEN) r.ws.close();
   if (r.ctx && r.ctx.state !== 'closed') {
     const remaining = Math.max(0, r.nextTime - r.ctx.currentTime);
-    setTimeout(() => {
-      r.ctx.close().catch((err) => console.warn('[live-demo] Audio context did not close', err));
-    }, remaining * 1000 + 250);
+    // Let the last translated sentences finish, but stay able to silence them.
+    if (remaining > 0) draining = r;
+    setTimeout(() => closeAudio(r), remaining * 1000 + 250);
   }
   if (run === r) {
     run = null;
     renderRunState();
   }
+}
+
+function closeAudio(r) {
+  if (draining === r) draining = null;
+  if (r.ctx && r.ctx.state !== 'closed') {
+    r.ctx.close().catch((err) => console.warn('[live-demo] Audio context did not close', err));
+  }
+}
+
+/** Stop a finished run's remaining speech, before the recording plays or a new run starts. */
+function silenceDraining() {
+  if (!draining) return;
+  const r = draining;
+  stopPlayback(r);
+  closeAudio(r);
 }
 
 init();

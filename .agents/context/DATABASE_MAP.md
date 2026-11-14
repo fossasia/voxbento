@@ -405,7 +405,7 @@ VoxBento logo served by the site). No row means the defaults.
 `max_session_seconds`, `sessions_per_ip_per_hour`, `max_targets` and `glossary`
 (text, one entry per line: `term`, `term = translation` or `term = fr: translation`,
 validated with the AI glossary rules). No row means the `LIVE_DEMO_*` environment
-defaults, and `LIVE_DEMO_ENABLED=false` keeps the demo off whatever the row says.
+defaults with the demo off (an Admin switches it on), and `LIVE_DEMO_ENABLED=false` keeps the demo off whatever the row says.
 `portal/live_demo.py` reads it through a ~10 s cache that saving replaces.
 
 ## Migrations 036–038 — live booth session revocation

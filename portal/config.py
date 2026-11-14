@@ -212,6 +212,7 @@ class Settings(BaseSettings):
 
     # Home-page live demo (/ws/demo/live): visitors speak and get captions, translations and a
     # voice from the server's own models. Public, so its load is capped per server and per IP.
+    # Admins switch it on at /admin/live-demo/ (off until then); False forbids it on this server.
     live_demo_enabled: bool = True
     live_demo_voice_enabled: bool = True
     live_demo_whisper_model: str = "base"

@@ -8,6 +8,7 @@ import assert from 'node:assert/strict';
 import {
   FRAME_SAMPLES,
   addGlossaryEntry,
+  adoptStream,
   findTermRanges,
   glossaryTerms,
   SCRIPTS,
@@ -17,6 +18,7 @@ import {
   frameLevel,
   pickListen,
   routeSummary,
+  stopTracks,
   toggleTarget,
 } from '../portal/static/js/live-demo-core.js';
 
@@ -114,4 +116,28 @@ run('adding glossary entries replaces the same term and language and respects th
   assert.equal(full.entries.length, 2);
   assert.match(full.error, /up to 2/);
   assert.match(addGlossaryEntry([], { term: '  ' }, 2).error, /Type a term/);
+});
+
+function fakeStream() {
+  const tracks = [{ stopped: false, stop() { this.stopped = true; } }];
+  return { tracks, getTracks: () => tracks };
+}
+
+run('a microphone granted after the visitor pressed stop is released at once', () => {
+  const stream = fakeStream();
+  const cancelled = { finished: true };
+  assert.equal(adoptStream(cancelled, stream), false);
+  assert.equal(stream.tracks[0].stopped, true);
+  assert.equal(cancelled.stream, undefined);
+});
+
+run('a microphone granted to a running try is kept', () => {
+  const stream = fakeStream();
+  const running = { finished: false };
+  assert.equal(adoptStream(running, stream), true);
+  assert.equal(running.stream, stream);
+  assert.equal(stream.tracks[0].stopped, false);
+  stopTracks(null);
+  stopTracks(stream);
+  assert.equal(stream.tracks[0].stopped, true);
 });
