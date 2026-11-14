@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+from contextlib import asynccontextmanager
 from unittest.mock import AsyncMock, patch
 
 import pytest
@@ -835,7 +836,7 @@ async def test_download_status_failure_preserves_inference_timeout(db_data, mock
         else "huggingface_hub.snapshot_download"
     )
     with (
-        patch(target, side_effect=PermissionError("private model path")),
+        patch(target, side_effect=PermissionError("private model path")) as mock_probe,
         patch.object(worker, "_call_llm", new_callable=AsyncMock, return_value="Bonjour"),
         patch("portal.tts.worker.synthesize", new_callable=AsyncMock, return_value=b"audio"),
         patch("portal.websockets.manager.tts_manager.broadcast_bundle", new_callable=AsyncMock) as bundle,
@@ -858,6 +859,7 @@ async def test_download_status_failure_preserves_inference_timeout(db_data, mock
             seq=1,
         )
 
+    assert mock_probe.call_count >= 1
     assert wait_for.call_args_list[0].kwargs["timeout"] == 60.0
     assert bundle.await_count == 2
     assert all(call.args[7] == "Bonjour" and call.args[8] is None for call in bundle.call_args_list)
@@ -868,10 +870,6 @@ async def test_download_status_failure_preserves_inference_timeout(db_data, mock
 @pytest.mark.anyio
 async def test_handle_translation_releases_session_before_translating(db_data, mock_broadcast):
     """The initial session that resolves the segment and room must close before inference begins."""
-    from contextlib import asynccontextmanager
-
-    from portal.database import get_session
-
     worker = TranslationWorker(mock_broadcast)
     initial_session_active = False
     initial_session_held_during_inference = False
@@ -920,6 +918,7 @@ async def test_handle_translation_releases_session_before_translating(db_data, m
         )
 
     # During inference, the initial resolving session must already be closed.
-    assert not initial_session_held_during_inference
+    assert len(recorded_targets) == 2
     assert sorted(recorded_targets) == ["es", "fr"]
+    assert not initial_session_held_during_inference
     assert mock_bundle.await_count >= 1

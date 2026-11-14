@@ -193,7 +193,7 @@ class TranslationWorker:
         async with get_session() as session:
             segment = await session.scalar(select(TranscriptSegment).where(TranscriptSegment.id == segment_id))
             if not segment:
-                logger.error(f"[{booth_id_str}] handle_translation abort: segment {segment_id} not found")
+                logger.error("[%s] handle_translation abort: segment %s not found", booth_id_str, segment_id)
                 return
 
             logger.debug(
@@ -208,7 +208,7 @@ class TranslationWorker:
         sentence = self._accumulate_sentence(text)
         tasks = self._build_language_tasks(job, segment_id, sentence, booth_id_str, uuid_segment_id, seq)
         if tasks:
-            logger.error(f"[{booth_id_str}] Spawning {len(tasks)} translation tasks for active listeners")
+            logger.error("[%s] Spawning %d translation tasks for active listeners", booth_id_str, len(tasks))
             await asyncio.gather(*tasks)
 
     async def _resolve_translation_job(

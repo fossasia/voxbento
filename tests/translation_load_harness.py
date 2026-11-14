@@ -532,8 +532,8 @@ def parse_languages(value: str) -> tuple[int, ...]:
 def main(argv: Sequence[str] | None = None) -> int:
     """Run one load test from the command line and print its report.
 
-    Exits 1 when a segment raised out of the worker or any translation was dropped,
-    failed, or got no answer.
+    Exits 1 when a segment raised out of the worker, any translation got no answer,
+    or (unless --allow-loss is set) any translation was dropped or failed.
     """
     parser = argparse.ArgumentParser(description="Load-test the translation worker with a fake engine.")
     defaults = LoadConfig()
