@@ -61,7 +61,7 @@ Jitsi Meet Floor Conference
         ▼
    TTS Worker (tts/worker.py)
    Reads 'final' translated segments → buffers punctuation → routes to TTS provider
-   (Deepgram Aura cloud WebSocket OR Supertonic self-hosted in-process ONNX)
+   (Deepgram Aura cloud WebSocket, ElevenLabs v4 cloud HTTP stream, OR Supertonic self-hosted in-process ONNX)
         │
         ▼
    broadcast_bundle() (WebSocket /ws/tts/{room_id}/{language_code}/{booth_id}) -> AudioScheduler -> Web Audio API
@@ -97,8 +97,8 @@ Jitsi Meet Floor Conference
 | `portal/translations/prompts.py` | Contextual prompt construction incorporating room AI persona and style instructions |
 | `portal/translations/vocabulary.py` | AI interpretation vocabulary & glossary resolution, CSV import/export, and matching |
 | `portal/tts/worker.py` | `TTSWorker`, buffers punctuation, chunks text, routes to a TTS provider, pushes raw PCM binary to `tts_manager` |
-| `portal/tts/providers/` | `TTSProvider` ABC + factory; `DeepgramTTSProvider` (Aura WebSocket) and `SupertonicTTSProvider` (in-process ONNX, 44.1k→24k resample) |
-| `portal/tts/constants.py` | `DEEPGRAM_VOICE_MAPPING` (language→Aura voice) plus Supertonic preset voices, language map, and supported languages |
+| `portal/tts/providers/` | `TTSProvider` ABC + factory; `DeepgramTTSProvider` (Aura WebSocket), `ElevenLabsTTSProvider` (Eleven v4 Turbo → v4 over `/v1/text-to-dialogue/stream`, `pcm_24000`) and `SupertonicTTSProvider` (in-process ONNX, 44.1k→24k resample) |
+| `portal/tts/constants.py` | `DEEPGRAM_VOICE_MAPPING` (language→Aura voice) plus Supertonic preset voices, language map, and supported languages; `ELEVENLABS_DEFAULT_VOICE_ID` and `ELEVENLABS_SUPPORTED_LANGS` (Eleven v4, Thai included) |
 
 ---
 
