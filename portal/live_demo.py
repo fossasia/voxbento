@@ -151,8 +151,6 @@ _NOISE_TRANSCRIPTS = frozenset(
     }
 )
 
-_LANGUAGE_PREFIX = re.compile(r"^([A-Za-z]{2})\s*:\s*(.*)$")
-
 
 class DemoRequestError(ValueError):
     """The browser's start message asked for something the demo does not offer."""
@@ -348,10 +346,18 @@ def parse_glossary(text: str, *, limit: int = MAX_SITE_GLOSSARY) -> tuple[list[V
         term, has_translation, rest = (part.strip() for part in line.partition("="))
         language, translation = "all", term
         if has_translation:
-            prefixed = _LANGUAGE_PREFIX.match(rest)
             # "fr: …" names a language; any other text before a colon is part of the translation.
-            if prefixed and pycountry.languages.get(alpha_2=prefixed.group(1).lower()):
-                language, translation = prefixed.group(1).lower(), prefixed.group(2).strip()
+            # Split on the colon rather than with a regex: Admin input, kept linear in its length.
+            code, has_code, value = rest.partition(":")
+            code = code.strip().lower()
+            if (
+                has_code
+                and len(code) == 2
+                and code.isascii()
+                and code.isalpha()
+                and pycountry.languages.get(alpha_2=code)
+            ):
+                language, translation = code, value.strip()
             else:
                 translation = rest
             if not translation:

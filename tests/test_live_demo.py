@@ -180,6 +180,16 @@ def test_parse_glossary_reports_each_bad_line():
     assert errors[3].startswith("Line 5:") and "formula" in errors[3]
 
 
+def test_parse_glossary_stays_fast_on_long_runs_of_spaces():
+    import time
+
+    started = time.perf_counter()
+    entries, errors = live_demo.parse_glossary("keynote = fr :" + " " * 200_000 + "plénière")
+    assert time.perf_counter() - started < 0.5
+    assert errors == []
+    assert (entries[0].target_language, entries[0].target_term) == ("fr", "plénière")
+
+
 def test_parse_glossary_caps_entries():
     entries, errors = live_demo.parse_glossary("\n".join(f"term{i}" for i in range(105)), limit=100)
     assert len(entries) == 100
