@@ -92,7 +92,6 @@ class TranscriptionProvider:
         broadcast_callback,
         booth_id: str,
         room_id: int | None = None,
-        ready_callback: Callable[[], None] | None = None,
     ) -> None:
         from portal.transcription.aggregator import CaptionAggregator
 
@@ -167,8 +166,6 @@ class TranscriptionProvider:
                     )
                     consecutive_errors = 0
                     booth_state.consecutive_drops = 0
-                    if ready_callback:
-                        ready_callback()
 
                     if text:
                         logger.debug("[%s] Transcribed: %s", booth_id, text)
@@ -195,8 +192,6 @@ class TranscriptionProvider:
 
         reader = asyncio.create_task(audio_reader_task())
         inference = asyncio.create_task(inference_task())
-        if ready_callback:
-            ready_callback()
 
         await asyncio.wait([reader, inference], return_when=asyncio.FIRST_COMPLETED)
 

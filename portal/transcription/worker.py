@@ -614,11 +614,9 @@ async def stop_transcription_worker(booth_id: str, timeout: float | None = None)
     if session is None:
         return True
 
-    effective_timeout = (
-        timeout if timeout is not None else getattr(settings, "transcription_shutdown_timeout_secs", 10.0)
-    )
+    effective_timeout = timeout if timeout is not None else settings.transcription_shutdown_timeout_secs
     try:
-        await asyncio.wait_for(session.wait_until_stopped(), timeout=effective_timeout)
+        await asyncio.wait_for(asyncio.shield(session.wait_until_stopped()), timeout=effective_timeout)
     except TimeoutError:
         logger.error(
             "[%s][%s] Timed out waiting for worker to stop. Retaining session in registry.",

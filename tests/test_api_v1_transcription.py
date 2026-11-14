@@ -1787,8 +1787,6 @@ async def test_webhook_pairing_across_retries():
         async def run_stream(self, process, language, model, config, callback, booth, room, **kwargs):
             nonlocal stream_attempts
             stream_attempts += 1
-            if kwargs.get("ready_callback"):
-                kwargs["ready_callback"]()
             if stream_attempts == 1:
                 raise RuntimeError("First stream attempt crashed")
             # Second attempt stays alive until cancelled
@@ -2295,8 +2293,15 @@ async def test_shutdown_timeout_preserves_registry_ownership():
 
     booth_id = "test-shutdown-timeout-retention-booth"
 
+    wait_cancelled = False
+
     async def stuck_wait():
-        await asyncio.sleep(0.5)
+        nonlocal wait_cancelled
+        try:
+            await asyncio.sleep(0.5)
+        except asyncio.CancelledError:
+            wait_cancelled = True
+            raise
 
     stuck_session = SimpleNamespace(
         session_id="stuck-123",
@@ -2310,6 +2315,7 @@ async def test_shutdown_timeout_preserves_registry_ownership():
         stopped = await stop_transcription_worker(booth_id, timeout=0.02)
         assert stopped is False
         assert active_workers.get(booth_id) is stuck_session
+        assert wait_cancelled is False, "wait_until_stopped coroutine was prematurely cancelled by wait_for timeout"
     finally:
         active_workers.pop(booth_id, None)
 
@@ -2424,8 +2430,8 @@ async def test_admin_start_versus_booth_deletion(event):
     ):
         with pytest.raises(api_admin.HTTPException) as exc_info:
             await api_admin.api_transcription_start(EVENT_SLUG, ROOM_ID, "en", request=mock_request)
-        assert exc_info.value.status_code == 500
-        assert exc_info.value.detail == "Failed to start transcription worker"
+        assert exc_info.value.status_code == 404
+        assert exc_info.value.detail == "Booth is no longer active"
         assert booth_id not in active_workers
 
 

@@ -1105,6 +1105,11 @@ async def start_transcription(
                 detail="Transcription worker is still stopping; retry shortly",
                 headers={"Retry-After": retry_after},
             )
+        if result.error_code == "booth_deleted":
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Booth is no longer active",
+            )
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="Failed to start transcription worker",
