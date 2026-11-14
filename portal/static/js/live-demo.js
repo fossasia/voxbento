@@ -274,6 +274,7 @@ function renderRows() {
       const text = document.createElement('span');
       text.className = 'live-demo__text';
       text.dataset.role = 'text';
+      text.dataset.kind = 'placeholder';
       text.textContent = canSpeak ? 'ready' : 'ready · captions only';
 
       row.append(label, text);
@@ -321,7 +322,9 @@ function setSourceText(text, kind) {
 
 function setRowText(code, text) {
   const row = els.rows.querySelector(`[data-lang="${code}"] [data-role="text"]`);
-  if (row) renderHighlighted(row, text, glossaryTerms(run?.glossary || [], code));
+  if (!row) return;
+  renderHighlighted(row, text, glossaryTerms(run?.glossary || [], code));
+  row.dataset.kind = text === '…' ? 'placeholder' : 'final';
 }
 
 /** Show a caption with its glossary terms marked, built from text nodes (never as HTML). */
