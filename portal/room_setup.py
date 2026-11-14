@@ -179,7 +179,7 @@ _SERVER_MODEL = "runs on this server's own AI model"
 # (provider, default model, label, event key attribute). Cloud first: they are faster
 # and more accurate than the self-hosted fallback when the event has a key for them.
 _SPEECH_ENGINES = (
-    ("deepgram", "nova-2", "Deepgram Nova", "encrypted_deepgram_api_key"),
+    ("deepgram", "nova-3", "Deepgram Nova", "encrypted_deepgram_api_key"),
     ("elevenlabs", "scribe_v2_realtime", "ElevenLabs Scribe", "encrypted_elevenlabs_api_key"),
     ("openai", "whisper-1", "OpenAI Whisper", "encrypted_openai_api_key"),
     ("atlascloud", "bytedance/seed-asr-2.0", "Atlas Cloud Seed ASR", "encrypted_atlascloud_api_key"),
@@ -196,7 +196,10 @@ _TRANSLATION_ENGINES = (
 
 # The caption models each speech service offers, with a plain description, recommended first.
 SPEECH_MODELS: dict[str, tuple[tuple[str, str], ...]] = {
-    "deepgram": (("nova-2", "Nova 2"),),
+    "deepgram": (
+        ("nova-3", "Nova 3, most accurate, uses the glossary"),
+        ("nova-2", "Nova 2"),
+    ),
     "elevenlabs": (("scribe_v2_realtime", "Scribe v2, streaming"),),
     "openai": (
         ("whisper-1", "Whisper"),

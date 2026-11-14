@@ -541,8 +541,12 @@ async function run() {
     data: bundleFrame({ segment_id: 'c', seq: 3, caption: 'Hello', translation: '', error: 'pipeline_failed' }),
   });
   assert(
-    historyBox.textContent.includes('(Translation failed)'),
-    'a failed translation still says so, right after an empty and a skipped one',
+    !historyBox.textContent.includes('(Translation'),
+    'a failed translation shows nothing, got "' + historyBox.textContent + '"',
+  );
+  assert(
+    historyBox.textContent.includes('Hello'),
+    'the original caption of a failed translation still shows, right after an empty and a skipped one',
   );
 
   console.log('\n' + passed + ' passed, ' + failed + ' failed');
