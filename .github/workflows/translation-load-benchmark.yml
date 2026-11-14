@@ -1,0 +1,108 @@
+name: Translation Load Benchmark
+
+on:
+  pull_request:
+    branches:
+      - dev
+      - main
+    paths:
+      - "portal/translations/**"
+      - "portal/database.py"
+      - "tests/translation_load_harness.py"
+      - ".github/workflows/translation-load-benchmark.yml"
+      - ".github/workflows/post-translation-load-report.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  benchmark:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: astral-sh/setup-uv@v7
+      - name: Set up Python 3.13
+        uses: actions/setup-python@v7
+        with:
+          python-version: "3.13"
+
+      - name: Sync dependencies
+        run: uv sync --python 3.13 --dev --frozen
+
+      - name: Run benchmark on PR branch
+        shell: bash
+        env:
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          mkdir -p report
+          echo "$PR_NUMBER" > report/pr_number.txt
+          echo "$HEAD_SHA" > report/head_sha.txt
+
+          uv run python tests/translation_load_harness.py \
+            --rooms 3 --languages 1,4 --segments 6 --interval 0.5 --latency 0.1 --markdown \
+            > report/pr_table.md
+
+      - name: Run benchmark on dev baseline
+        shell: bash
+        run: |
+          git clone --depth 1 --branch dev "https://github.com/${{ github.repository }}.git" dev-baseline || true
+          if [ -f dev-baseline/tests/translation_load_harness.py ]; then
+            (cd dev-baseline && uv sync --python 3.13 --dev --frozen && uv run python tests/translation_load_harness.py \
+              --rooms 3 --languages 1,4 --segments 6 --interval 0.5 --latency 0.1 --markdown \
+              > ../report/dev_table.md) || true
+          fi
+          if [ ! -s report/dev_table.md ]; then
+            echo "Baseline run not available or produced no output." > report/dev_table.md
+          fi
+
+      - name: Build comparison report
+        shell: bash
+        run: |
+          python -c '
+          import pathlib
+
+          sha_file = pathlib.Path("report/head_sha.txt")
+          sha = sha_file.read_text(encoding="utf-8").strip() if sha_file.exists() else ""
+          short_sha = sha[:7] if sha else "PR"
+
+          pr_file = pathlib.Path("report/pr_table.md")
+          pr_table = pr_file.read_text(encoding="utf-8").strip() if pr_file.exists() else "No data"
+
+          dev_file = pathlib.Path("report/dev_table.md")
+          dev_table = dev_file.read_text(encoding="utf-8").strip() if dev_file.exists() else "No baseline data"
+
+          comment = f"""### 📊 Translation Load Benchmark Report
+
+          Comparison against `dev` baseline for translation PRs.
+
+          #### 🚀 PR Branch (`{short_sha}`)
+
+          {pr_table}
+
+          <details>
+          <summary><b>📌 <code>dev</code> Baseline</b></summary>
+
+          {dev_table}
+
+          </details>
+
+          <!-- translation-load-benchmark-report -->
+          """
+
+          pathlib.Path("report/comment.md").write_text(comment.strip() + "\n", encoding="utf-8")
+          '
+
+      - name: Publish to Job Summary
+        shell: bash
+        run: cat report/comment.md >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload report artifact
+        uses: actions/upload-artifact@v7.0.2
+        with:
+          name: translation-load-report
+          path: report/

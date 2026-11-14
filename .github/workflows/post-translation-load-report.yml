@@ -1,0 +1,77 @@
+name: Post Translation Load Report
+
+on:
+  workflow_run:
+    workflows: ["Translation Load Benchmark"]
+    types: [completed]
+
+permissions:
+  contents: read
+  pull-requests: write
+  issues: write
+
+jobs:
+  comment:
+    if: github.event.workflow_run.conclusion == 'success'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download benchmark report artifact
+        uses: actions/download-artifact@v7.0.0
+        with:
+          name: translation-load-report
+          run-id: ${{ github.event.workflow_run.id }}
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          path: report
+
+      - name: Post or update PR comment
+        uses: actions/github-script@v9
+        with:
+          script: |
+            const fs = require('fs');
+            const path = require('path');
+
+            const prNumberFile = path.join(process.cwd(), 'report', 'pr_number.txt');
+            const commentFile = path.join(process.cwd(), 'report', 'comment.md');
+
+            if (!fs.existsSync(prNumberFile) || !fs.existsSync(commentFile)) {
+              core.warning('Benchmark report or PR number file not found in artifact.');
+              return;
+            }
+
+            const prNumber = parseInt(fs.readFileSync(prNumberFile, 'utf8').trim(), 10);
+            const body = fs.readFileSync(commentFile, 'utf8').trim();
+
+            if (!prNumber || isNaN(prNumber)) {
+              core.warning(`Invalid PR number: ${prNumber}`);
+              return;
+            }
+
+            const { owner, repo } = context.repo;
+            const marker = '<!-- translation-load-benchmark-report -->';
+
+            const { data: comments } = await github.rest.issues.listComments({
+              owner,
+              repo,
+              issue_number: prNumber,
+              per_page: 100,
+            });
+
+            const existingComment = comments.find((c) => c.body && c.body.includes(marker));
+
+            if (existingComment) {
+              core.info(`Updating existing comment #${existingComment.id} on PR #${prNumber}`);
+              await github.rest.issues.updateComment({
+                owner,
+                repo,
+                comment_id: existingComment.id,
+                body,
+              });
+            } else {
+              core.info(`Creating new comment on PR #${prNumber}`);
+              await github.rest.issues.createComment({
+                owner,
+                repo,
+                issue_number: prNumber,
+                body,
+              });
+            }
