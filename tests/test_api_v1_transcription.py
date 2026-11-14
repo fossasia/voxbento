@@ -19,7 +19,7 @@ from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 import portal.routers.api_v1 as api_v1
 from portal.database import create_booth, create_event, create_room
 from portal.models import Base, TranscriptSegment, TranscriptTranslation
-from portal.transcription.worker import TranscriptionWorkerSession, active_workers
+from portal.transcription.worker import State, TranscriptionWorkerSession, active_workers
 
 EVENT_SLUG = "pycon2026"
 ROOM_ID = 3
@@ -163,11 +163,11 @@ async def test_status_reports_false_for_stopping_and_stopped_workers(event):
     stopping_worker = TranscriptionWorkerSession(
         "pycon2026", "en", booth_en, MagicMock(), "local", "tiny", ProviderConfig(api_key=None)
     )
-    stopping_worker.state = api_v1.State.STOPPING
+    stopping_worker.state = State.STOPPING
     stopped_worker = TranscriptionWorkerSession(
         "pycon2026", "fr", booth_fr, MagicMock(), "local", "tiny", ProviderConfig(api_key=None)
     )
-    stopped_worker.state = api_v1.State.STOPPED
+    stopped_worker.state = State.STOPPED
     active_workers[booth_en] = stopping_worker
     active_workers[booth_fr] = stopped_worker
 
@@ -199,12 +199,12 @@ async def test_status_reports_false_for_starting_worker_with_error_or_dead_task(
     starting_worker = TranscriptionWorkerSession(
         "pycon2026", "en", booth_en, MagicMock(), "local", "tiny", ProviderConfig(api_key=None)
     )
-    starting_worker.state = api_v1.State.STARTING
+    starting_worker.state = State.STARTING
 
     errored_worker = TranscriptionWorkerSession(
         "pycon2026", "fr", booth_fr, MagicMock(), "local", "tiny", ProviderConfig(api_key=None)
     )
-    errored_worker.state = api_v1.State.RUNNING
+    errored_worker.state = State.RUNNING
     errored_worker.start_error = "ffmpeg failed"
 
     done_task = MagicMock()
@@ -212,7 +212,7 @@ async def test_status_reports_false_for_starting_worker_with_error_or_dead_task(
     dead_task_worker = TranscriptionWorkerSession(
         "pycon2026", "es", booth_es, MagicMock(), "local", "tiny", ProviderConfig(api_key=None)
     )
-    dead_task_worker.state = api_v1.State.RUNNING
+    dead_task_worker.state = State.RUNNING
     dead_task_worker.task = done_task
 
     active_workers[booth_en] = starting_worker
@@ -245,7 +245,7 @@ async def test_status_reports_true_for_running_session(event):
     running_worker = TranscriptionWorkerSession(
         "pycon2026", "en", booth_en, MagicMock(), "local", "tiny", ProviderConfig(api_key=None)
     )
-    running_worker.state = api_v1.State.RUNNING
+    running_worker.state = State.RUNNING
     running_worker.task = live_task
     active_workers[booth_en] = running_worker
 
@@ -810,7 +810,7 @@ async def test_start_already_running_same_config_returns_already_running(event):
         transcription_language=None,
         language_code="en",
         config=ProviderConfig(api_key=None),
-        state=api_v1.State.RUNNING,
+        state=State.RUNNING,
         stop=MagicMock(),
         wait_until_stopped=AsyncMock(),
     )
@@ -855,13 +855,13 @@ async def test_start_already_running_rotated_api_key_restarts_worker(event):
             self.language_code = "en"
             self.transcription_language = None
             self.config = ProviderConfig(api_key="old-key")
-            self.state = api_v1.State.RUNNING
+            self.state = State.RUNNING
             self.session_id = "old-session-123"
 
         def stop(self):
             nonlocal stopped_called
             stopped_called = True
-            self.state = api_v1.State.STOPPED
+            self.state = State.STOPPED
 
         async def wait_until_stopped(self):
             pass
@@ -931,7 +931,7 @@ async def test_start_normal_success_with_real_worker_lifecycle(event):
         }
         assert booth_id in active_workers
         session = active_workers[booth_id]
-        assert session.state == api_v1.State.RUNNING
+        assert session.state == State.RUNNING
 
         status_db = _db(_result(first=event), _result(all_=[SimpleNamespace(language_code="en")]))
         status_resp = await api_v1.get_transcription_status(EVENT_SLUG, ROOM_ID, db=status_db, token=object())
@@ -1044,7 +1044,7 @@ async def test_start_concurrent_requests_during_starting_state(event):
             await asyncio.sleep(0.01)
 
             assert booth_id in active_workers
-            assert active_workers[booth_id].state == api_v1.State.STARTING
+            assert active_workers[booth_id].state == State.STARTING
 
             task2 = asyncio.create_task(api_v1.start_transcription(EVENT_SLUG, ROOM_ID, "en", db=db2, token=object()))
             await asyncio.sleep(0.01)
@@ -1157,7 +1157,7 @@ async def test_start_startup_timeout_with_cleanup_timeout_preserves_registry_and
         # cannot immediately register a duplicate worker while old process is still unwinding.
         assert booth_id in active_workers
         retained_session = active_workers[booth_id]
-        assert retained_session.state == api_v1.State.STOPPING
+        assert retained_session.state == State.STOPPING
 
         # A subsequent start request sees the worker is still stopping and waits / does not duplicate
         slow_done.set()  # Unblock wait_until_stopped for subsequent attempts
@@ -1167,7 +1167,7 @@ async def test_start_startup_timeout_with_cleanup_timeout_preserves_registry_and
             patch("portal.transcription.worker.PROVIDERS", {"local": MagicMock()}),
         ):
             # When wait_until_stopped succeeds, next start cleanly succeeds
-            retained_session.state = api_v1.State.STOPPED
+            retained_session.state = State.STOPPED
             db2 = _db(_result(first=event), _result(first=db_booth))
 
             async def instant_aenter(self):
@@ -1403,7 +1403,7 @@ async def test_start_worker_stopping_wait_bounded_and_retains_registry():
         language_code="en",
         transcription_language=None,
         session_id="stuck-session-123",
-        state=api_v1.State.STOPPING,
+        state=State.STOPPING,
         config=ProviderConfig(api_key=None),
         stop=MagicMock(),
         wait_until_stopped=slow_wait,

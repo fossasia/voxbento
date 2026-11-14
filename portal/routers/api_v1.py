@@ -34,7 +34,6 @@ from portal.routers.api import broadcast_transcription, resolve_transcription_co
 from portal.transcription.constants import ProviderEnum
 from portal.transcription.worker import (
     ERROR_CODE_STOPPING_TIMEOUT,
-    State,  # noqa: F401
     TranscriptionStartResult,
     active_workers,
     start_transcription_worker,
