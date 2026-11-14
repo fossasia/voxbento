@@ -4,8 +4,8 @@ Admin settings for the home-page live demo: whether it is shown, its voice, spee
 model, load limits and a site-wide glossary. One row (id 1); no row means the
 LIVE_DEMO_* environment defaults.
 
-Revision ID: 042
-Revises: 041
+Revision ID: 043
+Revises: 042
 """
 
 from __future__ import annotations
@@ -16,8 +16,8 @@ import sqlalchemy as sa
 
 from alembic import op
 
-revision: str = "042"
-down_revision: Union[str, Sequence[str], None] = "041"
+revision: str = "043"
+down_revision: Union[str, Sequence[str], None] = "042"
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
 
