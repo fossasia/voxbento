@@ -337,6 +337,28 @@ def test_voice_support_is_listed_for_the_form():
     assert "fr" in support["supertonic"]
 
 
+def test_elevenlabs_voice_speaks_thai():
+    """English talks are read aloud in Thai, which no Deepgram Aura voice speaks."""
+    event = _event(encrypted_deepgram_api_key=encrypt_val("k"), encrypted_elevenlabs_api_key=encrypt_val("k"))
+    catalog = engine_catalog(event)
+    assert "th" in catalog.voice_support["elevenlabs"] and "th" not in catalog.voice_support["deepgram"]
+    form = _form(
+        display_name="Main Hall",
+        spoken_language="en",
+        languages=["th"],
+        delivery_th=AI_VOICE,
+        voice_engine="elevenlabs",
+    )
+    plan, errors = parse_plan(form, catalog)
+    assert errors == () and plan.voice_engine == "elevenlabs"
+
+
+def test_elevenlabs_voice_needs_its_key():
+    catalog = engine_catalog(_event(encrypted_deepgram_api_key=encrypt_val("k")))
+    assert catalog.find("voice", "elevenlabs") is None
+    assert "ElevenLabs" in catalog.locked
+
+
 @pytest.mark.anyio
 async def test_saving_legacy_spoken_language_booth_keeps_its_invites(admin_cookie, event_room):
     event, room = event_room

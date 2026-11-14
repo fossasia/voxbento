@@ -1746,7 +1746,7 @@ def _process_room_translation_section(session: AsyncSession, room: Room, form: F
 def _process_room_tts_section(room: Room, form: FormData) -> None:
     room.floor_tts_enabled = form.get("floor_tts_enabled") == "on"
     floor_tts_provider = (form.get("floor_tts_provider", "deepgram") or "deepgram").strip().lower() or "deepgram"
-    if floor_tts_provider not in {"deepgram", "supertonic"}:
+    if floor_tts_provider not in {"deepgram", "supertonic", "elevenlabs"}:
         floor_tts_provider = "deepgram"
     room.floor_tts_provider = floor_tts_provider
 
