@@ -441,7 +441,7 @@ async def reconcile_room(
             "meeting_agent transcription_start_failed room_id=%s booth_id=%s error_code=%s",
             room.id,
             booth_id,
-            getattr(started, "error_code", None),
+            started.error_code,
         )
         current.state, current.reason = "degraded", "Transcription worker is stopping; retry shortly."
         return

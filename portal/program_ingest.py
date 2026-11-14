@@ -726,7 +726,7 @@ async def reconcile_processing(
             "program_ingest transcription_start_failed room_id=%s booth_id=%s error_code=%s",
             room.id,
             booth_id,
-            getattr(started, "error_code", None),
+            started.error_code,
         )
         current.state, current.reason = "degraded", "Transcription worker is stopping; retry shortly."
         current.processing_state, current.processing_reason = current.state, current.reason
