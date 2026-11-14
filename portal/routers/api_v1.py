@@ -10,7 +10,12 @@ from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from portal.auth import coordinates_room, load_membership_scope, require_oauth_scope
-from portal.booth_identity import make_booth_id, make_mediamtx_path, validate_language_code
+from portal.booth_identity import (
+    make_booth_id,
+    make_mediamtx_path,
+    validate_booth_language_code,
+    validate_language_code,
+)
 from portal.config import settings
 from portal.database import delete_room as delete_db_room
 from portal.database import get_db_session
@@ -944,18 +949,14 @@ async def create_booth(
         db, token, event, room_id, manage=True, lock_event=True, write_lock=True
     )
     target_room_id = _extract_room_id(room, room_id)
-    language_code = _validate_lang(language_code)
-    if language_code == "floor":
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="'floor' is not a valid booth language for a room.",
-        )
+    try:
+        language_code = validate_booth_language_code(language_code)
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
 
     result = await db.execute(select(DBBooth).where(DBBooth.room_id == target_room_id, DBBooth.language_code == language_code))
     if result.scalars().first():
         raise HTTPException(status_code=409, detail="Booth already exists")
-
-    from portal.booth_identity import make_mediamtx_path
 
     booth = DBBooth(room_id=target_room_id, language_code=language_code, event_id=event.id, language_name=language_code)
     db.add(booth)
