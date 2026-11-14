@@ -177,6 +177,7 @@ def voice_languages_for(provider: str) -> Iterable[str]:
 
 _KEY_ADDED = "uses your API key"
 _SELF_HOSTED = "free, downloads the first time it's used"
+_ADMIN_DOWNLOADS = "free, an Admin downloads it first"
 _SERVER_MODEL = "runs on this server's own AI model"
 
 # (provider, default model, label, event key attribute). Cloud first: they are faster
@@ -288,7 +289,7 @@ def engine_catalog(event: Event) -> EngineCatalog:
             locked_translation.append(_BRANDS[provider])
     default_local_model = settings.local_translation_model_or_default(None)
     if default_local_model:
-        translation.append(Engine("local", default_local_model, "NLLB (built in)", _SELF_HOSTED))
+        translation.append(Engine("local", default_local_model, "NLLB (built in)", _ADMIN_DOWNLOADS))
     else:
         reason = "NLLB (built in) needs LOCAL_TRANSLATION_MODELS"
         unavailable.append(reason)

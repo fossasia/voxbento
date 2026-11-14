@@ -279,6 +279,14 @@ class Settings(BaseSettings):
             return model
         return self.self_hosted_llm_model_list[0] if self.self_hosted_llm_enabled else None
 
+    @field_validator("local_translation_models")
+    @classmethod
+    def validate_local_translation_models(cls, value: str) -> str:
+        """Model names are stored on rooms and booths, whose columns hold 100 characters."""
+        if any(len(m.strip()) > 100 for m in value.split(",")):
+            raise ValueError("each LOCAL_TRANSLATION_MODELS name must be 100 characters or fewer")
+        return value
+
     @property
     def local_translation_model_list(self) -> tuple[str, ...]:
         """The built-in translation models events may use, in the order the operator listed them."""

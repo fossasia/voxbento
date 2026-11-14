@@ -9,6 +9,7 @@ from unittest.mock import patch
 import pytest
 from httpx import ASGITransport, AsyncClient
 from huggingface_hub.utils import LocalEntryNotFoundError
+from pydantic import ValidationError
 from sqlalchemy import select
 
 import portal.translations.providers.local as local
@@ -86,6 +87,13 @@ def test_allow_list_and_default(models, model, allowed, chosen):
     assert s.local_translation_model_or_default(model) == chosen
 
 
+def test_a_model_name_longer_than_the_room_column_is_rejected():
+    """Rooms and booths store the model in a 100-character column, so a longer name would be cut."""
+    assert Settings(_env_file=None, local_translation_models="a" * 100).local_translation_model_list == ("a" * 100,)
+    with pytest.raises(ValidationError, match="100 characters or fewer"):
+        Settings(_env_file=None, local_translation_models=f"{NLLB},{'a' * 101}")
+
+
 # ── Room setup catalog ─────────────────────────────────────────────────────
 
 
@@ -96,7 +104,10 @@ def _event() -> Event:
 def test_new_rooms_get_the_first_offered_model(monkeypatch):
     monkeypatch.setattr(settings, "local_translation_models", f"{OWN_BUILD},{NLLB}")
     catalog = engine_catalog(_event())
-    assert catalog.find("translation", "local").model == OWN_BUILD
+    engine = catalog.find("translation", "local")
+    assert engine.model == OWN_BUILD
+    # Rooms never download it themselves, so the note must not promise that.
+    assert engine.note == "free, an Admin downloads it first"
     assert blank_plan(catalog).translation_engine == "local"
 
 
