@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import math
 from datetime import datetime, timezone
 from typing import Annotated, Any
 
@@ -8,6 +9,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 from pydantic import BaseModel, Field, field_validator
 from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import selectinload
 
 from portal.auth import coordinates_room, load_membership_scope, require_oauth_scope
 from portal.booth_identity import make_booth_id, make_mediamtx_path, validate_language_code
@@ -30,8 +32,15 @@ from portal.models import (
 )
 from portal.rate_limit import auth_rate_limiter
 from portal.roles import EVENT_OWNER
+from portal.routers.api import broadcast_transcription, resolve_transcription_config
 from portal.transcription.constants import ProviderEnum
-from portal.transcription.worker import active_workers, start_transcription_worker, stop_transcription_worker
+from portal.transcription.worker import (
+    ERROR_CODE_STOPPING_TIMEOUT,
+    TranscriptionStartResult,
+    active_workers,
+    start_transcription_worker,
+    stop_transcription_worker,
+)
 from portal.translations.constants import TranslationProviderEnum
 from portal.translations.model_languages import language_support_error
 from portal.websockets.revocation import revoke_booths_for_deleted_entity
@@ -44,15 +53,15 @@ router = APIRouter(prefix="/api/v1")
 # attribute on the Event model.  Adding a new provider only requires one
 # new entry here.
 _API_KEY_FIELDS: list[tuple[str, str]] = [
-    ("openai_api_key",             "encrypted_openai_api_key"),
-    ("deepgram_api_key",           "encrypted_deepgram_api_key"),
-    ("nvidia_api_key",             "encrypted_nvidia_api_key"),
-    ("elevenlabs_api_key",         "encrypted_elevenlabs_api_key"),
+    ("openai_api_key", "encrypted_openai_api_key"),
+    ("deepgram_api_key", "encrypted_deepgram_api_key"),
+    ("nvidia_api_key", "encrypted_nvidia_api_key"),
+    ("elevenlabs_api_key", "encrypted_elevenlabs_api_key"),
     ("translation_openai_api_key", "encrypted_translation_openai_api_key"),
-    ("openrouter_api_key",         "encrypted_openrouter_api_key"),
-    ("gemini_api_key",             "encrypted_gemini_api_key"),
-    ("anthropic_api_key",          "encrypted_anthropic_api_key"),
-    ("groq_api_key",               "encrypted_groq_api_key"),
+    ("openrouter_api_key", "encrypted_openrouter_api_key"),
+    ("gemini_api_key", "encrypted_gemini_api_key"),
+    ("anthropic_api_key", "encrypted_anthropic_api_key"),
+    ("groq_api_key", "encrypted_groq_api_key"),
 ]
 
 
@@ -863,9 +872,7 @@ async def patch_room_settings(
     if not event:
         raise HTTPException(status_code=404, detail="Event not found")
 
-    await _verify_token_rbac(
-        db, token, event, room_id, manage=True, lock_event=True, write_lock=True
-    )
+    await _verify_token_rbac(db, token, event, room_id, manage=True, lock_event=True, write_lock=True)
     return {"status": "success"}
 
 
@@ -915,7 +922,11 @@ async def get_booth(
     target_room_id = _extract_room_id(room, room_id)
     language_code = _validate_lang(language_code)
 
-    result = await db.execute(select(DBBooth).where(DBBooth.room_id == target_room_id, DBBooth.language_code == language_code, DBBooth.event_id == event.id))
+    result = await db.execute(
+        select(DBBooth).where(
+            DBBooth.room_id == target_room_id, DBBooth.language_code == language_code, DBBooth.event_id == event.id
+        )
+    )
     booth = result.scalars().first()
     if not booth:
         raise HTTPException(status_code=404, detail="Booth not found")
@@ -940,9 +951,7 @@ async def create_booth(
     if not event:
         raise HTTPException(status_code=404, detail="Event not found")
 
-    room = await _verify_token_rbac(
-        db, token, event, room_id, manage=True, lock_event=True, write_lock=True
-    )
+    room = await _verify_token_rbac(db, token, event, room_id, manage=True, lock_event=True, write_lock=True)
     target_room_id = _extract_room_id(room, room_id)
     language_code = _validate_lang(language_code)
     if language_code == "floor":
@@ -951,7 +960,9 @@ async def create_booth(
             detail="'floor' is not a valid booth language for a room.",
         )
 
-    result = await db.execute(select(DBBooth).where(DBBooth.room_id == target_room_id, DBBooth.language_code == language_code))
+    result = await db.execute(
+        select(DBBooth).where(DBBooth.room_id == target_room_id, DBBooth.language_code == language_code)
+    )
     if result.scalars().first():
         raise HTTPException(status_code=409, detail="Booth already exists")
 
@@ -977,13 +988,15 @@ async def delete_booth_endpoint(
     if not event:
         raise HTTPException(status_code=404, detail="Event not found")
 
-    room = await _verify_token_rbac(
-        db, token, event, room_id, manage=True, lock_event=True, write_lock=True
-    )
+    room = await _verify_token_rbac(db, token, event, room_id, manage=True, lock_event=True, write_lock=True)
     target_room_id = _extract_room_id(room, room_id)
     language_code = _validate_lang(language_code)
 
-    result = await db.execute(select(DBBooth).where(DBBooth.room_id == target_room_id, DBBooth.language_code == language_code, DBBooth.event_id == event.id))
+    result = await db.execute(
+        select(DBBooth).where(
+            DBBooth.room_id == target_room_id, DBBooth.language_code == language_code, DBBooth.event_id == event.id
+        )
+    )
     booth = result.scalars().first()
     if not booth:
         raise HTTPException(status_code=404, detail="Booth not found")
@@ -1011,16 +1024,73 @@ async def start_transcription(
     target_room_id = _extract_room_id(room, room_id)
     language_code = _validate_lang(language_code)
 
-    booth_id = make_booth_id(event_slug, target_room_id, language_code)
+    try:
+        canonical_language = validate_language_code(language_code)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
 
-    # Actually start transcription using the registry
-    if booth_id not in booths:
+    booth_id = make_booth_id(event_slug, target_room_id, canonical_language)
+
+    stmt = (
+        select(DBBooth)
+        .options(selectinload(DBBooth.event))
+        .where(
+            DBBooth.event_id == event.id,
+            DBBooth.room_id == target_room_id,
+            DBBooth.language_code == canonical_language,
+        )
+    )
+    result = await db.execute(stmt)
+    db_booth = result.scalars().first()
+    if not db_booth or not db_booth.transcription_enabled:
+        return {"status": "disabled", "message": "Transcription is not enabled for this booth."}
+
+    if booths.get_booth_sync(booth_id) is None:
         raise HTTPException(status_code=400, detail="Booth not active in memory")
 
-    # We call the real worker
-    await start_transcription_worker(booth_id, event.id)
+    provider, model_size, config = resolve_transcription_config(db_booth, event=event)
 
-    return {"status": "started", "booth_id": booth_id}
+    # End the database transaction and release the connection before waiting on worker startup
+    await db.commit()
+
+    try:
+        result = await start_transcription_worker(
+            event_slug,
+            canonical_language,
+            booth_id,
+            broadcast_transcription,
+            provider,
+            model_size,
+            config,
+            room_id=target_room_id,
+            restart_on_key_change=True,
+            wait_for_ready=True,
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=429, detail=str(e))
+
+    if not isinstance(result, TranscriptionStartResult):
+        logger.error(f"[{booth_id}] Unexpected start_transcription_worker result type: {type(result)}")
+        raise HTTPException(
+            status_code=500,
+            detail="Failed to start transcription worker",
+        )
+
+    if result.status == "failed":
+        logger.error(f"[{booth_id}] Transcription worker failed to start: {result.error}")
+        if result.error_code == ERROR_CODE_STOPPING_TIMEOUT:
+            retry_after = str(math.ceil(settings.transcription_startup_timeout_secs))
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail="Transcription worker is still stopping; retry shortly",
+                headers={"Retry-After": retry_after},
+            )
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Failed to start transcription worker",
+        )
+
+    return {"status": result.status, "booth_id": booth_id, "provider": result.provider, "model": result.model}
 
 
 @router.post("/events/{event_slug}/rooms/{room_id}/booths/{language_code}/transcription/stop")
@@ -1066,11 +1136,13 @@ async def get_transcription_status(
     statuses = {}
     for b in booths_list:
         bid = make_booth_id(event_slug, target_room_id, b.language_code)
+        worker = active_workers.get(bid)
+        is_running = worker is not None and worker.is_running
         statuses[b.language_code] = {
             "is_active": booths.get_booth_sync(bid) is not None,
             # Running transcription is tracked by the worker registry, not on the
             # in-memory Booth, which has no transcription_task attribute.
-            "transcription_running": bid in active_workers,
+            "transcription_running": is_running,
         }
 
     return {"room_id": target_room_id, "statuses": statuses}

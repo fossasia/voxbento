@@ -722,7 +722,7 @@ async def reconcile_processing(
         restart_on_key_change=True,
     )
     current.worker_config = config
-    if started is True or current.worker_started_at is None:
+    if started.status == "started" or current.worker_started_at is None:
         # Read the clock again: replacing the old worker can take a while, and the grace period starts now.
         current.worker_started_at = time.monotonic()
     last_audio = audio_progress.get(booth_id)

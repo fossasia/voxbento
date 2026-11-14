@@ -1,6 +1,7 @@
 from portal.transcription.constants import ALLOWED_MODELS, ProviderEnum
 from portal.transcription.providers.base import ProviderConfig, get_api_key
 from portal.transcription.worker import (
+    TranscriptionStartResult,
     active_workers,
     start_transcription_worker,
     stop_transcription_worker,
@@ -11,6 +12,7 @@ __all__ = [
     "ALLOWED_MODELS",
     "ProviderConfig",
     "get_api_key",
+    "TranscriptionStartResult",
     "active_workers",
     "start_transcription_worker",
     "stop_transcription_worker",

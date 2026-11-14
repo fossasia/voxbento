@@ -49,7 +49,9 @@ class Settings(BaseSettings):
     program_ingest_max_rooms: int = 10
     program_ingest_disconnect_grace_secs: float = 15.0
     program_ingest_stall_secs: float = 30.0
-    program_sender_session_ttl_secs: int = 150  # Browser sender publish window; long enough to negotiate, short enough to expire.
+    program_sender_session_ttl_secs: int = (
+        150  # Browser sender publish window; long enough to negotiate, short enough to expire.
+    )
     # RTMPS ingest with YouTube relay (#749). Off unless the operator deploys docker-compose.relay.yml.
     program_relay_enabled: bool = False
     # RTMPS contribution ingest without relaying (VoxBento as an extra destination).
@@ -167,9 +169,7 @@ class Settings(BaseSettings):
             )
         # Every outgoing email is encrypted at rest in the outbox, so sign-in links,
         # invitations and password resets cannot be sent without this key.
-        encryption_keys = [
-            key.strip() for key in (self.api_key_encryption_key or "").split(",") if key.strip()
-        ]
+        encryption_keys = [key.strip() for key in (self.api_key_encryption_key or "").split(",") if key.strip()]
         weak_encryption_keys = {"change-this-encryption-key-in-production", "your-secure-32-char-key-here"}
         if not encryption_keys or any(key in weak_encryption_keys or len(key) < 32 for key in encryption_keys):
             raise RuntimeError(
@@ -180,6 +180,7 @@ class Settings(BaseSettings):
 
     # Transcription Settings
     nvidia_function_id: str = ""
+    transcription_startup_timeout_secs: float = 5.0
 
     # Self-hosted translation: an OpenAI-compatible server (Ollama, llama.cpp, vLLM) run by
     # the operator. Only the server sets this URL, so event owners can't aim requests at

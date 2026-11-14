@@ -5,6 +5,7 @@ import hashlib
 import json
 import logging
 from datetime import datetime, timezone
+from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
 import httpx
@@ -118,6 +119,7 @@ async def env(monkeypatch):
 
         async def started(**kwargs):
             meeting.audio_progress[kwargs["booth_id"]] = clock.now
+            return SimpleNamespace(status="started")
 
         start.side_effect = started
         monkeypatch.setattr(meeting, "start_transcription_worker", start)

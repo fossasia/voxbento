@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import math
 
 import jwt as pyjwt
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
@@ -42,7 +43,12 @@ from portal.rate_limit import check_rate_limit
 from portal.roles import INTERPRETER, Permission, can_set_active, has_permission
 from portal.schemas.booth import CreateBoothRequest
 from portal.transcription import ProviderConfig, ProviderEnum, get_api_key
-from portal.transcription.worker import start_transcription_worker, stop_transcription_worker
+from portal.transcription.worker import (
+    ERROR_CODE_STOPPING_TIMEOUT,
+    TranscriptionStartResult,
+    start_transcription_worker,
+    stop_transcription_worker,
+)
 from portal.utils import (
     _check_mediamtx,
     _ensure_mediamtx_path,
@@ -305,9 +311,7 @@ async def _verify_resource_access(
     elif credentials is not None and payload is None:
         # A bearer API key is not a JWT. Resolve it through the event-scoped
         # authorization path instead of falling through to the generic gate.
-        await _verify_event_access(
-            session, request, event.id, room_id=room_id, credentials=credentials, token=token
-        )
+        await _verify_event_access(session, request, event.id, room_id=room_id, credentials=credentials, token=token)
     else:
         _require_access(request, credentials, token, session_payload=payload)
     if payload and not payload.get("user") and payload.get("token_id") is not None:
@@ -627,9 +631,10 @@ async def list_event_booths(
         b["label"] = f"{b.get('language_name', b.get('language_code', ''))} (Human)"
 
     async with get_session() as session:
-
-        stmt = select(Event).where(Event.slug == event_slug, Event.deleted_at.is_(None)).options(
-            selectinload(Event.rooms).selectinload(Room.translation_languages)
+        stmt = (
+            select(Event)
+            .where(Event.slug == event_slug, Event.deleted_at.is_(None))
+            .options(selectinload(Event.rooms).selectinload(Room.translation_languages))
         )
         event = await session.scalar(stmt)
         if event:
@@ -796,6 +801,32 @@ async def ingest_status_api(channel_id: str) -> dict:
     return {"channel_id": channel_id, "state": "mediamtx", "reachable": await _check_mediamtx()}
 
 
+def resolve_transcription_config(db_booth: DBBooth, event: Event | None = None) -> tuple[str, str, ProviderConfig]:
+    """Resolve provider, model size, and ProviderConfig for a booth."""
+    provider = db_booth.transcription_provider
+    model_size = db_booth.transcription_model
+    try:
+        provider_enum = ProviderEnum(provider)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Invalid transcription provider")
+    evt = event if event is not None else db_booth.event
+    if not evt.transcription_api_enabled and provider_enum != ProviderEnum.LOCAL:
+        raise HTTPException(status_code=400, detail="External API transcription is disabled for this event.")
+    api_key = None
+    if provider_enum != ProviderEnum.LOCAL:
+        try:
+            api_key = get_api_key(evt, provider_enum)
+        except ValueError:
+            raise HTTPException(
+                status_code=400,
+                detail="API Key decryption failed. The encryption key has rotated. Please go to the Admin portal, clear your existing keys, and re-enter them.",
+            )
+        if not api_key:
+            raise HTTPException(status_code=400, detail=f"{provider} API key missing. Cannot start transcription.")
+    config = ProviderConfig(api_key=api_key)
+    return provider, model_size, config
+
+
 @router.post("/events/{event_slug}/rooms/{room_id}/booths/{language_code}/transcription/start")
 async def api_transcription_start(
     event_slug: str,
@@ -846,32 +877,46 @@ async def api_transcription_start(
                 getattr(db_booth, "transcription_enabled", None),
             )
             return {"status": "disabled", "message": "Transcription is not enabled for this booth."}
-        provider = db_booth.transcription_provider
-        model_size = db_booth.transcription_model
-        try:
-            provider_enum = ProviderEnum(provider)
-        except ValueError:
-            raise HTTPException(status_code=400, detail="Invalid transcription provider")
-        if not db_booth.event.transcription_api_enabled and provider_enum != ProviderEnum.LOCAL:
-            raise HTTPException(status_code=400, detail="External API transcription is disabled for this event.")
-        try:
-            api_key = get_api_key(db_booth.event, provider_enum)
-        except ValueError:
-            raise HTTPException(
-                status_code=400,
-                detail="API Key decryption failed. The encryption key has rotated. Please go to the Admin portal, clear your existing keys, and re-enter them.",
-            )
-        if provider_enum != ProviderEnum.LOCAL and (not api_key):
-            raise HTTPException(status_code=400, detail=f"{provider} API key missing. Cannot start transcription.")
-        config = ProviderConfig(api_key=api_key)
+        provider, model_size, config = resolve_transcription_config(db_booth)
     try:
-        await start_transcription_worker(
-            event_slug, language_code, booth_id, broadcast_transcription, provider, model_size, config, room_id=room_id
+        result = await start_transcription_worker(
+            event_slug,
+            language_code,
+            booth_id,
+            broadcast_transcription,
+            provider,
+            model_size,
+            config,
+            room_id=room_id,
+            restart_on_key_change=True,
+            wait_for_ready=True,
         )
     except ValueError as e:
         raise HTTPException(status_code=429, detail=str(e))
-    logger.info("Transcription worker running for booth %s (provider: %s)", booth_id, provider)
-    return {"status": "started", "provider": provider, "model": model_size}
+    if isinstance(result, TranscriptionStartResult):
+        if result.status == "failed":
+            logger.error(f"[{booth_id}] Transcription worker failed to start: {result.error}")
+            if result.error_code == ERROR_CODE_STOPPING_TIMEOUT:
+                retry_after = str(math.ceil(settings.transcription_startup_timeout_secs))
+                raise HTTPException(
+                    status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                    detail="Transcription worker is still stopping; retry shortly",
+                    headers={"Retry-After": retry_after},
+                )
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail="Failed to start transcription worker",
+            )
+        result_status = result.status
+        res_provider = result.provider
+        res_model = result.model
+    else:
+        result_status = "started"
+        res_provider = provider
+        res_model = model_size
+
+    logger.info("Transcription worker running for booth %s (provider: %s)", booth_id, res_provider)
+    return {"status": result_status, "provider": res_provider, "model": res_model}
 
 
 @router.post("/events/{event_slug}/rooms/{room_id}/booths/{language_code}/transcription/stop")

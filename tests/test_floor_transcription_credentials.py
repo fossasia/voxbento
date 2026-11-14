@@ -276,7 +276,7 @@ async def test_simultaneous_key_refresh_starts_only_one_replacement(environment:
     assert await env.next_call() == (OLD_KEY, "en")
     original = worker.active_workers[env.booth_id]
 
-    async def refresh() -> bool:
+    async def refresh() -> worker.TranscriptionStartResult:
         """Request the same replacement credential from a concurrent caller."""
         return await worker.start_transcription_worker(
             "rotation-test",
@@ -292,7 +292,7 @@ async def test_simultaneous_key_refresh_starts_only_one_replacement(environment:
         )
 
     results = await asyncio.wait_for(asyncio.gather(refresh(), refresh()), timeout=5)
-    assert sorted(results) == [False, True]
+    assert sorted(r.status for r in results) == ["already_running", "started"]
     assert await env.next_call() == (NEW_KEY, "en")
     assert env.provider.calls.empty()
     assert original.state == worker.State.STOPPED
@@ -316,7 +316,7 @@ async def test_key_refresh_is_opt_in_for_other_worker_callers(environment: Envir
         ProviderConfig(api_key=NEW_KEY),
         room_id=env.room_id,
     )
-    assert started is False
+    assert started.status == "already_running"
     assert worker.active_workers[env.booth_id] is original
     assert original.config.get_key() == OLD_KEY
     assert env.provider.calls.empty()
@@ -401,7 +401,7 @@ async def test_key_refresh_waits_for_stopped_worker_cleanup(environment: Environ
         await asyncio.wait_for(refresh, timeout=3)
 
     assert original.task.done()
-    assert refresh.result() is True
+    assert refresh.result().status == "started"
     assert await env.next_call() == (NEW_KEY, "en")
 
 
