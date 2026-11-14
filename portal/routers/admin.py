@@ -18,6 +18,7 @@ from fastapi.responses import JSONResponse, RedirectResponse, Response
 from fastapi.templating import Jinja2Templates
 from pydantic import BaseModel
 from sqlalchemy import delete, func, select
+from sqlalchemy import inspect as sa_inspect
 from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import joinedload
@@ -156,6 +157,7 @@ from portal.room_setup import (
     room_audio_choice,
     server_unavailable_reason,
     summarize,
+    voice_languages_for,
 )
 from portal.room_setup import ALL_LANGUAGES as ROOM_ALL_LANGUAGES
 from portal.room_setup import COMMON_LANGUAGES as ROOM_COMMON_LANGUAGES
@@ -165,8 +167,8 @@ from portal.room_setup import DELIVERY_LABELS as ROOM_DELIVERY_LABELS
 from portal.room_setup import SPEECH_MODELS as ROOM_SPEECH_MODELS
 from portal.room_setup import VOICE_PRESETS as ROOM_VOICE_PRESETS
 from portal.room_setup import language_name as room_language_name
+from portal.team import INVALID_EMAIL, TeamError, clean_email, load_team
 from portal.team import ROLE_CHOICES as TEAM_ROLE_CHOICES
-from portal.team import TeamError, load_team
 from portal.team import add_member as add_team_member
 from portal.team import create_invite_link as create_team_invite_link
 from portal.team import parse_place as parse_team_place
@@ -1144,6 +1146,8 @@ async def admin_setup_add_invite(request: Request, event_id: int):
     role = form.get("role", EVENT_OWNER).strip() or EVENT_OWNER
     if role and assignment_error(role, "event"):
         return invalid_role_redirect(request, f"events/{event_id}/setup/invite", role)
+    if email and not (email := clean_email(email)):
+        return invalid_email_redirect(request, f"events/{event_id}/setup/invite")
     if email:
         async with get_session() as session:
             user = await get_user_by_email(session, email)
@@ -1502,7 +1506,8 @@ async def admin_room_detail(request: Request, event_id: int, room_id: int):
             },
             "room_overlay_channels": overlay_channels([room], db_booths),
             "floor_overlay_url": _overlay_url(event, room.id, "floor") if room.has_floor_captions else None,
-            "error_notice": getattr(request.state, "translation_error", None),
+            "error_notice": getattr(request.state, "translation_error", None)
+            or (INVALID_EMAIL if request.query_params.get("error") == "invalid_email" else None),
             "just_created": request.query_params.get("created") == "1",
             "just_updated": request.query_params.get("updated") == "1",
             "kept_live_languages": kept_live,
@@ -1595,6 +1600,48 @@ def _require_translatable(provider: str | None, model: str | None, language_code
         raise TranslationLanguageError(status_code=400, detail=error)
 
 
+def _saved_value(obj: object, attr: str) -> object | None:
+    """An attribute's value as last loaded from the database, before this save; None for a new row."""
+    state = sa_inspect(obj)
+    if state.transient or state.pending:
+        return None
+    history = getattr(state.attrs, attr).history
+    if history.deleted:
+        return history.deleted[0]
+    return history.unchanged[0] if history.unchanged else getattr(obj, attr)
+
+
+def _require_speakable(room: Room, provider: str, label: str) -> None:
+    """Refuse a voice service that cannot speak a language the room reads aloud, keeping the current one.
+
+    Only what this save changes is checked: a new voice service, or a language that starts being
+    read aloud (added, enabled again, or AI voice switched on). A room saved before this rule can
+    still save its other settings.
+    """
+    if not room.floor_tts_enabled:
+        return
+    changed = provider != _saved_value(room, "floor_tts_provider") or not _saved_value(room, "floor_tts_enabled")
+    supported = voice_languages_for(provider)
+
+    def newly_spoken(lang: RoomTranslationLanguage) -> bool:
+        return not (_saved_value(lang, "enabled") and _saved_value(lang, "tts_enabled"))
+
+    unsupported = [
+        room_language_name(lang.language_code)
+        for lang in room.translation_languages
+        if lang.enabled
+        and lang.tts_enabled
+        and lang.language_code not in supported
+        and (changed or newly_spoken(lang))
+    ]
+    if unsupported:
+        raise TranslationLanguageError(
+            status_code=400,
+            detail=f"{label} can't speak {', '.join(unsupported)}. Choose a voice service that can, "
+            "or set that language to AI captions in the room setup.",
+        )
+
+
 def _enabled_codes(translation_languages) -> list[str]:
     """The ISO codes of enabled target languages for a room."""
     return [lang.language_code for lang in translation_languages if lang.enabled]
@@ -1639,6 +1686,7 @@ def _apply_ai_settings(room: Room, form: FormData, catalog: EngineCatalog) -> No
 
     voice = catalog.find("voice", str(form.get("floor_tts_provider", "")))
     if voice:
+        _require_speakable(room, voice.provider, voice.label)
         room.floor_tts_provider = voice.provider
         preset = str(form.get("floor_tts_voice", "")).strip().upper()
         if preset in {value for value, _ in ROOM_VOICE_PRESETS}:
@@ -1739,16 +1787,19 @@ def _process_room_translation_section(session: AsyncSession, room: Room, form: F
             lang_obj = pycountry.languages.get(alpha_2=code)
             lang_name = lang_obj.name if lang_obj else code
             new_lang = RoomTranslationLanguage(
-                room_id=room.id, language_code=code, language_name=lang_name, enabled=True
+                room_id=room.id, language_code=code, language_name=lang_name, enabled=True, tts_enabled=True
             )
             session.add(new_lang)
+            # Also on the relationship, so checks later in the same save (the voice service) see it.
+            room.translation_languages.append(new_lang)
 
 
 def _process_room_tts_section(room: Room, form: FormData) -> None:
     room.floor_tts_enabled = form.get("floor_tts_enabled") == "on"
     floor_tts_provider = (form.get("floor_tts_provider", "deepgram") or "deepgram").strip().lower() or "deepgram"
-    if floor_tts_provider not in {"deepgram", "supertonic"}:
+    if floor_tts_provider not in {"deepgram", "supertonic", "elevenlabs"}:
         floor_tts_provider = "deepgram"
+    _require_speakable(room, floor_tts_provider, brand_name(floor_tts_provider))
     room.floor_tts_provider = floor_tts_provider
 
     floor_tts_voice = (form.get("floor_tts_voice", "M1") or "M1").strip().upper() or "M1"
@@ -2172,6 +2223,7 @@ BOOTH_WORKER_NOTICES = {
     "failed": "The caption worker could not be started, so there are no live captions right now. Try saving again in a moment.",
 }
 BOOTH_ERROR_NOTICES = {
+    "invalid_email": INVALID_EMAIL,
     "model": "That caption model is no longer supported. Pick another model and save again; nothing was changed.",
     "server": "That service is not available on this server. Pick another service and save again; nothing was changed.",
     "api_off": "External transcription is turned off for this event. Turn it on under API keys, or pick Local; nothing was changed.",
@@ -2329,6 +2381,8 @@ async def admin_add_room_member(request: Request, event_id: int, room_id: int):
     role = form.get("role", "").strip()
     if role and assignment_error(role, "room"):
         return invalid_role_redirect(request, f"events/{event_id}/rooms/{room_id}/", role)
+    if email and not (email := clean_email(email)):
+        return invalid_email_redirect(request, f"events/{event_id}/rooms/{room_id}/")
     if email:
         async with get_session() as session:
             room = await room_in_event(session, event_id, room_id)
@@ -2426,6 +2480,8 @@ async def admin_add_booth_member(request: Request, event_id: int, room_id: int, 
     role = form.get("role", "").strip()
     if role and assignment_error(role, "booth"):
         return invalid_role_redirect(request, f"events/{event_id}/rooms/{room_id}/booths/{booth_id}/", role)
+    if email and not (email := clean_email(email)):
+        return invalid_email_redirect(request, f"events/{event_id}/rooms/{room_id}/booths/{booth_id}/")
     if email:
         async with get_session() as session:
             booth = await booth_in_room(session, event_id, room_id, booth_id)
@@ -2853,6 +2909,11 @@ def invalid_role_redirect(request: Request, path: str, role: str) -> RedirectRes
         url=management_url(request, f"{path}?error=invalid_role&role={urllib.parse.quote(role)}"),
         status_code=status.HTTP_303_SEE_OTHER,
     )
+
+
+def invalid_email_redirect(request: Request, path: str) -> RedirectResponse:
+    """Back to the form when the email can't be used, instead of failing in User._validate_email."""
+    return safe_redirect(url=management_url(request, f"{path}?error=invalid_email"), status_code=status.HTTP_303_SEE_OTHER)
 
 
 def user_notice(request: Request) -> tuple[str, str] | None:
@@ -3637,6 +3698,9 @@ async def admin_add_event_member(request: Request, event_id: int):
     role = form.get("role", "").strip()
     if role and assignment_error(role, "event"):
         return invalid_role_redirect(request, f"events/{event_id}/members/", role)
+    if email and not (email := clean_email(email)):
+        # The Members page now redirects to Team, so show the error there.
+        return await render_team(request, event_id, error=INVALID_EMAIL, form={"email": form.get("email", "")}, status_code=400)
     if email:
         async with get_session() as session:
             event = await get_event_by_id(session, event_id)
