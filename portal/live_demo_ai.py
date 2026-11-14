@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from importlib.util import find_spec
 
+from portal.config import settings
 from portal.crypto import decrypt_val
 from portal.models import LiveDemoSettings
 from portal.transcription.constants import ALLOWED_MODELS
@@ -67,6 +69,15 @@ def load_demo_ai(row: LiveDemoSettings) -> DemoAI:
             value = DEFAULTS[name]
         selected[name] = value
     speech, speech_model = selected["speech_choice"].split("|", 1)
+    if speech == "nvidia":
+        if not settings.nvidia_function_id.strip():
+            problems.append("Set NVIDIA_FUNCTION_ID on the server to use NVIDIA speech recognition.")
+        try:
+            installed = find_spec("riva.client") is not None
+        except ModuleNotFoundError:
+            installed = False
+        if not installed:
+            problems.append("Install the nvidia-riva-client dependency on the server to use NVIDIA speech recognition.")
     translation, translation_model = selected["translation_choice"].split("|", 1)
     voice = None if not row.voice_enabled or selected["voice_provider"] == "none" else selected["voice_provider"]
     keys = {}

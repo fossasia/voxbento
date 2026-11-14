@@ -171,7 +171,11 @@ async def ws_live_demo(websocket: WebSocket) -> None:
             return
 
         session = live_demo.LiveDemoSession(
-            request, websocket.send_json, websocket.send_bytes, engines=live_demo.engines_for(demo)
+            request,
+            websocket.send_json,
+            websocket.send_bytes,
+            engines=live_demo.engines_for(demo),
+            daily_minutes=demo.daily_minutes,
         )
         session.start()
         max_seconds = demo.max_session_seconds

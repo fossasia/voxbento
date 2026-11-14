@@ -896,7 +896,8 @@ async def test_room_voice_uses_its_provider_voice_and_key(monkeypatch):
                 built.append((language_code, voice, text))
                 await on_audio(b"\x01\x00")
 
-    def fake_get_tts_provider(name, *, deepgram_api_key=None, elevenlabs_api_key=None):
+    def fake_get_tts_provider(name, *, deepgram_api_key=None, elevenlabs_api_key=None, elevenlabs_voice_id=""):
+        assert elevenlabs_voice_id == "Rachel"
         built.append((name, elevenlabs_api_key))
         return FakeVoice()
 
@@ -930,7 +931,7 @@ class FakeStreamingService:
             while self.messages:
                 await broadcast_callback(booth_id, self.messages.pop(0))
         if self.fail:
-            raise RuntimeError("service went away")
+            raise OSError("service went away")
 
 
 @pytest.mark.anyio
@@ -1144,3 +1145,71 @@ async def test_disabled_voice_needs_no_voice_key_and_hosted_languages_are_availa
     assert response.status_code == 303
     demo = await live_demo.current_settings()
     assert {language.code: language for language in live_demo.languages_for(demo)}["th"].voice
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("function_id, installed", [("", False), ("function", False), ("", True), ("function", True)])
+async def test_nvidia_demo_requires_server_prerequisites(admin_http, monkeypatch, function_id, installed):
+    http, tokens = admin_http
+    http.cookies.set("user_token", tokens["admin"])
+    monkeypatch.setattr(settings, "nvidia_function_id", function_id)
+    monkeypatch.setattr(live_demo_ai, "find_spec", lambda _: object() if installed else None)
+    response = await http.post(
+        "/admin/live-demo/",
+        data={
+            **CUSTOM_FORM,
+            "speech_choice": "nvidia|parakeet-ctc",
+            "speech_key": "key",
+            "translation_choice": "local|nllb-200-distilled-600M",
+            "voice_enabled": "",
+        },
+    )
+    assert response.status_code == 303
+    demo = await live_demo.current_settings()
+    assert demo.live == bool(function_id and installed)
+    assert ("NVIDIA_FUNCTION_ID" in (demo.problem or "")) == (not function_id)
+    assert ("nvidia-riva-client" in (demo.problem or "")) == (not installed)
+
+
+@pytest.mark.anyio
+async def test_shared_daily_allowance_is_reserved_before_forwarding():
+    live_demo.record_usage(59.95)
+    sent, send_json, send_bytes = collector()
+    request = live_demo.DemoRequest(source=lang("en"), targets=(lang("es"),), listen=None)
+    a = live_demo.LiveDemoSession(
+        request,
+        send_json,
+        send_bytes,
+        engines=live_demo.configured_engines(room()),
+        daily_minutes=1,
+        audio_lead_seconds=FAST,
+    )
+    b = live_demo.LiveDemoSession(
+        request,
+        send_json,
+        send_bytes,
+        engines=live_demo.configured_engines(room()),
+        daily_minutes=1,
+        audio_lead_seconds=FAST,
+    )
+    a.push_audio(speech_frame())
+    b.push_audio(speech_frame())
+    assert a._received == 1600  # Only the remaining 50 ms, on a whole-sample boundary.
+    assert b._received == 0
+    assert live_demo.minutes_used_today() == pytest.approx(1)
+    assert live_demo.daily_limit_reached(dataclasses.replace(DEMO, daily_minutes=1))
+
+
+@pytest.mark.anyio
+async def test_stream_programming_errors_propagate_from_finish():
+    async def broken(*_):
+        raise TypeError("adapter bug")
+
+    sent, send_json, send_bytes = collector()
+    request = live_demo.DemoRequest(source=lang("en"), targets=(lang("es"),), listen=None)
+    engines = dataclasses.replace(live_demo.configured_engines(room()), stream=broken)
+    session = live_demo.LiveDemoSession(request, send_json, send_bytes, engines=engines)
+    session.start()
+    with pytest.raises(TypeError, match="adapter bug"):
+        await session.finish()
+    assert not any(m.get("type") == "notice" for m in sent)

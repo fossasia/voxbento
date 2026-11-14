@@ -34,10 +34,12 @@ from dataclasses import dataclass, field
 from datetime import date, datetime, timezone
 from typing import Any
 
+import httpx
 import numpy as np
 import pycountry
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncSession
+from websockets.exceptions import WebSocketException
 
 from portal import live_demo_ai
 from portal.config import settings
@@ -941,7 +943,12 @@ def configured_engines(ai: DemoAI) -> Engines:
         voice_provider = ai.voice_provider
 
         async def synthesize(text: str, language: str) -> bytes:
-            provider = get_tts_provider(voice_provider, deepgram_api_key=ai.voice_key, elevenlabs_api_key=ai.voice_key)
+            provider = get_tts_provider(
+                voice_provider,
+                deepgram_api_key=ai.voice_key,
+                elevenlabs_api_key=ai.voice_key,
+                elevenlabs_voice_id=ai.voice,
+            )
             return await _speak(provider, text, language, ai.voice)
 
     return Engines(
@@ -1040,6 +1047,7 @@ class LiveDemoSession:
     send_bytes: SendBytes
     engines: Engines = LOCAL_ENGINES
     chunker: Chunker = field(default_factory=Chunker)
+    daily_minutes: int = 120
     audio_lead_seconds: float = MAX_AUDIO_LEAD_SECONDS
     clock: Callable[[], float] = time.monotonic
 
@@ -1084,6 +1092,11 @@ class LiveDemoSession:
         if self._received + len(frame) > allowed:
             self._note_dropped("audio arriving faster than real time")
             return
+        # Reserve the shared allowance without awaiting: another visitor cannot spend it first.
+        remaining_samples = max(0, round((self.daily_minutes * 60 - minutes_used_today() * 60) * SAMPLE_RATE))
+        frame = frame[: remaining_samples * 2]
+        if not frame:
+            return
         self._received += len(frame)
         record_usage(len(frame) / BYTES_PER_SECOND)
         if self._pipe is not None:
@@ -1114,7 +1127,7 @@ class LiveDemoSession:
             if last is not None:
                 self._chunks.put_nowait(last)
             self._chunks.put_nowait(None)
-        await asyncio.gather(*self._tasks, return_exceptions=True)
+        await asyncio.gather(*self._tasks)
 
     def cancel(self) -> None:
         if self._pipe is not None:
@@ -1127,7 +1140,7 @@ class LiveDemoSession:
         """Run the configured speech service over the visitor's audio until the audio ends."""
         try:
             await self.engines.stream(self._pipe, self._on_stream_message, self.request)
-        except Exception:  # a failing service must end with a message, not leave the visitor waiting
+        except (OSError, httpx.HTTPError, WebSocketException):
             logger.exception("[LiveDemo] The configured speech service failed")
             await self._send({"type": "notice", "message": "The speech service stopped. Press the mic to try again."})
         finally:
@@ -1296,7 +1309,7 @@ def minutes_used_today() -> float:
 
 
 def daily_limit_reached(demo: DemoSettings) -> bool:
-    return minutes_used_today() >= demo.daily_minutes
+    return round(minutes_used_today() * 60 * SAMPLE_RATE) >= demo.daily_minutes * 60 * SAMPLE_RATE
 
 
 def try_admit(limit: int) -> bool:
