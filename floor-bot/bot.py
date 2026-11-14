@@ -172,6 +172,15 @@ async def evaluate(page, script):
     except Exception:
         return False
 
+def stale_process_patterns(sink_name, pulse_socket):
+    # pkill -f patterns for this room's own leftover ffmpeg and PulseAudio. They match exact
+    # tokens: "slug.*room" would also match room 14 (or another slug) when cleaning up room 1.
+    import re
+    return (
+        f"(^|/)ffmpeg .* -i {re.escape(sink_name)}[.]monitor( |$)",
+        f"(^|/)pulseaudio .*socket={re.escape(pulse_socket)}( |$)",
+    )
+
 async def run_capture():
     loop = asyncio.get_running_loop()
     main_task = asyncio.current_task()
@@ -208,8 +217,9 @@ async def run_capture():
         import tempfile
         pulse_dir = tempfile.mkdtemp(prefix="pulse-dir-", dir="/tmp")
 
-        subprocess.run(["pkill", "-f", f"ffmpeg.*{event_slug}.*{room_id}"], stderr=subprocess.DEVNULL)
-        subprocess.run(["pkill", "-f", f"pulseaudio.*{event_slug}.*{room_id}"], stderr=subprocess.DEVNULL)
+        ffmpeg_pattern, pulse_pattern = stale_process_patterns(sink_name, pulse_socket)
+        subprocess.run(["pkill", "-f", ffmpeg_pattern], stderr=subprocess.DEVNULL)
+        subprocess.run(["pkill", "-f", pulse_pattern], stderr=subprocess.DEVNULL)
         if os.path.exists(pulse_socket):
             try:
                 os.remove(pulse_socket)
