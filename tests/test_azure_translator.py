@@ -11,8 +11,9 @@ import pytest
 import portal.crypto
 from portal.crypto import encrypt_val
 from portal.models import Event
+from portal.room_setup import engine_catalog
 from portal.translations.constants import TRANSLATION_MODELS, TranslationProviderEnum
-from portal.translations.engine import EngineKind
+from portal.translations.engine import EngineKind, Language, TranslationContext
 from portal.translations.keys import get_azure_translator_region, get_translation_api_key
 from portal.translations.providers.azure import AzureTranslatorProvider
 from portal.translations.worker import ENGINES, TranslationWorker
@@ -298,6 +299,56 @@ def test_azure_credentials_are_not_handed_to_another_provider():
 
 def test_azure_is_registered_as_a_machine_translation_engine():
     assert ENGINES[AZURE].kind is EngineKind.MT_API
+
+
+def test_an_event_with_an_azure_key_can_choose_azure():
+    with patch("portal.config.settings.api_key_encryption_key", _TEST_KEY):
+        event = Event(
+            slug="x",
+            display_name="X",
+            transcription_api_enabled=False,
+            encrypted_azure_translator_api_key=encrypt_val(SUBSCRIPTION_KEY),
+            encrypted_azure_translator_region=encrypt_val(REGION),
+        )
+        catalog = engine_catalog(event)
+
+    assert AZURE in [engine.provider for engine in catalog.translation]
+    assert "Azure Translator" not in catalog.locked
+
+
+def test_an_event_without_an_azure_key_cannot_choose_azure():
+    with patch("portal.config.settings.api_key_encryption_key", _TEST_KEY):
+        catalog = engine_catalog(Event(slug="x", display_name="X", transcription_api_enabled=False))
+
+    assert AZURE not in [engine.provider for engine in catalog.translation]
+    assert "Azure Translator" in catalog.locked
+
+
+async def test_a_room_translates_through_azure_with_the_events_credentials():
+    """The whole chain: the event's stored key and region reach Azure as headers."""
+    worker = TranslationWorker(broadcast_callback=None)
+    with patch("portal.config.settings.api_key_encryption_key", _TEST_KEY):
+        event = Event(
+            encrypted_azure_translator_api_key=encrypt_val(SUBSCRIPTION_KEY),
+            encrypted_azure_translator_region=encrypt_val(REGION),
+        )
+        api_key = worker._get_translation_api_key(event, AZURE)
+
+    client = mock_client(ok_response())
+    with patch("portal.globals.get_http_client", return_value=client):
+        rows = await ENGINES[AZURE].translate_batch(
+            Language(code="en", name="English"),
+            [Language(code="fr", name="French")],
+            ["Hello"],
+            TranslationContext(persona="Formal", style="Concise"),
+            model="translator-text-v3",
+            api_key=api_key,
+        )
+
+    assert rows == [["Bonjour"]]
+    headers = client.post.await_args.kwargs["headers"]
+    assert headers["Ocp-Apim-Subscription-Key"] == SUBSCRIPTION_KEY
+    assert headers["Ocp-Apim-Subscription-Region"] == REGION
 
 
 def test_azure_offers_a_model_to_choose():
