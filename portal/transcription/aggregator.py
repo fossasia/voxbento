@@ -87,7 +87,7 @@ class CaptionAggregator:
         await self._dispatch(self.stream.partial(booth_id, text))
 
     async def handle_chunk(self, booth_id: str, text: str):
-        """Used by Local Whisper. Appends finalized chunks and splits on punctuation."""
+        """Used by Local Whisper and Deepgram. Appends finalized chunks and splits on punctuation."""
         await self._dispatch(self.stream.chunk(booth_id, text))
 
     async def handle_final(self, booth_id: str, text: str):
@@ -107,6 +107,21 @@ class CaptionAggregator:
                 return {"source_received_at_ms": now, "server_sent_at_ms": now,
                         "sync_offset_ms": room.program_sync_offset_ms, "timestamp_basis": "stt_receive_wall_clock"}
         return {}
+
+    async def handle_interim(self, booth_id: str, text: str):
+        """Show words still being recognised after the ones already settled, without keeping them.
+
+        Used by streaming providers that settle audio in chunks (Deepgram): the next interim
+        result replaces this one, and only settled chunks reach ``handle_chunk``.
+        """
+        if not text.strip():
+            return
+        state = self._get_state(booth_id)
+        preview = f"{state.current_utterance} {text.strip()}".strip()
+        await self.broadcast_callback(
+            booth_id, {"type": "caption", "status": "partial", "text": preview,
+                       "segment_id": state.segment_id, **await self.partial_timing(booth_id)}
+        )
 
     async def _emit_final(self, event: FinalCaption) -> None:
         """Publish a settled caption, taking the floor sequence from the room.
