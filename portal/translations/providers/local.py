@@ -171,6 +171,12 @@ def decrement_model_ref(model_size: str):
             _active_translations_per_model[model_size] -= 1
 
 
+def is_model_loaded(model_size: str) -> bool:
+    """Whether ``model_size`` is in memory now (idle models are evicted after an hour)."""
+    with _model_lock:
+        return model_size in _loaded_models
+
+
 def get_model_and_tokenizer(model_size: str):
     """Load or retrieve the cached CTranslate2 generator and tokenizer for a local model."""
     with _model_lock:
