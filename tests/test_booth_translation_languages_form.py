@@ -54,9 +54,7 @@ async def _save(cookie, event_id, room_id, booth_id, languages, *, accept="appli
 
 async def _languages(booth_id) -> list[tuple[str, str, bool]]:
     async with get_session() as s:
-        rows = await s.scalars(
-            select(BoothTranslationLanguage).where(BoothTranslationLanguage.booth_id == booth_id)
-        )
+        rows = await s.scalars(select(BoothTranslationLanguage).where(BoothTranslationLanguage.booth_id == booth_id))
         return sorted((row.language_code, row.language_name, row.enabled) for row in rows)
 
 
@@ -184,3 +182,53 @@ async def test_a_saved_code_with_spaces_is_matched_by_its_trimmed_value(admin_bo
 
     assert (on.status_code, off.status_code) == (303, 303)
     assert await _languages(booth_id) == [(saved, saved, True)]
+
+
+@pytest.fixture
+async def file_db_admin_booth(tmp_path, admin_booth):
+    """The same booth in a database file, so overlapping requests get separate connections."""
+    await dispose()
+    configure(f"sqlite+aiosqlite:///{tmp_path / 'booth-langs.db'}")
+    await init_db()
+    async with get_session() as s:
+        admin = User(email="booth-langs@example.com", display_name="Admin", is_admin=True, email_verified=True)
+        s.add(admin)
+        event = await create_event(s, slug="langcon", display_name="LangCon")
+        event.encrypted_translation_openai_api_key = encrypt_val("sk-test")
+        room = await create_room(s, event_id=event.id, display_name="Main Hall")
+        booth = await create_booth(s, event_id=event.id, room_id=room.id, language_code="fr", language_name="French")
+        await s.flush()
+        cookie = {"user_token": create_user_token(user_id=admin.id, email=admin.email, is_admin=True)}
+        ids = (event.id, room.id, booth.id)
+    return cookie, *ids
+
+
+@pytest.mark.anyio
+async def test_overlapping_saves_of_the_same_new_language_add_it_once(file_db_admin_booth, monkeypatch):
+    """A save that reads the booth while another save is adding the same language waits for it."""
+    import asyncio
+
+    from portal.routers import admin as admin_routes
+
+    cookie, event_id, room_id, booth_id = file_db_admin_booth
+    booth_in_room = admin_routes.booth_in_room
+    calls = 0
+
+    async def slow_first_read(*args, **kwargs):
+        """Hold the first save after it reads the booth, so the second one starts in the meantime."""
+        nonlocal calls
+        calls += 1
+        booth = await booth_in_room(*args, **kwargs)
+        if calls == 1:
+            await asyncio.sleep(0.5)
+        return booth
+
+    monkeypatch.setattr(admin_routes, "booth_in_room", slow_first_read)
+
+    first, second = await asyncio.gather(
+        _save(cookie, event_id, room_id, booth_id, ["es"]),
+        _save(cookie, event_id, room_id, booth_id, ["es"]),
+    )
+
+    assert (first.status_code, second.status_code) == (303, 303)
+    assert await _languages(booth_id) == [("es", "Spanish", True)]

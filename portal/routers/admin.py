@@ -17,7 +17,7 @@ from fastapi import APIRouter, Depends, Form, HTTPException, Query, Request, sta
 from fastapi.responses import JSONResponse, RedirectResponse, Response
 from fastapi.templating import Jinja2Templates
 from pydantic import BaseModel
-from sqlalchemy import delete, func, select
+from sqlalchemy import delete, func, select, update
 from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import joinedload
@@ -2529,6 +2529,26 @@ async def admin_delete_booth(request: Request, event_id: int, room_id: int, boot
     )
 
 
+async def _lock_booth_for_settings(session, booth_id: int) -> None:
+    """Serialize translation settings saves for one booth, as ``_lock_event_for_request`` does for events.
+
+    Each save reads the booth's language rows and then adds or disables rows. Two overlapping saves
+    would both work from the rows they read: different selections could both stay enabled, and the
+    same new code would be inserted twice and fail on the unique index. PostgreSQL takes a row lock.
+    SQLite ignores ``FOR UPDATE``, so a no-op update takes the database write lock instead. Either
+    lock is held until the save commits, so the next save reads the rows it left.
+    """
+    if session.get_bind().dialect.name == "sqlite":
+        await session.execute(
+            update(DBBooth)
+            .where(DBBooth.id == booth_id)
+            .values(translation_enabled=DBBooth.translation_enabled)
+            .execution_options(synchronize_session=False)
+        )
+    else:
+        await session.execute(select(DBBooth.id).where(DBBooth.id == booth_id).with_for_update())
+
+
 def _clean_booth_target_languages(codes: list[str], saved: set[str]) -> list[str]:
     """The submitted target languages as the lowercase codes room setup offers, each once.
 
@@ -2572,6 +2592,7 @@ async def admin_booth_translation_settings(
     """Save supported translation settings or return the validation error to the form."""
     try:
         async with get_session() as session:
+            await _lock_booth_for_settings(session, booth_id)
             db_booth = await booth_in_room(session, event_id, room_id, booth_id)
             translation_languages = _clean_booth_target_languages(
                 translation_languages, {lang.language_code for lang in db_booth.translation_languages}
