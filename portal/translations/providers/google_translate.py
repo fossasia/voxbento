@@ -10,6 +10,7 @@ from collections.abc import Sequence
 
 import httpx
 
+import portal.globals as pg
 from portal.translations.engine import (
     EngineKind,
     Language,
@@ -54,8 +55,6 @@ class GoogleTranslateEngine(TranslationEngine):
         if source.code:  # Without a source language Google detects it from the text.
             payload["source"] = source.code
 
-        import portal.globals as pg
-
         # The key travels in a header, never the URL: httpx logs URLs and puts them in its errors.
         # For the same reason the handlers below log a status or a type, never the exception text.
         try:
@@ -66,9 +65,14 @@ class GoogleTranslateEngine(TranslationEngine):
                 timeout=httpx.Timeout(10.0),
             )
             res.raise_for_status()
-            return res.json()["data"]["translations"][0]["translatedText"].strip()
+            translated = res.json()["data"]["translations"][0]["translatedText"]
+            if not isinstance(translated, str):
+                raise TypeError("translatedText is not a string")
+            return translated.strip()
         except httpx.HTTPStatusError as e:
             logger.error("Google Cloud Translation returned HTTP %s for %s", e.response.status_code, target.code)
-        except Exception as e:
+        # A transport error, or a body that is not JSON (ValueError) or not the documented shape.
+        # Anything else is a bug and propagates.
+        except (httpx.HTTPError, ValueError, KeyError, IndexError, TypeError) as e:
             logger.error("Google Cloud Translation failed for %s: %s", target.code, type(e).__name__)
         return None

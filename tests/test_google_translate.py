@@ -62,10 +62,12 @@ async def test_sends_the_languages_and_text_with_the_key_in_a_header(http):
 async def test_the_key_appears_only_in_the_header(http):
     await _translate()
 
+    http.post.assert_awaited_once()
     args, kwargs = http.post.call_args
-    assert SECRET not in args[0]
-    assert "params" not in kwargs
-    assert SECRET not in str(kwargs["json"])
+    assert kwargs["headers"] == {"X-Goog-Api-Key": SECRET}
+    # Not in the URL, the body, cookies, params or anything else sent with the request.
+    everything_else = (args, {name: value for name, value in kwargs.items() if name != "headers"})
+    assert SECRET not in repr(everything_else)
 
 
 async def test_lets_google_detect_an_unknown_source_language(http):
@@ -75,10 +77,13 @@ async def test_lets_google_detect_an_unknown_source_language(http):
 
 
 async def test_a_room_prompt_is_not_sent(http):
-    await _translate(context=TranslationContext(persona="Formal interpreter", style="Concise"))
+    assert await _translate(context=TranslationContext(persona="Formal interpreter", style="Concise")) == "Bonjour"
 
-    assert "Formal interpreter" not in str(http.post.call_args)
-    assert "Concise" not in str(http.post.call_args)
+    http.post.assert_awaited_once()
+    request = repr(http.post.call_args)
+    assert "Formal interpreter" not in request
+    assert "Concise" not in request
+    assert http.post.call_args.kwargs["json"].keys() == {"q", "target", "source", "format", "model"}
 
 
 async def test_no_key_means_no_request(http):
@@ -123,7 +128,7 @@ async def test_an_error_response_logs_the_status_but_not_the_key_or_body(http, c
 
 
 @pytest.mark.parametrize(
-    "error", [httpx.ConnectError(f"cannot reach ?key={SECRET}"), RuntimeError(f"unexpected {SECRET}")]
+    "error", [httpx.ConnectError(f"cannot reach ?key={SECRET}"), httpx.ReadTimeout(f"slow {SECRET}")]
 )
 async def test_a_transport_error_never_logs_its_message(http, caplog, error):
     http.post.side_effect = error
@@ -135,8 +140,32 @@ async def test_a_transport_error_never_logs_its_message(http, caplog, error):
     assert SECRET not in caplog.text
 
 
-async def test_a_malformed_response_is_a_failed_translation(http):
-    http.post.return_value.json.return_value = {"data": {}}
+async def test_an_unexpected_error_is_not_hidden(http):
+    http.post.side_effect = RuntimeError("a bug")
+
+    with pytest.raises(RuntimeError, match="a bug"):
+        await _translate()
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        {"data": {}},
+        {"data": {"translations": []}},
+        {"data": [{"translatedText": "Bonjour"}]},
+        {"data": {"translations": [{"translatedText": None}]}},
+    ],
+    ids=["no-translations", "empty-list", "wrong-type", "not-a-string"],
+)
+async def test_a_malformed_response_is_a_failed_translation(http, caplog, body):
+    http.post.return_value.json.return_value = body
+
+    assert await _translate() is None
+    assert "Google Cloud Translation failed for fr" in caplog.text
+
+
+async def test_a_body_that_is_not_json_is_a_failed_translation(http):
+    http.post.return_value.json.side_effect = ValueError("Expecting value")
 
     assert await _translate() is None
 
@@ -167,6 +196,19 @@ async def test_a_room_can_use_it_with_the_event_key(http):
 
     assert translated == "Bonjour"
     assert http.post.call_args.kwargs["headers"] == {"X-Goog-Api-Key": SECRET}
+
+
+async def test_the_worker_does_not_log_the_transcript_when_nothing_comes_back(http, caplog):
+    http.post.return_value = _answer("")
+
+    with caplog.at_level(logging.DEBUG):
+        translated = await TranslationWorker(SimpleNamespace())._call_llm(
+            PROVIDER, MODEL, SECRET, "Our private keynote", "French", target_lang_code="fr", source_language_code="en"
+        )
+
+    assert translated == ""
+    assert "returned no translation for a 19-character segment" in caplog.text
+    assert "private keynote" not in caplog.text
 
 
 def test_the_service_stays_locked_without_a_key():

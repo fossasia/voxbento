@@ -594,5 +594,6 @@ class TranslationWorker:
             api_key=api_key,
         )
         if not translated:
-            logger.warning(f"Provider {provider} returned empty translation for text: '{text}'")
+            # The length, never the text: transcripts stay out of the logs.
+            logger.warning("Provider %s returned no translation for a %d-character segment", provider, len(text))
         return translated
