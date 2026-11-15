@@ -84,6 +84,7 @@ These variables configure how Voxbento talks to MediaMTX and other local Docker 
 | --- | --- | --- |
 | `MEDIAMTX_API_BASE` | `http://localhost:9997` | MediaMTX Control API URL. |
 | `MEDIAMTX_RTSP_BASE` | `rtsp://mediamtx:8554` | Internal RTSP URL for floor audio transcription. |
+| `MAX_TRANSCRIPTION_WORKERS` | `10` | Maximum concurrent transcription workers (ffmpeg + provider) running across all booths. |
 | `MEDIAMTX_AUTH_HOOK_SECRET` | _(none)_ | Shared secret used to authenticate private internal MediaMTX webhooks to `/internal/media-auth`. Required in production. |
 | `FLOOR_BOT_BASE` | `http://floor-bot:8080` | URL for the floor-bot container. |
 | `MEETING_AGENT_MAX_RESTARTS` | `5` | Automatic meeting-agent restarts per incident before the room reports **Needs attention**. |

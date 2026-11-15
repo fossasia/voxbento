@@ -41,6 +41,12 @@ class Settings(BaseSettings):
     # paths with alwaysAvailable so WHEP readers survive publisher handoffs.
     mediamtx_api_base: str = "http://localhost:9997"
     mediamtx_rtsp_base: str = "rtsp://mediamtx:8554"
+    max_transcription_workers: int = Field(
+        default=10,
+        ge=1,
+        le=100,
+        description="Maximum concurrent transcription workers allowed across all booths.",
+    )
     floor_bot_base: str = "http://floor-bot:8080"
     meeting_agent_max_restarts: int = 5  # Automatic agent restarts per incident before reporting degraded.
     meeting_agent_no_audio_secs: float = 45.0
