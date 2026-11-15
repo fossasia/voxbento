@@ -22,6 +22,7 @@ _WORKSPACE_ROUTE_PATTERNS = (
     re.compile(r"/workspace/events/\d+/?"),
     re.compile(r"/workspace/events/\d+/(?:setup/(?:rooms|booths|invite)|regenerate_join_code|api-settings|caption-overlays|delete)/?"),
     re.compile(r"/workspace/events/\d+/(?:rooms|members)/?"),
+    re.compile(r"/workspace/events/\d+/attendance/(?:export)?"),
     re.compile(r"/workspace/events/\d+/rooms/new/?"),
     re.compile(r"/workspace/events/\d+/members/\d+/(?:invite|delete)/?"),
     re.compile(r"/workspace/events/\d+/team(?:/(?:add|remove|resend|links(?:/revoke)?)?)?"),
@@ -30,6 +31,8 @@ _WORKSPACE_ROUTE_PATTERNS = (
     re.compile(r"/workspace/events/by-slug/[^/]+/rooms/by-eventyay/[^/]+/?"),
     re.compile(r"/workspace/events/\d+/rooms/\d+/ai-vocabulary/(?:upload|export|delete)/?"),
     re.compile(r"/workspace/events/\d+/rooms/\d+/(?:program-ingest|program-relay|program-sender|meeting-source)"),
+    re.compile(r"/workspace/events/\d+/youtube(?:/(?:connect|broadcasts))?/?"),
+    re.compile(r"/workspace/events/\d+/rooms/\d+/youtube/broadcast/?"),
     re.compile(r"/workspace/events/\d+/rooms/\d+/members(?:/\d+/(?:invite|delete))?/?"),
     re.compile(r"/workspace/events/\d+/rooms/\d+/booths/?"),
     re.compile(

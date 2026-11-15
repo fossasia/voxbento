@@ -55,6 +55,7 @@
           <a href="{{ management_prefix }}/events/{{ event.id }}/rooms/{{ rd.room.id }}/setup" class="btn btn-sm">Change setup</a>
           <form method="post" action="{{ management_prefix }}/events/{{ event.id }}/rooms/{{ rd.room.id }}/delete" class="inline-delete"
                 data-confirm="Delete room '{{ rd.room.display_name }}'? This will remove all booths in this room.">
+            <input type="hidden" name="csrf_token" value="{{ request.state.admin_csrf_token }}" />
             <button type="submit" class="btn btn-sm btn-danger">Delete</button>
           </form>
           {% endif %}

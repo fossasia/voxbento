@@ -26,7 +26,7 @@ from sqlalchemy import func, select
 from sqlalchemy.exc import SQLAlchemyError
 
 from portal import program_relay
-from portal.booth_identity import make_booth_id, make_mediamtx_path
+from portal.booth_identity import make_booth_id, make_mediamtx_path, parse_booth_id
 from portal.booth_publish import authorize_booth_publish
 from portal.config import settings
 from portal.database import get_session
@@ -35,7 +35,7 @@ from portal.models import Event, Room
 from portal.outage_log import OutageLog
 from portal.transcription.process import audio_progress
 from portal.transcription.providers.base import ProviderConfig, ProviderEnum, get_api_key
-from portal.transcription.worker import start_transcription_worker, stop_transcription_worker
+from portal.transcription.worker import active_workers, start_transcription_worker, stop_transcription_worker
 from portal.websockets.manager import broadcast_transcription
 
 logger = logging.getLogger(__name__)
@@ -187,12 +187,15 @@ def has_valid_credential(room: Room) -> bool:
 def publish_permitted(room: Room, protocol: str, digest: str) -> bool:
     """Bind each credential to the transport of the room's ingest mode.
 
-    Relay mode accepts only the encoder key over RTMPS (MediaMTX runs with
-    ``rtmpEncryption: strict``, so "rtmp" here is always TLS). WHIP mode keeps the
-    #690 behaviour. A key is never usable over the other mode's transport.
+    Both RTMPS modes accept only the encoder key over RTMPS (MediaMTX runs with
+    ``rtmpEncryption: strict``, so "rtmp" here is always TLS); a browser-sender
+    session secret never authorizes RTMPS. WHIP mode keeps the #690 behaviour.
+    A key is never usable over the other mode's transport.
     """
     if room.program_ingest_mode == program_relay.RELAY_MODE:
         return protocol == "rtmp" and settings.program_relay_enabled and key_digest_valid(room, digest)
+    if room.program_ingest_mode == program_relay.RTMPS_MODE:
+        return protocol == "rtmp" and settings.rtmps_ingest_enabled and key_digest_valid(room, digest)
     return protocol == "webrtc" and credential_digest_valid(room, digest)
 
 
@@ -200,7 +203,7 @@ def reserved_source(room: Room) -> MediaSource | None:
     """The MediaMTX session type a program-ingest reservation belongs to."""
     if not room.program_session_id:
         return None
-    kind = "rtmpsConn" if room.program_ingest_mode == program_relay.RELAY_MODE else "webRTCSession"
+    kind = "rtmpsConn" if room.program_ingest_mode in program_relay.RTMPS_MODES else "webRTCSession"
     return MediaSource(type=kind, id=room.program_session_id)
 
 
@@ -208,7 +211,7 @@ def presented_secret(data: MediaAuth) -> str:
     """Extract the publisher credential without accepting it from more than one place."""
     if data.protocol == "webrtc":
         return "" if data.query else (data.token or data.password)
-    if data.protocol == "rtmp" and settings.program_relay_enabled and not (data.token or data.password):
+    if data.protocol == "rtmp" and settings.rtmps_ingest_enabled and not (data.token or data.password):
         # OBS stream key "floor?key=<secret>": the query must be exactly one key parameter.
         try:
             query = parse_qs(data.query, strict_parsing=True)
@@ -272,6 +275,7 @@ async def authorize_publish(data: MediaAuth) -> None:
                     .where(
                         Room.id == parsed_room_id,
                         Event.slug == slug,
+                        Event.deleted_at.is_(None),
                     )
                 )
             ).first()
@@ -491,6 +495,10 @@ async def open_sender_session(room: Room, event: Event, offset_ms: int, ttl_secs
         raise HTTPException(
             409, "YouTube relay mode owns the floor; switch the room to independent outputs (WHIP) first."
         )
+    if room.floor_source == "program_ingest" and room.program_ingest_mode == program_relay.RTMPS_MODE:
+        raise HTTPException(
+            409, "An RTMPS encoder owns the floor; switch the room to independent outputs (WHIP) first."
+        )
     if room.floor_source == "program_ingest":
         # Floor already owned by program ingest; never displace a connected or
         # still-negotiating publisher (external encoder or another sender).
@@ -618,7 +626,9 @@ async def reconcile_room(room: Room, event: Event, path: MediaPath | None) -> tu
     now = time.monotonic()
     # A short-lived sender secret gates new publishes, not an already-connected session.
     session_live = bool(path and path.source and room.program_session_id and path.source.id == room.program_session_id)
-    permitted = bool(settings.program_ingest_enabled and (has_valid_credential(room) or session_live))
+    # Switching RTMPS ingest off also ends a feed that is already live.
+    rtmps_off = room.program_ingest_mode == program_relay.RTMPS_MODE and not settings.rtmps_ingest_enabled
+    permitted = bool(settings.program_ingest_enabled and not rtmps_off and (has_valid_credential(room) or session_live))
     if path and path.source and (not permitted or path.source.id != room.program_session_id):
         await kick(path_name, path.source)
         path = None
@@ -629,11 +639,12 @@ async def reconcile_room(room: Room, event: Event, path: MediaPath | None) -> tu
             current.missing_since = current.missing_since if current.missing_since is not None else now
             grace_started_at = current.missing_since
         current.state = "disconnected" if room.program_connected_at else "waiting"
-        current.reason = (
-            "No publisher. Reconnect the encoder."
-            if permitted
-            else "Credential revoked or expired; rotate it to publish."
-        )
+        if permitted:
+            current.reason = "No publisher. Reconnect the encoder."
+        elif rtmps_off:
+            current.reason = "RTMPS ingest is switched off on this server; ask the server operator."
+        else:
+            current.reason = "Credential revoked or expired; rotate it to publish."
         current.ingest_state, current.ingest_reason = current.state, current.reason
         current.processing_state, current.processing_reason = "idle", "No contribution feed to process."
         if now - grace_started_at >= settings.program_ingest_disconnect_grace_secs:
@@ -677,7 +688,7 @@ async def reconcile_processing(
     if not any(codec in {"Opus", "G711", "G722", "LPCM", "MPEG-4 Audio"} for codec in path.tracks):
         problem = (
             "No supported audio track. Configure the encoder to send AAC audio."
-            if room.program_ingest_mode == program_relay.RELAY_MODE
+            if room.program_ingest_mode in program_relay.RTMPS_MODES
             else "No supported audio track. Configure the WHIP encoder to send Opus audio."
         )
         current.ingest_state, current.ingest_reason = "degraded", problem
@@ -698,7 +709,7 @@ async def reconcile_processing(
     if current.worker_config and current.worker_config != config:
         if not await stop_room_worker(current, booth_id, room.id):
             return
-    await start_transcription_worker(
+    started = await start_transcription_worker(
         event_slug=event.slug,
         language_code="floor",
         booth_id=booth_id,
@@ -708,10 +719,12 @@ async def reconcile_processing(
         config=ProviderConfig(api_key=api_key),
         transcription_language=room.floor_language_code,
         room_id=room.id,
+        restart_on_key_change=True,
     )
     current.worker_config = config
-    if current.worker_started_at is None:
-        current.worker_started_at = now
+    if started is True or current.worker_started_at is None:
+        # Read the clock again: replacing the old worker can take a while, and the grace period starts now.
+        current.worker_started_at = time.monotonic()
     last_audio = audio_progress.get(booth_id)
     if now - (last_audio or current.worker_started_at) > settings.program_ingest_stall_secs:
         current.state, current.reason = "degraded", "Audio decoder stalled or failed; restarting the processing worker."
@@ -722,15 +735,103 @@ async def reconcile_processing(
         current.processing_state, current.processing_reason = current.state, current.reason
 
 
+async def stop_deleted_event_workers() -> None:
+    """Stop the floor worker of rooms whose event was deleted.
+
+    A delete can commit after a reconcile pass already read the room and started its worker, and
+    ``health`` can lose the room before that (``close_sender_session``), so find the workers among
+    the running ones instead: once the event is deleted the reconciler no longer sees the room.
+    """
+    booth_ids: dict[int, str] = {}
+    for booth_id in list(active_workers):
+        try:
+            _, room_id, language_code = parse_booth_id(booth_id)
+        except ValueError:
+            continue
+        if language_code == "floor":
+            booth_ids[room_id] = booth_id
+    if not booth_ids:
+        return
+    async with get_session() as session:
+        deleted_room_ids = (
+            await session.scalars(
+                select(Room.id).join(Event).where(Room.id.in_(booth_ids), Event.deleted_at.is_not(None))
+            )
+        ).all()
+    for room_id in deleted_room_ids:
+        await stop_room_worker(health.get(room_id) or IngestHealth(), booth_ids[room_id], room_id)
+
+
+async def release_deleted_event_sessions() -> None:
+    """Disconnect the encoder and free the reservation of rooms whose event was deleted.
+
+    The reconciler no longer sees these rooms, so ``reconcile_room`` never releases them. A kept
+    reservation would count against ``program_ingest_max_rooms``. A failed kick keeps the
+    reservation, so the next pass retries it.
+    """
+    async with get_session() as session:
+        rows = (
+            await session.execute(
+                select(Room.id, Event.slug)
+                .join(Event)
+                .where(
+                    Room.floor_source == "program_ingest",
+                    Room.program_session_id.is_not(None),
+                    Event.deleted_at.is_not(None),
+                )
+            )
+        ).all()
+    for room_id, slug in rows:
+        try:
+            async with room_lock(room_id), get_session() as session:
+                room = await session.get(Room, room_id)
+                if room and room.program_session_id:
+                    await kick(make_mediamtx_path(slug, room_id, "floor"), reserved_source(room))
+                    room.program_session_id = None
+                    room.program_disconnected_at = utc_now()
+        except (httpx.HTTPError, ValueError, HTTPException, SQLAlchemyError):
+            logger.warning("program_ingest deleted_event_release_failed room_id=%s", room_id)
+
+
+async def stop_deleted_event_relays() -> None:
+    """Stop the relays of rooms whose event was deleted, without needing the MediaMTX path list.
+
+    ``program_relay.sync`` does this on a normal pass, but it only runs once the path list is
+    read. Relays of other rooms are left alone.
+    """
+    try:
+        room_ids = {int(relay_id) for relay_id in await program_relay.list_relays() if relay_id.isdigit()}
+        if not room_ids:
+            return
+        async with get_session() as session:
+            deleted_room_ids = (
+                await session.scalars(
+                    select(Room.id).join(Event).where(Room.id.in_(room_ids), Event.deleted_at.is_not(None))
+                )
+            ).all()
+    except Exception:  # noqa: BLE001 - upstream bodies may contain secrets; the next pass retries
+        logger.warning("program_ingest deleted_event_relay_list_failed")
+        return
+    for room_id in deleted_room_ids:
+        try:
+            await program_relay.stop_relay(room_id)
+        except Exception:  # noqa: BLE001
+            logger.warning("program_ingest deleted_event_relay_stop_failed room_id=%s", room_id)
+
+
 async def reconcile_once() -> None:
     async with get_session() as session:
         rows = (
             await session.execute(
-                select(Room.id, Room.program_ingest_mode).where(Room.floor_source == "program_ingest")
+                select(Room.id, Room.program_ingest_mode)
+                .join(Event)
+                .where(Room.floor_source == "program_ingest", Event.deleted_at.is_(None))
             )
         ).all()
     ids = [room_id for room_id, _ in rows]
     relay_rooms = {room_id for room_id, mode in rows if mode == program_relay.RELAY_MODE}
+    await stop_deleted_event_workers()
+    await release_deleted_event_sessions()
     try:
         snapshots = await media_paths() if ids else {}
     except (httpx.HTTPError, ValueError):
@@ -742,6 +843,8 @@ async def reconcile_once() -> None:
             )
             current.ingest_state, current.ingest_reason = current.state, current.reason
         path_list_outage.failed()
+        if settings.program_relay_enabled:
+            await stop_deleted_event_relays()
         return
     if ids:
         path_list_outage.recovered()
@@ -749,7 +852,11 @@ async def reconcile_once() -> None:
     for room_id in ids:
         try:
             async with room_lock(room_id), get_session() as session:
-                row = (await session.execute(select(Room, Event).join(Event).where(Room.id == room_id))).first()
+                row = (
+                    await session.execute(
+                        select(Room, Event).join(Event).where(Room.id == room_id, Event.deleted_at.is_(None))
+                    )
+                ).first()
                 if row and row[0].floor_source == "program_ingest":
                     path_name = make_mediamtx_path(row[1].slug, room_id, "floor")
                     request = await reconcile_room(*row, snapshots.get(path_name))

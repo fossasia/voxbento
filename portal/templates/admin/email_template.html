@@ -35,6 +35,7 @@
 <div class="email-editor-grid">
   <section class="card email-card email-editor">
     <form id="email-draft" method="post" action="/admin/emails/{{ definition.key }}/draft">
+      <input type="hidden" name="csrf_token" value="{{ request.state.admin_csrf_token }}" />
       <div class="form-group">
         <label for="subject">Subject</label>
         <input id="subject" name="subject" value="{{ subject }}" required />
@@ -47,9 +48,11 @@
     <div class="email-actions">
       <button class="btn btn-primary" type="submit" form="email-draft">Save draft</button>
       <form method="post" action="/admin/emails/{{ definition.key }}/publish">
+        <input type="hidden" name="csrf_token" value="{{ request.state.admin_csrf_token }}" />
         <button class="btn btn-outline" type="submit">Publish draft</button>
       </form>
       <form method="post" action="/admin/emails/{{ definition.key }}/test">
+        <input type="hidden" name="csrf_token" value="{{ request.state.admin_csrf_token }}" />
         <button class="btn btn-outline" type="submit">Send me a test</button>
       </form>
       <span class="email-version">{{ 'Published version ' ~ version if version else 'Using the built-in version' }}</span>

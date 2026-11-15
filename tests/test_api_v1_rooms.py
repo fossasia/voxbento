@@ -42,6 +42,7 @@ async def _seed():
     from portal.auth import hash_password
     from portal.database import create_event, create_user, get_session, set_event_membership
     from portal.models import DeveloperAccount, OAuthClient, OAuthToken
+    from portal.roles import EVENT_OWNER
 
     async with get_session() as s:
         user = await create_user(
@@ -51,7 +52,7 @@ async def _seed():
             password_hash=hash_password("password123"),
         )
         event = await create_event(s, slug="synccon", display_name="SyncCon 2026")
-        await set_event_membership(s, user_id=user.id, event_id=event.id, role="event_owner")
+        await set_event_membership(s, user_id=user.id, event_id=event.id, role=EVENT_OWNER)
 
         dev_account = DeveloperAccount(user_id=user.id, status="approved")
         s.add(dev_account)
@@ -64,7 +65,14 @@ async def _seed():
                 client_id=client.id,
                 user_id=user.id,
                 event_id=event.id,
-                scopes=["rooms:write", "booths:read", "listeners:provision"],
+                scopes=[
+                    "rooms:write",
+                    "booths:read",
+                    "booths:write",
+                    "sessions:manage",
+                    "transcripts:read",
+                    "listeners:provision",
+                ],
                 access_token_hash=hashlib.sha256(ACCESS_TOKEN.encode()).hexdigest(),
                 expires_at=datetime.now(timezone.utc) + timedelta(hours=1),
             )
@@ -322,3 +330,112 @@ async def test_room_endpoint_handles_non_ascii_digit_without_server_error():
         assert res.json()["detail"] == "Room not found"
 
 
+@pytest.mark.anyio
+async def test_booth_endpoints_reject_invalid_language_code_with_400():
+    """Invalid language_code in path parameters must return 400 Bad Request, not 500."""
+    event = await _seed()
+
+    async with _client() as c:
+        # Create a room first
+        put_room = await c.put(
+            f"/api/v1/events/{event.slug}/rooms/room-1",
+            json={"name": "Main Hall"},
+            headers=_auth(),
+        )
+        assert put_room.status_code == 200
+        room_id = put_room.json()["room_id"]
+
+        endpoints = [
+            ("get", f"/api/v1/events/{event.slug}/rooms/{room_id}/booths/invalid_lang"),
+            ("post", f"/api/v1/events/{event.slug}/rooms/{room_id}/booths/invalid_lang"),
+            ("delete", f"/api/v1/events/{event.slug}/rooms/{room_id}/booths/invalid_lang"),
+            ("post", f"/api/v1/events/{event.slug}/rooms/{room_id}/booths/invalid_lang/transcription/start"),
+            ("post", f"/api/v1/events/{event.slug}/rooms/{room_id}/booths/invalid_lang/transcription/stop"),
+            ("get", f"/api/v1/events/{event.slug}/rooms/{room_id}/booths/invalid_lang/transcripts/export"),
+        ]
+
+        for method, url in endpoints:
+            req = getattr(c, method)
+            res = await req(url, headers=_auth())
+            assert res.status_code == 400, f"Expected 400 for {method.upper()} {url}, got {res.status_code}: {res.text}"
+            assert "Language code must be exactly two lowercase ASCII letters" in res.json()["detail"]
+
+
+@pytest.mark.anyio
+async def test_booth_endpoints_preserve_cross_event_404_with_invalid_language_code():
+    """A token scoped to Event A must receive 404 Event not found for Event B even with invalid language_code."""
+    from portal.database import create_event, create_room, get_session
+
+    await _seed()
+
+    async with get_session() as s:
+        event_b = await create_event(s, slug="othercon", display_name="OtherCon 2026")
+        room_b = await create_room(s, event_id=event_b.id, display_name="Other Hall")
+
+    async with _client() as c:
+        endpoints = [
+            ("get", f"/api/v1/events/{event_b.slug}/rooms/{room_b.id}/booths/invalid_lang"),
+            ("post", f"/api/v1/events/{event_b.slug}/rooms/{room_b.id}/booths/invalid_lang"),
+            ("delete", f"/api/v1/events/{event_b.slug}/rooms/{room_b.id}/booths/invalid_lang"),
+            ("post", f"/api/v1/events/{event_b.slug}/rooms/{room_b.id}/booths/invalid_lang/transcription/start"),
+            ("post", f"/api/v1/events/{event_b.slug}/rooms/{room_b.id}/booths/invalid_lang/transcription/stop"),
+            ("get", f"/api/v1/events/{event_b.slug}/rooms/{room_b.id}/booths/invalid_lang/transcripts/export"),
+        ]
+
+        for method, url in endpoints:
+            req = getattr(c, method)
+            res = await req(url, headers=_auth())
+            assert res.status_code == 404, f"Expected 404 for {method.upper()} {url}, got {res.status_code}: {res.text}"
+            assert res.json()["detail"] == "Event not found"
+
+
+@pytest.mark.anyio
+async def test_booth_endpoints_normalise_language_code():
+    """Uppercase or padded language codes are normalised before use downstream."""
+    event = await _seed()
+
+    async with _client() as c:
+        put_room = await c.put(
+            f"/api/v1/events/{event.slug}/rooms/room-1",
+            json={"name": "Main Hall"},
+            headers=_auth(),
+        )
+        assert put_room.status_code == 200
+        room_id = put_room.json()["room_id"]
+        base = f"/api/v1/events/{event.slug}/rooms/{room_id}/booths"
+
+        created = await c.post(f"{base}/EN", headers=_auth())
+        assert created.status_code == 200, created.text
+        assert created.json()["whip_path"] == f"{event.slug}/{room_id}/en"
+
+        duplicate = await c.post(f"{base}/%20en%20", headers=_auth())
+        assert duplicate.status_code == 409
+
+        fetched = await c.get(f"{base}/En", headers=_auth())
+        assert fetched.status_code == 200, fetched.text
+        assert fetched.json()["language_code"] == "en"
+
+        deleted = await c.delete(f"{base}/EN", headers=_auth())
+        assert deleted.status_code == 200, deleted.text
+        assert (await c.get(f"{base}/en", headers=_auth())).status_code == 404
+
+
+@pytest.mark.anyio
+async def test_create_booth_rejects_floor_language():
+    """'floor' is reserved for the floor channel and cannot be created as a booth."""
+    event = await _seed()
+
+    async with _client() as c:
+        put_room = await c.put(
+            f"/api/v1/events/{event.slug}/rooms/room-1",
+            json={"name": "Main Hall"},
+            headers=_auth(),
+        )
+        room_id = put_room.json()["room_id"]
+
+        res = await c.post(
+            f"/api/v1/events/{event.slug}/rooms/{room_id}/booths/FLOOR",
+            headers=_auth(),
+        )
+        assert res.status_code == 400
+        assert res.json()["detail"] == "'floor' is not a valid booth language for a room."

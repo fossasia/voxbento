@@ -17,11 +17,14 @@ from portal.translations.providers.gemini import GeminiProvider
 from portal.translations.providers.openai import OpenAIProvider
 from portal.translations.vocabulary import (
     MAX_ROWS,
+    ProtectedSegment,
     VocabularyEntryInput,
     VocabularyOverlapIndex,
     _term_matches,
     parse_vocabulary_csv,
+    protect_terms,
     resolve_vocabulary_entries,
+    restore_terms,
     serialize_vocabulary_csv,
     vocabulary_terms_overlap,
 )
@@ -192,48 +195,241 @@ def test_prompt_omits_the_guard_when_nothing_is_configured():
     assert "constrain word choice and register only" not in prompt
 
 
-@pytest.mark.anyio
-async def test_local_provider_ignores_interpretation_settings_and_says_so(caplog):
-    import logging
-
+async def translate_locally(
+    monkeypatch, outputs: dict[str, str | None], text: str, entries, **settings
+) -> tuple[str | None, list[str]]:
+    """Run the NLLB provider through the worker's dispatch with a fake model that maps exact inputs to outputs."""
     from portal.translations.providers.local import LocalProvider
+    from portal.translations.worker import TranslationWorker
 
-    entry = AIVocabularyEntry(
-        event_id=1, source_term="Voxbento", target_language="all", target_term="Voxbento"
-    )
-    captured = {}
+    calls = []
 
     def fake_inference(self, text, source_token, target_token, model_size):
-        captured["text"] = text
-        return "Willkommen"
+        calls.append(text)
+        return outputs[text]
 
-    LocalProvider._warned_unsupported_settings = False
-    original = LocalProvider._run_inference
-    LocalProvider._run_inference = fake_inference
-    try:
-        with caplog.at_level(logging.WARNING):
-            result = await LocalProvider().translate(
-                provider_name="local",
-                text="Welcome to Voxbento",
-                target_lang_name="German",
-                target_lang_code="de",
-                source_lang_name="English",
-                model="nllb-200-distilled-600M",
-                api_key=None,
-                persona="A commentator who adds background context.",
-                style="Summarize aggressively.",
-                vocabulary_entries=[entry],
-            )
-    finally:
-        LocalProvider._run_inference = original
-        LocalProvider._warned_unsupported_settings = False
+    monkeypatch.setattr(LocalProvider, "_run_inference", fake_inference)
+    monkeypatch.setattr(LocalProvider, "_warned_unsupported_settings", False)
+    result = await TranslationWorker(MagicMock())._call_llm(
+        "local",
+        "nllb-200-distilled-600M",
+        None,
+        text,
+        "French",
+        "English",
+        target_lang_code="fr",
+        vocabulary_entries=entries,
+        **settings,
+    )
+    return result, calls
 
-    assert result == "Willkommen"
-    # The model sees the raw segment: no persona, style or glossary is injected.
-    assert captured["text"] == "Welcome to Voxbento"
+
+@pytest.mark.anyio
+async def test_local_provider_ignores_persona_and_style_and_says_so(monkeypatch, caplog):
+    import logging
+
+    entry = AIVocabularyEntry(event_id=1, source_term="Voxbento", target_language="all", target_term="Voxbento")
+    with caplog.at_level(logging.WARNING):
+        result, calls = await translate_locally(
+            monkeypatch,
+            {"Welcome to [1]": "Bienvenue à [1]"},
+            "Welcome to Voxbento",
+            [entry],
+            persona="A commentator who adds background context.",
+            style="Summarize aggressively.",
+        )
+
+    assert result == "Bienvenue à Voxbento"
+    # Only the glossary reaches the model, as a placeholder: no persona or style is injected.
+    assert calls == ["Welcome to [1]"]
     warning = "".join(record.message for record in caplog.records if record.levelno >= logging.WARNING)
-    assert "ignores persona, style, vocabulary" in warning
+    assert "ignores persona, style:" in warning
     assert "cloud translation provider" in warning
+
+
+@pytest.mark.anyio
+async def test_local_provider_applies_glossary_terms(monkeypatch):
+    entries = [
+        AIVocabularyEntry(event_id=1, source_term="MediaMTX", target_language="all", target_term="MediaMTX"),
+        AIVocabularyEntry(event_id=1, source_term="booth", target_language="fr", target_term="cabine"),
+    ]
+    result, calls = await translate_locally(
+        monkeypatch,
+        {"The [1] streams through [2].": "La [1] diffuse via [2]."},
+        "The booth streams through MediaMTX.",
+        entries,
+    )
+
+    assert calls == ["The [1] streams through [2]."]
+    assert result == "La cabine diffuse via MediaMTX."
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize(
+    "mangled",
+    ["Bienvenue à [1]", "Bienvenue à [1] et [1] [2]", "Bienvenue à [1] et [2] [3]", "Bienvenue à [ 1] et [2]", None],
+)
+async def test_local_provider_falls_back_when_placeholders_do_not_survive(monkeypatch, mangled):
+    entries = [
+        AIVocabularyEntry(event_id=1, source_term="MediaMTX", target_language="all", target_term="MediaMTX"),
+        AIVocabularyEntry(event_id=1, source_term="Jitsi", target_language="all", target_term="Jitsi"),
+    ]
+    plain = "Bienvenue à MédiaMTX et Jitsi"
+    result, calls = await translate_locally(
+        monkeypatch,
+        {"Welcome to [1] and [2]": mangled, "Welcome to MediaMTX and Jitsi": plain},
+        "Welcome to MediaMTX and Jitsi",
+        entries,
+    )
+
+    if mangled is None:
+        # A failed inference is not retried; the worker already handles a missing translation.
+        assert result is None
+        assert calls == ["Welcome to [1] and [2]"]
+    else:
+        assert result == plain
+        assert calls == ["Welcome to [1] and [2]", "Welcome to MediaMTX and Jitsi"]
+
+
+@pytest.mark.anyio
+async def test_local_provider_leaves_segments_with_bracketed_numbers_unprotected(monkeypatch):
+    entry = AIVocabularyEntry(event_id=1, source_term="booth", target_language="fr", target_term="cabine")
+    result, calls = await translate_locally(
+        monkeypatch, {"Press [1] at the booth": "Appuyez sur [1] au stand"}, "Press [1] at the booth", [entry]
+    )
+
+    # A literal "[1]" could not be told apart from a placeholder, so the glossary sits this segment out.
+    assert result == "Appuyez sur [1] au stand"
+    assert calls == ["Press [1] at the booth"]
+
+
+def test_term_protection_resolves_overlaps_and_matching_rules():
+    def entry(term: str, target: str, match_type: str = "phrase", case_sensitive: bool = False):
+        return VocabularyEntryInput(
+            source_term=term,
+            target_language="fr",
+            target_term=target,
+            match_type=match_type,
+            case_sensitive=case_sensitive,
+        )
+
+    # The longest match wins an overlap, whichever entry was ranked first.
+    segment = protect_terms(
+        "The booth sits next to the interpreter booth.",
+        [entry("booth", "cabine"), entry("interpreter booth", "cabine d'interprétation")],
+    )
+    assert segment == ProtectedSegment("The [1] sits next to the [2].", ("cabine", "cabine d'interprétation"))
+
+    # Equal-length overlaps go to the entry the resolver ranked first.
+    segment = protect_terms("big cat toy", [entry("big cat", "A"), entry("cat toy", "B")])
+    assert segment == ProtectedSegment("[1] toy", ("A",))
+
+    # Only whole words are replaced, even for phrase entries: "AI" must not cut into "said".
+    segment = protect_terms("He said they maintain AI tools", [entry("AI", "IA")])
+    assert segment == ProtectedSegment("He said they maintain [1] tools", ("IA",))
+
+    # A combining mark belongs to the letter before it: "cafe" is not cut out of a decomposed "café",
+    # nor "बूथ" (booth) out of "बूथों" (booths).
+    assert protect_terms("café time", [entry("cafe", "X")]) == ProtectedSegment("café time", ())
+    assert protect_terms("हम बूथों पर", [entry("बूथ", "X")]) == ProtectedSegment("हम बूथों पर", ())
+    assert protect_terms("हम बूथ पर", [entry("बूथ", "X")]) == ProtectedSegment("हम [1] पर", ("X",))
+
+    # Scripts written without spaces have no word boundaries; spacing the placeholder there keeps NLLB from
+    # gluing it to a word of the translation.
+    assert protect_terms("我们在展台见面", [entry("展台", "stand")]) == ProtectedSegment("我们在 [1] 见面", ("stand",))
+    assert protect_terms("ブースで会いましょう", [entry("ブース", "X")]) == ProtectedSegment(
+        "[1] で会いましょう", ("X",)
+    )
+    assert protect_terms("我们在AI时代", [entry("AI", "IA")]) == ProtectedSegment("我们在 [1] 时代", ("IA",))
+    # The documented trade-off: there a term also matches inside a longer word, "ブース" (booth) in "ブースター"
+    # (booster), which whole-word matching rules out for "AI" in "said".
+    assert protect_terms("ブースターを使う", [entry("ブース", "X")]) == ProtectedSegment("[1] ターを使う", ("X",))
+
+    # Case sensitivity is respected, and the target term keeps the glossary's casing.
+    segment = protect_terms("US ships USB to us", [entry("US", "les États-Unis", "exact", case_sensitive=True)])
+    assert segment == ProtectedSegment("[1] ships USB to us", ("les États-Unis",), frozenset({1}))
+
+    # Case folding maps back onto the original text, even when it changes the length.
+    segment = protect_terms("Die Straße und die STRASSE", [entry("strasse", "rue", "exact")])
+    assert segment == ProtectedSegment("Die [1] und die [2]", ("rue", "rue"))
+
+    assert protect_terms("Nothing to see", [entry("booth", "cabine")]) == ProtectedSegment("Nothing to see", ())
+    assert protect_terms("Hello", [entry("", "X")]) == ProtectedSegment("Hello", ())
+
+
+def test_restore_terms_requires_each_placeholder_exactly_once():
+    segment = ProtectedSegment("The [1] uses [2].", ("cabine", "[2] MediaMTX"))
+
+    # Placeholders may be reordered; a target term that looks like a placeholder is not re-expanded.
+    assert restore_terms("[2] et la [1].", segment) == "[2] MediaMTX et la cabine."
+    assert restore_terms("La [1] utilise.", segment) is None
+    assert restore_terms("La [1] utilise [2] [2].", segment) is None
+    assert restore_terms("La [1] utilise [2] [3].", segment) is None
+    # Mangled or zero-padded copies are not placeholders and must never reach listeners.
+    assert restore_terms("La [1] utilise [ 2].", segment) is None
+    assert restore_terms("La [01] utilise [2].", segment) is None
+    assert restore_terms("La [1] utilise [2] 【1】.", segment) is None
+    assert restore_terms("La [1] utilise ［2］.", segment) is None
+
+
+def test_restored_terms_take_a_capital_only_when_they_open_a_sentence():
+    # An ordinary lowercase term that opens a sentence takes a capital; "iPhone" keeps its own casing.
+    segment = ProtectedSegment("[1] opens. Then the [2] closes for [3].", ("cabine", "cabine", "iPhone"))
+    assert (
+        restore_terms("[1] ouvre. Puis la [2] ferme pour [3].", segment)
+        == "Cabine ouvre. Puis la cabine ferme pour iPhone."
+    )
+    assert restore_terms("[3] ouvre la [1] et la [2].", segment) == "iPhone ouvre la cabine et la cabine."
+    segment = protect_terms("Booth opens.", [VocabularyEntryInput("booth", "fr", "cabine")])
+    assert restore_terms("[1] ouvre.", segment) == "Cabine ouvre."
+
+    ordinary = ProtectedSegment("", ("cabine", "cabine"))
+    # Real sentence ends, including spaced French punctuation and opening marks.
+    assert restore_terms("Il est là. [1] ouvre ? [2] ferme.", ordinary) == "Il est là. Cabine ouvre ? Cabine ferme."
+    assert restore_terms("« [1] ouvre », dit-il. ¿[2] cierra?", ordinary) == "« Cabine ouvre », dit-il. ¿Cabine cierra?"
+    # Initials and abbreviations do not end a sentence.
+    assert restore_terms("Voir p. ex. [1] ici, puis [2].", ordinary) == "Voir p. ex. cabine ici, puis cabine."
+    assert restore_terms("See e.g. [1] or i.e. [2].", ordinary) == "See e.g. cabine or i.e. cabine."
+    assert restore_terms("Siehe z. B. [1] und [2].", ordinary) == "Siehe z. B. cabine und cabine."
+    assert restore_terms("Voir p. ex. [1]. [2] ouvre ensuite.", ordinary) == "Voir p. ex. cabine. Cabine ouvre ensuite."
+    assert restore_terms("Voir par ex. [1] ou le Dr. [2].", ordinary) == "Voir par ex. cabine ou le Dr. cabine."
+    assert restore_terms("Demandez à M. [1] et à John F. [2].", ordinary) == "Demandez à M. cabine et à John F. cabine."
+    # A single letter after a lowercase word is not an initial, and a name after an initial can end a sentence.
+    single = ProtectedSegment("", ("cabine",))
+    assert restore_terms("C'est le plan B. [1] ouvre.", single) == "C'est le plan B. Cabine ouvre."
+    assert restore_terms("Il a vu M. Dupont. [1] ouvre.", single) == "Il a vu M. Dupont. Cabine ouvre."
+
+
+@pytest.mark.parametrize(
+    ("source_term", "target_term", "case_sensitive"),
+    [("npm", "npm", False), ("Voxbento", "voxbento", False), ("PR", "pull request", True)],
+)
+def test_keep_as_is_and_case_sensitive_terms_keep_their_casing(source_term, target_term, case_sensitive):
+    entry = VocabularyEntryInput(source_term, "fr", target_term, case_sensitive=case_sensitive)
+    segment = protect_terms(f"{source_term} is fast.", [entry])
+
+    # The glossary's casing wins, even at the start of a sentence.
+    assert segment.exact_case == frozenset({1})
+    assert restore_terms("[1] est rapide.", segment) == f"{target_term} est rapide."
+
+
+def test_restore_terms_trims_spaces_inside_unspaced_scripts():
+    def restore(translated: str, *terms: str) -> str | None:
+        return restore_terms(translated, ProtectedSegment("", terms))
+
+    # NLLB can keep the spaces around a placeholder; between Chinese or Japanese characters they do not belong.
+    assert restore("我们在 [1] 见面", "展台") == "我们在展台见面"
+    assert restore("在 [1].", "展台") == "在展台."
+    assert restore("欢迎来到 [1]。", "展台") == "欢迎来到展台。"
+    assert restore("[1] で会いましょう", "ブース") == "ブースで会いましょう"
+    assert restore("通訳は [1] にいます", "ブース") == "通訳はブースにいます"
+    assert restore("我们在 [1] 和 [2] 见面", "展台", "大厅") == "我们在展台和大厅见面"
+    # Spaces stay wherever either side is not written without spaces.
+    assert restore("Nous sommes à la [1] ici.", "cabine") == "Nous sommes à la cabine ici."
+    assert restore("我们使用 [1] 直播", "MediaMTX") == "我们使用 MediaMTX 直播"
+    assert restore("Meet me at [1] today.", "展台") == "Meet me at 展台 today."
+    # Thai has no spaces between words but does use them between phrases, so they are not trimmed.
+    assert restore("ฉันชอบ [1] มาก", "บูธ") == "ฉันชอบ บูธ มาก"
 
 
 def test_prompt_stays_within_its_size_budget():

@@ -19,6 +19,9 @@ from fastapi_app import app
 from portal.auth import create_participant_token, create_user_token
 from portal.websockets.manager import manager
 
+# These tests are not about CSRF; their requests carry the token a real page would send.
+pytestmark = pytest.mark.usefixtures("auto_csrf")
+
 client = TestClient(app)
 
 

@@ -9,7 +9,7 @@ import TabItem from "@theme/TabItem";
 
 While Voxbento default floor audio monitoring uses the self-hosted Jitsi Meet bot (`floor-bot`), high-production conferences often prefer ingesting clean program audio directly from an external hardware video switcher (e.g. Blackmagic ATEM, OBS, vMix).
 
-Voxbento supports **room-scoped Program Stream Ingest** (#690) and optional **YouTube RTMPS Relay** (#749).
+Voxbento supports **room-scoped Program Stream Ingest** (#690), optional **RTMPS ingest as an extra destination** (#1087) and optional **YouTube RTMPS Relay** (#749).
 
 ## Architecture Overview
 
@@ -47,6 +47,15 @@ The external encoder sends a WebRTC stream via HTTPS WHIP directly to MediaMTX.
 - **Best for**: Encoders with native WHIP output (OBS Studio 30+, modern hardware encoders).
 
 </TabItem>
+<TabItem value="rtmps" label="RTMPS Extra Destination">
+
+The streaming tool keeps sending to YouTube and also pushes an authenticated RTMPS stream to MediaMTX for captions, translation and TTS. Nothing is relayed, so a VoxBento outage never touches YouTube.
+
+- **URL format**: `rtmps://{domain}:1936/{event_slug}/{room_id}`
+- **Stream Key format**: `floor?key={program_key}`
+- **Best for**: StreamYard, Restream, vMix, Zoom/Teams live streaming or OBS with a multi-output plugin, which can add a "Custom RTMP" destination. Acceptance of the `floor?key=…` format is still being verified; rehearse with the exact tool before the event.
+
+</TabItem>
 <TabItem value="rtmps-relay" label="RTMPS Relay Mode">
 
 The encoder pushes a single secure RTMPS stream (`H.264 + AAC`) to MediaMTX. MediaMTX makes the audio available for transcription and translation, while a dedicated `program-relay` service forwards the untouched video and audio stream to YouTube.
@@ -81,6 +90,19 @@ Before connecting your encoder, configure the room's transcription settings so t
 
    Rehearse the exact second-output setup before the event (see `docs/program-stream-ingest.md`).
 5. Start streaming. *Encoder → VoxBento* turns **Connected**, and floor transcription starts as soon as audio arrives (provided floor transcription, a floor language and a usable provider are configured).
+
+## Add VoxBento as an Extra Destination
+
+Use this when your streaming tool already sends to YouTube and can add a second **Custom RTMP** destination. YouTube keeps receiving the tool's own output; VoxBento only listens to its copy.
+
+If the option says *Not switched on for this server yet*, the server operator runs `scripts/setup-youtube-relay.sh --ingest-only` once (see `docs/program-relay.md` → *RTMPS ingest only*).
+
+1. On the room page, open **Room audio → From streaming software** and choose **Add VoxBento as an extra destination**.
+2. Click **Create stream key**. Copy the **Server** (`rtmps://{domain}:1936/{event_slug}/{room_id}`) and the **Stream key** (`floor?key=…`, shown once, valid 30 days). Tools with a single URL field use **Copy full URL**.
+3. In StreamYard, Restream, vMix, Zoom/Teams live streaming or your OBS multi-output plugin, add a **Custom RTMP** destination and paste the server and stream key. Send **AAC** audio.
+4. Keep your YouTube destination as it is and start streaming. *Encoder → VoxBento* turns **Connected**, and captions start as soon as audio arrives.
+
+Rehearse with your exact tool before the event: not every platform accepts every stream key shape.
 
 ## Sending a Browser Tab's Audio (Chrome or Edge)
 

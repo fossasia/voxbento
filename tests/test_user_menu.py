@@ -310,3 +310,38 @@ async def test_signed_in_pages_version_their_stylesheets_and_scripts():
             assert res.status_code == 200, path
             for asset in assets:
                 assert f"/static/{asset}?v={_JS_CACHE_BUST}" in res.text, (path, asset)
+
+
+@pytest.mark.anyio
+async def test_user_menu_carries_its_own_colour_tokens():
+    # The booth's compact top bar renders the menu outside .app-header. With the tokens
+    # scoped to .app-header alone, var(--ah-surface) was undefined there and the menu
+    # opened transparent over the page (#1135).
+    from pathlib import Path
+
+    css = (Path(__file__).resolve().parent.parent / "portal" / "static" / "css" / "app-header.css").read_text()
+    token_block = re.search(r"\.app-header,\s*\.app-user\s*\{([^}]*)\}", css)
+    assert token_block is not None, "the --ah-* tokens must be defined for .app-user as well as .app-header"
+    values = {name: value.strip() for name, value in re.findall(r"(--ah-[a-z-]+)\s*:\s*([^;]*);", token_block.group(1))}
+    defined = set(values)
+    used_by_menu = set()
+    for selector_block in re.finditer(r"([^{}]*\.app-user[^{}]*)\{([^}]*)\}", css):
+        used_by_menu |= set(re.findall(r"var\((--ah-[a-z-]+)\)", selector_block.group(2)))
+    # --ah-gutter belongs to the header layout; every colour the menu uses must be defined.
+    assert used_by_menu - {"--ah-gutter"} <= defined, used_by_menu - defined
+    # A declared but empty value, a var() that points at another undefined token, or a colour
+    # with an alpha channel (rgba(), #rgba, #rrggbbaa) could leave the menu see-through again,
+    # so the surface must be an opaque colour: #rgb, #rrggbb or rgb().
+    opaque_colour = r"#(?:[0-9a-fA-F]{3}|[0-9a-fA-F]{6})|rgb\(\s*\d{1,3}\s*,\s*\d{1,3}\s*,\s*\d{1,3}\s*\)"
+    assert re.fullmatch(opaque_colour, values["--ah-surface"]), values["--ah-surface"]
+    # The menu sets its own stacking among the positioned elements of its host bar. The host bar's
+    # own z-index (.app-header 200, .booth-topbar 20) still bounds how high it can go.
+    menu_rule = re.search(r"\.app-user-menu\s*\{([^}]*)\}", css)
+    assert menu_rule is not None and re.search(r"z-index\s*:\s*\d+", menu_rule.group(1)), "the menu needs a z-index"
+    # The font lives on .app-user, so the button and the menu both inherit it outside .app-header.
+    widget_rules = [match.group(1) for match in re.finditer(r"\.app-user\s*\{([^}]*)\}", css)]
+    assert any(
+        all(re.search(rf"{prop}\s*:", rule) for prop in ("font-family", "font-size", "line-height"))
+        for rule in widget_rules
+    ), ".app-user must set font-family, font-size and line-height"
+    assert "font-family" not in menu_rule.group(1), "the menu inherits its font from .app-user"

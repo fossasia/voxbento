@@ -117,7 +117,7 @@ class Event(Base):
 
 class Room(Base):
     __tablename__ = "rooms"
-    __table_args__ = (UniqueConstraint("event_id", "eventyay_room_id", name="uq_room_event_eventyay_id"),)
+    __table_args__ = (Index("uq_room_event_eventyay_id", "event_id", "eventyay_room_id", unique=True),)
 
     id: Mapped[int] = mapped_column(primary_key=True)
     event_id: Mapped[int] = mapped_column(ForeignKey("events.id", ondelete="CASCADE"))
@@ -144,12 +144,16 @@ class Room(Base):
     program_connected_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     program_disconnected_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     program_sync_offset_ms: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
-    # "whip" keeps the independent dual-output model; "rtmps_relay" puts VoxBento in the YouTube path (#749).
+    # "whip" and "rtmps" (#1087) keep YouTube independent (VoxBento is an extra destination over WHIP
+    # or RTMPS); "rtmps_relay" puts VoxBento in the YouTube path (#749).
     program_ingest_mode: Mapped[str] = mapped_column(String(20), default="whip", server_default="whip")
     program_relay_server: Mapped[str | None] = mapped_column(String(255), nullable=True)
     # Fernet-encrypted YouTube stream key; write-only from the API, never returned or logged.
     program_relay_key_enc: Mapped[str | None] = mapped_column(Text, nullable=True)
     program_relay_updated_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    # The YouTube broadcast this room streams to, and the stream bound to it in YouTube Studio.
+    youtube_broadcast_id: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    youtube_stream_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
     floor_caption_seq: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
 
     # Translation Settings
@@ -500,6 +504,7 @@ class User(Base):
     hosting_requested_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True, default=None)
     hosting_revoked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True, default=None)
     sessions_valid_after: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True, default=None)
+    last_sign_in_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True, default=None)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
 
     memberships: Mapped[list[EventMembership]] = relationship(
@@ -715,6 +720,28 @@ class EventAPIKey(Base):
         return f"<EventAPIKey id={self.id} event={self.event_id} preview={self.preview!r}>"
 
 
+class YouTubeConnection(Base):
+    """One YouTube channel authorised per event. The refresh token is Fernet-encrypted and write-only."""
+
+    __tablename__ = "youtube_connections"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    event_id: Mapped[int] = mapped_column(ForeignKey("events.id", ondelete="CASCADE"), unique=True, index=True)
+    channel_id: Mapped[str] = mapped_column(String(64))
+    channel_title: Mapped[str] = mapped_column(String(200))
+    refresh_token_enc: Mapped[str] = mapped_column(Text)
+    scope: Mapped[str] = mapped_column(String(500))
+    connected_by_user_id: Mapped[int | None] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
+    last_error: Mapped[str | None] = mapped_column(String(300), nullable=True)
+    # When the owner last signed in; updated_at also moves when last_error changes.
+    connected_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now, onupdate=utc_now)
+
+    def __repr__(self) -> str:
+        return f"<YouTubeConnection id={self.id} event={self.event_id} channel={self.channel_id!r}>"
+
+
 class UsageMetric(Base):
     __tablename__ = "usage_metrics"
 
@@ -728,6 +755,74 @@ class UsageMetric(Base):
 
     def __repr__(self) -> str:
         return f"<UsageMetric event={self.event_id} metric={self.metric_name!r} value={self.value}>"
+
+
+# ---------------------------------------------------------------------------
+# Interpreter attendance (#1215)
+# ---------------------------------------------------------------------------
+
+
+class InterpreterAttendance(Base):
+    """One visit to an interpreter booth: from joining the booth page to leaving it.
+
+    Written in batches by ``portal.attendance`` (never on the live path). ``left_at`` is
+    unset while the visit is open; ``last_seen_at`` is the last time the portal saved it,
+    so a visit cut short by a restart is closed there. ``interpreting_seconds`` counts the
+    time the person was the active interpreter with the stream connected and the
+    microphone on.
+    """
+
+    __tablename__ = "interpreter_attendance"
+    __table_args__ = (Index("ix_interpreter_attendance_event_joined", "event_id", "joined_at"),)
+
+    id: Mapped[str] = mapped_column(String(32), primary_key=True)
+    event_id: Mapped[int] = mapped_column(ForeignKey("events.id", ondelete="CASCADE"))
+    # Plain values, not foreign keys: the record stays after a room or booth is removed.
+    room_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    language_code: Mapped[str] = mapped_column(String(10), default="")
+    user_id: Mapped[int | None] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"), nullable=True, index=True)
+    # Public id of the invite link used to join, for people without an account.
+    invite_public_id: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    display_name: Mapped[str] = mapped_column(String(200), default="")
+    role: Mapped[str] = mapped_column(String(32), default="")
+    joined_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    left_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True, default=None)
+    last_seen_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    interpreting_seconds: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
+
+    def __repr__(self) -> str:
+        return f"<InterpreterAttendance id={self.id} event={self.event_id} user={self.user_id}>"
+
+
+class BoothLiveState(Base):
+    """What a live booth needs to survive a portal restart (TD-03).
+
+    One row per booth with something live: Mission Control's Go Live switch and
+    who held the active slot. ``portal.booth_recovery`` keeps it in step with the
+    in-memory ``BoothRegistry`` and restores it at startup. ``booth_id`` is the
+    registry's key, not a foreign key, so a row never blocks deleting a booth.
+    """
+
+    __tablename__ = "booth_live_state"
+
+    booth_id: Mapped[str] = mapped_column(String(200), primary_key=True)
+    language: Mapped[str] = mapped_column(String(100), default="")
+    channel_id: Mapped[str] = mapped_column(String(200), default="")
+    room_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    broadcast_unlocked: Mapped[bool] = mapped_column(Boolean, default=False, server_default="0")
+    active_participant_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    # portal.auth.booth_session_key of the active interpreter: only that session may reclaim the slot.
+    active_session_key: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    active_display_name: Mapped[str | None] = mapped_column(String(200), nullable=True)
+    active_role: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    active_user_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    active_invite_public_id: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    active_mic_active: Mapped[bool] = mapped_column(Boolean, default=False, server_default="0")
+    active_ingest_connected: Mapped[bool] = mapped_column(Boolean, default=False, server_default="0")
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
+
+    def __repr__(self) -> str:
+        return f"<BoothLiveState booth={self.booth_id} unlocked={self.broadcast_unlocked}>"
 
 
 # ---------------------------------------------------------------------------
@@ -944,6 +1039,29 @@ class EmailSettings(Base):
     show_logo: Mapped[bool] = mapped_column(Boolean, default=True, server_default=sa.true())
     # An https image URL; empty means the VoxBento logo served by this site.
     logo_url: Mapped[str | None] = mapped_column(String(500), nullable=True)
+    updated_by_id: Mapped[int | None] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now, onupdate=utc_now)
+
+
+class LiveDemoSettings(Base):
+    """Admin settings for the home-page live demo (one row, id 1). No row means the server defaults.
+
+    The ``LIVE_DEMO_*`` environment variables supply those defaults, and ``LIVE_DEMO_ENABLED=false``
+    switches the demo off whatever is saved here.
+    """
+
+    __tablename__ = "live_demo_settings"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    enabled: Mapped[bool] = mapped_column(Boolean, default=True, server_default=sa.true())
+    voice_enabled: Mapped[bool] = mapped_column(Boolean, default=True, server_default=sa.true())
+    whisper_model: Mapped[str] = mapped_column(String(20), default="base", server_default="base")
+    max_sessions: Mapped[int] = mapped_column(Integer, default=2, server_default="2")
+    max_session_seconds: Mapped[int] = mapped_column(Integer, default=120, server_default="120")
+    sessions_per_ip_per_hour: Mapped[int] = mapped_column(Integer, default=12, server_default="12")
+    max_targets: Mapped[int] = mapped_column(Integer, default=3, server_default="3")
+    # One entry per line: "term", "term = translation" or "term = fr: translation".
+    glossary: Mapped[str] = mapped_column(Text, default="", server_default="")
     updated_by_id: Mapped[int | None] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now, onupdate=utc_now)
 
