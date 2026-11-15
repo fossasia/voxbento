@@ -1,7 +1,7 @@
 """add transcript segment indexes
 
-Revision ID: 042
-Revises: 041
+Revision ID: 045
+Revises: 044
 Create Date: 2026-10-26 17:10:00.000000
 
 """
@@ -15,8 +15,8 @@ from sqlalchemy import text
 from alembic import op
 
 # revision identifiers, used by Alembic.
-revision: str = "042"
-down_revision: Union[str, Sequence[str], None] = "041"
+revision: str = "045"
+down_revision: Union[str, Sequence[str], None] = "044"
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
 
@@ -27,8 +27,8 @@ BOOTH_ID = "ix_transcript_segments_booth_id"
 # serializes a run that bypasses that entry point. The number encodes the revision so
 # the two files can be matched by eye. It stays a literal because ``--sql`` mode does
 # not inline bound parameters and would emit ``%(lock_id)s`` instead.
-ADVISORY_LOCK = text("SELECT pg_advisory_lock(20261026042)")
-ADVISORY_UNLOCK = text("SELECT pg_advisory_unlock(20261026042)")
+ADVISORY_LOCK = text("SELECT pg_advisory_lock(20261026045)")
+ADVISORY_UNLOCK = text("SELECT pg_advisory_unlock(20261026045)")
 
 
 def upgrade() -> None:

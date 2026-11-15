@@ -55,8 +55,17 @@ async def _load_config(room_id: int) -> dict | None:
                 logger.error("[TTS] Deepgram API key not found for Event %s", event.id)
                 return None
 
+        el_api_key = None
+        if tts_provider_name == TTSProviderEnum.ELEVENLABS.value:
+            el_api_key = decrypt_val(event.encrypted_elevenlabs_api_key) if event.encrypted_elevenlabs_api_key else None
+            if not el_api_key:
+                logger.error("[TTS] ElevenLabs API key not found for Event %s", event.id)
+                return None
+
         try:
-            tts_provider = get_tts_provider(tts_provider_name, deepgram_api_key=dg_api_key)
+            tts_provider = get_tts_provider(
+                tts_provider_name, deepgram_api_key=dg_api_key, elevenlabs_api_key=el_api_key
+            )
         except Exception as e:
             logger.error(f"[TTS] Failed to initialise TTS provider '{tts_provider_name}': {e}")
             return None

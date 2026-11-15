@@ -60,6 +60,18 @@ class Settings(BaseSettings):
     program_relay_control_secret: str = ""
     program_relay_max: int = 4
     program_relay_allowed_hosts: str = "a.rtmps.youtube.com,b.rtmps.youtube.com"
+    # "Sign in with YouTube" (Google OAuth web client). Off unless both are set.
+    youtube_oauth_client_id: str = ""
+    youtube_oauth_client_secret: str = Field(default="", repr=False)
+    youtube_status_cache_secs: float = 60.0  # Two list calls per refresh per open linked room.
+
+    @property
+    def youtube_connect_enabled(self) -> bool:
+        return bool(self.youtube_oauth_client_id and self.youtube_oauth_client_secret)
+
+    @property
+    def youtube_redirect_uri(self) -> str:
+        return f"{self.public_base_url.rstrip('/')}/youtube/oauth/callback"
 
     @property
     def rtmps_ingest_enabled(self) -> bool:
@@ -97,6 +109,19 @@ class Settings(BaseSettings):
     # Database — SQLite for dev, PostgreSQL for prod
     database_url: str = "sqlite+aiosqlite:///./interpretation.db"
 
+    # Booth recovery (portal/booth_recovery.py). A participant whose booth socket
+    # drops keeps their place, including the active slot, for this long so a
+    # network blip does not take the live interpreter off air. 0 removes them at once.
+    booth_reconnect_grace_seconds: float = 20.0
+    # Save each booth's Go Live switch and active interpreter, and restore them
+    # when the portal restarts, so a deploy or crash mid-event keeps booths live.
+    booth_state_recovery_enabled: bool = True
+    # How long a restored active interpreter keeps the slot waiting to reconnect.
+    booth_restart_grace_seconds: float = 60.0
+    # Saved state is not restored when its last save is older than this. Live booths are saved on
+    # every change and at least every minute, so the age is the downtime plus up to a minute before it.
+    booth_state_max_age_seconds: float = 600.0
+
     @property
     def effective_jwt_secret(self) -> str:
         return self.jwt_secret or self.secret_key
@@ -106,13 +131,45 @@ class Settings(BaseSettings):
 
         Called once at application startup. No-op in debug mode so local
         development works without configuring a SECRET_KEY.
+
+        Note for upgrades: Existing production deployments that previously ran
+        with a weak or short secret must configure a 32+ character random
+        JWT_SECRET (or SECRET_KEY if JWT_SECRET is unset) before starting.
+        If stored credentials were tied to the old secret, reissue them after
+        rotation.
         """
         if self.debug:
             return
-        weak_defaults = {"change-me", "", "secret", "your-secret-key"}
-        if self.effective_jwt_secret in weak_defaults:
+        weak_defaults = {
+            "change-me",
+            "",
+            "secret",
+            "your-secret-key",
+            "admin",
+            "password",
+            "123456",
+            "qwerty",
+            "letmein",
+            "changeme",
+            "test",
+            "1234567890",
+        }
+        effective_secret = (self.effective_jwt_secret or "").strip()
+        if not effective_secret or effective_secret in weak_defaults:
             raise RuntimeError(
                 "SECRET_KEY (or JWT_SECRET) is set to a known-weak default value. "
+                "Set a strong random value before running in production. "
+                "Generate one with: openssl rand -hex 32"
+            )
+        if len(effective_secret) < 32:
+            raise RuntimeError(
+                "SECRET_KEY (or JWT_SECRET) is too short for production use. "
+                "It must be at least 32 characters. "
+                "Generate one with: openssl rand -hex 32"
+            )
+        if len(set(effective_secret)) < 8:
+            raise RuntimeError(
+                "SECRET_KEY (or JWT_SECRET) lacks sufficient character diversity. "
                 "Set a strong random value before running in production. "
                 "Generate one with: openssl rand -hex 32"
             )
@@ -133,6 +190,8 @@ class Settings(BaseSettings):
                 "PROGRAM_RELAY_ENABLED requires PROGRAM_RELAY_CONTROL_SECRET (at least 32 characters), "
                 "shared with the program-relay service. Generate one with: openssl rand -hex 32"
             )
+        if bool(self.youtube_oauth_client_id) != bool(self.youtube_oauth_client_secret):
+            raise RuntimeError("Set both YOUTUBE_OAUTH_CLIENT_ID and YOUTUBE_OAUTH_CLIENT_SECRET, or neither.")
         # Every outgoing email is encrypted at rest in the outbox, so sign-in links,
         # invitations and password resets cannot be sent without this key.
         encryption_keys = [
@@ -164,6 +223,17 @@ class Settings(BaseSettings):
     # ONNX Runtime intra-op threads for synthesis. 0 = let ONNX Runtime pick
     # (uses all physical cores).
     supertonic_intra_op_threads: int = 0
+
+    # Home-page live demo (/ws/demo/live): visitors speak and get captions, translations and a
+    # voice from the server's own models. Public, so its load is capped per server and per IP.
+    # Admins switch it on at /admin/live-demo/ (off until then); False forbids it on this server.
+    live_demo_enabled: bool = True
+    live_demo_voice_enabled: bool = True
+    live_demo_whisper_model: str = "base"
+    live_demo_translation_model: str = "nllb-200-distilled-600M"
+    live_demo_max_sessions: int = Field(default=2, ge=1)
+    live_demo_max_session_seconds: int = Field(default=120, ge=10)
+    live_demo_sessions_per_ip_per_hour: int = Field(default=12, ge=1)
 
     # Email Settings
     smtp_host: str = ""
