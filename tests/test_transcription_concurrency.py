@@ -15,10 +15,17 @@ from httpx import ASGITransport, AsyncClient
 
 from fastapi_app import app
 from portal.auth import create_user_token
+from portal.config import settings
 from portal.crypto import encrypt_val
 from portal.database import configure, dispose, get_session, init_db
 from portal.models import DBBooth, Event, Room
-from portal.transcription.worker import active_workers
+from portal.transcription.providers.base import ProviderConfig
+from portal.transcription.worker import (
+    WorkerCapacityError,
+    active_workers,
+    start_transcription_worker,
+    stop_transcription_worker,
+)
 
 # Bypass token requirements for WS/REST endpoints where applicable,
 # and use an admin token to satisfy _require_access.
@@ -286,10 +293,6 @@ async def test_stop_before_task_starts_still_runs_cleanup():
 @pytest.mark.anyio
 async def test_capacity_limit_respects_settings_override(monkeypatch: pytest.MonkeyPatch):
     """Dynamic override of settings.max_transcription_workers takes immediate effect."""
-    from portal.config import settings
-    from portal.transcription.providers.base import ProviderConfig
-    from portal.transcription.worker import WorkerCapacityError, start_transcription_worker, stop_transcription_worker
-
     monkeypatch.setattr(settings, "max_transcription_workers", 2)
 
     async def _noop_broadcast(*args, **kwargs):
