@@ -904,6 +904,24 @@ class BoothRegistry:
             self.attendance.forget_booth(booth_id)
             self._mark_dirty(booth_id)
 
+    async def remove_idle_booths(self, event_slug: str, room_id: int, language_codes: list[str]) -> str | None:
+        """Remove the booths for *language_codes* in one step, unless one of them is live.
+
+        Returns the first live language code and removes nothing, or None once all are removed.
+        Checking and removing under one lock leaves no gap for a booth to go live in between.
+        """
+        booth_ids = [make_booth_id(event_slug, room_id, code) for code in language_codes]
+        async with self._lock:
+            for code, booth_id in zip(language_codes, booth_ids, strict=True):
+                booth = self._booths.get(booth_id)
+                if booth is not None and booth.ingest_status == "connected":
+                    return code
+            for booth_id in booth_ids:
+                self._booths.pop(booth_id, None)
+                self.attendance.forget_booth(booth_id)
+                self._mark_dirty(booth_id)
+        return None
+
     async def validate_booth_event(self, booth_id: str, expected_event: str) -> None:
         """Raise PermissionError if *booth_id* does not belong to *expected_event*.
 

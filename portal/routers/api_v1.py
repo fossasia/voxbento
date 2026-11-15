@@ -717,17 +717,15 @@ async def upsert_room(
 
         # Safe Delete Removed Booths & Languages
         removed_booths = [(code, b) for code, b in existing_booths.items() if code not in requested_langs]
-        # Active Session Guard — check every removed booth before any cleanup
-        for code, _ in removed_booths:
-            active_booth = booths.get_booth_sync(make_booth_id(event_slug, room.id, code))
-            if active_booth is not None and active_booth.ingest_status == "connected":
-                raise HTTPException(
-                    status_code=status.HTTP_409_CONFLICT,
-                    detail=f"Cannot remove language '{code}' while it has an active session running.",
-                )
+        # Active Session Guard — checked and removed in one locked step, before any cleanup
+        live_code = await booths.remove_idle_booths(event_slug, room.id, [code for code, _ in removed_booths])
+        if live_code is not None:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail=f"Cannot remove language '{live_code}' while it has an active session running.",
+            )
         for code, b in removed_booths:
             booth_id = make_booth_id(event_slug, room.id, code)
-            await booths.remove_booth(event_slug, room.id, code)
             await stop_booth_publish(booth_id, take_booth_publishers(booth_id))
             await db.delete(b)
             db.add(

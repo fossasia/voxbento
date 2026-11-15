@@ -170,7 +170,7 @@ async def _kick_session(path: str, source_type: str, session_id: str) -> None:
     await program_ingest.kick(path, program_ingest.MediaSource(type=source_type, id=session_id))
 
 
-async def end_publishers(publishers: list[Publisher]) -> None:
+async def end_publishers(publishers: list[Publisher], *, only_while_locked: bool = False) -> None:
     """Best effort: kick each recorded WHIP session in MediaMTX.
 
     Kicking by session id leaves a newer publisher on the same path alone, and it
@@ -188,16 +188,19 @@ async def end_publishers(publishers: list[Publisher]) -> None:
             logger.warning("Could not end the publisher of booth %s (%s)", publisher.booth_id, type(exc).__name__)
             _remember(publisher)
     if publishers:
-        await _end_unowned_source(publishers[0].booth_id, publishers[0].path)
+        await _end_unowned_source(publishers[0].booth_id, publishers[0].path, only_while_locked=only_while_locked)
 
 
-async def _end_unowned_source(booth_id: str, path: str) -> None:
+async def _end_unowned_source(booth_id: str, path: str, *, only_while_locked: bool = False) -> None:
     from portal import program_ingest  # circular import, see _kick_session
 
     try:
         current = await program_ingest.media_path(path)
         source = current.source if current else None
         if source is not None and source.id not in _publishers.get(booth_id, {}):
+            booth = booths.get_booth_sync(booth_id)
+            if only_while_locked and booth is not None and booth.broadcast_unlocked:
+                return
             await _kick_session(path, source.type, source.id)
     except (httpx.HTTPError, HTTPException, ValueError) as exc:
         logger.warning("Could not check the source of booth %s (%s)", booth_id, type(exc).__name__)
@@ -211,7 +214,7 @@ async def stop_booth_publish(booth_id: str, publishers: list[Publisher], *, only
     """
     from portal import program_ingest  # circular import, see _kick_session
 
-    await end_publishers(publishers)
+    await end_publishers(publishers, only_while_locked=only_while_locked)
     known = {publisher.session_id for publisher in publishers}
     try:
         path = booth_id_to_mediamtx_path(booth_id)

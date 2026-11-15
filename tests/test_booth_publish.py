@@ -508,8 +508,8 @@ async def test_stop_does_not_kick_a_publisher_that_started_after_unlock(media, m
     newer = str(uuid4())
     real_end = booth_publish.end_publishers
 
-    async def unlock_meanwhile(publishers):
-        await real_end(publishers)
+    async def unlock_meanwhile(publishers, **kwargs):
+        await real_end(publishers, **kwargs)
         booths.get_booth_sync(BOOTH_ID).broadcast_unlocked = True
         paths[PATH] = {"name": PATH, "ready": True, "source": {"type": "webRTCSession", "id": newer}}
 
@@ -558,3 +558,45 @@ async def test_live_session_evicted_by_failed_retries_is_still_ended(media, monk
 
     assert kicks[-1] == live
     assert PATH not in paths
+
+
+@pytest.mark.anyio
+async def test_stop_spares_an_evicted_session_that_started_after_unlock(media, monkeypatch):
+    """A new session pushed out of the records while Stop's kick is pending is not treated as unowned."""
+    client, (active, _), paths, kicks, _ = media
+    monkeypatch.setattr(booth_publish, "MAX_SESSIONS_PER_BOOTH", 1)
+    old = await go_live(client, active, paths)
+    newer = str(uuid4())
+    real_kick = booth_publish._kick_session
+
+    async def unlock_meanwhile(path, source_type, session_id):
+        await real_kick(path, source_type, session_id)
+        if session_id == old:
+            booths.get_booth_sync(BOOTH_ID).broadcast_unlocked = True
+            paths[PATH] = {"name": PATH, "ready": True, "source": {"type": "webRTCSession", "id": newer}}
+
+    monkeypatch.setattr(booth_publish, "_kick_session", unlock_meanwhile)
+    ws = MockWebSocket()
+    await _handle_set_broadcast_unlocked(ws, session_for(None, granted_role="room_coordinator"), {"unlocked": False})
+
+    assert kicks == [old]
+    assert paths[PATH]["source"]["id"] == newer
+
+
+@pytest.mark.anyio
+async def test_removing_booths_is_refused_whole_when_one_is_live():
+    """A room update that drops a live booth removes none of the requested booths."""
+    from portal.booth_state import BoothRegistry
+
+    registry = BoothRegistry()
+    for code in ("de", "fr"):
+        await registry.set_broadcast_unlocked(f"{EVENT}-{ROOM}-{code}", True, code, f"{EVENT}/{ROOM}/{code}")
+    registry.get_booth_sync(f"{EVENT}-{ROOM}-fr").ingest_status = "connected"
+
+    assert await registry.remove_idle_booths(EVENT, ROOM, ["de", "fr"]) == "fr"
+    assert registry.get_booth_sync(f"{EVENT}-{ROOM}-de") is not None
+
+    registry.get_booth_sync(f"{EVENT}-{ROOM}-fr").ingest_status = "disconnected"
+    assert await registry.remove_idle_booths(EVENT, ROOM, ["de", "fr"]) is None
+    assert registry.get_booth_sync(f"{EVENT}-{ROOM}-de") is None
+    assert registry.get_booth_sync(f"{EVENT}-{ROOM}-fr") is None
