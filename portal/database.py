@@ -1182,8 +1182,9 @@ async def save_transcript_segment(booth_id_str: str, text: str, room_id: int | N
                     )
                 )
                 booth_id = await session.scalar(stmt_booth)
-
-            if booth_id is None:
+                if booth_id is None:
+                    return None
+            else:
                 stmt_room = (
                     select(Room.id)
                     .join(Event, Room.event_id == Event.id)
