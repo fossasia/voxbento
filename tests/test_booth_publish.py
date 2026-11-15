@@ -471,8 +471,7 @@ async def test_unreachable_mediamtx_does_not_block_revocation_or_stop(media, cap
     assert booths.get_booth_sync(BOOTH_ID).broadcast_unlocked is False
     assert ws.sent == []
     assert kicks == []
-    # Revocation's kick, Stop retrying it, and Stop's path lookup.
-    assert len(caplog.records) == 3
+    assert caplog.records and all(r.levelname == "WARNING" for r in caplog.records)
     assert session_id not in caplog.text
 
 
@@ -542,3 +541,20 @@ async def test_stalled_broadcast_does_not_hold_up_the_kick(media, monkeypatch):
     assert not release.done()
     stuck.set()
     await release
+
+
+@pytest.mark.anyio
+async def test_live_session_evicted_by_failed_retries_is_still_ended(media, monkeypatch):
+    """Retries that fill the per-booth cap cannot leave the live session out of reach."""
+    client, (active, _), paths, kicks, _ = media
+    monkeypatch.setattr(booth_publish, "MAX_SESSIONS_PER_BOOTH", 2)
+    live = await go_live(client, active, paths)
+    for _ in range(3):
+        reply = await request_ticket(active)
+        assert await publish(client, token=reply["ticket"], id=str(uuid4())) == 204
+    assert live not in booth_publish._publishers[BOOTH_ID]
+
+    await release_participant(socket_session(active), immediate=True)
+
+    assert kicks[-1] == live
+    assert PATH not in paths

@@ -177,6 +177,9 @@ async def end_publishers(publishers: list[Publisher]) -> None:
     works before MediaMTX lists the session as the path's source; a session that
     is already gone counts as ended. A failed kick is recorded again, so the next
     removal in the booth, Stop or deletion retries it.
+
+    The path's current source is ended too when no remaining record owns it: the
+    per-booth cap can evict a live session after repeated failed retries.
     """
     for publisher in publishers:
         try:
@@ -184,6 +187,20 @@ async def end_publishers(publishers: list[Publisher]) -> None:
         except (httpx.HTTPError, HTTPException, ValueError) as exc:
             logger.warning("Could not end the publisher of booth %s (%s)", publisher.booth_id, type(exc).__name__)
             _remember(publisher)
+    if publishers:
+        await _end_unowned_source(publishers[0].booth_id, publishers[0].path)
+
+
+async def _end_unowned_source(booth_id: str, path: str) -> None:
+    from portal import program_ingest  # circular import, see _kick_session
+
+    try:
+        current = await program_ingest.media_path(path)
+        source = current.source if current else None
+        if source is not None and source.id not in _publishers.get(booth_id, {}):
+            await _kick_session(path, source.type, source.id)
+    except (httpx.HTTPError, HTTPException, ValueError) as exc:
+        logger.warning("Could not check the source of booth %s (%s)", booth_id, type(exc).__name__)
 
 
 async def stop_booth_publish(booth_id: str, publishers: list[Publisher], *, only_while_locked: bool = False) -> None:

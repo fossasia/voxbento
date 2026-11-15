@@ -1025,17 +1025,16 @@ async def _handle_set_broadcast_unlocked(ws: WebSocket, session: Session, data: 
         # unresponsive. Publisher mic/ingest state is already reset inside
         # set_broadcast_unlocked; the MediaMTX session is ended below.
         if not unlocked:
+            # The WHIP session goes to MediaMTX directly; end it first so the audio
+            # stops even if the interpreter's tab never tears it down, without
+            # waiting for transcription cleanup or the broadcast.
+            await stop_booth_publish(session.booth_id, stopped, only_while_locked=True)
             try:
                 from portal.transcription.worker import stop_transcription_worker
 
                 await stop_transcription_worker(session.booth_id)
             except Exception as e:
                 logging.getLogger(__name__).warning(f"Failed to stop transcription on lock: {e}")
-        if not unlocked:
-            # The WHIP session goes to MediaMTX directly; end it here so the audio
-            # stops even if the interpreter's tab never tears it down. Before the
-            # broadcast, so a stalled recipient cannot hold it up.
-            await stop_booth_publish(session.booth_id, stopped, only_while_locked=True)
         await broadcast_booth_state(session.booth_id, state)
     except Exception as exc:
         await ws.send_text(json.dumps({"type": "booth:error", "message": str(exc)}))
