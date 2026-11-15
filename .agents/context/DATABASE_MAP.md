@@ -371,6 +371,17 @@ URL), `program_relay_key_enc` (Fernet ciphertext of the YouTube stream key; writ
 never serialize or log) and `program_relay_updated_at`. Helpers live in
 `portal/program_relay.py` (`store_destination`, `clear_destination`, `destination`).
 
+## Migration 044 — Sign in with YouTube (#1087)
+
+Table `youtube_connections` (model `YouTubeConnection`), one row per event (unique
+`event_id`, cascade on event delete): `channel_id` (String(64)), `channel_title`
+(String(200)), `refresh_token_enc` (Text, Fernet ciphertext of the Google refresh token;
+write-only, never serialize or log), `scope` (String(500)), nullable
+`connected_by_user_id` (→ `users.id`, SET NULL), nullable `last_error` (String(300), the
+"sign in again" message), `connected_at` (sign-in time), `created_at`, `updated_at`. Room fields: nullable
+`youtube_broadcast_id` (String(32)) and `youtube_stream_id` (String(64)). Helpers live in
+`portal/youtube_account.py` (`get_connection`, `link_broadcast`, `unlink_event_rooms`).
+
 ## Migration 035 — per-language AI voice (#1005)
 
 `room_translation_languages.tts_enabled` (Boolean, default true, server default true)
