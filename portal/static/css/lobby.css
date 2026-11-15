@@ -27,9 +27,10 @@
 .lobby-field:last-child { margin-bottom: 0; }
 .lobby-field label, .lobby-label { font-size: 0.875rem; font-weight: 600; color: var(--aa-text); }
 .lobby-field-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
-.lobby-inline { display: flex; gap: 8px; }
-.lobby-select { flex: 1; min-width: 0; padding: 9px 12px; border: 1px solid var(--aa-border-strong); border-radius: 8px; background: var(--aa-surface); color: var(--aa-text); font: inherit; }
+.lobby-inline { display: flex; gap: 8px; min-width: 0; }
+.lobby-select { flex: 1; min-width: 0; width: 0; padding: 9px 12px; border: 1px solid var(--aa-border-strong); border-radius: 8px; background: var(--aa-surface); color: var(--aa-text); font: inherit; }
 .lobby-select:focus { outline: 3px solid var(--aa-focus); border-color: var(--aa-primary); }
+.lobby-inline .aa-btn { flex-shrink: 0; }
 .lobby-check-option { display: inline-flex; align-items: center; gap: 8px; font-weight: 400 !important; color: var(--aa-text-secondary) !important; }
 .lobby-hint { margin: 0; font-size: 0.875rem; color: var(--aa-text-secondary); }
 .loopback-progress { width: 100%; height: 8px; }

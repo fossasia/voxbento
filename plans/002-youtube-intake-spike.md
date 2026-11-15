@@ -1,13 +1,49 @@
 # Plan 002: Verify the four YouTube-intake assumptions before building
 
+## In plain English
+
+Before promising the new workflow, try the real browser, streaming software and
+YouTube service. This plan produces evidence, not application code.
+
+**Status on 12 November 2026: IN PROGRESS.** [#1133](https://github.com/fossasia/voxbento/pull/1133)
+merged [the results](002-results.md): browser-tab audio, YouTube account fields and
+caption posting were measured. The streaming-platform test (step 2) is still pending.
+
+### What to do now
+
+1. Get a test event/room and a public RTMPS endpoint from a maintainer. RTMPS is the
+   encrypted connection streaming tools use to send the event to VoxBento.
+2. In the room, choose **Add VoxBento as an extra destination** and create a key.
+   Keep the tool's normal YouTube output running separately.
+3. Add VoxBento's server/key to each available tool, send speech, and record whether
+   it accepts the credential, VoxBento receives sound and captions appear.
+4. Revoke the VoxBento key and verify that YouTube keeps receiving its independent
+   output. Record failures too, with the tool/version and exact safe error text.
+5. Update the existing results file in a follow-up PR. Keep unavailable tools marked
+   PENDING and hide all private keys/tokens. Do not recreate the merged report.
+6. Mark 002 complete only when every required step has a verdict; at least one
+   supported streaming platform must actually pass step 2.
+
+The test endpoint was reported enabled on 7 November; this review did not check its
+current deployment. StreamYard/Restream paid access and test-event access need
+coordination. The other measurements remain useful and do not need repeating
+unless their assumptions change. See [the overall sequence](README.md#remaining-work-step-by-step).
+
+## Technical implementation reference
+
+The following implementation steps and excerpts were written against `250aefde`
+on 1 November 2026. The current status and completion steps above take precedence.
+Run the drift check before reusing an example; refresh stale code against current
+`dev` and the relevant PR. Completed implementation steps are maintenance reference.
+
 > **Executor instructions**: Follow this plan step by step. This is a
-> measurement spike: you change **no source files**. You write exactly one
-> results file. Run every verification and record the observed result. If a
+> measurement spike: you change **no source files**. You update the existing
+> results file; do not recreate the measurements already merged. Run every verification and record the observed result. If a
 > STOP condition occurs, stop and report. When done, update the status row for
 > this plan in `plans/README.md`.
 >
 > **Drift check (run first)**: `git diff --stat 250aefde..HEAD -- mediamtx.yml docker-compose.yml docker-compose.relay.yml portal/program_ingest.py portal/static/js/program-sender.js`
-> If any listed file changed, re-read the "Current state" facts below against the
+> If any listed file changed, re-read the "Original implementation baseline" facts below against the
 > live code before proceeding; on a mismatch, STOP.
 
 ## Status
@@ -27,7 +63,7 @@ YouTube/Chrome/third-party behaviour. If any is false, the dependent plan must
 change before anyone writes code. The spike output is a short results file that
 those plans read.
 
-## Current state
+## Original implementation baseline (1 November 2026)
 
 - `portal/static/js/program-sender.js` publishes floor audio over authenticated
   WHIP using `navigator.mediaDevices.getUserMedia` (line ~116) and a short-lived
@@ -61,8 +97,8 @@ results file. Write `<redacted>` instead.
 
 ## Git workflow
 
-- No branch needed; the results file is a planning artifact. Do not commit unless
-  the operator asks.
+- The initial results are already merged. Record new step-2 measurements in a
+  follow-up branch from current `dev` and submit a PR when authorised.
 
 ## Steps
 
@@ -87,8 +123,8 @@ results file. Write `<redacted>` instead.
 
 ### Step 2: Third-party "Custom RTMP" destination → VoxBento RTMPS
 
-Using a VoxBento instance with relay mode enabled (`docs/program-relay.md` →
-Server setup) and a room in relay mode with **no YouTube key saved**:
+Using a VoxBento instance with RTMPS enabled (`docs/program-relay.md` →
+RTMPS ingest only) and a room in **extra-destination mode** (`rtmps`, plan 004):
 
 1. Copy the room's **Server** (`rtmps://<host>:1936/<event>/<room>`) and **Stream key**
    (`floor?key=…`).
@@ -96,12 +132,14 @@ Server setup) and a room in relay mode with **no YouTube key saved**:
    OBS with the "Multiple RTMP outputs" plugin, and vMix (if available).
 3. Stream 2 minutes of speech. Record per platform: accepted `rtmps://`? accepted the
    `?` in the key? MediaMTX shows the path ready (`/v3/paths/list`)? Captions appeared?
-4. If a platform rejects or rewrites `floor?key=…`, record the exact error. Note alternative
+4. While both outputs are live, revoke the VoxBento key. Record that VoxBento
+   disconnects and YouTube continues receiving the separate output.
+5. If a platform rejects or rewrites `floor?key=…`, record the exact error. Note alternative
    credential formats (e.g. `rtmps://user:pass@host/…` or a `?user=…&pass=…` query) as
    future VoxBento code changes rather than current test options, since VoxBento's
    current auth hook strictly enforces the `floor?key=<secret>` format. **Do not change code.**
 
-**Verify**: results table *Platform | rtmps ok | key format ok | path ready | captions ok | notes*.
+**Verify**: results table *Platform | version | rtmps ok | key format ok | path ready | captions ok | YouTube continues after revoke | notes*.
 
 ### Step 3: YouTube API fields with a real channel
 
@@ -157,7 +195,7 @@ No automated tests. Run the sanity command from the table to confirm the tree is
 
 - [ ] `plans/002-results.md` exists with the four sections above, each with a yes/no verdict.
 - [ ] No secrets committed: run `grep -nE "key=[A-Za-z0-9_-]{20,}|ya29\.|1//0|AIza" plans/002-results.md` (no matches) and verify all sensitive tokens, stream keys, and caption URLs are replaced with `<redacted>`.
-- [ ] Only `plans/002-results.md` (untracked) and `plans/README.md` (modified status row) appear in `git status --short`.
+- [ ] Only `plans/002-results.md` (new observations) and `plans/README.md` (status row) appear in `git status --short`.
 - [ ] `plans/README.md` status row for 002 updated to DONE.
 
 ## STOP conditions

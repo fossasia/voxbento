@@ -1,5 +1,39 @@
 # Plan 003: Add a "Browser tab" source to the program audio sender
 
+## In plain English
+
+Let the organiser share the sound of a playing browser tab directly with VoxBento.
+They no longer need to share that tab into a meeting and wait for a bot to hear it.
+This is useful for a YouTube Studio webcam broadcast or another stream they are
+allowed to caption but cannot configure as an encoder output.
+
+**Status on 12 November 2026: DONE.** [#1097](https://github.com/fossasia/voxbento/pull/1097)
+merged tab capture; [#1231](https://github.com/fossasia/voxbento/pull/1231) later fixed
+starting/reconnecting so it keeps the room's saved audio/video sync delay.
+Do not implement the historical steps below again.
+
+### What the organiser does
+
+1. Open the stream in a normal browser tab and the room's sender in another tab.
+2. Choose browser-tab audio, click Start sending, pick the playing tab and tick
+   **Also share tab audio**. The measured browsers are recorded in [002-results.md](002-results.md).
+3. Check the sender's sound meter and the VoxBento listener page's captions.
+4. Keep both tabs open. A network reconnect should keep the shared track without
+   asking them to choose the tab again; ending browser sharing stops capture.
+5. Use VoxBento's listener link for translations and translated speech. The separate
+   YouTube CC option belongs to plan 006 and is not completed by tab capture.
+
+This route does not require connecting the stream owner's Google account. The
+remaining team work is incorporating it into the guide in plan 007 and rehearsing
+that complete journey. See [the overall sequence](README.md#remaining-work-step-by-step).
+
+## Technical implementation reference
+
+The following implementation steps and excerpts were written against `250aefde`
+on 1 November 2026. The current status and completion steps above take precedence.
+Run the drift check before reusing an example; refresh stale code against current
+`dev` and the relevant PR. Completed implementation steps are maintenance reference.
+
 > **Executor instructions**: Follow this plan step by step. Run every
 > verification command and confirm the expected result before moving to the
 > next step. If anything in the "STOP conditions" section occurs, stop and
@@ -9,7 +43,7 @@
 >
 > **Drift check (run first)**: `git diff --stat 250aefde..HEAD -- portal/static/js/program-sender.js portal/templates/admin/program_sender.html tests/test_program_sender.py .github/workflows/tests.yml docs/program-stream-ingest.md website/docs/admin/program-ingest.mdx`
 > If any in-scope file changed since this plan was written, compare the
-> "Current state" excerpts against the live code before proceeding; on a
+> "Original implementation baseline" excerpts against the live code before proceeding; on a
 > mismatch, treat it as a STOP condition.
 
 ## Status
@@ -32,7 +66,7 @@ The program audio sender page already publishes authenticated WHIP straight to t
 room's floor path. Letting it capture a **browser tab's audio** collapses the path to
 tab → WebRTC → MediaMTX → STT with no Jitsi and no bot, and needs no backend change.
 
-## Current state
+## Original implementation baseline (1 November 2026)
 
 - `portal/templates/admin/program_sender.html`: standalone sender page (event owners
   only, served at `/admin|workspace/events/{id}/rooms/{id}/sender/`). It has one
