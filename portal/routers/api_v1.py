@@ -53,6 +53,7 @@ _API_KEY_FIELDS: list[tuple[str, str]] = [
     ("gemini_api_key",             "encrypted_gemini_api_key"),
     ("anthropic_api_key",          "encrypted_anthropic_api_key"),
     ("groq_api_key",               "encrypted_groq_api_key"),
+    ("atlascloud_api_key",         "encrypted_atlascloud_api_key"),
     ("google_translate_api_key",   "encrypted_google_translate_api_key"),
 ]
 
@@ -1190,6 +1191,7 @@ class EventAPIKeysUpdate(BaseModel):
     gemini_api_key: str | None = None
     anthropic_api_key: str | None = None
     groq_api_key: str | None = None
+    atlascloud_api_key: str | None = None
     google_translate_api_key: str | None = None
 
 
