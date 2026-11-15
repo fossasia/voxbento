@@ -851,8 +851,8 @@ async def _handle_leave(session: Session) -> None:
     )
     session.participant_id = None
     departed = take_departed_publishers(session.booth_id, state)
-    await broadcast_booth_state(session.booth_id, state)
     await end_publishers(departed)
+    await broadcast_booth_state(session.booth_id, state)
 
 
 async def _remove_retained_participants(removal: Awaitable[list[tuple[str, dict]]]) -> None:
@@ -864,8 +864,8 @@ async def _remove_retained_participants(removal: Awaitable[list[tuple[str, dict]
     """
     removed = [(booth_id, state, take_departed_publishers(booth_id, state)) for booth_id, state in await removal]
     for booth_id, state, departed in removed:
-        await broadcast_booth_state(booth_id, state)
         await end_publishers(departed)
+        await broadcast_booth_state(booth_id, state)
 
 
 def schedule_participant_expiry(booth_id: str, participant_id: str, connection_id: str | None, delay: float) -> None:
@@ -879,8 +879,8 @@ def schedule_participant_expiry(booth_id: str, participant_id: str, connection_i
         state = await booths.expire_participant(booth_id, participant_id, connection_id)
         if state is not None:
             departed = take_departed_publishers(booth_id, state)
-            await broadcast_booth_state(booth_id, state)
             await end_publishers(departed)
+            await broadcast_booth_state(booth_id, state)
 
     track_task(asyncio.create_task(expire(), name=f"booth-expire-{booth_id}"))
 
@@ -910,8 +910,8 @@ async def release_participant(session: Session, *, immediate: bool) -> None:
         schedule_participant_expiry(session.booth_id, participant_id, session.connection_id, grace)
     # Still in the booth during the grace, so this only claims a publisher who was removed.
     departed = take_departed_publishers(session.booth_id, state)
-    await broadcast_booth_state(session.booth_id, state)
     await end_publishers(departed)
+    await broadcast_booth_state(session.booth_id, state)
 
 
 async def _handle_chat(ws: WebSocket, session: Session, data: dict) -> None:
@@ -1023,7 +1023,7 @@ async def _handle_set_broadcast_unlocked(ws: WebSocket, session: Session, data: 
         # transcription worker (which pulls audio independently of any browser)
         # is torn down here so captions stop even if the interpreter's client is
         # unresponsive. Publisher mic/ingest state is already reset inside
-        # set_broadcast_unlocked; the MediaMTX session is ended after the broadcast.
+        # set_broadcast_unlocked; the MediaMTX session is ended below.
         if not unlocked:
             try:
                 from portal.transcription.worker import stop_transcription_worker
@@ -1031,11 +1031,12 @@ async def _handle_set_broadcast_unlocked(ws: WebSocket, session: Session, data: 
                 await stop_transcription_worker(session.booth_id)
             except Exception as e:
                 logging.getLogger(__name__).warning(f"Failed to stop transcription on lock: {e}")
-        await broadcast_booth_state(session.booth_id, state)
         if not unlocked:
             # The WHIP session goes to MediaMTX directly; end it here so the audio
-            # stops even if the interpreter's tab never tears it down.
+            # stops even if the interpreter's tab never tears it down. Before the
+            # broadcast, so a stalled recipient cannot hold it up.
             await stop_booth_publish(session.booth_id, stopped, only_while_locked=True)
+        await broadcast_booth_state(session.booth_id, state)
     except Exception as exc:
         await ws.send_text(json.dumps({"type": "booth:error", "message": str(exc)}))
 

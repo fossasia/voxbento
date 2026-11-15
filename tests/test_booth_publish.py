@@ -520,3 +520,25 @@ async def test_stop_does_not_kick_a_publisher_that_started_after_unlock(media, m
 
     assert kicks == []
     assert paths[PATH]["source"]["id"] == newer
+
+
+@pytest.mark.anyio
+async def test_stalled_broadcast_does_not_hold_up_the_kick(media, monkeypatch):
+    """The session is ended before the booth state is broadcast, so a stuck recipient cannot delay it."""
+    client, (active, _), paths, kicks, _ = media
+    session_id = await go_live(client, active, paths)
+    stuck = asyncio.Event()
+
+    async def stalled(_booth_id, _state):
+        await stuck.wait()
+
+    monkeypatch.setattr(manager_module, "broadcast_booth_state", stalled)
+    release = asyncio.create_task(release_participant(socket_session(active), immediate=True))
+    for _ in range(500):
+        if kicks:
+            break
+        await asyncio.sleep(0.01)
+    assert kicks == [session_id]
+    assert not release.done()
+    stuck.set()
+    await release
