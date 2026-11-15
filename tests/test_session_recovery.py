@@ -713,9 +713,10 @@ def test_unrelated_active_account_does_not_shadow_tts_invite(recovery, revoked):
     client.cookies.set("user_token", old_token(target))
     client.cookies.set("session_token", participant)
     if revoked:
-        with pytest.raises(WebSocketDisconnect):
-            with client.websocket_connect(tts_path(room)) as ws:
+        with client.websocket_connect(tts_path(room)) as ws:
+            with pytest.raises(WebSocketDisconnect) as exc:
                 ws.receive_text()
+        assert exc.value.code == 4003
     else:
         with client.websocket_connect(tts_path(room)) as socket:
             broadcast(client, room)
