@@ -5,18 +5,31 @@ participant was assigned by the server at ``booth:join``. The browser sends it
 as ``Authorization: Bearer`` on the WHIP offer; MediaMTX forwards it to
 ``/internal/media-auth``, where it is redeemed once and re-checked against the
 live ``BoothRegistry``. Single portal process, like ``BoothRegistry``.
+
+The ticket is only checked when the WHIP session starts, so the MediaMTX
+session it opened is recorded per booth. When that interpreter leaves the booth
+(revocation, removal, grace expiry) or Mission Control stops it, the portal
+kicks that session itself instead of relying on the interpreter's browser (#1285).
 """
 
 from __future__ import annotations
 
 import hashlib
+import logging
 import secrets
 import time
 from collections import OrderedDict
 from dataclasses import dataclass
+from uuid import UUID
 
+import httpx
+from fastapi import HTTPException
+
+from portal.booth_identity import booth_id_to_mediamtx_path
 from portal.globals import booths
 from portal.roles import Permission, has_permission
+
+logger = logging.getLogger(__name__)
 
 TICKET_TTL_SECS = 30.0
 MAX_TICKETS = 4096
@@ -30,8 +43,20 @@ class PublishTicket:
     expires_at: float
 
 
+@dataclass(frozen=True)
+class Publisher:
+    """The WHIP session a ticket opened in MediaMTX."""
+
+    booth_id: str
+    participant_id: str
+    path: str
+    session_id: str
+
+
 # Keyed by SHA-256 of the ticket so raw secrets never sit in memory.
 _tickets: OrderedDict[str, PublishTicket] = OrderedDict()
+# The latest authorized publisher per booth; MediaMTX keeps one source per path.
+_publishers: dict[str, Publisher] = {}
 
 
 def _key(secret: str) -> str:
@@ -87,12 +112,76 @@ def still_entitled(ticket: PublishTicket) -> bool:
     )
 
 
-async def authorize_booth_publish(path: str, secret: str) -> bool:
-    """MediaMTX hook check for a non-floor (interpreter booth) path."""
+async def authorize_booth_publish(path: str, secret: str, session_id: str = "") -> bool:
+    """MediaMTX hook check for a non-floor (interpreter booth) path.
+
+    *session_id* is the hook payload's ``id``: the UUID of the WHIP session
+    MediaMTX is about to add as the path's source.
+    """
     ticket = redeem_ticket(secret, path)
-    return ticket is not None and still_entitled(ticket)
+    if ticket is None or not still_entitled(ticket):
+        return False
+    try:
+        session_id = str(UUID(session_id))
+    except ValueError:
+        return True
+    _publishers[ticket.booth_id] = Publisher(ticket.booth_id, ticket.participant_id, ticket.path, session_id)
+    return True
+
+
+def take_departed_publisher(booth_id: str, state: dict) -> Publisher | None:
+    """Claim the booth's recorded publisher if they are no longer in *state*.
+
+    Call it right after a removal, before awaiting anything. It checks the
+    recorded participant rather than whoever is active now: removing the live
+    interpreter can promote a backup who has not gone live yet.
+    """
+    publisher = _publishers.get(booth_id)
+    if publisher is None:
+        return None
+    if any(p.get("participant_id") == publisher.participant_id for p in state.get("participants", ())):
+        return None
+    return _publishers.pop(booth_id)
+
+
+async def _kick_session(path: str, source_type: str, session_id: str) -> None:
+    # Imported here, not at the top: program_ingest imports this module (circular import).
+    from portal import program_ingest
+
+    await program_ingest.kick(path, program_ingest.MediaSource(type=source_type, id=session_id))
+
+
+async def end_publisher(publisher: Publisher | None) -> None:
+    """Best effort: kick *publisher*'s WHIP session in MediaMTX.
+
+    Kicking by session id leaves a newer publisher on the same path alone; a
+    session that is already gone counts as ended.
+    """
+    if publisher is None:
+        return
+    try:
+        await _kick_session(publisher.path, "webRTCSession", publisher.session_id)
+    except (httpx.HTTPError, HTTPException, ValueError) as exc:
+        logger.warning("Could not end the publisher of booth %s (%s)", publisher.booth_id, type(exc).__name__)
+
+
+async def stop_booth_publish(booth_id: str) -> None:
+    """Best effort: end whatever publishes to the booth's path (Mission Control Stop, booth deletion)."""
+    from portal import program_ingest  # circular import, see _kick_session
+
+    publisher = _publishers.pop(booth_id, None)
+    await end_publisher(publisher)
+    try:
+        path = booth_id_to_mediamtx_path(booth_id)
+        current = await program_ingest.media_path(path)
+        source = current.source if current else None
+        if source is not None and (publisher is None or source.id != publisher.session_id):
+            await _kick_session(path, source.type, source.id)
+    except (httpx.HTTPError, HTTPException, ValueError) as exc:
+        logger.warning("Could not stop the publisher of booth %s (%s)", booth_id, type(exc).__name__)
 
 
 def clear_tickets() -> None:
-    """Forget every outstanding ticket (tests)."""
+    """Forget every outstanding ticket and recorded publisher (tests)."""
     _tickets.clear()
+    _publishers.clear()
