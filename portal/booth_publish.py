@@ -87,10 +87,27 @@ def still_entitled(ticket: PublishTicket) -> bool:
     )
 
 
-async def authorize_booth_publish(path: str, secret: str) -> bool:
+@dataclass(frozen=True)
+class Publisher:
+    """Who started the WHIP session now on a booth path, as MediaMTX named it."""
+
+    participant_id: str
+    session_id: str
+
+
+def publisher_for(path: str) -> Publisher | None:
+    """The recorded publisher of *path*, if any."""
+    return None
+
+
+async def authorize_booth_publish(path: str, secret: str, session_id: str = "") -> bool:
     """MediaMTX hook check for a non-floor (interpreter booth) path."""
     ticket = redeem_ticket(secret, path)
     return ticket is not None and still_entitled(ticket)
+
+
+async def end_booth_publish(booth_id: str, *, participant_id: str | None = None, was_active: bool = False) -> None:
+    """End the WHIP session publishing to a booth's path."""
 
 
 def clear_tickets() -> None:
