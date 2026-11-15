@@ -306,6 +306,7 @@ Tracks which languages the translation worker should generate for a given room o
 | 041 | `041_add_interpreter_attendance.py` | `interpreter_attendance` table (#1215) |
 | 042 | `042_add_booth_live_state.py` | `booth_live_state` table (TD-03) |
 | 043 | `043_add_live_demo_settings.py` | `live_demo_settings` singleton for the home-page live demo |
+| 044 | `044_youtube_connections.py` | `youtube_connections` table (one per event), `rooms.youtube_broadcast_id`, `rooms.youtube_stream_id` (#1087) |
 
 Run migrations: `uv run alembic upgrade head`
 
