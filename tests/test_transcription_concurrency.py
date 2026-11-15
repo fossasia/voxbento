@@ -280,3 +280,42 @@ async def test_stop_before_task_starts_still_runs_cleanup():
 
     assert session.state == State.STOPPED
     assert local._active_booths_per_model["tiny"] == 0
+
+
+@pytest.mark.anyio
+async def test_capacity_limit_respects_settings_override(monkeypatch: pytest.MonkeyPatch):
+    """Dynamic override of settings.max_transcription_workers takes immediate effect."""
+    from portal.config import settings
+    from portal.transcription.providers.base import ProviderConfig
+    from portal.transcription.worker import WorkerCapacityError, start_transcription_worker, stop_transcription_worker
+
+    monkeypatch.setattr(settings, "max_transcription_workers", 2)
+
+    async def _noop_broadcast(*args, **kwargs):
+        pass
+
+    config = ProviderConfig(api_key="test-key")
+
+    # First two booths succeed
+    started_1 = await start_transcription_worker(
+        "event-1", "en", "booth-1", _noop_broadcast, "openai", "whisper-1", config
+    )
+    assert started_1 is True
+
+    started_2 = await start_transcription_worker(
+        "event-1", "fr", "booth-2", _noop_broadcast, "openai", "whisper-1", config
+    )
+    assert started_2 is True
+
+    assert len(active_workers) == 2
+
+    # Third booth hits capacity limit 2
+    with pytest.raises(WorkerCapacityError) as exc_info:
+        await start_transcription_worker("event-1", "de", "booth-3", _noop_broadcast, "openai", "whisper-1", config)
+
+    assert "System at maximum capacity (2 concurrent transcription booths)." in str(exc_info.value)
+
+    # Clean up
+    await stop_transcription_worker("booth-1")
+    await stop_transcription_worker("booth-2")
+    assert len(active_workers) == 0
