@@ -32,6 +32,7 @@ def setup_db(monkeypatch):
     from portal.config import settings
 
     monkeypatch.setattr(settings, "debug", True)
+    monkeypatch.setattr(settings, "max_transcription_workers", 10)
     anyio.run(init_db)
     yield
     anyio.run(dispose)
