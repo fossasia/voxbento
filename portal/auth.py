@@ -11,6 +11,7 @@ import bcrypt
 import jwt
 from fastapi import Depends, HTTPException, Request, WebSocket, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
+from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from portal.config import settings
@@ -34,7 +35,9 @@ def invalidate_token_revocation_cache(token_str: str | None = None) -> None:
         _REVOKED_TOKEN_CACHE.pop(str(token_str), None)
 
 
-async def is_invite_token_revoked(token_str: str, ttl: float = 5.0) -> bool:
+async def is_invite_token_revoked(
+    token_str: str, ttl: float = 5.0, *, raise_on_error: bool = False
+) -> bool:
     """Check if an invite token is revoked in the database with a short TTL cache."""
     import asyncio
     import time
@@ -52,7 +55,7 @@ async def is_invite_token_revoked(token_str: str, ttl: float = 5.0) -> bool:
                 revoked = (tok is None) or (tok.revoked_at is not None)
                 _REVOKED_TOKEN_CACHE[key] = (now_mono, revoked)
                 return revoked
-        except Exception:
+        except Exception as exc:
             if attempt == 0:
                 logger.warning(
                     "Transient error checking token revocation for public_id %s; retrying once", key
@@ -62,6 +65,10 @@ async def is_invite_token_revoked(token_str: str, ttl: float = 5.0) -> bool:
             logger.exception(
                 "Error checking token revocation for public_id %s after retry; failing closed", key
             )
+            if raise_on_error:
+                if isinstance(exc, SQLAlchemyError):
+                    raise
+                raise SQLAlchemyError(f"Database error checking token revocation: {exc}") from exc
             # Fail closed on database errors without poisoning the cache
             return True
     return True

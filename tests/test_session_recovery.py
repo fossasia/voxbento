@@ -852,6 +852,35 @@ def test_caption_session_lookup_failure_allows_client_retry(recovery, monkeypatc
         assert exc.value.code == 1011
 
 
+def test_tts_session_lookup_failure_allows_client_retry(recovery, monkeypatch):
+    """A database error during TTS authorization closes with 1011 to allow reconnect."""
+    from sqlalchemy.exc import OperationalError
+
+    import portal.database
+    from portal.auth import invalidate_token_revocation_cache
+
+    client, (_, _, event, room, _) = recovery
+
+    invalidate_token_revocation_cache()
+
+    async def failing_lookup(session, key):
+        raise OperationalError("SELECT invite_tokens", {}, RuntimeError("database unavailable"))
+
+    monkeypatch.setattr(portal.database, "get_invite_token_by_public_id", failing_lookup)
+    token = create_participant_token(
+        booth_id=f"recovery-test-{room.id}-en",
+        role="interpreter",
+        event_slug="recovery-test",
+        room_id=room.id,
+        language_code="en",
+        token_id="tok-transient-fail",
+    )
+    with client.websocket_connect(tts_path(room) + "?token=" + token) as socket:
+        with pytest.raises(WebSocketDisconnect) as exc:
+            socket.receive_text()
+        assert exc.value.code == 1011
+
+
 @pytest.mark.anyio
 async def test_overlapping_tts_broadcast_cannot_send_after_authorizer_removed():
     from portal.auth import WSAuthError
