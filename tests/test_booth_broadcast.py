@@ -1,10 +1,12 @@
 from __future__ import annotations
 
 import json
+from types import SimpleNamespace
 
 import pytest
 from starlette.websockets import WebSocket, WebSocketState
 
+from portal.websockets import manager as manager_module
 from portal.websockets.manager import ConnectionManager, Session
 
 
@@ -289,3 +291,21 @@ async def test_broadcast_booth_state_isolates_and_sanitizes():
         manager.remove(interp_ws)
         manager.remove(revoked_ws)
         listener_manager.remove(listener_ws, booth_id)
+
+
+@pytest.mark.anyio
+async def test_transcription_failure_leaves_a_live_booth_connected(monkeypatch):
+    """A failing caption provider is reported, but the interpreter is still on air."""
+    booth = SimpleNamespace(ingest_status="connected", as_public_dict=lambda: {})
+    monkeypatch.setattr(manager_module.booths, "get_booth_sync", lambda booth_id: booth)
+    sent = []
+
+    async def broadcast(booth_id, message):
+        sent.append(message)
+
+    monkeypatch.setattr(manager_module.manager, "broadcast", broadcast)
+
+    await manager_module.broadcast_transcription("booth-1", "[Transcription provider failed. Check logs.]")
+
+    assert sent == [{"type": "booth:error", "message": "[Transcription provider failed. Check logs.]"}]
+    assert booth.ingest_status == "connected"

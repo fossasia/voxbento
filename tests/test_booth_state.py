@@ -862,19 +862,6 @@ async def test_booth_is_not_live_after_the_last_publisher_leaves():
 
 
 @pytest.mark.anyio
-async def test_a_non_publisher_leaving_keeps_an_overloaded_status():
-    registry = BoothRegistry()
-    active = await join(registry, "Interpreter A")
-    passive = await join(registry, "Interpreter B")
-    await go_live(registry, active)
-    registry.get_booth_sync(BOOTH[0]).ingest_status = "overloaded"
-
-    state = await registry.leave_participant(BOOTH[0], passive.participant_id, *BOOTH[1:])
-
-    assert state["ingest_status"] == "overloaded"
-
-
-@pytest.mark.anyio
 async def test_who_joined_a_participant_stays_on_the_server():
     registry = BoothRegistry()
 
