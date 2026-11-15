@@ -11,6 +11,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from portal.auth import coordinates_room, load_membership_scope, require_oauth_scope
 from portal.booth_identity import make_booth_id, make_mediamtx_path, validate_language_code
+from portal.booth_publish import stop_booth_publish, take_booth_publishers
 from portal.config import settings
 from portal.database import delete_room as delete_db_room
 from portal.database import get_db_session
@@ -730,6 +731,7 @@ async def upsert_room(
                             detail=f"Cannot remove language '{code}' while it has an active session running.",
                         )
                 await booths.remove_booth(event_slug, room.id, code)
+                await stop_booth_publish(booth_id, take_booth_publishers(booth_id))
                 await db.delete(b)
                 db.add(
                     OAuthAuditLog(

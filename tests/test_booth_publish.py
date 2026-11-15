@@ -353,16 +353,31 @@ async def test_revoking_access_kicks_a_publisher_whose_socket_had_dropped(media,
 
 @pytest.mark.anyio
 async def test_newer_publisher_survives_the_previous_one_being_revoked(media):
-    """After a handoff the path belongs to the new interpreter; removing the old one kicks nothing."""
+    """After a handoff the path belongs to the new interpreter; only the old session id is kicked."""
     client, (active, backup), paths, kicks, _ = media
-    await go_live(client, active, paths)
+    older = await go_live(client, active, paths)
     await booths.set_active_interpreter(BOOTH_ID, active, backup, "English", PATH)
     newer = await go_live(client, backup, paths)
 
     await release_participant(socket_session(active), immediate=True)
 
-    assert kicks == []
+    assert active not in participant_ids()
+    assert kicks == [older]
     assert paths[PATH]["source"]["id"] == newer
+
+
+@pytest.mark.anyio
+async def test_retry_that_failed_does_not_hide_the_live_session(media):
+    """A second authorized publish that never went live still leaves the first one kickable."""
+    client, (active, _), paths, kicks, _ = media
+    live = await go_live(client, active, paths)
+    reply = await request_ticket(active)
+    assert await publish(client, token=reply["ticket"], id=str(uuid4())) == 204
+
+    await release_participant(socket_session(active), immediate=True)
+
+    assert live in kicks
+    assert PATH not in paths
 
 
 @pytest.mark.anyio
@@ -380,11 +395,10 @@ async def test_dropped_socket_keeps_its_audio_until_the_grace_runs_out(media, mo
     assert kicks == []
     assert scheduled == [(BOOTH_ID, active, "Active-socket", 30.0)]
 
+    expiries = []
+    monkeypatch.setattr(manager_module, "track_task", expiries.append)
     schedule_participant_expiry(BOOTH_ID, active, "Active-socket", 0)
-    for _ in range(100):
-        if kicks:
-            break
-        await asyncio.sleep(0.01)
+    await asyncio.wait_for(expiries[0], timeout=10)
     assert active not in participant_ids()
     assert kicks == [session_id]
 
@@ -457,14 +471,52 @@ async def test_unreachable_mediamtx_does_not_block_revocation_or_stop(media, cap
     assert booths.get_booth_sync(BOOTH_ID).broadcast_unlocked is False
     assert ws.sent == []
     assert kicks == []
-    assert len(caplog.records) == 2
+    # Revocation's kick, Stop retrying it, and Stop's path lookup.
+    assert len(caplog.records) == 3
     assert session_id not in caplog.text
 
 
 @pytest.mark.anyio
-async def test_hook_without_a_session_id_records_no_publisher(booth):
-    """The ticket still decides the publish; there is just no session to end later."""
+@pytest.mark.parametrize("session_id", ["", "not-a-uuid"])
+async def test_hook_without_a_session_id_is_refused(booth, session_id):
+    """A publish the portal could not end later is never allowed."""
     client, (active, _) = booth
     reply = await request_ticket(active)
-    assert await publish(client, token=reply["ticket"], id="") == 204
+    assert await publish(client, token=reply["ticket"], id=session_id) == 401
     assert booth_publish._publishers == {}
+
+
+@pytest.mark.anyio
+async def test_failed_kick_is_retried_by_stop(media):
+    """A kick that failed while MediaMTX was down is kept, so a later Stop still ends that session."""
+    client, (active, _), paths, kicks, failure = media
+    session_id = await go_live(client, active, paths)
+    failure.append(httpx.ConnectError("media down"))
+    await release_participant(socket_session(active), immediate=True)
+    failure.clear()
+
+    ws = MockWebSocket()
+    await _handle_set_broadcast_unlocked(ws, session_for(None, granted_role="room_coordinator"), {"unlocked": False})
+
+    assert kicks == [session_id]
+    assert PATH not in paths
+
+
+@pytest.mark.anyio
+async def test_stop_does_not_kick_a_publisher_that_started_after_unlock(media, monkeypatch):
+    """A Stop still talking to MediaMTX when the booth is unlocked again leaves the new source alone."""
+    client, (active, _), paths, kicks, _ = media
+    newer = str(uuid4())
+    real_end = booth_publish.end_publishers
+
+    async def unlock_meanwhile(publishers):
+        await real_end(publishers)
+        booths.get_booth_sync(BOOTH_ID).broadcast_unlocked = True
+        paths[PATH] = {"name": PATH, "ready": True, "source": {"type": "webRTCSession", "id": newer}}
+
+    monkeypatch.setattr(booth_publish, "end_publishers", unlock_meanwhile)
+    ws = MockWebSocket()
+    await _handle_set_broadcast_unlocked(ws, session_for(None, granted_role="room_coordinator"), {"unlocked": False})
+
+    assert kicks == []
+    assert paths[PATH]["source"]["id"] == newer
