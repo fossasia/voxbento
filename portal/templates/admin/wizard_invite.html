@@ -12,6 +12,7 @@
 
     {% if success == 'invite_sent' %}<div class="alert alert-success">Invitation sent.</div>{% endif %}
     {% if error == 'invalid_role' %}<div class="alert alert-danger">{{ roles.assignment_error(request.query_params.get('role', ''), 'event') or "That role can't be given here." }}</div>{% endif %}
+    {% if error == 'invalid_email' %}<div class="alert alert-danger">Enter a valid email address.</div>{% endif %}
 
     <h3 class="wizard-section-title">Event owners</h3>
     <p class="text-secondary wizard-section-hint">Owners can change everything about this event. Interpreters and room coordinators are invited per room or booth on the <a href="{{ management_prefix }}/events/{{ event.id }}/team/">Team page</a>.</p>
