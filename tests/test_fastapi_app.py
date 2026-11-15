@@ -2922,8 +2922,25 @@ def test_ws_tts_rejects_anonymous():
     from fastapi.websockets import WebSocketDisconnect
 
     with pytest.raises(WebSocketDisconnect) as exc_info:
-        with client.websocket_connect("/ws/tts/1/en/testcon-1-en"):
-            pass
+        with client.websocket_connect("/ws/tts/1/en/testcon-1-en") as ws:
+            ws.receive_text()
+    assert exc_info.value.code == 4003
+
+
+def test_ws_tts_auth_failure_closes_with_4003_not_1006():
+    """Auth failure must close with WS code 4003, not HTTP 403.
+
+    Verifies that ws_tts calls accept() before close() so browsers
+    receive CloseEvent.code = 4003 (stop retrying) instead of 1006
+    (reconnect). The TestClient raises WebSocketDisconnect(code=4003)
+    only when the connection was accepted and then closed with that code;
+    a pre-accept HTTP 403 would instead raise WebSocketDisconnect(code=1006).
+    """
+    from fastapi.websockets import WebSocketDisconnect
+
+    with pytest.raises(WebSocketDisconnect) as exc_info:
+        with client.websocket_connect("/ws/tts/1/en/testcon-1-en") as ws:
+            ws.receive_text()
     assert exc_info.value.code == 4003
 
 
@@ -2981,8 +2998,8 @@ def test_ws_tts_rejects_mismatched_origin_scheme():
             f"/ws/tts/{room_id}/en/ttstest-scheme-{room_id}-en",
             cookies={"listener_code_ttstest-scheme": "secret123"},
             headers=headers,
-        ):
-            pass
+        ) as ws:
+            ws.receive_text()
     assert exc_info.value.code == 4003
 
 
@@ -3012,8 +3029,8 @@ def test_ws_tts_rejects_mismatched_room():
             f"/ws/tts/{room_id + 1}/en/ttstest2-{room_id}-en",
             cookies={"listener_code_ttstest2": "secret123"},
             headers=headers,
-        ):
-            pass
+        ) as ws:
+            ws.receive_text()
     assert exc_info.value.code == 4003
 
     with pytest.raises(WebSocketDisconnect) as exc_info:
@@ -3021,8 +3038,8 @@ def test_ws_tts_rejects_mismatched_room():
             f"/ws/tts/{room_id}/en/ttstest2-{room_id + 1}-en",
             cookies={"listener_code_ttstest2": "secret123"},
             headers=headers,
-        ):
-            pass
+        ) as ws:
+            ws.receive_text()
     assert exc_info.value.code == 4003
 
 
@@ -3054,16 +3071,16 @@ def test_ws_tts_throttles_wrong_listener_cookies():
             with pytest.raises(WebSocketDisconnect) as exc_info:
                 with client.websocket_connect(
                     url, cookies={"listener_code_ttstest-throttle": f"wrong{i}"}, headers=headers
-                ):
-                    pass
+                ) as ws:
+                    ws.receive_text()
             assert exc_info.value.code == 4003
 
         # The budget is spent, so even the right code is refused until the window ends.
         with pytest.raises(WebSocketDisconnect) as exc_info:
             with client.websocket_connect(
                 url, cookies={"listener_code_ttstest-throttle": "secret123"}, headers=headers
-            ):
-                pass
+            ) as ws:
+                ws.receive_text()
         assert exc_info.value.code == 4003
     finally:
         join_code_limit._join_code_attempts.clear()
@@ -3096,8 +3113,8 @@ def test_ws_tts_listener_cookie_for_event_without_code_is_not_an_attempt():
                 f"/ws/tts/{room_id}/en/ttstest-nocode-{room_id}-en",
                 cookies={"listener_code_ttstest-nocode": "anything"},
                 headers={"Origin": "http://testserver"},
-            ):
-                pass
+            ) as ws:
+                ws.receive_text()
         assert exc_info.value.code == 4003
         assert not join_code_limit._join_code_attempts
     finally:
@@ -3164,8 +3181,8 @@ def test_ws_tts_rejects_unscoped_query_token():
     unscoped_token = jwt.encode({"sub": "user1", "role": "viewer"}, settings.effective_jwt_secret, algorithm="HS256")
 
     with pytest.raises(WebSocketDisconnect) as exc_info:
-        with client.websocket_connect(f"/ws/tts/{room_id}/en/ttstest-unscoped-{room_id}-en?token={unscoped_token}"):
-            pass
+        with client.websocket_connect(f"/ws/tts/{room_id}/en/ttstest-unscoped-{room_id}-en?token={unscoped_token}") as ws:
+            ws.receive_text()
     assert exc_info.value.code == 4003
 
 
@@ -3196,8 +3213,8 @@ def test_ws_tts_accepts_and_rejects_scoped_tokens():
     # Listener token with mismatched event
     bad_listener_tok = create_listener_token(event_slug="other-event")
     with pytest.raises(WebSocketDisconnect) as exc_info:
-        with client.websocket_connect(f"/ws/tts/{room_id}/en/ttstest-scoped-{room_id}-en?token={bad_listener_tok}"):
-            pass
+        with client.websocket_connect(f"/ws/tts/{room_id}/en/ttstest-scoped-{room_id}-en?token={bad_listener_tok}") as ws:
+            ws.receive_text()
     assert exc_info.value.code == 4003
 
     # Valid participant token
@@ -3220,8 +3237,8 @@ def test_ws_tts_accepts_and_rejects_scoped_tokens():
         language_code="fr",
     )
     with pytest.raises(WebSocketDisconnect) as exc_info:
-        with client.websocket_connect(f"/ws/tts/{room_id}/en/ttstest-scoped-{room_id}-en?token={bad_part_tok}"):
-            pass
+        with client.websocket_connect(f"/ws/tts/{room_id}/en/ttstest-scoped-{room_id}-en?token={bad_part_tok}") as ws:
+            ws.receive_text()
     assert exc_info.value.code == 4003
 
 
@@ -3253,8 +3270,8 @@ def test_ws_tts_rejects_unpermitted_registered_user_cookie():
             f"/ws/tts/{room_id}/en/ttstest-unauth-user-{room_id}-en",
             cookies={"user_token": user_tok},
             headers=headers,
-        ):
-            pass
+        ) as ws:
+            ws.receive_text()
     assert exc_info.value.code == 4003
 
 
@@ -3357,8 +3374,8 @@ def test_ws_tts_rejects_unscoped_session_cookie():
             f"/ws/tts/{room_id}/en/ttstest-unscoped-sess-{room_id}-en",
             cookies={"session_token": unscoped_tok},
             headers=headers,
-        ):
-            pass
+        ) as ws:
+            ws.receive_text()
     assert exc_info.value.code == 4003
 
 

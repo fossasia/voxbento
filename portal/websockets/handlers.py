@@ -483,6 +483,7 @@ async def ws_tts(websocket: WebSocket, room_id: int, language_code: str, booth_i
     try:
         await _authorize_tts(websocket, room_id, language_code, booth_id)
     except WSAuthError:
+        await websocket.accept()
         await websocket.close(code=4003)
         return
 

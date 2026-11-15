@@ -146,8 +146,8 @@ def test_revoked_admin_cannot_open_tts(recovery, change, transport):
     else:
         client.cookies.set("user_token", token)
     with pytest.raises(WebSocketDisconnect) as exc:
-        with client.websocket_connect(path):
-            pass
+        with client.websocket_connect(path) as ws:
+            ws.receive_text()
     assert exc.value.code == 4003
 
 
@@ -302,8 +302,8 @@ def test_tts_rejects_a_listener_code_cookie_the_event_does_not_have(recovery, ev
     client.cookies.set("listener_code_recovery-test", "wrong-listener-code")
     try:
         with pytest.raises(WebSocketDisconnect) as exc:
-            with client.websocket_connect(tts_path(room)):
-                pass
+            with client.websocket_connect(tts_path(room)) as ws:
+                ws.receive_text()
         assert exc.value.code == 4003
     finally:
         _join_code_attempts.clear()
@@ -505,8 +505,8 @@ def test_revoked_account_cookie_does_not_override_valid_invite(recovery, channel
     path = tts_path(room) if channel == "tts" else f"/ws/booth/recovery-test-{room.id}-en"
     if revoked_invite:
         with pytest.raises(WebSocketDisconnect) as exc:
-            with client.websocket_connect(path):
-                pass
+            with client.websocket_connect(path) as ws:
+                ws.receive_text()
         assert exc.value.code == 4003
         return
     with client.websocket_connect(path) as socket:
@@ -714,8 +714,8 @@ def test_unrelated_active_account_does_not_shadow_tts_invite(recovery, revoked):
     client.cookies.set("session_token", participant)
     if revoked:
         with pytest.raises(WebSocketDisconnect):
-            with client.websocket_connect(tts_path(room)):
-                pass
+            with client.websocket_connect(tts_path(room)) as ws:
+                ws.receive_text()
     else:
         with client.websocket_connect(tts_path(room)) as socket:
             broadcast(client, room)
