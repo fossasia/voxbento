@@ -10,6 +10,10 @@ os.environ["API_KEY_ENCRYPTION_KEY"] = "test-encryption-key-value-for-all-tests"
 os.environ["BOOTH_ACCESS_TOKEN"] = ""
 os.environ["SECRET_KEY"] = "test-secret-key-at-least-32-chars-long-for-testing"
 os.environ["JWT_SECRET"] = "test-secret-key-at-least-32-chars-long-for-testing"
+# Most tests expect a closed booth socket to leave at once and every app start to
+# begin with empty booths. tests/test_booth_recovery.py turns both on where it tests them.
+os.environ["BOOTH_RECONNECT_GRACE_SECONDS"] = "0"
+os.environ["BOOTH_STATE_RECOVERY_ENABLED"] = "false"
 
 
 ROOT = Path(__file__).resolve().parents[1]
