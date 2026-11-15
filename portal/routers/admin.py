@@ -3769,15 +3769,14 @@ async def api_admin_get_transcripts(
     target_lang: str | None = Query(None, min_length=1),
     admin: bool = Depends(require_owner_or_coordinator),
 ):
-    from sqlalchemy import func, select
+    from sqlalchemy import case, func, select
 
     from portal.database import get_session
-    from portal.translations.model_languages import validate_translation_language
+    from portal.translations.model_languages import resolve_translation_language
 
     # Booth codes are stored lowercase; translation codes are the ones room setup offers (as in the API v1 export).
     try:
         language_code = validate_language_code(language_code)
-        target_lang = validate_translation_language(target_lang) if target_lang else None
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
@@ -3788,6 +3787,15 @@ async def api_admin_get_transcripts(
             raise HTTPException(status_code=404, detail="Room not found.")
 
         if target_lang:
+            saved_codes = await session.scalars(
+                select(BoothTranslationLanguage.language_code)
+                .join(DBBooth, BoothTranslationLanguage.booth_id == DBBooth.id)
+                .where(DBBooth.room_id == room_id, DBBooth.language_code == language_code)
+            )
+            try:
+                target_lang = resolve_translation_language(target_lang, saved_codes.all())
+            except ValueError as exc:
+                raise HTTPException(status_code=400, detail=str(exc)) from exc
             stmt = (
                 select(TranscriptTranslation)
                 .join(TranscriptSegment)
@@ -3797,10 +3805,21 @@ async def api_admin_get_transcripts(
                     # Rows saved before codes were normalized can be in any case.
                     func.lower(TranscriptTranslation.language_code) == target_lang,
                 )
-                .order_by(TranscriptSegment.created_at)
+                .order_by(
+                    TranscriptSegment.created_at,
+                    TranscriptSegment.id,
+                    # A segment can have the same language saved twice ("es" and "ES"): keep the lowercase one.
+                    case((TranscriptTranslation.language_code == target_lang, 0), else_=1),
+                    TranscriptTranslation.id,
+                )
             )
             result = await session.execute(stmt)
-            translations = result.scalars().all()
+            translations = []
+            seen_segments = set()
+            for translation in result.scalars().all():
+                if translation.segment_id not in seen_segments:
+                    seen_segments.add(translation.segment_id)
+                    translations.append(translation)
             return [{"id": t.id, "text": t.text, "created_at": t.created_at.isoformat()} for t in translations]
         else:
             stmt = (

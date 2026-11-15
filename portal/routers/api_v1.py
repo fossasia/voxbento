@@ -6,7 +6,7 @@ from typing import Annotated, Any
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 from pydantic import BaseModel, Field, field_validator
-from sqlalchemy import func, select, update
+from sqlalchemy import case, func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from portal.auth import coordinates_room, load_membership_scope, require_oauth_scope
@@ -16,6 +16,7 @@ from portal.database import delete_room as delete_db_room
 from portal.database import get_db_session
 from portal.globals import booths
 from portal.models import (
+    BoothTranslationLanguage,
     DBBooth,
     Event,
     EventMembership,
@@ -33,7 +34,7 @@ from portal.roles import EVENT_OWNER
 from portal.transcription.constants import ProviderEnum
 from portal.transcription.worker import active_workers, start_transcription_worker, stop_transcription_worker
 from portal.translations.constants import TranslationProviderEnum
-from portal.translations.model_languages import language_support_error, validate_translation_language
+from portal.translations.model_languages import language_support_error, resolve_translation_language
 from portal.websockets.revocation import revoke_booths_for_deleted_entity
 
 logger = logging.getLogger(__name__)
@@ -1109,11 +1110,6 @@ async def export_transcript(
     room = await _verify_token_rbac(db, token, event, room_id, lock_event=True)
     target_room_id = _extract_room_id(room, room_id)
     language_code = _validate_lang(language_code)
-    if target_lang:
-        try:
-            target_lang = validate_translation_language(target_lang)
-        except ValueError as exc:
-            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
 
     # Validate that the booth exists within this event/room
     result = await db.execute(
@@ -1128,6 +1124,13 @@ async def export_transcript(
         raise HTTPException(status_code=404, detail="Booth not found")
 
     if target_lang:
+        saved_codes = await db.execute(
+            select(BoothTranslationLanguage.language_code).where(BoothTranslationLanguage.booth_id == booth.id)
+        )
+        try:
+            target_lang = resolve_translation_language(target_lang, saved_codes.scalars().all())
+        except ValueError as exc:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
         stmt = (
             select(TranscriptSegment, TranscriptTranslation)
             .join(TranscriptSegment, TranscriptTranslation.segment_id == TranscriptSegment.id)
@@ -1137,12 +1140,21 @@ async def export_transcript(
                 # Rows saved before codes were normalized can be in any case.
                 func.lower(TranscriptTranslation.language_code) == target_lang,
             )
-            .order_by(TranscriptSegment.created_at, TranscriptSegment.id)
+            .order_by(
+                TranscriptSegment.created_at,
+                TranscriptSegment.id,
+                # A segment can have the same language saved twice ("es" and "ES"): keep the lowercase one.
+                case((TranscriptTranslation.language_code == target_lang, 0), else_=1),
+                TranscriptTranslation.id,
+            )
         )
         result = await db.execute(stmt)
-        segments = [
-            {"id": seg.id, "text": tr.text, "created_at": _format_timestamp(seg.created_at)} for seg, tr in result.all()
-        ]
+        segments = []
+        seen_segments = set()
+        for seg, tr in result.all():
+            if seg.id not in seen_segments:
+                seen_segments.add(seg.id)
+                segments.append({"id": seg.id, "text": tr.text, "created_at": _format_timestamp(seg.created_at)})
     else:
         stmt = (
             select(TranscriptSegment)

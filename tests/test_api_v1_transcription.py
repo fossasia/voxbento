@@ -12,11 +12,12 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
 import portal.routers.api_v1 as api_v1
 from portal.database import create_booth, create_event, create_room
-from portal.models import Base, TranscriptSegment, TranscriptTranslation
+from portal.models import Base, BoothTranslationLanguage, DBBooth, TranscriptSegment, TranscriptTranslation
 from portal.transcription.worker import active_workers
 
 EVENT_SLUG = "pycon2026"
@@ -268,7 +269,7 @@ async def test_export_returns_translations_when_target_lang_given(event):
     translation = SimpleNamespace(id=101, text="Bonjour le monde")
     result_mock = MagicMock()
     result_mock.all.return_value = [(segment, translation)]
-    db = _db(_result(first=event), _result(first=booth), result_mock)
+    db = _db(_result(first=event), _result(first=booth), _result(), result_mock)
 
     response = await api_v1.export_transcript(EVENT_SLUG, ROOM_ID, "en", target_lang="fr", db=db, token=object())
 
@@ -289,7 +290,7 @@ async def test_export_returns_empty_when_no_translations_for_target_lang(event):
     booth = SimpleNamespace(id=10, room_id=ROOM_ID, language_code="en")
     result_mock = MagicMock()
     result_mock.all.return_value = []
-    db = _db(_result(first=event), _result(first=booth), result_mock)
+    db = _db(_result(first=event), _result(first=booth), _result(), result_mock)
 
     response = await api_v1.export_transcript(EVENT_SLUG, ROOM_ID, "en", target_lang="fr", db=db, token=object())
 
@@ -432,7 +433,7 @@ async def test_export_normalizes_naive_timestamps_in_translations(event):
 
     result_mock = MagicMock()
     result_mock.all.return_value = [(seg, trans)]
-    db = _db(_result(first=event), _result(first=booth), result_mock)
+    db = _db(_result(first=event), _result(first=booth), _result(), result_mock)
 
     response = await api_v1.export_transcript(EVENT_SLUG, ROOM_ID, "en", target_lang="fr", db=db, token=object())
 
@@ -455,3 +456,36 @@ def test_export_rejects_empty_target_lang():
     assert response.status_code == 422
     errors = response.json().get("detail", [])
     assert any(err.get("loc") == ["query", "target_lang"] for err in errors)
+
+
+@pytest.mark.anyio
+async def test_export_returns_one_translation_per_segment(real_db):
+    """A segment with the same language saved in two cases ("es" and "ES") is exported once."""
+    room = await _booth_with_translation(real_db, "ES")
+    segment_id = (await real_db.execute(select(TranscriptSegment.id))).scalar_one()
+    real_db.add(TranscriptTranslation(segment_id=segment_id, language_code="es", text="Lowercase row"))
+    await real_db.flush()
+
+    response = await api_v1.export_transcript(EVENT_SLUG, room.id, "en", target_lang="es", db=real_db, token=object())
+
+    assert [s["text"] for s in response["segments"]] == ["Lowercase row"]
+
+
+@pytest.mark.anyio
+async def test_export_accepts_a_saved_booth_target_language(real_db):
+    """A target language the booth already has, such as a regional code, stays exportable."""
+    room = await _booth_with_translation(real_db, "pt-BR")
+    booth_id = (await real_db.execute(select(DBBooth.id))).scalar_one()
+    real_db.add(BoothTranslationLanguage(booth_id=booth_id, language_code="pt-BR", language_name="Portuguese"))
+    await real_db.flush()
+
+    response = await api_v1.export_transcript(
+        EVENT_SLUG, room.id, "en", target_lang="PT-br", db=real_db, token=object()
+    )
+
+    assert response["target_lang"] == "pt-br"
+    assert [s["text"] for s in response["segments"]] == ["Translated"]
+
+    with pytest.raises(api_v1.HTTPException) as exc_info:
+        await api_v1.export_transcript(EVENT_SLUG, room.id, "en", target_lang="fr-CA", db=real_db, token=object())
+    assert exc_info.value.status_code == 400
