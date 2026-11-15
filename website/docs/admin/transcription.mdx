@@ -49,12 +49,14 @@ For the lowest latency captions, use `gpt-4o-realtime-preview` when budget allow
 
 Uses Deepgram's WebSocket streaming API. Requires a Deepgram API key stored in the event's API settings.
 
-**Models available:** `nova-2`
+**Models available:** `nova-3` (recommended), `nova-2`
+
+`nova-3` is Deepgram's most accurate model and covers more languages than `nova-2`, including Thai. It also listens for the event's glossary: the source terms of every glossary entry for the event or room (up to Deepgram's limit of roughly 100 terms, highest priority first) are sent as [keyterms](https://developers.deepgram.com/docs/keyterm), so product names and jargon are recognised before they are translated. `nova-2` gets the same terms as gently boosted keywords. Turning off the room's glossary switch turns this off too, and glossary changes apply the next time captions start.
 
 Deepgram streams partial and final transcripts over a persistent WebSocket connection, making it one of the fastest options for near-real-time captions. Voxbento uses the `numerals=true` configuration parameter by default to convert spoken numbers into numerical format, making it easier for listeners to read numbers quickly.
 
 :::tip
-For the lowest latency captions, Deepgram `nova-2` (WebSocket streaming) is an excellent choice alongside OpenAI real-time models.
+For the lowest latency captions, Deepgram `nova-3` (WebSocket streaming) is an excellent choice alongside OpenAI real-time models.
 :::
 
 </TabItem>
@@ -67,7 +69,7 @@ Uses ElevenLabs' **Speech-to-Text** (Scribe) service. Requires an ElevenLabs API
 ElevenLabs Scribe provides high-accuracy transcription for various languages and supports low-latency streaming.
 
 :::info
-While ElevenLabs is widely known for Text-to-Speech, Voxbento utilizes their **Scribe** service specifically for high-quality **Speech-to-Text** (transcription).
+Voxbento uses their **Scribe** service for **Speech-to-Text** (transcription). The same key also unlocks the **ElevenLabs v4** AI voice, which speaks 90+ languages including Thai (Deepgram Aura has no Thai voice).
 :::
 
 </TabItem>
@@ -88,7 +90,7 @@ Best suited for deployments that already operate NVIDIA GPU infrastructure.
 | --- | --- | --- |
 | Local (Whisper) | `tiny`, `base`, `small`, `medium`, `large-v2`, `large-v3` | Runs on-server, no API key needed |
 | OpenAI | `whisper-1`, `gpt-4o-realtime-preview`, `gpt-4o-mini-realtime-preview` | Requires OpenAI API key |
-| Deepgram | `nova-2` | Requires Deepgram API key, WebSocket streaming |
+| Deepgram | `nova-3`, `nova-2` | Requires Deepgram API key, WebSocket streaming; both use the glossary |
 | ElevenLabs | `scribe_v2` | Requires ElevenLabs API key |
 | NVIDIA Riva | `parakeet-rnnt`, `parakeet-ctc` | Requires NVIDIA API key and optional dependency |
 
@@ -217,7 +219,7 @@ Translated segments are broadcast to subscribers through two synchronized paths 
 Translations can be customized using room **AI Interpreter Persona**, **Interpretation Style**, and uploaded **Vocabulary Glossaries** (see [AI Interpretation](./ai-interpretation.mdx)).
 
 ### Direct Push Text-to-Speech (TTS)
-When a room language uses **AI voice**, translated segments are synthesized into natural speech via **Deepgram Aura** or self-hosted **Supertonic ONNX**. Attendees receive binary framed messages on:
+When a room language uses **AI voice**, translated segments are synthesized into natural speech via **Deepgram Aura**, **ElevenLabs v4** (one voice for every language, Thai included) or self-hosted **Supertonic ONNX**. Attendees receive binary framed messages on:
 ```text
 /ws/tts/{room_id}/{language_code}/{booth_id}
 ```

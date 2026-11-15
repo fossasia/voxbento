@@ -2064,3 +2064,23 @@ th[aria-sort='descending'] .att-sort::after { content: '↓'; opacity: 1; }
   .att-stats .stat-card { padding: 14px 16px; }
   .att-stats .stat-num { font-size: 1.5rem; }
 }
+
+/* Live demo settings (/admin/live-demo/) */
+.live-demo-summary { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 16px; margin: 20px 0; }
+.live-demo-summary .card { display: grid; gap: 4px; padding: 18px 20px; }
+.live-demo-summary strong { font-size: 1.375rem; color: var(--color-text); }
+.live-demo-summary span { color: var(--color-text-secondary); }
+.live-demo-card { margin: 20px 0; overflow: hidden; }
+.live-demo-card-body { display: grid; gap: 14px; padding: 20px 24px; justify-items: start; }
+.live-demo-grid { grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); justify-items: stretch; }
+.live-demo-card .form-group { display: grid; gap: 6px; width: 100%; max-width: 560px; margin: 0; }
+.live-demo-card .form-group label { font-weight: 600; font-size: .875rem; }
+.live-demo-card .form-group input,
+.live-demo-card .form-group select,
+.live-demo-card .form-group textarea { width: 100%; padding: 10px 12px; border: 1px solid var(--color-border); border-radius: 8px; background: #fff; color: var(--color-text); font: inherit; }
+.live-demo-card .form-group small,
+.live-demo-help { color: var(--color-text-secondary); font-size: .8125rem; line-height: 1.5; }
+.live-demo-glossary { max-width: 760px !important; }
+.live-demo-glossary textarea { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: .8125rem; line-height: 1.5; resize: vertical; }
+.live-demo-check { display: inline-flex; align-items: center; gap: 8px; font-weight: 600; font-size: .9375rem; }
+.live-demo-actions { display: flex; gap: 8px; margin: 0 0 20px; }
