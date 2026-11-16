@@ -48,6 +48,7 @@ const modeLabels = {
   whip: 'OBS streaming to YouTube itself',
   rtmps: 'Streaming tool sends VoxBento an extra stream',
   rtmps_relay: 'VoxBento forwarding to YouTube',
+  srt: 'Secure Reliable Transport (SRT)',
 };
 
 // Both RTMPS modes take the OBS-style server and stream key.
@@ -59,6 +60,7 @@ const credentialWords = {
   whip: {rotate: 'Rotate token', revoke: 'Revoke token', expires: 'Token expires'},
   rtmps: streamKeyWords,
   rtmps_relay: streamKeyWords,
+  srt: {rotate: 'New passphrase', revoke: 'Revoke passphrase', expires: 'Passphrase expires'},
 };
 
 const confirmations = {
@@ -100,14 +102,15 @@ function applyMode(mode) {
   document.getElementById('program-expires-label').textContent = words.expires;
   const enable = card.querySelector('[data-ingest-action="enable"]');
   const help = document.getElementById('program-enable-help');
+  const isSrt = mode === 'srt';
   if (latest?.enabled && latest.mode !== mode) {
     enable.textContent = `Switch to ${modeLabels[mode]}`;
     help.textContent = 'Creates a new credential and stops VoxBento hearing the room any other way.';
   } else if (latest?.enabled && latest.credential_present) {
-    enable.textContent = streamKey ? 'Create a new stream key' : 'Create a new token';
+    enable.textContent = isSrt ? 'Create a new passphrase' : (streamKey ? 'Create a new stream key' : 'Create a new token');
     help.textContent = 'Only needed if you lost it. The encoder disconnects until you paste the new one.';
   } else {
-    enable.textContent = streamKey ? 'Create stream key' : 'Enable ingest and create token';
+    enable.textContent = isSrt ? 'Enable ingest and create passphrase' : (streamKey ? 'Create stream key' : 'Enable ingest and create token');
     help.textContent = 'Room-specific and shown only once. Valid for 30 days.';
   }
 }
@@ -229,15 +232,26 @@ async function refresh() {
     document.getElementById('program-relay-unavailable').hidden = data.relay_available;
     rtmpsRadio.disabled = !data.rtmps_available;
     document.getElementById('program-rtmps-unavailable').hidden = data.rtmps_available;
+    const srtRadio = document.getElementById('program-mode-srt');
+    if (srtRadio) {
+      srtRadio.disabled = !data.srt_available;
+      const srtUnavailable = document.getElementById('program-srt-unavailable');
+      if (srtUnavailable) srtUnavailable.hidden = data.srt_available;
+    }
     applyMode(selectedMode());
     document.getElementById('program-endpoint').value = data.endpoint;
     document.getElementById('program-rtmps-server').value = data.rtmps_server;
+    const srtServerInput = document.getElementById('program-srt-server');
+    if (srtServerInput && data.srt_server) srtServerInput.value = data.srt_server;
+    const srtBackupInput = document.getElementById('program-srt-backup');
+    if (srtBackupInput && data.srt_backup_server) srtBackupInput.value = data.srt_backup_server;
     renderStatus(data);
     card.querySelectorAll('[data-ingest-action]').forEach(button => {
       const action = button.dataset.ingestAction;
       const relayBlocked = action === 'enable' && selectedMode() === 'rtmps_relay' && !data.relay_available;
       const rtmpsBlocked = action === 'enable' && selectedMode() === 'rtmps' && !data.rtmps_available;
-      button.disabled = (['enable', 'rotate'].includes(action) && !data.available) || relayBlocked || rtmpsBlocked ||
+      const srtBlocked = action === 'enable' && selectedMode() === 'srt' && !data.srt_available;
+      button.disabled = (['enable', 'rotate'].includes(action) && !data.available) || relayBlocked || rtmpsBlocked || srtBlocked ||
         (['rotate', 'revoke', 'disable'].includes(action) && !data.enabled);
     });
     destinationForm.querySelectorAll('input, button[type="submit"]').forEach(item => {
@@ -251,13 +265,22 @@ async function refresh() {
 }
 
 function showSecret(data) {
+  const isSrt = Boolean(data.passphrase);
   const streamKey = Boolean(data.stream_key);
-  secret.value = streamKey ? data.stream_key : data.secret;
-  secret.dataset.kind = streamKey ? 'stream_key' : 'token';
-  document.getElementById('program-secret-label').textContent = streamKey ? 'Stream key' : 'Bearer token';
-  document.getElementById('program-secret-help').textContent = streamKey
-    ? 'Paste this as the Stream Key in OBS or your streaming tool. Copy it now: it is shown only once and expires in 30 days.'
-    : 'Paste this into OBS as the Bearer Token. It expires in 30 days.';
+  if (isSrt) {
+    secret.value = data.passphrase;
+    secret.dataset.kind = 'passphrase';
+    document.getElementById('program-secret-label').textContent = 'SRT Passphrase';
+    document.getElementById('program-secret-help').textContent =
+      'Set this as the Passphrase in OBS, vMix or your hardware encoder. Copy it now: it is shown only once and expires in 30 days.';
+  } else {
+    secret.value = streamKey ? data.stream_key : data.secret;
+    secret.dataset.kind = streamKey ? 'stream_key' : 'token';
+    document.getElementById('program-secret-label').textContent = streamKey ? 'Stream key' : 'Bearer token';
+    document.getElementById('program-secret-help').textContent = streamKey
+      ? 'Paste this as the Stream Key in OBS or your streaming tool. Copy it now: it is shown only once and expires in 30 days.'
+      : 'Paste this into OBS as the Bearer Token. It expires in 30 days.';
+  }
   document.getElementById('program-secret-panel').hidden = false;
   updateFullUrl();
 }
@@ -370,12 +393,32 @@ document.getElementById('program-copy-full-url').addEventListener('click', async
 document.getElementById('program-copy').addEventListener('click', async () => {
   await copyField(secret, document.getElementById('program-copy'), 'Copied');
 });
+const dismissBtn = document.getElementById('program-dismiss');
+if (dismissBtn) {
+  dismissBtn.addEventListener('click', () => {
+    secret.value = '';
+    fullUrl.value = '';
+    document.getElementById('program-secret-panel').hidden = true;
+  });
+}
 document.getElementById('program-copy-endpoint').addEventListener('click', async () => {
   await copyField(document.getElementById('program-endpoint'), document.getElementById('program-copy-endpoint'), 'URL copied');
 });
 document.getElementById('program-copy-rtmps').addEventListener('click', async () => {
   await copyField(document.getElementById('program-rtmps-server'), document.getElementById('program-copy-rtmps'), 'Server copied');
 });
+const copySrtBtn = document.getElementById('program-copy-srt');
+if (copySrtBtn) {
+  copySrtBtn.addEventListener('click', async () => {
+    await copyField(document.getElementById('program-srt-server'), copySrtBtn, 'URL copied');
+  });
+}
+const copySrtBackupBtn = document.getElementById('program-copy-srt-backup');
+if (copySrtBackupBtn) {
+  copySrtBackupBtn.addEventListener('click', async () => {
+    await copyField(document.getElementById('program-srt-backup'), copySrtBackupBtn, 'URL copied');
+  });
+}
 window.addEventListener('pagehide', () => { secret.value = ''; fullUrl.value = ''; relayKey.value = ''; });
 refresh();
 const refreshTimer = setInterval(refresh, 5000);

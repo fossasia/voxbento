@@ -42,7 +42,7 @@ class WebhookResponse(BaseModel):
     secret_key: str | None = None
 
 
-_DEV_LOCAL_HOSTS = {"localhost", "127.0.0.1", "::1"}
+_DEV_LOCAL_HOSTS = {"localhost", "127.0.0.1", "::1", "host.docker.internal"}
 _NAT64_PREFIX = ipaddress.IPv6Network("64:ff9b::/96")
 _IPV4_COMPATIBLE_PREFIX = ipaddress.IPv6Network("::/96")
 

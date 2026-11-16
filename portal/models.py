@@ -154,6 +154,27 @@ class Room(Base):
     # The YouTube broadcast this room streams to, and the stream bound to it in YouTube Studio.
     youtube_broadcast_id: Mapped[str | None] = mapped_column(String(32), nullable=True)
     youtube_stream_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+
+    # ── SRT Contribution Credentials ─────────────────────────────────────────
+    # Fernet-encrypted: MediaMTX needs plaintext passphrase via Control API publishPass.
+    # Never hashed — must be recoverable. Use encrypt_val()/decrypt_val() from portal/crypto.py.
+    program_srt_passphrase_enc: Mapped[str | None] = mapped_column(Text, nullable=True)
+    program_srt_passphrase_expires_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+
+    # ── Backup Contribution Feed ──────────────────────────────────────────────
+    program_backup_enabled: Mapped[bool] = mapped_column(Boolean, default=False, server_default=sa.false())
+    program_backup_key_enc: Mapped[str | None] = mapped_column(Text, nullable=True)
+    program_backup_key_expires_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    program_active_feed: Mapped[str] = mapped_column(
+        String(10), default="primary", server_default="primary"
+    )
+    program_backup_connected_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
     floor_caption_seq: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
 
     # Translation Settings

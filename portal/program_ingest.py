@@ -26,9 +26,10 @@ from sqlalchemy import func, select
 from sqlalchemy.exc import SQLAlchemyError
 
 from portal import program_relay
-from portal.booth_identity import make_booth_id, make_mediamtx_path, parse_booth_id
+from portal.booth_identity import make_backup_floor_path, make_booth_id, make_mediamtx_path, parse_booth_id
 from portal.booth_publish import authorize_booth_publish
 from portal.config import settings
+from portal.crypto import decrypt_val, encrypt_val
 from portal.database import get_session
 from portal.globals import get_http_client
 from portal.models import Event, Room
@@ -41,10 +42,11 @@ from portal.websockets.manager import broadcast_transcription
 logger = logging.getLogger(__name__)
 room_locks: dict[int, asyncio.Lock] = {}
 capacity_lock = asyncio.Lock()
-FLOOR_PATH = re.compile(r"([a-z0-9]+(?:-[a-z0-9]+)*)/([1-9][0-9]*)/floor")
+FLOOR_PATH = re.compile(r"([a-z0-9]+(?:-[a-z0-9]+)*)/([1-9][0-9]*)/floor(?P<backup>_backup)?")
 MEDIA_CONTROL_TIMEOUT = 3.0
 # A freshly minted sender session may still be negotiating; reject duplicate starts within this window.
 SENDER_PENDING_SECS = 15.0
+TAKEOVER_STALL_SECS = 5.0
 
 
 def room_lock(room_id: int) -> asyncio.Lock:
@@ -116,10 +118,15 @@ class IngestHealth:
     ingest_reason: str = "Waiting for an authenticated encoder."
     processing_state: str = "idle"
     processing_reason: str = "Starts when the contribution feed carries audio."
+    # Gateway bitrate tracking
+    last_cycle_bytes: int = -1
+    last_cycle_time: float = 0.0
+    high_bitrate_cycles: int = 0
 
 
 health: dict[int, IngestHealth] = {}
 failures: OrderedDict[str, tuple[float, int]] = OrderedDict()
+_configured_srt_paths: set[str] = set()
 path_list_outage = OutageLog(logger, "program_ingest path_list_unavailable")
 database_outage = OutageLog(logger, "program_ingest database_unavailable")
 PROGRAM_SECRET_KDF_ROUNDS = 120_000
@@ -181,7 +188,12 @@ def has_valid_credential(room: Room) -> bool:
         and room.program_session_secret_expires_at
         and aware(room.program_session_secret_expires_at) > now
     )
-    return key_live or session_live
+    srt_live = bool(
+        room.program_ingest_mode in program_relay.SRT_MODES
+        and room.program_srt_passphrase_enc
+        and (room.program_srt_passphrase_expires_at is None or aware(room.program_srt_passphrase_expires_at) > now)
+    )
+    return key_live or session_live or srt_live
 
 
 def publish_permitted(room: Room, protocol: str, digest: str) -> bool:
@@ -192,6 +204,8 @@ def publish_permitted(room: Room, protocol: str, digest: str) -> bool:
     session secret never authorizes RTMPS. WHIP mode keeps the #690 behaviour.
     A key is never usable over the other mode's transport.
     """
+    if room.program_ingest_mode == program_relay.SRT_MODE:
+        return protocol == "srt" and settings.srt_ingest_enabled
     if room.program_ingest_mode == program_relay.RELAY_MODE:
         return protocol == "rtmp" and settings.program_relay_enabled and key_digest_valid(room, digest)
     if room.program_ingest_mode == program_relay.RTMPS_MODE:
@@ -203,7 +217,11 @@ def reserved_source(room: Room) -> MediaSource | None:
     """The MediaMTX session type a program-ingest reservation belongs to."""
     if not room.program_session_id:
         return None
-    kind = "rtmpsConn" if room.program_ingest_mode in program_relay.RTMPS_MODES else "webRTCSession"
+    kind = (
+        "srtConns"
+        if room.program_ingest_mode in program_relay.SRT_MODES
+        else ("rtmpsConn" if room.program_ingest_mode in program_relay.RTMPS_MODES else "webRTCSession")
+    )
     return MediaSource(type=kind, id=room.program_session_id)
 
 
@@ -211,6 +229,10 @@ def presented_secret(data: MediaAuth) -> str:
     """Extract the publisher credential without accepting it from more than one place."""
     if data.protocol == "webrtc":
         return "" if data.query else (data.token or data.password)
+    if data.protocol == "srt":
+        # Passphrase enforcement delegated to MediaMTX per-path publishPass.
+        # Auth hook validates room ownership only.
+        return ""
     if data.protocol == "rtmp" and settings.rtmps_ingest_enabled and not (data.token or data.password):
         # OBS stream key "floor?key=<secret>": the query must be exactly one key parameter.
         try:
@@ -243,12 +265,14 @@ async def authorize_publish(data: MediaAuth) -> None:
     # interpreter booth check.
     trimmed_path = data.path.rstrip("/")
     final_component = trimmed_path.rsplit("/", 1)[-1].casefold()
-    if final_component == "floor" and (data.path.endswith("/") or not data.path.endswith("/floor")):
+    if final_component in ("floor", "floor_backup") and (
+        data.path.endswith("/") or not (data.path.endswith("/floor") or data.path.endswith("/floor_backup"))
+    ):
         raise HTTPException(403, "Canonical floor path required")
     start, count = failures.get(data.ip, (0, 0))
     if count >= 10 and time.monotonic() - start < 60:
         raise HTTPException(429, "Publish authorization failed")
-    if final_component != "floor":
+    if final_component not in ("floor", "floor_backup"):
         # Interpreter booths publish from the browser only, with a single-use
         # ticket issued to the active interpreter over the booth WebSocket.
         if data.protocol != "webrtc" or not await authorize_booth_publish(data.path, data.token):
@@ -257,8 +281,10 @@ async def authorize_publish(data: MediaAuth) -> None:
     match = FLOOR_PATH.fullmatch(data.path)
     if not match:
         deny(data.ip)
-    slug, room_id = match.groups()
+    slug = match.group(1)
+    room_id = match.group(2)
     parsed_room_id = int(room_id)
+    is_backup = match.group("backup") is not None
     secret = presented_secret(data)
     if not settings.program_ingest_enabled or not secret:
         # Bot-mode RTSP is checked after loading the room; all invalid external
@@ -282,6 +308,8 @@ async def authorize_publish(data: MediaAuth) -> None:
             if row is None:
                 deny(data.ip)
             room, event = row
+            if is_backup and not room.program_backup_enabled:
+                raise HTTPException(403, "Backup contribution feed is not enabled")
             if room.floor_source == "jitsi_bot":
                 # RTSP is not publicly exposed. WHIP must never impersonate the bot.
                 try:
@@ -293,6 +321,9 @@ async def authorize_publish(data: MediaAuth) -> None:
                 deny(data.ip)
             if not settings.program_ingest_enabled or not publish_permitted(room, data.protocol, presented_digest):
                 deny(data.ip)
+            if is_backup:
+                room.program_backup_connected_at = utc_now()
+                return
             try:
                 session_id = str(UUID(data.id))
             except ValueError:
@@ -307,10 +338,13 @@ async def authorize_publish(data: MediaAuth) -> None:
                 and time.monotonic() - reservation.reservation_started_at < 5.0
             )
             if room.program_session_id and room.program_session_id != session_id and not reservation_recent:
-                live_path = await media_path(make_mediamtx_path(event.slug, room.id, "floor"))
-                if live_path is None or live_path.source is None:
-                    room.program_session_id = None
-                    health.pop(room.id, None)
+                try:
+                    live_path = await media_path(make_mediamtx_path(event.slug, room.id, "floor"))
+                    if live_path is None or live_path.source is None:
+                        room.program_session_id = None
+                        health.pop(room.id, None)
+                except httpx.HTTPError:
+                    pass
             if room.program_session_id and room.program_session_id != session_id:
                 raise HTTPException(409, "A floor publisher is already connected or connecting")
 
@@ -330,6 +364,8 @@ async def authorize_publish(data: MediaAuth) -> None:
                     Room.floor_source == "program_ingest",
                 )
             )
+            if not room.program_session_id and count >= settings.program_contribution_max:
+                raise HTTPException(429, "Gateway at contribution capacity")
             if not room.program_session_id and count >= settings.program_ingest_max_rooms:
                 raise HTTPException(503, "Program ingest capacity reached")
             room.program_session_id = session_id
@@ -381,10 +417,15 @@ async def kick(path: str, source: MediaSource | None) -> None:
         "rtspSession": "rtspsessions",
         "rtmpConn": "rtmpconns",
         "rtmpsConn": "rtmpsconns",
+        "srtConn": "srtconns",
+        "srtConns": "srtconns",
     }.get(source.type)
     if endpoint is None:
         raise HTTPException(409, "Unsupported existing floor publisher; stop it before switching source")
-    session_id = str(UUID(source.id))
+    try:
+        session_id = str(UUID(source.id))
+    except ValueError:
+        session_id = source.id
     response = await get_http_client().post(
         f"{settings.mediamtx_api_base}/v3/{endpoint}/kick/{session_id}", timeout=MEDIA_CONTROL_TIMEOUT
     )
@@ -459,9 +500,18 @@ async def configure_source(
     health.pop(room.id, None)
     secret = None
     if action in {"enable", "rotate"}:
-        secret = secrets.token_urlsafe(32)
-        room.program_key_hash = await asyncio.to_thread(digest_program_secret, secret)
-        room.program_key_expires_at = utc_now() + timedelta(days=30)
+        if room.program_ingest_mode == program_relay.SRT_MODE:
+            secret = secrets.token_urlsafe(16)
+            room.program_srt_passphrase_enc = encrypt_val(secret)
+            room.program_srt_passphrase_expires_at = utc_now() + timedelta(days=30)
+            await apply_srt_passphrase_to_mediamtx(path, secret)
+            if room.program_backup_enabled:
+                backup_path = make_backup_floor_path(event.slug, room.id)
+                await apply_srt_passphrase_to_mediamtx(backup_path, secret)
+        else:
+            secret = secrets.token_urlsafe(32)
+            room.program_key_hash = await asyncio.to_thread(digest_program_secret, secret)
+            room.program_key_expires_at = utc_now() + timedelta(days=30)
     logger.info("program_ingest action=%s room_id=%s", action, room.id)
     return secret
 
@@ -570,6 +620,48 @@ async def close_sender_session(room: Room, event: Event, secret: str | None) -> 
     logger.info("program_ingest sender_session_closed room_id=%s", room.id)
 
 
+async def generate_srt_passphrase(room: Room, session) -> str:
+    """Generate, encrypt, store SRT passphrase. Returns plaintext for display once."""
+    import secrets
+
+    from portal.crypto import encrypt_val
+
+    passphrase = secrets.token_urlsafe(16)
+    room.program_srt_passphrase_enc = encrypt_val(passphrase)
+    room.program_srt_passphrase_expires_at = None
+    return passphrase
+
+
+async def apply_srt_passphrase_to_mediamtx(path: str, passphrase: str) -> None:
+    """POST /v3/config/paths/add/{path} with srtPublishPassphrase and publishPass. Called after DB commit."""
+    client = get_http_client()
+    body = {
+        "srtPublishPassphrase": passphrase,
+        "publishPass": passphrase,
+        "overridePublisher": True,
+    }
+    response = await client.post(
+        f"{settings.mediamtx_api_base}/v3/config/paths/add/{path}",
+        json=body,
+        timeout=MEDIA_CONTROL_TIMEOUT,
+    )
+    if response.status_code in (400, 409):
+        response = await client.patch(
+            f"{settings.mediamtx_api_base}/v3/config/paths/patch/{path}",
+            json=body,
+            timeout=MEDIA_CONTROL_TIMEOUT,
+        )
+    response.raise_for_status()
+
+
+async def promote_primary_feed(room: Room, session) -> None:
+    """Allow operator manual switchback to primary feed."""
+    room.program_active_feed = "primary"
+    current = health.get(room.id)
+    if current:
+        current.worker_config = None
+
+
 async def stop_room_worker(current: IngestHealth, booth_id: str, room_id: int) -> bool:
     """Stop a room's floor STT worker without ever raising.
 
@@ -616,23 +708,37 @@ def relay_request(room: Room, event: Event, path: MediaPath | None) -> tuple[str
             "degraded", "The saved destination cannot be decrypted; enter the YouTube stream key again."
         )
         return None
-    return (make_mediamtx_path(event.slug, room.id, "floor"), url) if url else None
+    active_path_name = (
+        make_backup_floor_path(event.slug, room.id)
+        if getattr(room, "program_active_feed", "primary") == "backup"
+        else make_mediamtx_path(event.slug, room.id, "floor")
+    )
+    return (active_path_name, url) if url else None
 
 
 async def reconcile_room(room: Room, event: Event, path: MediaPath | None) -> tuple[str, str] | None:
     current = health.setdefault(room.id, IngestHealth())
-    path_name = make_mediamtx_path(event.slug, room.id, "floor")
+    is_backup = getattr(room, "program_active_feed", "primary") == "backup"
+    path_name = (
+        make_backup_floor_path(event.slug, room.id)
+        if is_backup
+        else make_mediamtx_path(event.slug, room.id, "floor")
+    )
     booth_id = make_booth_id(event.slug, room.id, "floor")
     now = time.monotonic()
     # A short-lived sender secret gates new publishes, not an already-connected session.
-    session_live = bool(path and path.source and room.program_session_id and path.source.id == room.program_session_id)
+    session_live = bool(
+        path and path.source and (is_backup or (room.program_session_id and path.source.id == room.program_session_id))
+    )
     # Switching RTMPS ingest off also ends a feed that is already live.
     rtmps_off = room.program_ingest_mode == program_relay.RTMPS_MODE and not settings.rtmps_ingest_enabled
     permitted = bool(settings.program_ingest_enabled and not rtmps_off and (has_valid_credential(room) or session_live))
-    if path and path.source and (not permitted or path.source.id != room.program_session_id):
+    if path and path.source and (not permitted or (not is_backup and path.source.id != room.program_session_id)):
         await kick(path_name, path.source)
         path = None
     if not path or not path.ready or not path.source:
+        current.high_bitrate_cycles = 0
+        current.last_cycle_bytes = -1
         if current.reservation_started_at is not None:
             grace_started_at = current.reservation_started_at
         else:
@@ -649,11 +755,54 @@ async def reconcile_room(room: Room, event: Event, path: MediaPath | None) -> tu
         current.processing_state, current.processing_reason = "idle", "No contribution feed to process."
         if now - grace_started_at >= settings.program_ingest_disconnect_grace_secs:
             await stop_room_worker(current, booth_id, room.id)
-            if room.program_session_id:
+            if room.program_session_id and not is_backup:
                 await kick(path_name, reserved_source(room))
                 room.program_session_id = None
                 room.program_disconnected_at = utc_now()
             current.reservation_started_at = None
+        relay_request(room, event, None)
+        return None
+
+    # Gateway limits enforcement: Codec inspection
+    if room.program_ingest_mode in program_relay.SRT_MODES and path.tracks:
+        conforming = all(
+            t in {"H264", "H.264", "MPEG-4 Audio", "AAC"}
+            or t.upper() in {"H264", "H.264", "AAC"}
+            or "MPEG-4" in t.upper()
+            for t in path.tracks
+        )
+        if not conforming:
+            await kick(path_name, path.source)
+            current.state = "rejected_codec"
+            current.ingest_state = "rejected_codec"
+            current.reason = "Non-conforming codec detected. Expected H.264 video and AAC audio."
+            current.ingest_reason = current.reason
+            relay_request(room, event, None)
+            return None
+
+    # Gateway limits enforcement: Bitrate enforcement (> 12,000 kbps for 5 consecutive cycles)
+    if current.last_cycle_bytes >= 0 and current.last_cycle_time > 0:
+        dt = now - current.last_cycle_time
+        delta_bytes = path.bytesReceived - current.last_cycle_bytes
+        if delta_bytes >= 0:
+            effective_dt = dt if dt > 0 else 2.0
+            bitrate_kbps = (delta_bytes * 8) / (effective_dt * 1000)
+            if bitrate_kbps > 12000:
+                current.high_bitrate_cycles += 1
+            else:
+                current.high_bitrate_cycles = 0
+    else:
+        current.high_bitrate_cycles = 0
+
+    current.last_cycle_bytes = path.bytesReceived
+    current.last_cycle_time = now
+
+    if current.high_bitrate_cycles >= 5:
+        await kick(path_name, path.source)
+        current.state = "rejected_limits"
+        current.ingest_state = "rejected_limits"
+        current.reason = "Inbound bitrate exceeded 12,000 kbps for 5 consecutive cycles."
+        current.ingest_reason = current.reason
         relay_request(room, event, None)
         return None
     if current.missing_since is not None or current.reservation_started_at is not None or current.last_bytes == -1:
@@ -705,13 +854,14 @@ async def reconcile_processing(
     current.state, current.reason = "receiving", "Audio received; starting transcription."
     current.processing_state, current.processing_reason = "starting", "Starting the transcription worker."
     api_key = get_api_key(event, ProviderEnum(room.floor_transcription_provider))
-    config = (room.floor_transcription_provider, room.floor_transcription_model, room.floor_language_code)
+    active_channel = "floor_backup" if getattr(room, "program_active_feed", "primary") == "backup" else "floor"
+    config = (room.floor_transcription_provider, room.floor_transcription_model, room.floor_language_code, active_channel)
     if current.worker_config and current.worker_config != config:
         if not await stop_room_worker(current, booth_id, room.id):
             return
     started = await start_transcription_worker(
         event_slug=event.slug,
-        language_code="floor",
+        language_code=active_channel,
         booth_id=booth_id,
         broadcast_callback=broadcast_transcription,
         provider=room.floor_transcription_provider,
@@ -858,8 +1008,55 @@ async def reconcile_once() -> None:
                     )
                 ).first()
                 if row and row[0].floor_source == "program_ingest":
-                    path_name = make_mediamtx_path(row[1].slug, room_id, "floor")
-                    request = await reconcile_room(*row, snapshots.get(path_name))
+                    room, event = row[0], row[1]
+                    # MediaMTX restart recovery: re-apply publishPass
+                    if room.program_ingest_mode == program_relay.SRT_MODE and room.program_srt_passphrase_enc:
+                        passphrase = decrypt_val(room.program_srt_passphrase_enc)
+                        if passphrase:
+                            primary_floor = make_mediamtx_path(event.slug, room_id, "floor")
+                            if primary_floor not in snapshots or primary_floor not in _configured_srt_paths:
+                                try:
+                                    await apply_srt_passphrase_to_mediamtx(primary_floor, passphrase)
+                                    _configured_srt_paths.add(primary_floor)
+                                except Exception:
+                                    logger.warning("program_ingest srt_passphrase_restore_failed room_id=%s", room_id)
+
+                    primary_path_name = make_mediamtx_path(event.slug, room_id, "floor")
+                    backup_path_name = make_backup_floor_path(event.slug, room_id)
+                    primary_snapshot = snapshots.get(primary_path_name)
+                    backup_snapshot = snapshots.get(backup_path_name)
+
+                    current = health.setdefault(room_id, IngestHealth())
+                    now = time.monotonic()
+
+                    primary_connected = bool(primary_snapshot and primary_snapshot.ready and primary_snapshot.source)
+                    primary_stalled = bool(
+                        primary_connected
+                        and current.last_progress > 0
+                        and (now - current.last_progress >= TAKEOVER_STALL_SECS)
+                    )
+                    primary_failed = (not primary_connected) or primary_stalled
+
+                    backup_connected = bool(backup_snapshot and backup_snapshot.ready and backup_snapshot.source)
+
+                    # Deterministic Backup Takeover
+                    if (
+                        primary_failed
+                        and room.program_backup_enabled
+                        and backup_connected
+                        and getattr(room, "program_active_feed", "primary") == "primary"
+                    ):
+                        room.program_active_feed = "backup"
+                        current.worker_config = None
+                        logger.info("program_ingest backup_promoted room_id=%s", room_id)
+
+                    active_snapshot = (
+                        backup_snapshot
+                        if getattr(room, "program_active_feed", "primary") == "backup" and room.program_backup_enabled
+                        else primary_snapshot
+                    )
+
+                    request = await reconcile_room(room, event, active_snapshot)
                     if request:
                         wanted[room_id] = request
         except (httpx.HTTPError, ValueError, SQLAlchemyError):

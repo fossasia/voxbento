@@ -14,7 +14,7 @@ from pydantic import BaseModel, Field, ValidationError
 
 from portal import program_relay, youtube_account
 from portal.auth import require_admin_csrf, require_event_owner
-from portal.booth_identity import make_mediamtx_path
+from portal.booth_identity import make_backup_floor_path, make_mediamtx_path
 from portal.config import settings
 from portal.database import get_event_by_id, get_room_by_id, get_session
 from portal.program_ingest import (
@@ -35,7 +35,7 @@ class IngestChange(BaseModel):
     action: Literal["enable", "rotate", "revoke", "disable", "sync"]
     sync_offset_ms: int = Field(default=0, ge=0, le=120000)
     # Only read on "enable": the transport the new credential is bound to.
-    mode: Literal["whip", "rtmps", "rtmps_relay"] = "whip"
+    mode: Literal["whip", "rtmps", "rtmps_relay", "srt"] = "whip"
 
 
 class RelayDestination(BaseModel):
@@ -135,8 +135,10 @@ async def ingest_status(event_id: int, room_id: int) -> JSONResponse:
                 "state": (current.state if current else "waiting") if enabled else "disabled",
                 "reason": current.reason if enabled and current else "",
                 "endpoint": f"{settings.public_base_url.rstrip('/')}/{make_mediamtx_path(event.slug, room_id, 'floor')}/whip",
-                "credential_present": bool(room.program_key_hash),
-                "expires_at": room.program_key_expires_at.isoformat() if room.program_key_expires_at else None,
+                "credential_present": bool(room.program_key_hash or room.program_srt_passphrase_enc),
+                "expires_at": (room.program_srt_passphrase_expires_at or room.program_key_expires_at).isoformat()
+                if (room.program_srt_passphrase_expires_at or room.program_key_expires_at)
+                else None,
                 "last_connected_at": room.program_connected_at.isoformat() if room.program_connected_at else None,
                 "last_disconnected_at": room.program_disconnected_at.isoformat()
                 if room.program_disconnected_at
@@ -147,6 +149,11 @@ async def ingest_status(event_id: int, room_id: int) -> JSONResponse:
                 "mode": room.program_ingest_mode,
                 "relay_available": settings.program_ingest_enabled and settings.program_relay_enabled,
                 "rtmps_available": settings.rtmps_ingest_enabled,
+                "srt_available": settings.srt_ingest_enabled,
+                "srt_server": f"srt://{settings.jitsi_domain}:8890?streamid=#!::r={make_mediamtx_path(event.slug, room_id, 'floor')},m=publish" if settings.srt_ingest_enabled else "",
+                "srt_backup_server": f"srt://{settings.jitsi_domain}:8890?streamid=#!::r={make_backup_floor_path(event.slug, room_id)},m=publish" if settings.srt_ingest_enabled else "",
+                "backup_enabled": room.program_backup_enabled,
+                "active_feed": room.program_active_feed,
                 # The reconciler's last call to the relay service failed: the operator must start it.
                 "relay_service_down": settings.program_relay_enabled and program_relay.list_outage.failures > 0,
                 "rtmps_server": _rtmps_server(event.slug, room_id) if settings.rtmps_ingest_enabled else "",
@@ -189,6 +196,8 @@ async def ingest_change(request: Request, event_id: int, room_id: int, change: I
         raise HTTPException(409, "YouTube relay mode must first be enabled by the server operator")
     if change.action == "enable" and change.mode == program_relay.RTMPS_MODE and not settings.rtmps_ingest_enabled:
         raise HTTPException(409, "RTMPS ingest must first be enabled by the server operator")
+    if change.action == "enable" and change.mode == program_relay.SRT_MODE and not settings.srt_ingest_enabled:
+        raise HTTPException(409, "SRT ingest must first be enabled by the server operator")
     secret = None
     rtmps_mode = False
     cleanup_pending = False
@@ -207,6 +216,8 @@ async def ingest_change(request: Request, event_id: int, room_id: int, change: I
                 # never roll the old credential back into validity.
                 room.program_key_hash = None
                 room.program_key_expires_at = None
+                room.program_srt_passphrase_enc = None
+                room.program_srt_passphrase_expires_at = None
                 room.program_session_secret_hash = None
                 room.program_session_secret_expires_at = None
                 # Clear the reservation too, so a failed cleanup kick cannot leave the
@@ -241,6 +252,9 @@ async def ingest_change(request: Request, event_id: int, room_id: int, change: I
     body = {"secret": secret}
     if secret and rtmps_mode:
         body["stream_key"] = f"floor?key={secret}"
+    elif secret and room.program_ingest_mode == program_relay.SRT_MODE:
+        body["passphrase"] = secret
+        body["streamid"] = f"#!::r={make_mediamtx_path(event.slug, room_id, 'floor')},m=publish"
     if cleanup_pending:
         body["cleanup_pending"] = True
     return JSONResponse(

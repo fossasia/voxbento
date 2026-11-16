@@ -324,6 +324,16 @@ def make_mediamtx_path(event_slug: str, room_id: int | None, language_code: str)
     return f"{slug}/{room}/{code}"
 
 
+def make_backup_floor_path(event_slug: str, room_id: int) -> str:
+    """Build a MediaMTX stream path for backup contribution feed.
+
+    Format: ``{event_slug}/{room_id}/floor_backup`` (e.g. ``pycon2026/14/floor_backup``).
+    """
+    slug = validate_event_slug(event_slug)
+    room = validate_room_id(room_id)
+    return f"{slug}/{room}/floor_backup"
+
+
 def booth_id_to_mediamtx_path(booth_id: str) -> str:
     """Convert a booth ID to its corresponding MediaMTX path.
 

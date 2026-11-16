@@ -59,6 +59,14 @@
         <small id='program-relay-unavailable' class='program-mode-note' hidden>Not switched on for this server yet. Ask the server operator to run <code>scripts/setup-youtube-relay.sh</code>.</small>
       </span>
     </label>
+    <label class='program-mode-option'>
+      <input type='radio' name='program-mode' value='srt' id='program-mode-srt'>
+      <span>
+        <strong>Secure Reliable Transport (SRT)</strong>
+        <small>OBS, vMix, Wirecast or hardware encoders connect via AES-encrypted SRT (Caller mode) with redundant backup feed support.</small>
+        <small id='program-srt-unavailable' class='program-mode-note' hidden>Not switched on for this server yet. Start with <code>docker-compose.srt.yml</code>.</small>
+      </span>
+    </label>
   </fieldset>
 
   <div id='program-relay-risk' class='program-ingest-warning program-relay-risk' role='note' hidden>
@@ -127,6 +135,20 @@
             <button type='button' class='btn btn-outline' id='program-copy-rtmps'>Copy</button>
           </div>
         </div>
+        <div data-mode-panel='srt' hidden>
+          <label for='program-srt-server'>SRT Caller URL (with Stream ID)</label>
+          <div class='program-copy-field'>
+            <input id='program-srt-server' class='input' readonly placeholder='Not configured on this server'>
+            <button type='button' class='btn btn-outline' id='program-copy-srt'>Copy URL</button>
+          </div>
+          <div id='program-srt-backup-row' style='margin-top: 0.75rem;'>
+            <label for='program-srt-backup'>Backup Feed Stream URL</label>
+            <div class='program-copy-field'>
+              <input id='program-srt-backup' class='input' readonly placeholder='Backup feed endpoint'>
+              <button type='button' class='btn btn-outline' id='program-copy-srt-backup'>Copy</button>
+            </div>
+          </div>
+        </div>
 
         <div class='program-primary-action'>
           <button type='button' class='btn btn-primary' data-ingest-action='enable'>Enable ingest and create token</button>
@@ -145,6 +167,7 @@
             <input id='program-secret' class='input' type='password' readonly autocomplete='off'>
             <button type='button' class='btn btn-outline' id='program-reveal'>Show</button>
             <button type='button' class='btn btn-outline' id='program-copy'>Copy</button>
+            <button type='button' class='btn btn-outline' id='program-dismiss' title='Close and clear from screen'>Done</button>
           </div>
           <div data-mode-panel='rtmps rtmps_relay' hidden>
             <div class='program-full-url' id='program-full-url-row' hidden>

@@ -1,0 +1,234 @@
+"""SRT contribution ingest tests (#750)."""
+
+from __future__ import annotations
+
+import asyncio
+import json
+from unittest.mock import AsyncMock
+from uuid import uuid4
+
+import httpx
+import pytest
+
+from fastapi_app import app
+from portal import program_ingest as ingest
+from portal import program_relay as relay
+from portal.auth import create_user_token
+from portal.config import settings
+from portal.crypto import decrypt_val, encrypt_val
+from portal.database import configure, create_user, dispose, get_session, init_db
+from portal.models import Event, Room
+
+# Requests carry the token a real page would send.
+pytestmark = pytest.mark.usefixtures("auto_csrf")
+
+
+@pytest.fixture
+async def srt_env(monkeypatch):
+    configure("sqlite+aiosqlite://")
+    await init_db()
+    monkeypatch.setattr(settings, "program_ingest_enabled", True)
+    monkeypatch.setattr(settings, "srt_ingest_enabled", True)
+    monkeypatch.setattr(settings, "program_relay_enabled", False)
+    monkeypatch.setattr(settings, "mediamtx_auth_hook_secret", "")
+    monkeypatch.setattr(settings, "debug", True)
+    monkeypatch.setattr(settings, "program_ingest_disconnect_grace_secs", 0)
+
+    ingest.health.clear()
+    ingest.failures.clear()
+    ingest.room_locks.clear()
+    relay.relay_health.clear()
+    relay.list_outage.failures = 0
+
+    media: dict[str, dict] = {}
+    calls: list[tuple[str, str, dict]] = []
+
+    def control(request: httpx.Request):
+        data = json.loads(request.read()) if request.content else {}
+        calls.append((request.method, str(request.url), data))
+        if "/v3/config/paths/" in request.url.path:
+            return httpx.Response(200, json={})
+        if "/paths/list" in request.url.path:
+            return httpx.Response(200, json={"items": list(media.values())})
+        if "/paths/get/" in request.url.path:
+            name = request.url.path.split("/paths/get/")[1]
+            return httpx.Response(200, json=media[name]) if name in media else httpx.Response(404)
+        return httpx.Response(200, json={})
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(control)) as control_client:
+        monkeypatch.setattr(ingest, "get_http_client", lambda: control_client)
+        monkeypatch.setattr(relay, "get_http_client", lambda: control_client)
+        start, stop = AsyncMock(), AsyncMock()
+
+        async def started(**kwargs):
+            ingest.audio_progress[kwargs["booth_id"]] = asyncio.get_running_loop().time()
+
+        start.side_effect = started
+        monkeypatch.setattr(ingest, "start_transcription_worker", start)
+        monkeypatch.setattr(ingest, "stop_transcription_worker", stop)
+
+        async with get_session() as session:
+            admin = await create_user(
+                session,
+                email="srt-admin@example.com",
+                display_name="SRT Admin",
+                email_verified=True,
+                is_admin=True,
+            )
+            event = Event(slug="srt-test", display_name="SRT Test")
+            session.add(event)
+            await session.flush()
+            rooms = [
+                Room(
+                    event_id=event.id,
+                    display_name=f"Room {n}",
+                    floor_transcription_enabled=True,
+                    floor_language_code="en",
+                    floor_source="program_ingest",
+                    program_ingest_mode=relay.SRT_MODE,
+                )
+                for n in range(2)
+            ]
+            session.add_all(rooms)
+            await session.flush()
+            for r in rooms:
+                await ingest.generate_srt_passphrase(r, session)
+            await session.commit()
+
+        token = create_user_token(user_id=admin.id, email=admin.email, is_admin=True)
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app, client=("127.0.0.1", 1234)),
+            base_url="http://test",
+            cookies={"user_token": token},
+        ) as client:
+            yield {
+                "client": client,
+                "event": event,
+                "rooms": rooms,
+                "media": media,
+                "calls": calls,
+                "start": start,
+            }
+
+    ingest.health.clear()
+    ingest.failures.clear()
+    ingest.room_locks.clear()
+    ingest.audio_progress.clear()
+    relay.relay_health.clear()
+    await dispose()
+
+
+def srt_publish(event: Event, room: Room, **overrides) -> dict:
+    return {
+        "action": "publish",
+        "path": f"{event.slug}/{room.id}/floor",
+        "protocol": "srt",
+        "id": str(uuid4()),
+        "ip": "198.51.100.1",
+        **overrides,
+    }
+
+
+@pytest.mark.anyio
+async def test_srt_auth_hook_accepts_valid_room(srt_env):
+    client = srt_env["client"]
+    event = srt_env["event"]
+    room = srt_env["rooms"][0]
+
+    payload = srt_publish(event, room)
+    response = await client.post("/internal/media-auth", json=payload)
+    assert response.status_code == 204
+
+
+@pytest.mark.anyio
+async def test_srt_auth_hook_rejects_when_srt_disabled(srt_env, monkeypatch):
+    client = srt_env["client"]
+    event = srt_env["event"]
+    room = srt_env["rooms"][0]
+
+    monkeypatch.setattr(settings, "srt_ingest_enabled", False)
+    payload = srt_publish(event, room)
+    response = await client.post("/internal/media-auth", json=payload)
+    assert response.status_code in (401, 403)
+
+
+@pytest.mark.anyio
+async def test_srt_passphrase_stored_encrypted_never_logged(srt_env):
+    room = srt_env["rooms"][0]
+
+    async with get_session() as session:
+        stored = await session.get(Room, room.id)
+        assert stored is not None
+        encrypted = stored.program_srt_passphrase_enc
+        assert encrypted is not None
+
+        plaintext = decrypt_val(encrypted)
+        assert plaintext is not None
+        assert len(plaintext) >= 16
+        # Ciphertext must differ from plaintext
+        assert encrypted != plaintext
+        # Plaintext must not appear in plaintext in ciphertext or room repr
+        assert plaintext not in encrypted
+        assert plaintext not in repr(stored)
+
+
+@pytest.mark.anyio
+async def test_transport_isolation(srt_env, monkeypatch):
+    client = srt_env["client"]
+    event = srt_env["event"]
+    srt_room = srt_env["rooms"][0]
+    rtmps_room = srt_env["rooms"][1]
+
+    # Configure rtmps_room for RTMPS mode
+    async with get_session() as session:
+        stored = await session.get(Room, rtmps_room.id)
+        assert stored is not None
+        stored.program_ingest_mode = relay.RTMPS_MODE
+        stored.program_relay_key_enc = encrypt_val("rtmps-stream-key")
+        await session.commit()
+
+    monkeypatch.setattr(settings, "program_rtmps_enabled", True)
+
+    # 1. SRT room rejects RTMP protocol
+    rtmp_payload = {
+        "action": "publish",
+        "path": f"{event.slug}/{srt_room.id}/floor",
+        "protocol": "rtmp",
+        "query": "key=test-key",
+        "id": str(uuid4()),
+        "ip": "198.51.100.1",
+    }
+    resp1 = await client.post("/internal/media-auth", json=rtmp_payload)
+    assert resp1.status_code in (401, 403)
+
+    # 2. RTMPS room rejects SRT protocol
+    srt_payload = srt_publish(event, rtmps_room)
+    resp2 = await client.post("/internal/media-auth", json=srt_payload)
+    assert resp2.status_code in (401, 403)
+
+
+@pytest.mark.anyio
+async def test_generate_and_apply_srt_passphrase(srt_env):
+    event = srt_env["event"]
+    room = srt_env["rooms"][0]
+    calls = srt_env["calls"]
+
+    async with get_session() as session:
+        stored = await session.get(Room, room.id)
+        assert stored is not None
+        passphrase = await ingest.generate_srt_passphrase(stored, session)
+        assert len(passphrase) >= 16
+        await session.commit()
+
+    path = f"{event.slug}/{room.id}/floor"
+    await ingest.apply_srt_passphrase_to_mediamtx(path, passphrase)
+
+    # Verify MediaMTX control client was invoked with srtPublishPassphrase and publishPass
+    matching_calls = [
+        (method, url, data)
+        for method, url, data in calls
+        if f"/v3/config/paths/add/{path}" in url or f"/v3/config/paths/patch/{path}" in url
+    ]
+    assert len(matching_calls) >= 1
+    assert matching_calls[0][2]["srtPublishPassphrase"] == passphrase
+    assert matching_calls[0][2]["publishPass"] == passphrase

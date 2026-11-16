@@ -26,8 +26,10 @@ logger = logging.getLogger(__name__)
 WHIP_MODE = "whip"
 RTMPS_MODE = "rtmps"  # VoxBento is an extra RTMPS destination; YouTube is independent
 RELAY_MODE = "rtmps_relay"  # VoxBento forwards to YouTube (#749)
+SRT_MODE = "srt"
+SRT_MODES = (SRT_MODE,)
 RTMPS_MODES = (RTMPS_MODE, RELAY_MODE)
-MODES = (WHIP_MODE, RTMPS_MODE, RELAY_MODE)
+MODES = (WHIP_MODE, RTMPS_MODE, RELAY_MODE, SRT_MODE)
 STREAM_KEY = re.compile(r"[A-Za-z0-9_-]{4,128}")
 RELAY_CONTROL_TIMEOUT = 3.0
 # MediaMTX track names for the documented H.264/AAC contribution contract.

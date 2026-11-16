@@ -1,8 +1,10 @@
-# RTMPS Ingest with YouTube Relay (#749)
+# Program Stream Ingest (RTMPS & SRT) with YouTube Relay (#749, #750)
 
-One encoder output, two results: the organizer's encoder sends a single **RTMPS**
-stream to VoxBento; VoxBento relays it unchanged to YouTube and feeds its audio
-to the room's floor captions, translation and TTS.
+One encoder output, two results: the organizer's encoder sends a contribution
+stream (**SRT** or **RTMPS**) to VoxBento; VoxBento relays it unchanged to YouTube
+and feeds its audio to the room's floor captions, translation and TTS. For mission-critical
+broadcasts, VoxBento supports dual redundant contribution feeds (primary and backup)
+with automatic, deterministic takeover.
 
 > **Relay mode puts VoxBento in the YouTube delivery path.** If VoxBento, MediaMTX
 > or the relay gateway fails, the YouTube broadcast is interrupted. When failure
@@ -13,21 +15,36 @@ to the room's floor captions, translation and TTS.
 ## Architecture
 
 ```
-OBS / vMix / Wirecast / hardware
-        │  RTMPS :1936  (H.264 + AAC, stream key "floor?key=<room secret>")
+OBS / vMix / Wirecast / Makito X4 / AJA HELO
+        │  SRT :8890/udp (Caller mode, AES passphrase, streamid=#!::r=.../floor)
+        │  OR RTMPS :1936/tcp (TLS, stream key "floor?key=<secret>")
         ▼
-MediaMTX ──auth hook──▶ portal /internal/media-auth   (room/key/mode check only)
-   │  canonical path {event_slug}/{room_id}/floor
+MediaMTX (SRT Listener :8890 / RTMPS Listener :1936)
+   │  auth hook / Control API ──▶ portal /internal/media-auth
+   │
+   ├─ Primary Feed:  {event_slug}/{room_id}/floor
+   ├─ Backup Feed:   {event_slug}/{room_id}/floor_backup  (Hot Standby)
+   │
+   │  [Active Feed: Exactly ONE consumed at a time — single-consumer guarantee]
+   │
    ├─RTSP (private)──▶ FFmpeg ▶ STT ▶ captions ▶ translation ▶ TTS   (existing pipeline)
    └─RTSP (private)──▶ program-relay ── ffmpeg -c copy ──▶ rtmps://a.rtmps.youtube.com/live2/<key>
                          ▲
-                         └── portal reconciler: desired relays over an authenticated control API
+                         └── portal reconciler: manages desired relays and backup takeover
 ```
 
 - **Media never traverses FastAPI.** MediaMTX terminates the contribution feed; the
-  dedicated `program-relay` container (stdlib Python + FFmpeg) pulls the floor path
+  dedicated `program-relay` container (stdlib Python + FFmpeg) pulls the active floor path
   over private RTSP and pushes it with `-c copy` (first video + first audio track, no
   re-encode). The portal owns configuration, authorization and status only.
+- **SRT Caller / Listener Topology.** MediaMTX acts as an **SRT Listener** bound to
+  port `8890/udp`. Encoders (OBS, vMix, Wirecast, Makito X4, AJA HELO) connect as
+  **SRT Callers**. No global passphrase is configured on MediaMTX; passphrases are
+  isolated per room/feed path and programmed dynamically via the MediaMTX Control API.
+- **Single-Consumer Guarantee.** Downstream consumers (`program-relay` pushing to YouTube
+  and the STT floor audio pipeline) bind to exactly one active feed path (`floor` or
+  `floor_backup`) at any moment. Feeds are never mixed, duplicate packets are never sent
+  to YouTube, and YouTube stream timestamps remain contiguous.
 - **One floor owner.** Relay mode is a `program_ingest` source. It replaces the Jitsi
   agent; no second OBS output is needed for captions/translation/TTS.
 - **Independent health.** The room page reports three stages separately:
@@ -36,18 +53,43 @@ MediaMTX ──auth hook──▶ portal /internal/media-auth   (room/key/mode c
   `capacity`, `degraded`) and *Captions and translation* (STT worker). Captions being off or
   an STT provider outage never stops the relay; a relay failure never stops captions.
 
-## Input contract (v1)
+## Input contract
 
 | | Required |
 |---|---|
-| Transport | RTMPS (TLS). Plain RTMP is closed (`rtmpEncryption: strict`). |
-| Video | H.264 (YouTube-compatible profile, keyframe every 2 s) |
+| Transport | **SRT** (Caller mode to MediaMTX Listener `:8890/udp`, AES passphrase per-path, latency 500ms) OR **RTMPS** (TLS on `:1936/tcp`, plain RTMP closed with `rtmpEncryption: strict`). |
+| Video | H.264 (YouTube-compatible profile, keyframe every 2 s / 60 frames @ 30fps) |
 | Audio | AAC-LC, 44.1 or 48 kHz, stereo or mono |
-| Bitrate | What YouTube accepts for the chosen resolution; VoxBento does not transcode |
+| Bitrate | Maximum 12,000 kbps (enforced by reconciler; sessions exceeding this for 5 cycles are kicked). VoxBento does not transcode. |
 
 Feeds without H.264 + AAC are accepted for captions when they carry decodable audio,
 but are **not relayed**; relay health shows *Needs attention* with the reason.
-Codec conversion and SRT are follow-up work.
+
+## Redundant Contribution & Deterministic Backup Takeover (#750)
+
+For high-profile events where encoder, hardware, or network link failure cannot be tolerated, VoxBento provides dual-path contribution with automatic failover:
+
+### 1. Dual Ingest Paths
+* **Primary Path:** `{event_slug}/{room_id}/floor`
+* **Backup Path:** `{event_slug}/{room_id}/floor_backup`
+
+When backup contribution is enabled on a room (`program_backup_enabled = true`), VoxBento generates independent credentials for both primary and backup paths. Both encoders stream simultaneously to MediaMTX. MediaMTX terminates both connections concurrently.
+
+### 2. Single-Consumer Guarantee
+YouTube live broadcasts require strictly monotonic timestamps and consistent encoder bitstreams. Pushing two feeds or muxing streams upstream corrupts YouTube ingest. 
+
+VoxBento guarantees that downstream consumers (`program-relay` forwarding to YouTube, and the STT floor transcription worker) consume **exactly one path** at any time based on `room.program_active_feed` (`"primary"` or `"backup"`). The backup feed remains in hot standby, consuming zero relay egress until promoted.
+
+### 3. Deterministic Takeover Mechanics
+The portal reconciler continuously monitors feed health:
+* **Trigger Conditions:** If the primary feed stalls (0 byte progress for $\ge 5.0$ seconds via `TAKEOVER_STALL_SECS`) or completely disconnects, and `program_backup_enabled` is active with a live connected backup feed, takeover triggers immediately.
+* **Promotion Action:** The reconciler sets `room.program_active_feed = "backup"`, rebinds `program-relay` to the RTSP path of `floor_backup`, and rebinds the STT worker.
+* **Failover Latency:** Takeover completes within 5–7 seconds, preventing YouTube broadcast termination while preserving caption continuity.
+
+### 4. Anti-Flapping Protection
+If the primary encoder recovers or reconnects while the backup feed is actively carrying the broadcast, VoxBento **does not automatically revert** to the primary feed. Automatic failback during a live event creates dangerous stream flapping and multiple YouTube buffering interruptions.
+* The recovered primary feed remains connected in hot standby.
+* When the operator confirms the primary link is stable, they can manually restore primary using the `promote_primary_feed` action in the room dashboard.
 
 ## Organizer setup (step by step)
 
@@ -225,6 +267,29 @@ relay deployments accept the extra-destination mode too. Running the script late
 `--ingest-only` replaces `docker-compose.rtmps.yml` with the relay file; the two are never
 combined. Rollback: drop `docker-compose.rtmps.yml` from `COMPOSE_FILE` and run
 `docker compose up -d --remove-orphans`.
+
+### SRT Contribution Ingest Setup (#750)
+
+SRT provides superior transmission resilience over unstable public networks compared to RTMPS. To enable SRT contribution ingest:
+
+1. **Activate the Compose overlay:**
+   Add `docker-compose.srt.yml` to your `COMPOSE_FILE` variable in `.env`, or start with:
+   ```bash
+   docker compose -f docker-compose.yml -f docker-compose.srt.yml up -d
+   ```
+   Or when combined with YouTube relaying:
+   ```bash
+   docker compose -f docker-compose.yml -f docker-compose.relay.yml -f docker-compose.srt.yml up -d
+   ```
+
+2. **Open Firewall Port:**
+   Open **UDP 8890** in your cloud firewall / security group. Encoders establish outgoing connections to this port.
+
+3. **Topology & Credential Architecture:**
+   * **MediaMTX Role:** MediaMTX acts as an **SRT Listener** on `:8890/udp`.
+   * **Encoder Role:** Encoders connect as **SRT Callers**.
+   * **Zero Global Passphrase:** MediaMTX is deliberately configured without a global passphrase. Passphrases are generated per-room and registered dynamically via the MediaMTX Control API (`/v3/config/paths/add` and `patch`) with the `publishPass` directive.
+   * **Restart Recovery:** If MediaMTX restarts, the portal reconciler automatically detects active SRT rooms, decrypts `program_srt_passphrase_enc`, and repopulates the per-path configuration via the Control API.
 
 ### Websites behind Cloudflare
 

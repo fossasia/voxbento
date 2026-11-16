@@ -65,6 +65,8 @@ class Settings(BaseSettings):
     program_relay_base: str = "http://program-relay:8090"
     program_relay_control_secret: str = ""
     program_relay_max: int = 4
+    srt_ingest_enabled: bool = False
+    program_contribution_max: int = 4  # counts program_ingest rooms only, not WHIP interpreter booths
     program_relay_allowed_hosts: str = "a.rtmps.youtube.com,b.rtmps.youtube.com"
     # "Sign in with YouTube" (Google OAuth web client). Off unless both are set.
     youtube_oauth_client_id: str = ""

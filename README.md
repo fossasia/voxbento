@@ -41,7 +41,7 @@ Interpreters monitor the floor session and broadcast high-fidelity translation d
 - **⚡ Sub-Second Listener Playback:** Attendees receive ultra-low latency audio via WebRTC (WHEP) powered by MediaMTX, scaling effortlessly to thousands of listeners.
 - **🤖 Live AI Transcription & Translation:** Multi-provider speech-to-text (Faster-Whisper, OpenAI, Deepgram, NVIDIA Parakeet, ElevenLabs) paired with real-time LLM translations guided by custom personas, styles, and domain vocabulary glossaries.
 - **🗣️ Direct-Push Text-to-Speech (TTS):** Synthesize live translated speech on the fly (Deepgram Aura or self-hosted Supertonic ONNX), streamed directly to attendees over binary WebSocket frames.
-- **📡 Program Stream Ingest & YouTube Relay:** Send conference floor audio from an encoder or browser, with optional RTMPS forwarding to YouTube.
+- **📡 Program Stream Ingest & YouTube Relay:** Send conference floor audio from an encoder (SRT or RTMPS) or browser (WHIP), with optional forwarding to YouTube and redundant backup feed takeover.
 - **🎛️ Mission Control & Coordination:** Real-time booth status monitoring, live audio meters, in-booth team chat, and coordinator controls via FastAPI WebSockets.
 - **💻 VoxBento Local:** Sovereign, 100% offline desktop application for private AI meeting intelligence and minutes on macOS, Windows, and Linux.
 
@@ -57,7 +57,7 @@ VoxBento isolates the real-time media plane from application coordination. Media
                          │                                                         │
 [ Interpreter Mic ] ────►│  /event/room/lang/whip (WHIP Ingest)                    ├────► [ Attendees (WHEP) ]
                          │                                                         │
-[ Floor Audio / OBS ] ──►│  /event/room/floor (WHIP / RTMPS Ingest)                ├────► [ Optional YouTube Relay ]
+[ Floor Audio / OBS ] ──►│  /event/room/floor (WHIP / RTMPS / SRT Ingest)          ├────► [ Optional YouTube Relay ]
                          └───────────────────────────┬─────────────────────────────┘
                                                      │ RTSP (8554)
                                                      ▼
@@ -153,6 +153,14 @@ and [registration protection](docs/registration-protection.md) for signup contro
 ```bash
 docker compose up -d --build
 ```
+
+To enable SRT contribution ingest on port `8890/udp`, apply the SRT Compose overlay:
+```bash
+docker compose -f docker-compose.yml -f docker-compose.srt.yml up -d --build
+```
+
+> **MediaMTX Upgrade Drain Notice:**
+> When upgrading or restarting MediaMTX (`docker compose restart mediamtx`), active SRT and RTMPS connections terminate immediately as UDP/TCP socket state cannot be preserved across container restarts. Configure all encoders with automatic reconnect enabled (e.g. 2-second retry delay). The portal reconciler automatically repopulates dynamic per-path SRT credentials on startup as soon as MediaMTX is ready.
 
 **Option B: Native Development (Faster backend iteration)**
 ```bash
