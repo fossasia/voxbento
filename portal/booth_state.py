@@ -522,15 +522,17 @@ class BoothRegistry:
         user_id: int | None = None,
         invite_public_id: str | None = None,
         booth_id: str | None = None,
-    ) -> list[tuple[str, dict]]:
+    ) -> list[tuple[str, dict, list[tuple[str, bool]]]]:
         """Remove participants kept after their socket dropped, for a user or invite whose access ended.
 
         Covers records held for the reconnect grace and placeholders restored after a restart,
-        which have no socket for revocation to close. Returns ``(booth_id, state)`` per changed booth.
+        which have no socket for revocation to close. Returns ``(booth_id, state, removed)`` per
+        changed booth, where *removed* lists ``(participant_id, was_active)``. Whether each was the
+        active interpreter is read before they go, because removing them promotes the next one.
         """
         if user_id is None and invite_public_id is None:
             return []
-        changed: list[tuple[str, dict]] = []
+        changed: list[tuple[str, dict, list[tuple[str, bool]]]] = []
         async with self._lock:
             for key, booth in list(self._booths.items()):
                 if booth_id is not None and key != booth_id:
@@ -544,10 +546,12 @@ class BoothRegistry:
                         or (invite_public_id is not None and p.invite_public_id == invite_public_id)
                     )
                 ]
+                removed: list[tuple[str, bool]] = []
                 for participant_id in matches:
+                    removed.append((participant_id, booth.active_interpreter_id == participant_id))
                     self._remove_participant(booth, participant_id)
                 if matches:
-                    changed.append((key, booth.as_public_dict()))
+                    changed.append((key, booth.as_public_dict(), removed))
         return changed
 
     def _remove_participant(self, booth: Booth, participant_id: str) -> None:
