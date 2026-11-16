@@ -158,6 +158,53 @@ async def test_update_event_api_keys_only_changes_fields_sent_in_payload(event_a
 
 
 @pytest.mark.anyio
+async def test_update_event_api_keys_persists_rotates_and_clears_the_atlas_cloud_key(event_api_access):
+    """#1162: the Atlas Cloud key is stored like every other provider key, not silently dropped."""
+    access_token, event_id = event_api_access
+    headers = {"Authorization": f"Bearer {access_token}"}
+    url = "/api/v1/events/api-key-test/api_keys"
+
+    async with _client() as client:
+        response = await client.patch(
+            url,
+            json={"openai_api_key": "openai-key", "atlascloud_api_key": "atlas-key"},
+            headers=headers,
+        )
+    assert response.status_code == 200
+
+    async with get_session() as session:
+        event = await session.get(Event, event_id)
+        assert event is not None
+        first_ciphertext = event.encrypted_atlascloud_api_key
+        assert first_ciphertext is not None
+        assert first_ciphertext != "atlas-key"
+        assert decrypt_val(first_ciphertext) == "atlas-key"
+        assert decrypt_val(event.encrypted_openai_api_key) == "openai-key"
+
+    async with _client() as client:
+        response = await client.patch(url, json={"atlascloud_api_key": "rotated-atlas-key"}, headers=headers)
+    assert response.status_code == 200
+
+    async with get_session() as session:
+        event = await session.get(Event, event_id)
+        assert event is not None
+        assert event.encrypted_atlascloud_api_key != first_ciphertext
+        assert decrypt_val(event.encrypted_atlascloud_api_key) == "rotated-atlas-key"
+        # A payload that omits the field must not disturb either stored key.
+        assert decrypt_val(event.encrypted_openai_api_key) == "openai-key"
+
+    async with _client() as client:
+        response = await client.patch(url, json={"atlascloud_api_key": ""}, headers=headers)
+    assert response.status_code == 200
+
+    async with get_session() as session:
+        event = await session.get(Event, event_id)
+        assert event is not None
+        assert event.encrypted_atlascloud_api_key is None
+        assert decrypt_val(event.encrypted_openai_api_key) == "openai-key"
+
+
+@pytest.mark.anyio
 async def test_update_event_api_keys_sarvam_encrypts_preserves_and_clears(event_api_access):
     """PATCH /api_keys encrypts sarvam_api_key, preserves omitted fields, and clears on empty string."""
     access_token, event_id = event_api_access
@@ -314,9 +361,7 @@ async def test_upsert_room_rejects_sarvam_with_unsupported_source_language(event
 
     async with get_session() as session:
         room = (
-            await session.execute(
-                select(Room).where(Room.event_id == event_id, Room.eventyay_room_id == "ext-room-1")
-            )
+            await session.execute(select(Room).where(Room.event_id == event_id, Room.eventyay_room_id == "ext-room-1"))
         ).scalar_one()
         assert room.floor_language_code == "hi"
         assert room.floor_transcription_provider == "sarvam"

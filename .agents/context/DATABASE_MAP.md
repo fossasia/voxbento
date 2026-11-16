@@ -307,6 +307,8 @@ Tracks which languages the translation worker should generate for a given room o
 | 041 | `041_add_interpreter_attendance.py` | `interpreter_attendance` table (#1215) |
 | 042 | `042_add_booth_live_state.py` | `booth_live_state` table (TD-03) |
 | 043 | `043_add_live_demo_settings.py` | `live_demo_settings` singleton for the home-page live demo |
+| 044 | `044_youtube_connections.py` | `youtube_connections` table (one per event), `rooms.youtube_broadcast_id`, `rooms.youtube_stream_id` (#1087) |
+| 045 | `045_add_sarvam_api_key.py` | events.sarvam_api_key (Text nullable, Fernet-encrypted) (#1173) |
 
 Run migrations: `uv run alembic upgrade head`
 
@@ -446,7 +448,7 @@ Final floor sequence increments atomically and survives worker/portal restarts.
 Raw credentials are only returned at create/rotate. YouTube keys exist only in
 relay mode, encrypted (migration 028).
 
-## Migration 044 — Sarvam AI API key (#1173)
+## Migration 045 — Sarvam AI API key (#1173)
 
 Adds nullable `events.sarvam_api_key` (`Text`, mapped as `encrypted_sarvam_api_key`)
 stored Fernet-encrypted via `portal.crypto.encrypt_val` and read through
