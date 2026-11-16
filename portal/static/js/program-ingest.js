@@ -68,6 +68,7 @@ const confirmations = {
   rotate: 'This creates a new credential. The encoder disconnects until you paste the new one.',
   revoke: 'This disconnects the encoder now and the current credential stops working.',
   disable: 'This disconnects the encoder and switches the room back to the online meeting.',
+  promote_primary: 'This switches the active feed back to the primary contribution stream.',
 };
 
 function formatTime(value) {
@@ -150,6 +151,31 @@ function renderStatus(data) {
   document.getElementById('program-connected').textContent = formatTime(data.last_connected_at) || 'Never';
   document.getElementById('program-disconnected').textContent = formatTime(data.last_disconnected_at) || 'Never';
   document.getElementById('program-expires').textContent = formatTime(data.expires_at) || 'Not created';
+  const activeFeedEl = document.getElementById('program-active-feed');
+  if (activeFeedEl) {
+    activeFeedEl.textContent = data.active_feed === 'backup' ? 'Backup (active)' : 'Primary';
+  }
+  const promoteBtn = document.getElementById('program-promote-primary');
+  if (promoteBtn) {
+    promoteBtn.hidden = !(selectedMode() === 'srt' && data.enabled && data.active_feed === 'backup');
+  }
+  const backupToggle = document.getElementById('program-backup-toggle');
+  if (backupToggle) {
+    backupToggle.checked = Boolean(data.backup_enabled);
+    backupToggle.disabled = !data.enabled || selectedMode() !== 'srt';
+  }
+  const backupStatusEl = document.getElementById('program-backup-status');
+  if (backupStatusEl && selectedMode() === 'srt') {
+    if (!data.backup_enabled) {
+      backupStatusEl.textContent = 'Disabled';
+    } else if (data.active_feed === 'backup') {
+      backupStatusEl.textContent = 'Active (on-air)';
+    } else if (data.backup_connected) {
+      backupStatusEl.textContent = 'Connected (standing by)';
+    } else {
+      backupStatusEl.textContent = 'Disconnected';
+    }
+  }
   renderHealth('ingest', data.health.ingest);
   renderHealth('relay', data.health.relay);
   renderHealth('processing', data.health.processing);
@@ -172,6 +198,11 @@ function renderStatus(data) {
   }
   if (rtmpsSelected && data.rtmps_available && !data.rtmps_server) {
     warnings.push('The server has no public RTMPS address yet. Ask the server operator to set PROGRAM_RTMPS_PUBLIC_BASE.');
+  }
+  if (Array.isArray(data.alerts)) {
+    for (const a of data.alerts) {
+      warnings.push(`[${a.target.toUpperCase()}] ${a.message} (Action: ${a.action})`);
+    }
   }
   warning.hidden = warnings.length === 0;
   document.getElementById('program-warning-title').textContent = data.available
@@ -252,7 +283,8 @@ async function refresh() {
       const rtmpsBlocked = action === 'enable' && selectedMode() === 'rtmps' && !data.rtmps_available;
       const srtBlocked = action === 'enable' && selectedMode() === 'srt' && !data.srt_available;
       button.disabled = (['enable', 'rotate'].includes(action) && !data.available) || relayBlocked || rtmpsBlocked || srtBlocked ||
-        (['rotate', 'revoke', 'disable'].includes(action) && !data.enabled);
+        (['rotate', 'revoke', 'disable'].includes(action) && !data.enabled) ||
+        (action === 'promote_primary' && (!data.enabled || data.active_feed !== 'backup'));
     });
     destinationForm.querySelectorAll('input, button[type="submit"]').forEach(item => {
       item.disabled = !data.relay_available;
@@ -280,6 +312,15 @@ function showSecret(data) {
     document.getElementById('program-secret-help').textContent = streamKey
       ? 'Paste this as the Stream Key in OBS or your streaming tool. Copy it now: it is shown only once and expires in 30 days.'
       : 'Paste this into OBS as the Bearer Token. It expires in 30 days.';
+  }
+  const backupSecretInput = document.getElementById('program-backup-secret');
+  const backupSecretRow = document.getElementById('program-backup-secret-row');
+  if (data.backup_passphrase && backupSecretInput && backupSecretRow) {
+    backupSecretInput.value = data.backup_passphrase;
+    backupSecretRow.hidden = false;
+  } else if (backupSecretRow) {
+    backupSecretRow.hidden = true;
+    if (backupSecretInput) backupSecretInput.value = '';
   }
   document.getElementById('program-secret-panel').hidden = false;
   updateFullUrl();
@@ -393,11 +434,28 @@ document.getElementById('program-copy-full-url').addEventListener('click', async
 document.getElementById('program-copy').addEventListener('click', async () => {
   await copyField(secret, document.getElementById('program-copy'), 'Copied');
 });
+const revealBackupBtn = document.getElementById('program-reveal-backup');
+const backupSecretInput = document.getElementById('program-backup-secret');
+if (revealBackupBtn && backupSecretInput) {
+  revealBackupBtn.addEventListener('click', () => {
+    backupSecretInput.type = backupSecretInput.type === 'password' ? 'text' : 'password';
+    revealBackupBtn.textContent = backupSecretInput.type === 'password' ? 'Show' : 'Hide';
+  });
+}
+const copyBackupBtn = document.getElementById('program-copy-backup');
+if (copyBackupBtn && backupSecretInput) {
+  copyBackupBtn.addEventListener('click', async () => {
+    await copyField(backupSecretInput, copyBackupBtn, 'Copied');
+  });
+}
 const dismissBtn = document.getElementById('program-dismiss');
 if (dismissBtn) {
   dismissBtn.addEventListener('click', () => {
     secret.value = '';
     fullUrl.value = '';
+    if (backupSecretInput) backupSecretInput.value = '';
+    const backupSecretRow = document.getElementById('program-backup-secret-row');
+    if (backupSecretRow) backupSecretRow.hidden = true;
     document.getElementById('program-secret-panel').hidden = true;
   });
 }
@@ -419,7 +477,35 @@ if (copySrtBackupBtn) {
     await copyField(document.getElementById('program-srt-backup'), copySrtBackupBtn, 'URL copied');
   });
 }
-window.addEventListener('pagehide', () => { secret.value = ''; fullUrl.value = ''; relayKey.value = ''; });
+const backupToggle = document.getElementById('program-backup-toggle');
+if (backupToggle) {
+  backupToggle.addEventListener('change', async () => {
+    busy = true;
+    try {
+      const response = await fetch(card.dataset.url, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'X-CSRF-Token': csrfToken()
+        },
+        body: JSON.stringify({
+          action: 'toggle_backup',
+          backup_enabled: backupToggle.checked,
+          mode: selectedMode()
+        }),
+      });
+      await readError(response);
+    } catch (error) {
+      console.error('Failed to toggle backup feed', error);
+      status.textContent = error.message;
+      backupToggle.checked = !backupToggle.checked;
+    } finally {
+      busy = false;
+      await refresh();
+    }
+  });
+}
+window.addEventListener('pagehide', () => { secret.value = ''; fullUrl.value = ''; if (backupSecretInput) backupSecretInput.value = ''; relayKey.value = ''; });
 refresh();
 const refreshTimer = setInterval(refresh, 5000);
 window.addEventListener('pagehide', () => clearInterval(refreshTimer));

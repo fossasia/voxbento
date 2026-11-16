@@ -153,23 +153,30 @@ async def test_srt_auth_hook_rejects_when_srt_disabled(srt_env, monkeypatch):
 
 
 @pytest.mark.anyio
-async def test_srt_passphrase_stored_encrypted_never_logged(srt_env):
+async def test_srt_passphrase_stored_encrypted_never_logged(srt_env, caplog):
+    import logging
     room = srt_env["rooms"][0]
+    caplog.set_level(logging.DEBUG)
 
     async with get_session() as session:
         stored = await session.get(Room, room.id)
         assert stored is not None
+        passphrase = await ingest.generate_srt_passphrase(stored, session)
+        await session.commit()
+
         encrypted = stored.program_srt_passphrase_enc
         assert encrypted is not None
 
         plaintext = decrypt_val(encrypted)
         assert plaintext is not None
+        assert plaintext == passphrase
         assert len(plaintext) >= 16
         # Ciphertext must differ from plaintext
         assert encrypted != plaintext
-        # Plaintext must not appear in plaintext in ciphertext or room repr
+        # Plaintext must not appear in plaintext in ciphertext, room repr, or captured logs
         assert plaintext not in encrypted
         assert plaintext not in repr(stored)
+        assert plaintext not in caplog.text
 
 
 @pytest.mark.anyio
@@ -232,3 +239,85 @@ async def test_generate_and_apply_srt_passphrase(srt_env):
     assert len(matching_calls) >= 1
     assert matching_calls[0][2]["srtPublishPassphrase"] == passphrase
     assert matching_calls[0][2]["publishPass"] == passphrase
+    assert matching_calls[0][2]["overridePublisher"] is False
+
+
+@pytest.mark.anyio
+async def test_srt_codec_validation_requires_both_h264_and_aac(srt_env):
+    event = srt_env["event"]
+    room = srt_env["rooms"][0]
+
+    async with get_session() as session:
+        stored = await session.get(Room, room.id)
+        assert stored is not None
+        stored.program_session_id = "test-session-id"
+        await session.commit()
+
+    # Helper to test codec validation
+    async def evaluate_tracks(tracks: list[str]) -> str:
+        health_entry = ingest.IngestHealth()
+        ingest.health[room.id] = health_entry
+        path = ingest.MediaPath(
+            name=f"{event.slug}/{room.id}/floor",
+            ready=True,
+            source=ingest.MediaSource(id="test-session-id", type="srtConn"),
+            tracks=tracks,
+            bytesReceived=1024,
+        )
+        await ingest.reconcile_room(stored, event, path)
+        return health_entry.state
+
+    # 1. Video only -> rejected
+    assert await evaluate_tracks(["H264"]) == "rejected_codec"
+
+    # 2. Audio only -> rejected
+    assert await evaluate_tracks(["AAC"]) == "rejected_codec"
+
+    # 3. Empty tracks -> rejected
+    assert await evaluate_tracks([]) == "rejected_codec"
+
+    # 4. Incompatible extra track (HEVC) -> rejected
+    assert await evaluate_tracks(["H264", "AAC", "HEVC"]) == "rejected_codec"
+
+    # 5. Non-AAC MPEG-4 -> rejected
+    assert await evaluate_tracks(["H264", "MPEG-4 Visual"]) == "rejected_codec"
+
+    # 6. Valid H.264 + AAC -> accepted (not rejected_codec)
+    state_valid1 = await evaluate_tracks(["H264", "AAC"])
+    assert state_valid1 != "rejected_codec"
+
+    # 7. Valid H.264 + MPEG-4 Audio -> accepted
+    state_valid2 = await evaluate_tracks(["H.264", "MPEG-4 Audio"])
+    assert state_valid2 != "rejected_codec"
+
+
+@pytest.mark.anyio
+async def test_srt_aac_audio_track_recognized_for_transcription(srt_env):
+    import time
+    event = srt_env["event"]
+    room = srt_env["rooms"][0]
+
+    async with get_session() as session:
+        stored = await session.get(Room, room.id)
+        assert stored is not None
+        stored.floor_transcription_provider = "local"
+        stored.floor_transcription_model = "tiny"
+        await session.commit()
+
+    path = ingest.MediaPath(
+        name=f"{event.slug}/{room.id}/floor",
+        ready=True,
+        source=ingest.MediaSource(id="test-session-id", type="srtConn"),
+        tracks=["H264", "AAC"],
+        bytesReceived=1024,
+    )
+    health_entry = ingest.IngestHealth()
+    booth_id = f"{event.slug}-{room.id}-floor"
+    now = time.monotonic()
+
+    # Reconcile processing with AAC track: must start transcription, not degrade
+    await ingest.reconcile_processing(stored, event, path, health_entry, booth_id, now)
+    assert health_entry.processing_state != "degraded"
+    assert health_entry.state in ("receiving", "processing")
+    assert health_entry.processing_state in ("starting", "processing")
+

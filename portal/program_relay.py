@@ -34,7 +34,7 @@ STREAM_KEY = re.compile(r"[A-Za-z0-9_-]{4,128}")
 RELAY_CONTROL_TIMEOUT = 3.0
 # MediaMTX track names for the documented H.264/AAC contribution contract.
 RELAY_VIDEO_CODECS = {"H264"}
-RELAY_AUDIO_CODECS = {"MPEG-4 Audio"}
+RELAY_AUDIO_CODECS = {"MPEG-4 Audio", "AAC"}
 YOUTUBE_DEFAULT_SERVER = "rtmps://a.rtmps.youtube.com/live2"
 SERVER_URL_MAX = 255  # rooms.program_relay_server column length
 # YouTube's plain-RTMP ingest hosts and their RTMPS equivalents.

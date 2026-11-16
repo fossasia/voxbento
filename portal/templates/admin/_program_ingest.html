@@ -142,7 +142,13 @@
             <button type='button' class='btn btn-outline' id='program-copy-srt'>Copy URL</button>
           </div>
           <div id='program-srt-backup-row' style='margin-top: 0.75rem;'>
-            <label for='program-srt-backup'>Backup Feed Stream URL</label>
+            <div style='display: flex; align-items: center; justify-content: space-between; margin-bottom: 0.25rem;'>
+              <label for='program-srt-backup' style='margin-bottom: 0;'>Backup Feed Stream URL</label>
+              <label style='display: flex; align-items: center; gap: 0.35rem; font-size: 0.85rem; cursor: pointer;'>
+                <input type='checkbox' id='program-backup-toggle'>
+                <span>Enable backup</span>
+              </label>
+            </div>
             <div class='program-copy-field'>
               <input id='program-srt-backup' class='input' readonly placeholder='Backup feed endpoint'>
               <button type='button' class='btn btn-outline' id='program-copy-srt-backup'>Copy</button>
@@ -168,6 +174,14 @@
             <button type='button' class='btn btn-outline' id='program-reveal'>Show</button>
             <button type='button' class='btn btn-outline' id='program-copy'>Copy</button>
             <button type='button' class='btn btn-outline' id='program-dismiss' title='Close and clear from screen'>Done</button>
+          </div>
+          <div class='program-copy-field' id='program-backup-secret-row' style='margin-top: 0.75rem;' hidden>
+            <div style='width: 100%; margin-bottom: 0.25rem;'>
+              <label for='program-backup-secret' style='font-size: 0.85rem; font-weight: 600;'>Backup SRT Passphrase</label>
+            </div>
+            <input id='program-backup-secret' class='input' type='password' readonly autocomplete='off'>
+            <button type='button' class='btn btn-outline' id='program-reveal-backup'>Show</button>
+            <button type='button' class='btn btn-outline' id='program-copy-backup'>Copy</button>
           </div>
           <div data-mode-panel='rtmps rtmps_relay' hidden>
             <div class='program-full-url' id='program-full-url-row' hidden>
@@ -206,6 +220,8 @@
       </ul>
       <p class='program-relay-note' data-mode-panel='rtmps_relay' hidden>When <em>VoxBento → YouTube</em> shows <strong>Live</strong>, check the preview in YouTube Studio, then go live there.</p>
       <dl class='program-ingest-facts'>
+        <div data-mode-panel='srt' hidden><dt>Active feed</dt><dd id='program-active-feed'>Primary</dd></div>
+        <div data-mode-panel='srt' id='program-backup-status-row' hidden><dt>Backup feed</dt><dd id='program-backup-status'>—</dd></div>
         <div><dt>Audio / video</dt><dd id='program-codecs'>—</dd></div>
         <div><dt>Last connected</dt><dd id='program-connected'>Never</dd></div>
         <div><dt>Last disconnected</dt><dd id='program-disconnected'>Never</dd></div>
@@ -233,6 +249,7 @@
     <div class='program-secondary-actions'>
       <span>Source and credential controls</span>
       <div>
+        <button type='button' class='btn btn-outline' id='program-promote-primary' data-ingest-action='promote_primary' hidden>Switch back to primary</button>
         <button type='button' class='btn btn-outline' data-ingest-action='rotate'>Rotate token</button>
         <button type='button' class='btn btn-outline program-revoke-button' data-ingest-action='revoke'>Revoke token</button>
         <button type='button' class='btn btn-outline' data-ingest-action='disable'>Switch to the online meeting</button>

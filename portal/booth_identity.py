@@ -250,7 +250,7 @@ def validate_language_code(code: str) -> str:
     Raises ``ValueError`` with a descriptive message on failure.
     """
     normalised = code.strip().lower()
-    if normalised == "floor":
+    if normalised in ("floor", "floor_backup"):
         return normalised
     if not _LANGUAGE_CODE_RE.match(normalised):
         raise ValueError(

@@ -178,6 +178,12 @@ The badge at the top reads **Live on YouTube**. Check the preview in YouTube Stu
 | *Not switched on for this server yet* | Relay mode not deployed | Operator: run `scripts/setup-youtube-relay.sh` |
 | *Not switched on for this server yet* under **Add VoxBento as an extra destination** | RTMPS ingest not deployed | Operator: run `scripts/setup-youtube-relay.sh --ingest-only` (a relay deployment also covers it) |
 | *At capacity* | `PROGRAM_RELAY_MAX` rooms already forwarding | Stop another room's forwarding, or the operator raises the limit |
+| SRT encoder: *Connection timed out / refused* | Firewall blocking UDP 8890 or SRT overlay missing | Open UDP 8890 in firewall; run with `docker-compose.srt.yml` |
+| SRT encoder rejected immediately (401 / 403) | Invalid/expired passphrase or room ingest disabled | Copy current passphrase from room page or click **Rotate Key** |
+| *Primary stalled — switched to backup* | Primary feed dropped or zero bytes for $\ge 5.0\text{ s}$ | Verify primary encoder connection; click **Promote primary** once stable |
+| *Non-conforming codec detected (rejected_codec)* | Encoder stream missing H.264 video or AAC audio | Configure encoder to output standard H.264 video and AAC audio |
+| *Inbound bitrate exceeded 12,000 kbps (rejected_limits)* | Stream exceeded 12 Mbps cap for 5 consecutive cycles | Lower encoder bitrate to recommended 4500–6000 kbps |
+| *Gateway at contribution capacity (429)* | `PROGRAM_CONTRIBUTION_MAX` limit reached (4 rooms) | Stop another room's contribution or raise `PROGRAM_CONTRIBUTION_MAX` |
 
 ## Security
 
@@ -215,6 +221,18 @@ The badge at the top reads **Live on YouTube**. Check the preview in YouTube Stu
   loopback; `/internal/*` stays blocked at Caddy.
 - The YouTube key is visible in the relay container's process list (FFmpeg argv). Treat
   host shell access to that container as access to the keys.
+- **SRT AES encryption and per-room credentials.** Encoders connect to MediaMTX as SRT Callers
+  on `:8890/udp` with native AES-128 or AES-256 encryption. VoxBento generates cryptographically
+  secure 256-bit random passphrases (`secrets.token_urlsafe(16)`), stored Fernet-encrypted
+  (`program_srt_passphrase_enc` and `program_backup_key_enc`), write-only via API, never logged,
+  and never exposed in plaintext. Passphrases are pushed to MediaMTX dynamically via local
+  Control API (`publishPass` directive) without configuring a static global passphrase.
+- **Dual-feed credential isolation.** Primary and backup SRT feeds have separate, independently
+  rotatable credentials. Revoking or updating one does not compromise the other.
+- **Gateway boundary protection.** Non-conforming video/audio codecs (requiring H.264 + AAC)
+  are kicked immediately (`rejected_codec`); streams exceeding 12,000 kbps for 5 consecutive
+  cycles are kicked (`rejected_limits`); and total concurrent room ingest is strictly bounded
+  by `PROGRAM_CONTRIBUTION_MAX=4` (HTTP 429).
 
 ## Server setup (operator)
 
@@ -290,6 +308,11 @@ SRT provides superior transmission resilience over unstable public networks comp
    * **Encoder Role:** Encoders connect as **SRT Callers**.
    * **Zero Global Passphrase:** MediaMTX is deliberately configured without a global passphrase. Passphrases are generated per-room and registered dynamically via the MediaMTX Control API (`/v3/config/paths/add` and `patch`) with the `publishPass` directive.
    * **Restart Recovery:** If MediaMTX restarts, the portal reconciler automatically detects active SRT rooms, decrypts `program_srt_passphrase_enc`, and repopulates the per-path configuration via the Control API.
+
+4. **Rolling Deployments and Rollback Procedure:**
+   * **Application Rolling Update (Stream Preservation):** Updating the `portal` container preserves live SRT and RTMPS streams. MediaMTX retains UDP/TCP sockets and stream state across portal restarts without dropping live audience or relay connections.
+   * **Deliberate Media Plane Restart:** Upgrading `mediamtx` terminates UDP sockets. Encoders configured with auto-reconnect restore feeds within seconds. The operator dashboard shows `disconnected` and returns to `receiving`.
+   * **Rollback:** In case of failure, revert compose overlays and run `docker compose up -d --remove-orphans`. Database schema can be rolled back via `uv run alembic downgrade -1`.
 
 ### Websites behind Cloudflare
 

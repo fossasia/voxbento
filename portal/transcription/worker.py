@@ -56,6 +56,7 @@ class TranscriptionWorkerSession:
         config: ProviderConfig,
         transcription_language: str | None = None,
         room_id: int | None = None,
+        stream_path: str | None = None,
     ):
         self.session_id = str(uuid.uuid4())
         self.event_slug = event_slug
@@ -67,6 +68,7 @@ class TranscriptionWorkerSession:
         self.config = config
         self.transcription_language = transcription_language
         self.room_id = room_id
+        self.stream_path = stream_path
 
         self.state = State.STARTING
         self.stop_event = asyncio.Event()
@@ -78,7 +80,7 @@ class TranscriptionWorkerSession:
 
         from portal.booth_identity import make_mediamtx_path
 
-        channel_path = make_mediamtx_path(self.event_slug, self.room_id, self.language_code)
+        channel_path = self.stream_path or make_mediamtx_path(self.event_slug, self.room_id, self.language_code)
         self.rtsp_url = f"{settings.mediamtx_rtsp_base}/{channel_path}"
         self.provider = PROVIDERS.get(self.provider_name, PROVIDERS["local"])
         self.sample_rate = str(self.provider.sample_rate)
@@ -221,6 +223,7 @@ async def start_transcription_worker(
     room_id: int | None = None,
     *,
     restart_on_key_change: bool = False,
+    stream_path: str | None = None,
 ) -> bool:
     """Return whether a new worker was started, optionally replacing changed credentials."""
     while True:
@@ -249,6 +252,7 @@ async def start_transcription_worker(
                     config,
                     transcription_language,
                     room_id,
+                    stream_path=stream_path,
                 )
                 active_workers[booth_id] = new_session
                 new_session.start()
@@ -264,7 +268,10 @@ async def start_transcription_worker(
                 # Session is tearing down in the background. We must strictly serialize.
                 # Drop lock, actively await the old session's death, then loop around and re-check registry.
                 pass
-            elif restart_on_key_change and existing_session.config.get_key() != config.get_key():
+            elif (
+                (restart_on_key_change and existing_session.config.get_key() != config.get_key())
+                or (getattr(existing_session, "stream_path", None) != stream_path)
+            ):
                 existing_session.stop()
             else:
                 logger.info(f"Transcription worker for {booth_id} is already running.")

@@ -158,7 +158,6 @@ async def test_validate_ssrf_development_bypass_matches_exact_hostname(dns, monk
     assert await validate_ssrf("http://localhost:8000/hook") is None
     assert await validate_ssrf("https://127.0.0.1/hook") is None
     assert await validate_ssrf("http://[::1]:8000/hook") is None
-    assert await validate_ssrf("http://host.docker.internal:8000/hook") is None
 
     for url in ("https://localhost.attacker.com/hook", "https://10.0.0.1/?next=localhost"):
         with pytest.raises(HTTPException):

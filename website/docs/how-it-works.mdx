@@ -530,6 +530,20 @@ RTMPS on TCP 1936. Production uses `rtmps.voxbento.com`; Caddy manages its certi
 while MediaMTX terminates the encoder connection. The cloud firewall must allow
 inbound TCP 1936 as well. See `docs/program-relay.md`.
 
+### SRT contribution ingest
+
+For venues broadcasting over public or unpredictable internet connections, VoxBento supports authenticated SRT (Secure Reliable Transport) contribution ingest on UDP 8890. MediaMTX acts as an **SRT Listener** on `:8890/udp`, while hardware or software encoders connect as **SRT Callers**.
+
+MediaMTX runs without a static global passphrase. Passphrases are generated per room with cryptographically secure random tokens (`secrets.token_urlsafe(16)`), stored Fernet-encrypted at rest (`rooms.program_srt_passphrase_enc`), and dynamically configured onto MediaMTX paths via its Control API (`publishPass` directive). If MediaMTX restarts, the portal reconciler automatically detects unconfigured SRT paths and restores per-path credentials from encrypted database state. The gateway enforces H.264 video and AAC audio requirements (`rejected_codec`), a 12 Mbps inbound bitrate threshold (`rejected_limits`), and a global concurrency cap of `PROGRAM_CONTRIBUTION_MAX=4` concurrent rooms (HTTP 429).
+
+### Redundant contribution and deterministic backup takeover
+
+High-profile conference stages can stream dual redundant contribution feeds:
+- **Primary feed:** `{event_slug}/{room_id}/floor`
+- **Backup feed:** `{event_slug}/{room_id}/floor_backup`
+
+Both feeds stream concurrently with independent Fernet-encrypted credentials. Downstream consumers (`program-relay` for YouTube egress and the speech-to-text floor transcription worker) observe a strict **single-consumer guarantee**, consuming exclusively the active feed (`room.program_active_feed`). If the primary feed stalls (zero byte progress for $\ge 5.0\text{ s}$) or drops completely, the reconciler automatically executes a deterministic takeover to `floor_backup` in under 7 seconds without stream flapping. Anti-flapping logic preserves the backup feed if the primary recovers, allowing the operator to manually promote the primary back to active when physical link stability is confirmed.
+
 ## Production deployment
 
 Defaults keep debug disabled (`DEBUG=false`), so startup checks reject known-weak
