@@ -174,6 +174,8 @@ with `?error=invalid_role&role=…` and the page explains why.
 | POST | `/admin/emails/{key}/draft` | — | Admin + same-origin; validates allowed placeholders and saves a draft |
 | POST | `/admin/emails/{key}/publish` | — | Admin + same-origin; publishes the draft and records a revision |
 | POST | `/admin/emails/{key}/test` | — | Admin + same-origin; queues a safe example message to the signed-in Admin |
+| GET | `/admin/translation-models/` | `admin/translation_models.html` | Admin-only (#1191); offered built-in models (`LOCAL_TRANSLATION_MODELS`) then the other registry models, with size, languages, licence and download status (`portal/routers/translation_models.py`) |
+| POST | `/admin/translation-models/download` | — | Admin + CSRF; form `model` must be offered (else `404`); starts the download in the background and redirects `303` to the page |
 | GET | `/admin/live-demo/` | `admin/live_demo.html` | Admin-only settings for the home-page live demo: on/off, voice, speech model, limits, site glossary; shows visitors using it now and whether models are loaded |
 | POST | `/admin/live-demo/` | — | Admin + same-origin; validates ranges and every glossary line, saves the `live_demo_settings` row and replaces the cached settings; 400 re-renders with the error |
 | POST | `/admin/live-demo/warm-up` | — | Admin + same-origin; loads (first time: downloads) the demo's models in a background task |
