@@ -73,6 +73,7 @@
 <div class="alert alert-warning" role="status">{{ kept_live_languages | join(', ') }} {{ 'booth is' if kept_live_languages|length == 1 else 'booths are' }} live right now, so {{ 'it was' if kept_live_languages|length == 1 else 'they were' }} kept. Change the languages again after the session to remove {{ 'it' if kept_live_languages|length == 1 else 'them' }}.</div>
 {% endif %}
 
+<div class="room-overview-cols">
 <div class="room-card">
   <div class="room-card-head">
     <div>
@@ -126,6 +127,7 @@
   </div>
 </div>
 
+<div class="room-overview-side">
 {% if event.listener_join_code and room_overlay_channels %}
 <details class="room-card">
   <summary>All caption overlay URLs (OBS / vMix)</summary>
@@ -139,6 +141,14 @@
   {% endfor %}
 </details>
 {% endif %}
+
+<div class="room-card room-card--row">
+  <div>
+    <h2>Meeting reports</h2>
+    <p class="room-card-sub">Meeting notes written by AI from this room's transcripts, grouped by the topics that came up.</p>
+  </div>
+  <a href="{{ management_prefix }}/events/{{ event.id }}/rooms/{{ room.id }}/analysis/" class="btn btn-outline">View reports</a>
+</div>
 
 {% if is_event_owner %}
 <div class="room-card room-card--row">
@@ -158,6 +168,8 @@
   <a href="{{ management_prefix }}/events/{{ event.id }}/team/" class="btn btn-outline">Open Team</a>
 </div>
 {% endif %}
+</div>
+</div>
 </section>
 
 {% if is_event_owner %}
