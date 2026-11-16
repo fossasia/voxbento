@@ -223,13 +223,13 @@ async def start_transcription_worker(
     restart_on_key_change: bool = False,
 ) -> bool:
     """Return whether a new worker was started, optionally replacing changed credentials."""
+    if settings.max_transcription_workers < 0:
+        raise ValueError("max_transcription_workers must be a non-negative integer")
     while True:
         async with active_workers_lock:
             existing_session = active_workers.get(booth_id)
             if not existing_session:
                 limit = settings.max_transcription_workers
-                if limit < 0:
-                    raise ValueError("max_transcription_workers must be a non-negative integer")
                 if len(active_workers) >= limit:
                     raise WorkerCapacityError(
                         f"System at maximum capacity ({limit} concurrent transcription booths)."
