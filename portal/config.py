@@ -182,7 +182,9 @@ class Settings(BaseSettings):
     nvidia_function_id: str = ""
     # Maximum concurrent transcription booth workers. Overridable via the
     # MAX_TRANSCRIPTION_WORKERS environment variable (or .env).
-    max_transcription_workers: int = 10
+    # Must be a non-negative integer: a negative value would make
+    # start_transcription_worker reject every new booth with a 429.
+    max_transcription_workers: int = Field(default=10, ge=0)
 
     # Self-hosted translation: an OpenAI-compatible server (Ollama, llama.cpp, vLLM) run by
     # the operator. Only the server sets this URL, so event owners can't aim requests at
@@ -248,6 +250,14 @@ class Settings(BaseSettings):
             raise ValueError("self_hosted_llm_base_url must not include credentials, a query string or a fragment")
         if parsed.path.endswith("/chat/completions"):
             raise ValueError("self_hosted_llm_base_url is the base URL; leave out /chat/completions")
+        return value
+
+    @field_validator("max_transcription_workers")
+    @classmethod
+    def validate_max_transcription_workers(cls, value: int) -> int:
+        """Reject negative worker limits; they would 429 every booth start."""
+        if value < 0:
+            raise ValueError("MAX_TRANSCRIPTION_WORKERS must be a non-negative integer")
         return value
 
     @field_validator("self_hosted_llm_models")

@@ -225,6 +225,8 @@ async def start_transcription_worker(
         async with active_workers_lock:
             existing_session = active_workers.get(booth_id)
             if not existing_session:
+                if settings.max_transcription_workers < 0:
+                    raise ValueError("max_transcription_workers must be a non-negative integer")
                 if len(active_workers) >= settings.max_transcription_workers:
                     raise WorkerCapacityError(
                         f"System at maximum capacity ({settings.max_transcription_workers} concurrent transcription booths)."

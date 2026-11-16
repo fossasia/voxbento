@@ -191,11 +191,16 @@ async def seed_data():
 
 
 @pytest.mark.anyio
-async def test_high_concurrency_isolation_and_capacity_limits():
+async def test_high_concurrency_isolation_and_capacity_limits(monkeypatch):
     """
     Spawns 16 concurrent POST requests to start transcription booths across 3 events.
+
+    Uses a NON-default capacity limit (7, not the default 10) and asserts the
+    worker enforces exactly that limit, proving MAX_TRANSCRIPTION_WORKERS is
+    honoured at runtime rather than only at its default value.
     """
-    limit = settings.max_transcription_workers
+    limit = 7
+    monkeypatch.setattr(settings, "max_transcription_workers", limit)
     booths = await seed_data()
 
     # Ensure fresh state
@@ -223,16 +228,19 @@ async def test_high_concurrency_isolation_and_capacity_limits():
     # Analyze Responses
     status_codes = [r.status_code for r in responses]
 
-    # 16 total booths were fired (6 OpenAI, 6 NVIDIA, 4 Local).
-    # settings.max_transcription_workers (10 by default), so exactly 16 - limit requests must hit 429 Too Many Requests.
-    assert status_codes.count(429) == 16 - limit, f"Exactly {16 - limit} booths should be rate-limited."
-    assert status_codes.count(200) == limit, f"Exactly {limit} booths should succeed."
+    # 16 total booths were fired (6 OpenAI, 6 NVIDIA, 4 Local), but only 16
+    # requests are launched, so at most min(limit, 16) of them can succeed:
+    # exactly that many must return 200 and the rest must hit 429.
+    expected_success = min(limit, 16)
+    expected_rejected = 16 - expected_success
+    assert status_codes.count(429) == expected_rejected, f"Exactly {expected_rejected} booths should be rate-limited."
+    assert status_codes.count(200) == expected_success, f"Exactly {expected_success} booths should succeed."
 
     # Give the background tasks a tiny fraction of a second to spin up and populate the provider logs
     await asyncio.sleep(0.1)
 
-    # 1. Verify Global Locking limits worked
-    assert len(active_workers) == limit
+    # 1. Verify Global Locking limits worked (the non-default limit of 7)
+    assert len(active_workers) == expected_success
 
     # 2. Verify API Key Cross-Contamination did not occur
     openai_provider = mock_providers["openai"]

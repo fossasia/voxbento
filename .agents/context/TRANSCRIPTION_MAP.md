@@ -125,7 +125,7 @@ External provider use requires `event.transcription_api_enabled = True`.
 
 1. Acquires `active_workers_lock`.
 2. Returns immediately if worker already running for this `booth_id`.
-3. Returns immediately if `len(active_workers) >= MAX_TOTAL_WORKERS` (10).
+3. Raises a capacity error if `len(active_workers) >= settings.max_transcription_workers` (10 by default; set via the `MAX_TRANSCRIPTION_WORKERS` environment variable).
 4. Creates asyncio Task running `transcription_worker(...)`.
 5. Stores in `active_workers[booth_id]` = `{task, provider, stderr_task}`.
 
