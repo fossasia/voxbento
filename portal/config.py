@@ -230,6 +230,8 @@ class Settings(BaseSettings):
     # (uses all physical cores).
     supertonic_intra_op_threads: int = 0
 
+    meeting_analysis_ollama_base_url: str = "http://localhost:11434"
+    meeting_analysis_ollama_num_ctx: int = 32768
     # Home-page live demo (/ws/demo/live): visitors speak and get captions, translations and a
     # voice from the server's own models. Public, so its load is capped per server and per IP.
     # Admins switch it on at /admin/live-demo/ (off until then); False forbids it on this server.
