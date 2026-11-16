@@ -7,6 +7,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import joinedload
 
 from portal.booth_identity import make_booth_id
+from portal.booth_publish import end_booth_publish
 from portal.models import DBBooth
 from portal.websockets.manager import REASON_MEMBERSHIP_REMOVED, manager
 
@@ -84,5 +85,8 @@ async def revoke_booths_for_deleted_entity(
     for booth_id in affected_booth_ids:
         try:
             await manager.close_booth_sessions(booth_id)
+            # The booth is gone, so end whatever is still publishing to its path: closing the sockets
+            # alone leaves the audio playing until each interpreter's browser reacts (#1285).
+            await end_booth_publish(booth_id)
         except Exception:
             logger.exception("Failed to close booth %s sessions on %s deletion", booth_id, level)
