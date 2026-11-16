@@ -5,7 +5,9 @@ but left the audio they were sending running in MediaMTX until their own browser
 tore it down. A frozen or sleeping tab never does.
 
 These tests mock MediaMTX's control API and drive the real booth registry and
-session handlers.
+session handlers. Every authorised offer is recorded against its owner, so even
+a pending offer and a publisher whose participant record is already gone are
+ended, and a backup or a replacement publisher is left alone.
 """
 
 from __future__ import annotations
@@ -19,7 +21,14 @@ import pytest
 from sqlalchemy import select
 
 import portal.program_ingest as ingest
-from portal.booth_publish import authorize_booth_publish, clear_tickets, end_booth_publish, issue_ticket
+from portal.booth_publish import (
+    authorize_booth_publish,
+    clear_tickets,
+    end_booth_publish,
+    end_publishers_for,
+    issue_ticket,
+    publisher_for,
+)
 from portal.config import settings
 from portal.database import configure, dispose, get_session, init_db
 from portal.globals import booths
@@ -55,7 +64,7 @@ def _booth(tag: str) -> tuple[str, str, str]:
     return f"{tag}-1-en", f"{tag}/1/en", f"{tag}-1-en-audio"
 
 
-async def _join(booth_id: str, channel: str, name: str, *, user_id: int | None = None, connection: str = "sock"):
+async def _join(booth_id, channel, name, *, user_id=None, invite_public_id=None, connection="sock"):
     participant, _ = await booths.join_participant(
         booth_id=booth_id,
         display_name=name,
@@ -64,12 +73,13 @@ async def _join(booth_id: str, channel: str, name: str, *, user_id: int | None =
         channel_id=channel,
         joined_by=f"user:{user_id}" if user_id else name,
         user_id=user_id,
+        invite_public_id=invite_public_id,
         connection_id=f"{name}-{connection}",
     )
     return participant
 
 
-def _session(booth_id: str, channel: str, participant, name: str, connection: str = "sock") -> Session:
+def _session(booth_id, channel, participant, name, connection="sock") -> Session:
     return Session(
         booth_id=booth_id,
         participant_id=participant.participant_id,
@@ -79,38 +89,39 @@ def _session(booth_id: str, channel: str, participant, name: str, connection: st
     )
 
 
-async def _start_publishing(booth_id: str, path: str, channel: str, participant, session_id: str) -> None:
+async def _start_publishing(booth_id, path, channel, participant, session_id) -> None:
     """Go through the same authorisation MediaMTX asks the portal for on a WHIP offer."""
     await booths.set_broadcast_unlocked(booth_id, True, LANG, channel)
     secret = issue_ticket(booth_id, participant.participant_id, path)
     assert await authorize_booth_publish(path, secret, session_id)
 
 
-def _kicked(mediamtx) -> list[str]:
+def _kicked_ids(mediamtx) -> list[str]:
     return [call.args[1].id for call in mediamtx.kick.await_args_list]
 
 
-# -- the session a ticket produces is remembered as the booth's publisher ----------------------------
+def _kicked(mediamtx) -> list[tuple[str, str, str]]:
+    """Each kick as (path, source type, session id) — hashable, so order-independent sets work."""
+    return [(call.args[0], call.args[1].type, call.args[1].id) for call in mediamtx.kick.await_args_list]
+
+
+# -- the authorised session is recorded against its owner --------------------------------------------
 
 
 @pytest.mark.anyio
-async def test_the_portal_remembers_which_session_a_publish_ticket_started():
-    from portal.booth_publish import publisher_for
-
+async def test_the_portal_records_the_authorised_session_and_its_owner():
     booth_id, path, channel = _booth("remember")
-    ana = await _join(booth_id, channel, "Ana")
+    ana = await _join(booth_id, channel, "Ana", user_id=5, invite_public_id="inv-5")
     await _start_publishing(booth_id, path, channel, ana, ANA_SESSION)
 
-    publisher = publisher_for(path)
+    owner = publisher_for(path)
 
-    assert publisher is not None
-    assert (publisher.participant_id, publisher.session_id) == (ana.participant_id, ANA_SESSION)
+    assert owner is not None
+    assert (owner.participant_id, owner.user_id, owner.invite_public_id) == (ana.participant_id, 5, "inv-5")
 
 
 @pytest.mark.anyio
 async def test_authorize_publish_passes_the_mediamtx_session_id_through():
-    from portal.booth_publish import publisher_for
-
     booth_id, path, channel = _booth("passthrough")
     ana = await _join(booth_id, channel, "Ana")
     await booths.set_broadcast_unlocked(booth_id, True, LANG, channel)
@@ -120,7 +131,7 @@ async def test_authorize_publish_passes_the_mediamtx_session_id_through():
         MediaAuth(action="publish", path=path, protocol="webrtc", id=ANA_SESSION, token=secret, ip="203.0.113.9")
     )
 
-    assert publisher_for(path).session_id == ANA_SESSION
+    assert publisher_for(path).participant_id == ana.participant_id
 
 
 # -- access ending ends the audio --------------------------------------------------------------------
@@ -134,7 +145,7 @@ async def test_revoking_the_publisher_kicks_the_session_they_started(mediamtx):
 
     await release_participant(_session(booth_id, channel, ana, "Ana"), immediate=True)
 
-    mediamtx.kick.assert_awaited_once_with(path, MediaSource(type="webRTCSession", id=ANA_SESSION))
+    assert _kicked(mediamtx) == [(path, "webRTCSession", ANA_SESSION)]
 
 
 @pytest.mark.anyio
@@ -162,7 +173,21 @@ async def test_the_revoked_publishers_session_is_kicked_even_though_a_backup_tak
 
     state = await booths.get_booth(booth_id)
     assert state["active_interpreter_id"] == ben.participant_id
-    assert _kicked(mediamtx) == [ANA_SESSION]
+    assert _kicked_ids(mediamtx) == [ANA_SESSION]
+
+
+@pytest.mark.anyio
+async def test_an_offer_that_never_became_the_live_source_is_still_ended(mediamtx):
+    """MediaMTX gives a session its id before the publish hook; a pending offer is recorded and kicked."""
+    booth_id, path, channel = _booth("pending")
+    ana = await _join(booth_id, channel, "Ana")
+    await _start_publishing(booth_id, path, channel, ana, ANA_SESSION)
+    # media_path still returns None: the offer passed the hook but never became the path source.
+
+    await release_participant(_session(booth_id, channel, ana, "Ana"), immediate=True)
+
+    assert _kicked_ids(mediamtx) == [ANA_SESSION]
+    mediamtx.lookup.assert_not_awaited()
 
 
 @pytest.mark.anyio
@@ -175,28 +200,57 @@ async def test_a_publisher_whose_socket_had_already_dropped_is_kicked_when_their
 
     await manager.close_user_sessions(7, booth_id=booth_id)
 
-    assert _kicked(mediamtx) == [ANA_SESSION]
+    assert _kicked_ids(mediamtx) == [ANA_SESSION]
 
 
 @pytest.mark.anyio
 async def test_a_revoked_invite_whose_socket_had_already_dropped_is_kicked(mediamtx):
     booth_id, path, channel = _booth("invite")
-    participant, _ = await booths.join_participant(
-        booth_id=booth_id,
-        display_name="Guest",
-        role=INTERPRETER,
-        language=LANG,
-        channel_id=channel,
-        joined_by="invite",
-        invite_public_id="invite-9",
-        connection_id="Guest-sock",
-    )
+    participant = await _join(booth_id, channel, "Guest", invite_public_id="invite-9")
     await _start_publishing(booth_id, path, channel, participant, ANA_SESSION)
     await booths.disconnect_participant(booth_id, participant.participant_id, "Guest-sock")
 
     await manager.close_token_sessions("invite-9", booth_id=booth_id)
 
-    assert _kicked(mediamtx) == [ANA_SESSION]
+    assert _kicked_ids(mediamtx) == [ANA_SESSION]
+
+
+@pytest.mark.anyio
+async def test_a_publisher_removed_without_a_reconnect_grace_is_still_ended_by_identity(monkeypatch, mediamtx):
+    """A grace-0 drop removes the participant at once, so a later revoke must find them by identity (#1285)."""
+    monkeypatch.setattr(settings, "booth_reconnect_grace_seconds", 0.0)
+    booth_id, path, channel = _booth("nograceid")
+    ana = await _join(booth_id, channel, "Ana", user_id=8)
+    await _start_publishing(booth_id, path, channel, ana, ANA_SESSION)
+
+    # Ordinary disconnect with no grace: the participant is gone, but nothing is kicked yet (#1280).
+    await release_participant(_session(booth_id, channel, ana, "Ana"), immediate=False)
+    mediamtx.kick.assert_not_awaited()
+    assert (await booths.get_booth(booth_id))["participants"] == []
+
+    # The account is then deactivated: their recorded session is ended by user id.
+    await manager.close_user_sessions(8, booth_id=booth_id)
+    assert _kicked_ids(mediamtx) == [ANA_SESSION]
+
+
+@pytest.mark.anyio
+async def test_end_publishers_for_ends_a_users_sessions_across_every_booth(mediamtx):
+    """Account deletion is not scoped to one booth, so it ends the user's audio everywhere."""
+    sessions = {}
+    for index, tag in enumerate(("acctA", "acctB")):
+        booth_id, path, channel = _booth(tag)
+        ana = await _join(booth_id, channel, "Ana", user_id=9)
+        sid = f"9999999{index}-9999-4999-8999-999999999999"
+        await _start_publishing(booth_id, path, channel, ana, sid)
+        sessions[path] = sid
+
+    await end_publishers_for(user_id=9)
+
+    assert {path for path, _type, _sid in _kicked(mediamtx)} == set(sessions)
+    assert set(_kicked_ids(mediamtx)) == set(sessions.values())
+
+
+# -- the restart fallback, and its guard against kicking a replacement --------------------------------
 
 
 @pytest.mark.anyio
@@ -211,7 +265,7 @@ async def test_after_a_restart_the_revoked_active_interpreters_session_is_found_
 
     await release_participant(_session(booth_id, channel, ana, "Ana"), immediate=True)
 
-    assert _kicked(mediamtx) == [RESTART_SESSION]
+    assert _kicked_ids(mediamtx) == [RESTART_SESSION]
 
 
 @pytest.mark.anyio
@@ -224,6 +278,26 @@ async def test_after_a_restart_a_revoked_backup_still_touches_nothing(mediamtx):
     )
 
     await release_participant(_session(booth_id, channel, ben, "Ben"), immediate=True)
+
+    mediamtx.kick.assert_not_awaited()
+
+
+@pytest.mark.anyio
+async def test_the_fallback_does_not_kick_a_replacement_recorded_during_the_path_lookup(mediamtx):
+    """If a backup is authorised while media_path is awaited, the live source is theirs — leave it (#1285)."""
+    booth_id, path, channel = _booth("replace")
+    ana = await _join(booth_id, channel, "Ana")  # active, but publishing predates this portal (no record)
+    ben = await _join(booth_id, channel, "Ben")
+
+    async def record_ben_then_answer(_path):
+        # Stand in for a backup that authorises during the suspension of the media_path await.
+        await booths.set_active_interpreter(booth_id, ana.participant_id, ben.participant_id, LANG, channel)
+        await _start_publishing(booth_id, path, channel, ben, BEN_SESSION)
+        return MediaPath(name=path, available=True, source=MediaSource(type="webRTCSession", id=BEN_SESSION))
+
+    mediamtx.lookup.side_effect = record_ben_then_answer
+
+    await end_booth_publish(booth_id, participant_id=ana.participant_id, was_active=True)
 
     mediamtx.kick.assert_not_awaited()
 
@@ -248,7 +322,7 @@ async def test_an_ordinary_disconnect_leaves_the_audio_up(monkeypatch, mediamtx,
 # -- Mission Control --------------------------------------------------------------------------------
 
 
-def _coordinator(booth_id: str, channel: str) -> tuple[SimpleNamespace, Session]:
+def _coordinator(booth_id, channel) -> tuple[SimpleNamespace, Session]:
     return (
         SimpleNamespace(send_text=AsyncMock()),
         Session(
@@ -266,7 +340,7 @@ async def test_locking_the_booth_ends_the_publishers_session(mediamtx):
 
     await _handle_set_broadcast_unlocked(ws, coordinator, {"unlocked": False})
 
-    assert _kicked(mediamtx) == [ANA_SESSION]
+    assert _kicked_ids(mediamtx) == [ANA_SESSION]
 
 
 @pytest.mark.anyio
@@ -307,35 +381,40 @@ async def stored_booths():
 @pytest.mark.parametrize("level", ["event", "room"])
 async def test_deleting_an_event_or_room_ends_every_interpreter_booths_session(stored_booths, mediamtx, level):
     ids = {"event": stored_booths.event, "room": stored_booths.room}
-    published = []
+    expected = set()
     for index, code in enumerate(("en", "fr")):
-        booth_id, path = f"{stored_booths.slug}-{stored_booths.room}-{code}", f"{stored_booths.slug}/{stored_booths.room}/{code}"
+        booth_id = f"{stored_booths.slug}-{stored_booths.room}-{code}"
+        path = f"{stored_booths.slug}/{stored_booths.room}/{code}"
         channel = f"{booth_id}-audio"
         participant = await _join(booth_id, channel, f"Pat{code}")
-        await _start_publishing(booth_id, path, channel, participant, f"4444444{index}-4444-4444-8444-444444444444")
-        published.append(path)
+        sid = f"4444444{index}-4444-4444-8444-444444444444"
+        await _start_publishing(booth_id, path, channel, participant, sid)
+        expected.add((path, "webRTCSession", sid))
 
     async with get_session() as session:
         await revoke_booths_for_deleted_entity(session, level=level, target_id=ids[level])
 
-    assert sorted(call.args[0] for call in mediamtx.kick.await_args_list) == sorted(published)
+    assert set(_kicked(mediamtx)) == expected
 
 
 @pytest.mark.anyio
 async def test_deleting_a_booth_ends_only_that_booths_session(stored_booths, mediamtx):
-    published = {}
+    sessions = {}
     for index, code in enumerate(("en", "fr")):
-        booth_id, path = f"{stored_booths.slug}-{stored_booths.room}-{code}", f"{stored_booths.slug}/{stored_booths.room}/{code}"
+        booth_id = f"{stored_booths.slug}-{stored_booths.room}-{code}"
+        path = f"{stored_booths.slug}/{stored_booths.room}/{code}"
         channel = f"{booth_id}-audio"
         participant = await _join(booth_id, channel, f"Pat{code}")
-        await _start_publishing(booth_id, path, channel, participant, f"5555555{index}-5555-4555-8555-555555555555")
-        published[code] = path
+        sid = f"5555555{index}-5555-4555-8555-555555555555"
+        await _start_publishing(booth_id, path, channel, participant, sid)
+        sessions[code] = (path, sid)
 
     async with get_session() as session:
         french = (await session.scalars(select(DBBooth).where(DBBooth.language_code == "fr"))).one()
         await revoke_booths_for_deleted_entity(session, level="booth", target_id=french.id)
 
-    assert [call.args[0] for call in mediamtx.kick.await_args_list] == [published["fr"]]
+    fr_path, fr_sid = sessions["fr"]
+    assert _kicked(mediamtx) == [(fr_path, "webRTCSession", fr_sid)]
 
 
 # -- the floor is never touched ----------------------------------------------------------------------
