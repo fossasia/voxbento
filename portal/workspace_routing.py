@@ -34,6 +34,7 @@ _WORKSPACE_ROUTE_PATTERNS = (
     re.compile(r"/workspace/events/\d+/youtube(?:/(?:connect|broadcasts))?/?"),
     re.compile(r"/workspace/events/\d+/rooms/\d+/youtube/broadcast/?"),
     re.compile(r"/workspace/events/\d+/rooms/\d+/members(?:/\d+/(?:invite|delete))?/?"),
+    re.compile(r"/workspace/events/\d+/rooms/\d+/analysis(?:/\d+(?:\.md)?)?/?"),
     re.compile(r"/workspace/events/\d+/rooms/\d+/booths/?"),
     re.compile(
         r"/workspace/events/\d+/rooms/\d+/booths/\d+"
@@ -48,6 +49,7 @@ _WORKSPACE_ROUTE_PATTERNS = (
     re.compile(r"/workspace/models/(?:trigger_download|download_progress)"),
     re.compile(r"/workspace/models/supertonic/(?:trigger_download|download_progress)"),
     re.compile(r"/api/workspace/events/\d+/rooms/\d+/transcripts/[^/]+"),
+    re.compile(r"/api/workspace/events/\d+/rooms/\d+/analysis/\d+"),
     re.compile(r"/api/workspace/providers/translation/models"),
 )
 
