@@ -26,7 +26,7 @@ def upgrade() -> None:
     cols = {col["name"] for col in inspector.get_columns("events")}
     with op.batch_alter_table("events") as batch_op:
         if "meeting_analysis_enabled" not in cols:
-            batch_op.add_column(sa.Column("meeting_analysis_enabled", sa.Boolean(), nullable=False, server_default="0"))
+            batch_op.add_column(sa.Column("meeting_analysis_enabled", sa.Boolean(), nullable=False, server_default=sa.false()))
         if "meeting_analysis_provider" not in cols:
             batch_op.add_column(
                 sa.Column("meeting_analysis_provider", sa.String(length=50), nullable=False, server_default="local")

@@ -717,6 +717,26 @@ async def test_clearing_the_model_brings_back_the_recommended_one(world):
 
 
 @pytest.mark.anyio
+async def test_a_model_name_cannot_change_the_provider_request_path(world):
+    url = f"/admin/events/{world['event']}/api-settings"
+    async with _client() as c:
+        refused = await c.post(
+            url,
+            data={"meeting_analysis_provider": "gemini", "meeting_analysis_model": "a/../../files"},
+            cookies=world["admin"],
+        )
+        accepted = await c.post(
+            url,
+            data={"meeting_analysis_provider": "local", "meeting_analysis_model": "gemma3:4b"},
+            cookies=world["admin"],
+        )
+    assert refused.status_code == 400
+    assert accepted.status_code < 400
+    async with get_session() as s:
+        assert (await s.get(Event, world["event"])).meeting_analysis_model == "gemma3:4b"
+
+
+@pytest.mark.anyio
 async def test_room_coordinators_can_find_the_reports_from_the_room_page(world):
     async with _client() as c:
         page = await c.get(f"/admin/events/{world['event']}/rooms/{world['room']}/", cookies=world["coordinator"])

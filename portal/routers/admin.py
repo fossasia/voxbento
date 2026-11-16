@@ -218,6 +218,9 @@ templates.env.globals["roles"] = roles_module
 templates.env.globals["brand_name"] = brand_name
 templates.env.filters["role_label"] = role_label
 
+# Model names go into provider request paths (Gemini), so only allow characters model IDs use.
+_ANALYSIS_MODEL_RE = re.compile(r"(?!.*\.\.)[A-Za-z0-9][A-Za-z0-9._:/@+-]*")
+
 
 def _apply_api_key_updates(
     event: Event,
@@ -1418,6 +1421,8 @@ async def admin_event_api_settings_post(
         raise HTTPException(status_code=400, detail="Unknown meeting report service.")
     if meeting_analysis_model is not None and len(meeting_analysis_model) > ANALYSIS_MAX_MODEL_LENGTH:
         raise HTTPException(status_code=400, detail="The meeting report model name is too long.")
+    if meeting_analysis_model and not _ANALYSIS_MODEL_RE.fullmatch(meeting_analysis_model):
+        raise HTTPException(status_code=400, detail="The meeting report model name has characters a model name can't have.")
     async with get_session() as session:
         event = await get_event_by_id(session, event_id)
         if event is None:
