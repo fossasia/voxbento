@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import logging
 
 from sqlalchemy import select
@@ -82,12 +83,18 @@ async def revoke_booths_for_deleted_entity(
                 bid = make_booth_id(b.event.slug, b.room_id, b.language_code)
                 affected_booth_ids.append(bid)
 
+    # Close every booth's sockets first, so a slow MediaMTX ending one booth's WHIP session cannot
+    # delay revoking the next booth's sockets. Then end the publishers concurrently (#1285).
     for booth_id in affected_booth_ids:
         try:
             await manager.close_booth_sessions(booth_id)
         except Exception:
             logger.exception("Failed to close booth %s sessions on %s deletion", booth_id, level)
-        # The booth is gone, so end whatever is still publishing to its path: closing the sockets
-        # alone leaves the audio playing until each interpreter's browser reacts (#1285). This runs
-        # even if close_booth_sessions raised above, and end_booth_publish never raises itself.
-        await end_booth_publish(booth_id)
+
+    # The booths are gone, so end whatever is still publishing to each path: closing the sockets
+    # alone leaves the audio playing until each interpreter's browser reacts. end_booth_publish
+    # swallows a down or slow MediaMTX, and gather keeps one failure from stopping the rest.
+    await asyncio.gather(
+        *(end_booth_publish(booth_id) for booth_id in affected_booth_ids),
+        return_exceptions=True,
+    )
