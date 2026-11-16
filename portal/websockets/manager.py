@@ -18,7 +18,7 @@ from sqlalchemy.exc import SQLAlchemyError
 import portal.webhooks.worker as _wh_worker
 from portal.auth import WSAuthError, can_perform_role
 from portal.booth_identity import booth_id_to_mediamtx_path, parse_booth_id
-from portal.booth_publish import TICKET_TTL_SECS, issue_ticket
+from portal.booth_publish import TICKET_TTL_SECS, end_booth_publish, issue_ticket
 from portal.config import settings
 from portal.globals import booths
 from portal.roles import ALL_ROLES, INTERPRETER, can_set_active
@@ -844,13 +844,18 @@ async def _handle_leave(session: Session) -> None:
     await broadcast_booth_state(session.booth_id, state)
 
 
-async def _remove_retained_participants(removal: Awaitable[list[tuple[str, dict]]]) -> None:
+async def _remove_retained_participants(
+    removal: Awaitable[list[tuple[str, dict, list[tuple[str, bool]]]]],
+) -> None:
     """Remove participants whose access was revoked while their socket was down, and tell their booths.
 
     Without this they would keep their place, and an active slot with live audio, until the
-    reconnect or restart grace ran out, although they can no longer reconnect.
+    reconnect or restart grace ran out, although they can no longer reconnect. Their WHIP session
+    is ended too, so a publisher removed here does not keep playing to listeners (#1285).
     """
-    for booth_id, state in await removal:
+    for booth_id, state, removed in await removal:
+        for participant_id, was_active in removed:
+            await end_booth_publish(booth_id, participant_id=participant_id, was_active=was_active)
         await broadcast_booth_state(booth_id, state)
 
 
@@ -880,9 +885,15 @@ async def release_participant(session: Session, *, immediate: bool) -> None:
     session.participant_id = None
     grace = settings.booth_reconnect_grace_seconds
     if immediate or grace <= 0:
+        # Read before removal: taking the active interpreter out promotes the next one.
+        booth = booths.get_booth_sync(session.booth_id)
+        was_active = booth is not None and booth.active_interpreter_id == participant_id
         state = await booths.leave_participant(
             session.booth_id, participant_id, session.language, session.channel_id, connection_id=session.connection_id
         )
+        if immediate:
+            # Access ended, not an ordinary drop: end the audio they are still sending (#1285).
+            await end_booth_publish(session.booth_id, participant_id=participant_id, was_active=was_active)
     else:
         state = await booths.disconnect_participant(session.booth_id, participant_id, session.connection_id)
         if state is None:
@@ -1006,6 +1017,9 @@ async def _handle_set_broadcast_unlocked(ws: WebSocket, session: Session, data: 
                 await stop_transcription_worker(session.booth_id)
             except Exception as e:
                 logging.getLogger(__name__).warning(f"Failed to stop transcription on lock: {e}")
+            # Stop is meant to take the booth off air, so end the WHIP session too: otherwise the
+            # audio keeps playing to direct WHEP readers until the interpreter's browser reacts (#1285).
+            await end_booth_publish(session.booth_id)
         await broadcast_booth_state(session.booth_id, state)
     except Exception as exc:
         await ws.send_text(json.dumps({"type": "booth:error", "message": str(exc)}))
