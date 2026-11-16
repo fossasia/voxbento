@@ -19,11 +19,9 @@
 
 ---
 
-### TD-03: In-memory booth state is not persistent
-**File:** `portal/booth_state.py` — `BoothRegistry`
-**Problem:** All booth state (active interpreter, participants, chat) lives in process memory. A portal restart loses all active sessions.
-**Impact:** High during live events — active interpreters are silently dropped.
-**Fix:** Either use Redis for booth state, or persist essential state to DB and recover on startup.
+### TD-03: [RESOLVED] In-memory booth state is not persistent
+**File:** `portal/booth_state.py` — `BoothRegistry`, `portal/booth_recovery.py`
+**Resolution:** Each booth's Go Live switch and active interpreter are saved to `booth_live_state` (migration 042) and restored at startup. The active interpreter comes back as a placeholder only the same session can reclaim within `BOOTH_RESTART_GRACE_SECONDS`. Participants, chat and transcription workers are still in memory only: interpreters rejoin on reconnect, chat history starts empty, and floor/booth transcription must be restarted by its owner.
 
 ---
 
@@ -41,11 +39,9 @@
 
 ---
 
-### TD-06: Transcription worker MAX_TOTAL_WORKERS is hardcoded — RESOLVED (#555)
-**File:** `portal/transcription/worker.py` — was `MAX_TOTAL_WORKERS = 10`
-**Problem:** Not configurable via settings. Large events with many language channels may hit the limit.
-**Impact:** Low for typical deployments (≤10 booths).
-**Fix (done):** Added `max_transcription_workers: int` to `Settings` in `portal/config.py`, overridable via the `MAX_TRANSCRIPTION_WORKERS` environment variable.
+### TD-06: [RESOLVED] Transcription worker MAX_TOTAL_WORKERS is hardcoded
+**File:** `portal/transcription/worker.py` — `MAX_TOTAL_WORKERS = 10`
+**Resolution:** Made operator-configurable via `Settings.max_transcription_workers` in `portal/config.py` and the `MAX_TRANSCRIPTION_WORKERS` environment variable (default: 10, range: 1–100).
 
 ---
 
@@ -79,11 +75,9 @@
 
 ---
 
-### TD-11: No WebSocket reconnection handling on the server
-**File:** `portal/websockets/manager.py` — `ws_booth` endpoint
-**Problem:** If a participant reconnects after a network drop, they get a new `participant_id` and appear as a new participant. The old participant remains until server-side cleanup.
-**Impact:** Medium — room_coordinator sees ghost participants; handoff state may be incorrect.
-**Fix:** Allow reconnect with an existing `participant_id` (with token re-validation); clean up stale participant records after a timeout.
+### TD-11: [RESOLVED] No WebSocket reconnection handling on the server
+**File:** `portal/booth_state.py`, `portal/websockets/manager.py`
+**Resolution:** A dropped booth socket marks the participant `connected: false` and keeps their place, including the active slot, for `BOOTH_RECONNECT_GRACE_SECONDS`. A reconnect from the same session (`booth_session_key`) with the same `participant_id` reclaims it; any other session gets a fresh ID. A socket that still holds the participant is closed with 4009, which the client treats as final. Revoked access removes the participant at once.
 
 ---
 

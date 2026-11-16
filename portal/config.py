@@ -41,6 +41,12 @@ class Settings(BaseSettings):
     # paths with alwaysAvailable so WHEP readers survive publisher handoffs.
     mediamtx_api_base: str = "http://localhost:9997"
     mediamtx_rtsp_base: str = "rtsp://mediamtx:8554"
+    max_transcription_workers: int = Field(
+        default=10,
+        ge=1,
+        le=100,
+        description="Maximum concurrent transcription workers allowed across all booths.",
+    )
     floor_bot_base: str = "http://floor-bot:8080"
     meeting_agent_max_restarts: int = 5  # Automatic agent restarts per incident before reporting degraded.
     meeting_agent_no_audio_secs: float = 45.0
@@ -60,6 +66,18 @@ class Settings(BaseSettings):
     program_relay_control_secret: str = ""
     program_relay_max: int = 4
     program_relay_allowed_hosts: str = "a.rtmps.youtube.com,b.rtmps.youtube.com"
+    # "Sign in with YouTube" (Google OAuth web client). Off unless both are set.
+    youtube_oauth_client_id: str = ""
+    youtube_oauth_client_secret: str = Field(default="", repr=False)
+    youtube_status_cache_secs: float = 60.0  # Two list calls per refresh per open linked room.
+
+    @property
+    def youtube_connect_enabled(self) -> bool:
+        return bool(self.youtube_oauth_client_id and self.youtube_oauth_client_secret)
+
+    @property
+    def youtube_redirect_uri(self) -> str:
+        return f"{self.public_base_url.rstrip('/')}/youtube/oauth/callback"
 
     @property
     def rtmps_ingest_enabled(self) -> bool:
@@ -96,6 +114,19 @@ class Settings(BaseSettings):
 
     # Database — SQLite for dev, PostgreSQL for prod
     database_url: str = "sqlite+aiosqlite:///./interpretation.db"
+
+    # Booth recovery (portal/booth_recovery.py). A participant whose booth socket
+    # drops keeps their place, including the active slot, for this long so a
+    # network blip does not take the live interpreter off air. 0 removes them at once.
+    booth_reconnect_grace_seconds: float = 20.0
+    # Save each booth's Go Live switch and active interpreter, and restore them
+    # when the portal restarts, so a deploy or crash mid-event keeps booths live.
+    booth_state_recovery_enabled: bool = True
+    # How long a restored active interpreter keeps the slot waiting to reconnect.
+    booth_restart_grace_seconds: float = 60.0
+    # Saved state is not restored when its last save is older than this. Live booths are saved on
+    # every change and at least every minute, so the age is the downtime plus up to a minute before it.
+    booth_state_max_age_seconds: float = 600.0
 
     @property
     def effective_jwt_secret(self) -> str:
@@ -165,6 +196,8 @@ class Settings(BaseSettings):
                 "PROGRAM_RELAY_ENABLED requires PROGRAM_RELAY_CONTROL_SECRET (at least 32 characters), "
                 "shared with the program-relay service. Generate one with: openssl rand -hex 32"
             )
+        if bool(self.youtube_oauth_client_id) != bool(self.youtube_oauth_client_secret):
+            raise RuntimeError("Set both YOUTUBE_OAUTH_CLIENT_ID and YOUTUBE_OAUTH_CLIENT_SECRET, or neither.")
         # Every outgoing email is encrypted at rest in the outbox, so sign-in links,
         # invitations and password resets cannot be sent without this key.
         encryption_keys = [
@@ -180,11 +213,6 @@ class Settings(BaseSettings):
 
     # Transcription Settings
     nvidia_function_id: str = ""
-    # Maximum concurrent transcription booth workers. Overridable via the
-    # MAX_TRANSCRIPTION_WORKERS environment variable (or .env).
-    # Must be a non-negative integer: a negative value would make
-    # start_transcription_worker reject every new booth with a 429.
-    max_transcription_workers: int = Field(default=10, ge=0)
 
     # Self-hosted translation: an OpenAI-compatible server (Ollama, llama.cpp, vLLM) run by
     # the operator. Only the server sets this URL, so event owners can't aim requests at
@@ -201,6 +229,19 @@ class Settings(BaseSettings):
     # ONNX Runtime intra-op threads for synthesis. 0 = let ONNX Runtime pick
     # (uses all physical cores).
     supertonic_intra_op_threads: int = 0
+
+    meeting_analysis_ollama_base_url: str = "http://localhost:11434"
+    meeting_analysis_ollama_num_ctx: int = 32768
+    # Home-page live demo (/ws/demo/live): visitors speak and get captions, translations and a
+    # voice from the server's own models. Public, so its load is capped per server and per IP.
+    # Admins switch it on at /admin/live-demo/ (off until then); False forbids it on this server.
+    live_demo_enabled: bool = True
+    live_demo_voice_enabled: bool = True
+    live_demo_whisper_model: str = "base"
+    live_demo_translation_model: str = "nllb-200-distilled-600M"
+    live_demo_max_sessions: int = Field(default=2, ge=1)
+    live_demo_max_session_seconds: int = Field(default=120, ge=10)
+    live_demo_sessions_per_ip_per_hour: int = Field(default=12, ge=1)
 
     # Email Settings
     smtp_host: str = ""
@@ -250,14 +291,6 @@ class Settings(BaseSettings):
             raise ValueError("self_hosted_llm_base_url must not include credentials, a query string or a fragment")
         if parsed.path.endswith("/chat/completions"):
             raise ValueError("self_hosted_llm_base_url is the base URL; leave out /chat/completions")
-        return value
-
-    @field_validator("max_transcription_workers")
-    @classmethod
-    def validate_max_transcription_workers(cls, value: int) -> int:
-        """Reject negative worker limits; they would 429 every booth start."""
-        if value < 0:
-            raise ValueError("MAX_TRANSCRIPTION_WORKERS must be a non-negative integer")
         return value
 
     @field_validator("self_hosted_llm_models")

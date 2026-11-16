@@ -80,10 +80,10 @@ Manual browser check:
 
 | Component | Limitation |
 |---|---|
-| Transcription workers | `settings.max_transcription_workers` — 10 by default, configurable via `MAX_TRANSCRIPTION_WORKERS` |
+| Transcription workers | `MAX_TRANSCRIPTION_WORKERS` (default 10, range 1–100) |
 | Booth state | Single-process; no horizontal scaling |
 | MediaMTX streams | One per language channel; limited by server resources |
 | Jitsi participants | Limited by JVB server capacity |
 | DB connections | SQLAlchemy async pool (default settings) |
 
-For events with >10 simultaneous transcribed booths: raise the limit with the `MAX_TRANSCRIPTION_WORKERS` environment variable (Settings in `portal/config.py`); do not edit `worker.py`.
+For events with >10 simultaneous transcribed booths: set `MAX_TRANSCRIPTION_WORKERS` in `.env` (or configure `settings.max_transcription_workers`).
