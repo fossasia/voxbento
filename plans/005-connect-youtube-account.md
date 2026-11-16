@@ -1,5 +1,55 @@
 # Plan 005: Let event owners "Sign in with YouTube" and pick a broadcast
 
+## In plain English
+
+Let the owner give VoxBento permission to see their YouTube channel, choose a
+broadcast and connect it to a room. When VoxBento forwards the event to YouTube,
+it can fill in the private YouTube destination without the organiser copying its
+key. This connects account settings; the event's sound still needs one of the
+three routes described in [the overview](README.md#the-three-ways-sound-can-reach-voxbento).
+
+**Status on 12 November 2026: IN PROGRESS — changes requested.** Backend
+[#1107](https://github.com/fossasia/voxbento/pull/1107) and controls/docs
+[#1108](https://github.com/fossasia/voxbento/pull/1108) are open. Reviewed heads are
+`534cf342` and `aef5c43a`; recheck later pushes before applying these findings.
+Last recorded contributor: @ManojLamani.
+
+### What to do next, in order
+
+1. Fix failed reconnect cleanup in the backend. If Google briefly fails after the
+   owner reconnects, the earlier working connection and other events sharing its
+   access must continue to work. Add a regression for that failure.
+2. Fix the settings test's weak repeated-character test secret. Keep production's
+   strong-secret checks intact. The reviewed #1107 unit CI fails.
+3. Keep the now-correct database update: migration 042 follows 041. Fresh install,
+   upgrade and downgrade/re-upgrade passed in review. Introduce it once in the
+   backend; any subsequent migration follows the actual latest merged revision.
+4. Update the UI branch against the final backend/current dev and resolve conflicts.
+   Carry over its additional failure-cleanup tests. Make **Remove destination** stay
+   removed: a routine status refresh must not recreate the key or restart forwarding.
+5. Rehearse with an unlisted broadcast: sign in, choose a broadcast, enable
+   forwarding, send from the encoder and see YouTube receive the stream. Also test
+   choosing the broadcast before enabling forwarding and removing its destination.
+6. Test Disconnect, including another event sharing Google access. Explain when
+   access is revoked for the whole grant and when another event still needs it.
+   Record the results without exposing any YouTube key, token or private address.
+7. Get a fresh review, merge the backend before the controls, and update the index.
+   A named deployment operator must handle Google client setup and the applicable
+   app verification before public rollout; a test consent screen is not that rollout.
+
+The API-field measurement in #1133 is complete; this application's successful
+broadcast/relay rehearsal remains pending. Review details:
+[#1107](https://github.com/fossasia/voxbento/pull/1107#pullrequestreview-5872114981),
+[#1108](https://github.com/fossasia/voxbento/pull/1108#pullrequestreview-5872115423).
+See [the overall sequence](README.md#remaining-work-step-by-step).
+
+## Technical implementation reference
+
+The following implementation steps and excerpts were written against `250aefde`
+on 1 November 2026. The current status and completion steps above take precedence.
+Run the drift check before reusing an example; refresh stale code against current
+`dev` and the relevant PR. Completed implementation steps are maintenance reference.
+
 > **Executor instructions**: Follow this plan step by step. Run every
 > verification command and confirm the expected result before moving to the
 > next step. If anything in the "STOP conditions" section occurs, stop and
@@ -9,9 +59,9 @@
 >
 > **Drift check (run first)**: `git diff --stat 250aefde..HEAD -- portal/config.py portal/models.py portal/program_relay.py portal/routers/program_ingest.py portal/workspace_routing.py portal/templates/admin/_program_ingest.html portal/static/js/program-ingest.js fastapi_app.py alembic/versions`
 > If any in-scope file changed since this plan was written, compare the
-> "Current state" excerpts against the live code before proceeding; on a
-> mismatch, treat it as a STOP condition. If a migration numbered `039` already
-> exists, use the next free number and update `down_revision` accordingly.
+> "Original implementation baseline" excerpts against the live code before proceeding; on a
+> mismatch, treat it as a STOP condition. The open backend uses `042` after `041`.
+> Check the current migration head before adding any new revision; never reuse an occupied number.
 
 ## Status
 
@@ -36,7 +86,7 @@ consent screen, VoxBento can list the channel's live/upcoming broadcasts, accept
 pasted link, fill in the relay destination automatically (the key is never shown),
 show YouTube-side status, and enable native captions (plan 006).
 
-## Current state
+## Original implementation baseline (1 November 2026)
 
 - **No Google/YouTube API code exists.** `portal/routers/oauth.py` is VoxBento acting
   as an OAuth *provider* for developer apps; it is unrelated, so don't reuse it.
@@ -81,7 +131,8 @@ show YouTube-side status, and enable native captions (plan 006).
 YouTube API facts (reference docs, verified 2026-11-01):
 - Authorise: `https://accounts.google.com/o/oauth2/v2/auth` with `response_type=code`,
   `access_type=offline`, `prompt=consent`, `include_granted_scopes=true`, PKCE `S256`.
-  Token: `POST https://oauth2.googleapis.com/token`. Revoke: `POST https://oauth2.googleapis.com/revoke?token=…`.
+  Token: `POST https://oauth2.googleapis.com/token`. Revoke: `POST https://oauth2.googleapis.com/revoke`
+  with the token in the form body, never the URL.
 - Scope: `https://www.googleapis.com/auth/youtube.force-ssl` (needed by plan 006 to set
   caption type; also covers all reads below). It is a *sensitive* scope: unverified apps
   are limited to 100 test users and show a warning.
@@ -100,7 +151,7 @@ YouTube API facts (reference docs, verified 2026-11-01):
 | Purpose | Command | Expected on success |
 |---|---|---|
 | Install | `uv sync --python 3.13 --dev` | exit 0 |
-| Migrate | `uv run alembic upgrade head` | exit 0, ends at `039` |
+| Migrate | `uv run alembic upgrade head` | exit 0 at the current migration head |
 | Downgrade check | `uv run alembic downgrade -1 && uv run alembic upgrade head` | exit 0 |
 | Focused tests | `uv run pytest tests/test_youtube_account.py -q` | all pass |
 | Regression | `uv run pytest tests/test_program_relay.py tests/test_program_ingest.py tests/test_workspace_routing.py -q` (skip a file that does not exist) | all pass |
@@ -120,7 +171,7 @@ YouTube API facts (reference docs, verified 2026-11-01):
 **In scope**:
 - `portal/config.py` (settings + production validation)
 - `portal/models.py` (new `YouTubeConnection`; two `Room` columns)
-- `alembic/versions/039_youtube_connections.py` (create)
+- `alembic/versions/042_youtube_connections.py` (create)
 - `portal/youtube_account.py` (create): Google OAuth + API client, pure link parser
 - `portal/routers/youtube.py` (create) + registration in `fastapi_app.py`
 - `portal/workspace_routing.py` (allowlist regexes)
@@ -154,7 +205,7 @@ YouTube API facts (reference docs, verified 2026-11-01):
 # "Sign in with YouTube" (Google OAuth web client). Off unless both are set.
 youtube_oauth_client_id: str = ""
 youtube_oauth_client_secret: str = ""
-youtube_status_cache_secs: float = 30.0
+youtube_status_cache_secs: float = 60.0
 
 @property
 def youtube_connect_enabled(self) -> bool:
@@ -190,9 +241,9 @@ On `Room` add:
 youtube_broadcast_id: Mapped[str | None] = mapped_column(String(32), nullable=True)
 youtube_stream_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
 ```
-Create `alembic/versions/039_youtube_connections.py` (`revision = "039"`,
-`down_revision = "038"`), idempotent like 038: create the table if missing, add the two
-room columns with `batch_alter_table` if missing; `downgrade()` drops them.
+Create `alembic/versions/042_youtube_connections.py` (`revision = "042"`,
+`down_revision = "041"` in the reviewed backend; check current head before changing
+it). Keep it idempotent like 038: create the table if missing, add the two room columns with `batch_alter_table` if missing; `downgrade()` drops them.
 
 **Verify**: `uv run alembic upgrade head` → exit 0; `uv run alembic downgrade -1 && uv run alembic upgrade head` → exit 0.
 
@@ -255,18 +306,19 @@ stores or embeds YouTube audio/video."* Contents:
 ### Step 4: Routes, `portal/routers/youtube.py`
 
 All JSON routes: `Cache-Control: no-store`; state-changing ones call the same origin
-check as `program_ingest._check_origin` (import or copy it); all 404 when
+check as `program_ingest._check_origin` (import or copy it) and the current CSRF
+dependency/token contract; all 404 when
 `not settings.youtube_connect_enabled` except status (returns `available: false`).
 
 | Method | Path | Guard | Behaviour |
 |---|---|---|---|
 | GET | `/admin/events/{event_id}/youtube` | `require_event_owner` | `{available, connected, channel_title, channel_id, connected_at, last_error}` |
 | GET | `/admin/events/{event_id}/youtube/connect?room_id=N` | `require_event_owner` | Create nonce + PKCE; set HttpOnly, Secure (unless `settings.debug`), SameSite=Lax cookie `vb_yt_oauth` (path `/youtube/oauth`, max-age 600) holding a JWT signed with `settings.effective_jwt_secret` containing `{nonce, verifier, event_id, room_id, sub}`; 303 to `authorization_url(nonce, challenge)` |
-| GET | `/youtube/oauth/callback` | user cookie | Decode cookie JWT (reject expired/missing); `state` must equal `nonce` (`secrets.compare_digest`); current `user_token` sub must equal cookie `sub`; re-check ownership with `resolve_principal` (`is_admin` or `event_id in owned_event_ids`). On `error` param (user cancelled), redirect back with `?youtube=cancelled`. Exchange code, read `my_channel`, upsert `YouTubeConnection` (encrypt refresh token; replace an existing row for the event and best-effort revoke the old token), evict `_tokens.pop(event_id, None)` and all cached `room_status` entries for the event's rooms so subsequent requests immediately use the new channel's access token, delete the cookie, `safe_redirect` to the room page (`/workspace/events/{id}/rooms/{room}/?youtube=connected#room-audio`, or `/admin/...` for Admins without ownership, following `portal/workspace_routing.py` helpers) |
+| GET | `/youtube/oauth/callback` | user cookie | Decode cookie JWT (reject expired/missing); `state` must equal `nonce` (`secrets.compare_digest`); current `user_token` sub must equal cookie `sub`; re-check ownership with `resolve_principal` (`is_admin` or `event_id in owned_event_ids`). On `error` param (user cancelled), redirect back with `?youtube=cancelled`. Exchange code, read `my_channel`, upsert `YouTubeConnection` (encrypt refresh token; replace an existing row for the event; revoke only when that cannot invalidate the new connection or another stored/shared grant, including during failed reconnect cleanup), evict `_tokens.pop(event_id, None)` and all cached `room_status` entries for the event's rooms so subsequent requests immediately use the new channel's access token, delete the cookie, `safe_redirect` to the room page (`/workspace/events/{id}/rooms/{room}/?youtube=connected#room-audio`, or `/admin/...` for Admins without ownership, following `portal/workspace_routing.py` helpers) |
 | GET | `/admin/events/{event_id}/youtube/broadcasts` | `require_event_owner` | `{"broadcasts": [ {id, title, scheduled_start, life_cycle_status, latency_preference} ]}`; 409 with `last_error` on `YouTubeAuthError` |
 | PUT | `/admin/events/{event_id}/rooms/{room_id}/youtube/broadcast` | `require_event_owner` | Body `{"broadcast": str (≤ 300)}`. Under `room_lock`, `link_broadcast`. Returns `{broadcast_id, title, life_cycle_status, stream_bound, destination_configured}`. 422 on ValueError, 409 on auth error, 502 on API error |
 | DELETE | `/admin/events/{event_id}/rooms/{room_id}/youtube/broadcast` | `require_event_owner` | Clear `youtube_broadcast_id`/`youtube_stream_id`. Leave the relay destination (owner removes it explicitly) |
-| DELETE | `/admin/events/{event_id}/youtube` | `require_event_owner` | Best-effort `revoke`, delete row, clear both room columns for every room of the event, drop cached tokens/status |
+| DELETE | `/admin/events/{event_id}/youtube` | `require_event_owner` | Best-effort `revoke` only when no other event needs the grant; delete row, clear both room columns for every room of the event, drop cached tokens/status |
 
 Register in `fastapi_app.py` next to `program_ingest_router`. Add to the
 `portal/workspace_routing.py` allowlist:
@@ -308,7 +360,8 @@ Cases (≥ 14):
 10. Same in `whip` mode: links broadcast, does **not** store a destination.
 11. Broadcast not on channel → 422 with the not-on-channel message.
 12. `invalid_grant` on refresh → 409 and `last_error` set.
-13. `DELETE …/youtube` calls revoke and clears room columns.
+13. `DELETE …/youtube` clears room columns and revokes only when no other event
+    needs the grant. A failed reconnect must preserve existing/shared access.
 14. Non-owner user → 403 on every owner route; feature disabled → 404.
 15. Log hygiene: run case 9 with `caplog` at DEBUG; assert neither the fake key, the fake refresh token nor the fake access token appears in `caplog.text`.
 16. Access-log redaction: build a `logging.LogRecord` whose message is
@@ -330,7 +383,7 @@ relay destination step in `_program_ingest.html` (and reusable by plan 007). Con
   and a status line (`life_cycle_status`, stream health).
 Create `portal/static/js/youtube-connect.js` (plain ES module, same style as
 `program-ingest.js`): load status, load broadcasts, PUT/DELETE calls with
-`credentials: 'same-origin'` and JSON bodies, show messages from `detail`.
+`credentials: 'same-origin'`, the page CSRF token and JSON bodies; show messages from `detail`.
 Follow Google branding guidance for the button text ("Sign in with YouTube" / "Continue with Google").
 
 **Verify**: `node --check portal/static/js/youtube-connect.js` → exit 0; the room page
@@ -341,8 +394,8 @@ renders in `uv run pytest tests/test_program_ingest.py -q`.
 - Create `docs/youtube-connect.md`: what it does / does not do (policy boundary);
   operator setup (Google Cloud project, enable YouTube Data API v3, OAuth consent
   screen, web client, redirect URI `{PUBLIC_BASE_URL}/youtube/oauth/callback`, test
-  users, verification for > 100 users with privacy-policy URL); env vars; quota notes
-  (status cached 30 s per room; list calls are cheap); revocation (Disconnect, or
+  users, applicable verification before public use with privacy-policy URL); env vars; quota notes
+  (status cached 60 s per room in the reviewed branches; list calls are cheap); revocation (Disconnect, or
   myaccount.google.com/permissions); data stored (channel id/title, encrypted refresh token).
 - `website/docs/configuration/environment-variables.mdx`: the three new variables.
 - `.agents/context/ROUTE_MAP.md`, `.agents/context/DATABASE_MAP.md`: new routes, table and columns.
@@ -355,8 +408,11 @@ renders in `uv run pytest tests/test_program_ingest.py -q`.
 
 With a test Google project and an unlisted broadcast: Sign in → broadcast listed →
 choose it in a relay-mode room → *VoxBento → YouTube* goes Live when OBS streams to
-VoxBento, and YouTube Studio shows the stream. Disconnect → connection gone in
-myaccount.google.com/permissions.
+VoxBento, and YouTube Studio shows the stream. Disconnect → the event connection
+is removed; verify Google revocation when no
+other event shares the grant. If another event still uses it, preserve that access
+and explain that the Google grant remains. Removing a saved relay destination must
+keep it removed across subsequent status refreshes.
 
 ## Test plan
 
@@ -392,5 +448,5 @@ See Step 6 (≥ 14 cases). Pattern: `tests/test_program_relay.py` fixture +
   broadcast (**Use this broadcast**) refreshes the key. A future improvement: refresh
   automatically when relay health reports an authentication failure.
 - Reviewers: scrutinise the callback (state, PKCE, user binding, ownership re-check),
-  log hygiene, and that disconnect revokes the token.
+  log hygiene, and that disconnect revokes unused access without breaking a shared grant.
 - Deferred to plan 006: caption ingestion URL use. Deferred to plan 007: room-audio flow.

@@ -224,6 +224,27 @@ Index: `(event_id, joined_at)`, `user_id`.
 
 ---
 
+### `booth_live_state`
+
+What a live booth needs to survive a portal restart (TD-03). One row per booth with
+something live, written by `portal/booth_recovery.py` shortly after the in-memory
+`BoothRegistry` changes (never on the WebSocket path) and read back at startup.
+
+| Column | Type | Notes |
+|---|---|---|
+| `booth_id` | String(200) PK | Registry key; not a foreign key, so a row never blocks deleting a booth |
+| `language`, `channel_id`, `room_id` | | Booth identity used to rebuild the registry entry |
+| `broadcast_unlocked` | Boolean | Mission Control's Go Live switch |
+| `active_participant_id` | String(64) nullable | Active interpreter, restored as a disconnected placeholder |
+| `active_session_key` | String(100) nullable | `booth_session_key` of the active interpreter; only that session may reclaim the slot |
+| `active_display_name`, `active_role`, `active_user_id`, `active_invite_public_id` | | Placeholder details (attendance) |
+| `active_mic_active`, `active_ingest_connected` | Boolean | So listeners keep seeing the booth live while the interpreter reconnects |
+| `updated_at` | DateTime(tz) | Refreshed every 60 s for live booths; rows older than `BOOTH_STATE_MAX_AGE_SECONDS` are not restored |
+
+A booth with Go Live off and no active interpreter has no row.
+
+---
+
 ### `room_translation_languages` & `booth_translation_languages`
 
 | Column | Type | Notes |
@@ -284,6 +305,9 @@ Tracks which languages the translation worker should generate for a given room o
 | 039 | `039_add_atlascloud_api_key.py` | AtlasCloud API key setting |
 | 040 | `040_add_last_sign_in_at_to_users.py` | Nullable `users.last_sign_in_at` |
 | 041 | `041_add_interpreter_attendance.py` | `interpreter_attendance` table (#1215) |
+| 042 | `042_add_booth_live_state.py` | `booth_live_state` table (TD-03) |
+| 043 | `043_add_live_demo_settings.py` | `live_demo_settings` singleton for the home-page live demo |
+| 044 | `044_youtube_connections.py` | `youtube_connections` table (one per event), `rooms.youtube_broadcast_id`, `rooms.youtube_stream_id` (#1087) |
 
 Run migrations: `uv run alembic upgrade head`
 
@@ -376,7 +400,7 @@ No links or email content are shown in the administration history.
 `show_logo` (default true) and an optional https `logo_url` (empty means the
 VoxBento logo served by the site). No row means the defaults.
 
-## Migration 042 — meeting reports (#1080)
+## Migration 045 — meeting reports (#1080)
 
 Adds `events.meeting_analysis_enabled` (default false),
 `events.meeting_analysis_provider` (default `local`) and
@@ -394,6 +418,16 @@ session end when the session was too long), `segment_count`,
 `(room_id, created_at)` and partial unique index `uq_meeting_reports_room_in_progress`
 (one `pending`/`running` report per room). CRUD: `create_meeting_report`, `list_meeting_reports`,
 `get_meeting_report`. See `docs/meeting-analysis.md`.
+
+## Migration 043 — home-page live demo settings
+
+`live_demo_settings` holds one row (id 1), edited at `/admin/live-demo/`: `enabled`,
+`voice_enabled`, `whisper_model` (`tiny`/`base`/`small`), `max_sessions`,
+`max_session_seconds`, `sessions_per_ip_per_hour`, `max_targets` and `glossary`
+(text, one entry per line: `term`, `term = translation` or `term = fr: translation`,
+validated with the AI glossary rules). No row means the `LIVE_DEMO_*` environment
+defaults with the demo off (an Admin switches it on), and `LIVE_DEMO_ENABLED=false` keeps the demo off whatever the row says.
+`portal/live_demo.py` reads it through a ~10 s cache that saving replaces.
 
 ## Migrations 036–038 — live booth session revocation
 

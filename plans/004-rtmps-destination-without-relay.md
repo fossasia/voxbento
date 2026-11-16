@@ -1,5 +1,41 @@
 # Plan 004: Accept RTMPS as an independent second destination (no relay required)
 
+## In plain English
+
+Have the streaming tool send two copies of the event: one to YouTube as usual and
+one to VoxBento for captions and translation. If VoxBento fails, the independent
+YouTube stream can continue. RTMPS is the encrypted connection for that second copy.
+
+**Status on 12 November 2026: IN PROGRESS — code merged, platform rehearsal pending.**
+[#1102](https://github.com/fossasia/voxbento/pull/1102) merged the implementation and
+maintainer approval of the updated transport rule. [#1152](https://github.com/fossasia/voxbento/pull/1152)
+merged the cleanup follow-up; [#1016](https://github.com/fossasia/voxbento/pull/1016)
+provides the related deleted-event cleanup. Do not rebuild these pieces.
+
+### What remains to finish
+
+1. A server operator enables the extra-destination service with its valid encrypted
+   endpoint. This mode does not need the service that forwards streams to YouTube.
+2. The event owner chooses **Add VoxBento as an extra destination** in the room and
+   intentionally copies its newly created VoxBento server/key into the streaming tool.
+3. Keep the tool's YouTube output and start its extra VoxBento output. Check speech
+   reaches the room and produces captions on the listener page.
+4. Revoke VoxBento's key while YouTube is live. Confirm the VoxBento connection stops
+   and YouTube continues. Record the tool/version and outcome under plan 002 step 2.
+5. Publish supported-tool guidance from those measurements. Keep untested platforms
+   labelled pending; do not infer support from automated tests alone.
+
+The authorised test-server rollout preceded this rehearsal; the approval is recorded
+in #1102. Historical wording below describes the original implementation proposal,
+not a new request for invariant approval. See [the overall sequence](README.md#remaining-work-step-by-step).
+
+## Technical implementation reference
+
+The following implementation steps and excerpts were written against `250aefde`
+on 1 November 2026. The current status and completion steps above take precedence.
+Run the drift check before reusing an example; refresh stale code against current
+`dev` and the relevant PR. Completed implementation steps are maintenance reference.
+
 > **Executor instructions**: Follow this plan step by step. Run every
 > verification command and confirm the expected result before moving to the
 > next step. If anything in the "STOP conditions" section occurs, stop and
@@ -9,7 +45,7 @@
 >
 > **Drift check (run first)**: `git diff --stat 250aefde..HEAD -- portal/config.py portal/program_relay.py portal/program_ingest.py portal/routers/program_ingest.py portal/templates/admin/_program_ingest.html portal/static/js/program-ingest.js docker-compose.relay.yml scripts/setup-youtube-relay.sh docs/program-stream-ingest.md docs/program-relay.md website/docs/admin/program-ingest.mdx agents.md .agents/context/CHANGE_IMPACT_MAP.md`
 > If any in-scope file changed since this plan was written, compare the
-> "Current state" excerpts against the live code before proceeding; on a
+> "Original implementation baseline" excerpts against the live code before proceeding; on a
 > mismatch, treat it as a STOP condition.
 
 ## Status
@@ -34,7 +70,7 @@ publishes per room, but only inside **relay mode**, which also requires the
 feed for captions/translation/TTS while YouTube keeps receiving the organiser's own
 output, so it stays failure-isolated.
 
-## Current state
+## Original implementation baseline (1 November 2026)
 
 - `portal/program_relay.py:26-28`:
   ```python

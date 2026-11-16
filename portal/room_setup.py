@@ -26,7 +26,7 @@ from portal.roles import INTERPRETER
 from portal.transcription.constants import ALLOWED_MODELS, ProviderEnum
 from portal.translations.model_languages import supported_languages, unsupported_languages
 from portal.translations.registry import NLLB_200_DISTILLED_600M
-from portal.tts.constants import DEEPGRAM_VOICE_MAPPING, SUPERTONIC_SUPPORTED_LANGS
+from portal.tts.constants import DEEPGRAM_VOICE_MAPPING, ELEVENLABS_SUPPORTED_LANGS, SUPERTONIC_SUPPORTED_LANGS
 from portal.utils import _make_jitsi_url
 
 AI_VOICE = "ai_voice"
@@ -169,7 +169,11 @@ class EngineCatalog:
 
 
 def voice_languages_for(provider: str) -> Iterable[str]:
-    return DEEPGRAM_VOICE_MAPPING if provider == "deepgram" else SUPERTONIC_SUPPORTED_LANGS
+    if provider == "deepgram":
+        return DEEPGRAM_VOICE_MAPPING
+    if provider == "elevenlabs":
+        return ELEVENLABS_SUPPORTED_LANGS
+    return SUPERTONIC_SUPPORTED_LANGS
 
 
 _KEY_ADDED = "uses your API key"
@@ -179,7 +183,7 @@ _SERVER_MODEL = "runs on this server's own AI model"
 # (provider, default model, label, event key attribute). Cloud first: they are faster
 # and more accurate than the self-hosted fallback when the event has a key for them.
 _SPEECH_ENGINES = (
-    ("deepgram", "nova-2", "Deepgram Nova", "encrypted_deepgram_api_key"),
+    ("deepgram", "nova-3", "Deepgram Nova", "encrypted_deepgram_api_key"),
     ("elevenlabs", "scribe_v2_realtime", "ElevenLabs Scribe", "encrypted_elevenlabs_api_key"),
     ("openai", "whisper-1", "OpenAI Whisper", "encrypted_openai_api_key"),
     ("atlascloud", "bytedance/seed-asr-2.0", "Atlas Cloud Seed ASR", "encrypted_atlascloud_api_key"),
@@ -196,7 +200,10 @@ _TRANSLATION_ENGINES = (
 
 # The caption models each speech service offers, with a plain description, recommended first.
 SPEECH_MODELS: dict[str, tuple[tuple[str, str], ...]] = {
-    "deepgram": (("nova-2", "Nova 2"),),
+    "deepgram": (
+        ("nova-3", "Nova 3, most accurate, uses the glossary"),
+        ("nova-2", "Nova 2"),
+    ),
     "elevenlabs": (("scribe_v2_realtime", "Scribe v2, streaming"),),
     "openai": (
         ("whisper-1", "Whisper"),
@@ -293,6 +300,11 @@ def engine_catalog(event: Event) -> EngineCatalog:
         voice.append(Engine("deepgram", "aura", "Deepgram Aura", _KEY_ADDED))
     else:
         locked.append(_BRANDS["deepgram"])
+    if event.encrypted_elevenlabs_api_key:
+        # Deepgram Aura has no Thai voice; Eleven v4 speaks Thai and 90+ other languages.
+        voice.append(Engine("elevenlabs", "eleven_v4", "ElevenLabs v4", _KEY_ADDED))
+    else:
+        locked.append(_BRANDS["elevenlabs"])
     if find_spec("supertonic") is not None:
         voice.append(Engine("supertonic", "supertonic", "Supertonic (built in)", _SELF_HOSTED))
     else:

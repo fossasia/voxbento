@@ -5,16 +5,30 @@ upstream GitHub issue. Parent epic: fossasia/voxbento#746. Related: #748 (browse
 sender, closed), #749 (RTMPS relay, closed), #750 (gateway hardening + SRT), #751
 (guided floor-source setup).
 
+## Delivery update — 12 November 2026
+
+This brief explains the original design; [the plan index](README.md) is the current
+plain-English delivery map and ordered next steps. Browser-tab sound and independent
+RTMPS input have merged. Account connection is in #1107/#1108 with changes requested.
+The caption delivery engine merged in #1153, but its owner controls and lifecycle
+integration remain to be built. #1125 proposes part of the guide and needs changes.
+The complete feature is still open in #1087.
+
+Connecting a YouTube account chooses the broadcast and reads its settings; it does
+not deliver sound. Sound comes from the organiser's extra output, forwarding path
+or explicitly shared browser tab. Captions inside YouTube and translated speech on
+VoxBento are separate outputs. The index explains each route and its outage effects.
+
 ## Goal
 
 An organiser whose event is on YouTube gets VoxBento captions, translations and
 translated speech **without Jitsi screen-sharing, without the floor bot, and without
-copying stream keys**. The default path is: *Sign in with YouTube → pick the
+copying the private YouTube stream key**. The default path is: *Sign in with YouTube → pick the
 broadcast → follow one short, tailored instruction*. For a stream the organiser does
 not control, VoxBento offers a one-click browser-tab capture that replaces the
 current Jitsi workaround.
 
-## Today's workaround and why it hurts
+## Original workaround and why it hurts
 
 ```
 YouTube → organiser's browser tab → screen-share into Jitsi (Opus re-encode, JVB SFU)
@@ -101,7 +115,8 @@ Room page → **Room audio → From a YouTube stream**
 | StreamYard / Restream / vMix multi-output / OBS multi-RTMP plugin / Zoom or Teams live streaming | **Add VoxBento as an extra destination** (new RTMPS-without-relay mode) | Add a "Custom RTMP" destination | YouTube independent |
 | YouTube Studio webcam, phone app, or "it's not my stream" | **Share the YouTube tab** from VoxBento's sender page (Chrome/Edge tab audio → WHIP) | None | YouTube independent; a person keeps the tab open |
 
-4. **Captions on YouTube** (toggle, on by default when signed in): VoxBento posts
+4. **Captions on YouTube** (toggle; automatic enablement is a proposal pending the
+   default decision below): VoxBento posts
    final captions (floor language, or one chosen translation) to the broadcast's
    caption ingestion URL, so viewers get native YouTube CC. **Important:** The YouTube Live
    API requires caption configuration (`closedCaptionsHttpPost`) to be set up **before**
@@ -162,8 +177,11 @@ work. Jitsi + floor bot remains for real Jitsi meetings only.
 
 ## Open questions for maintainers
 
-1. Plan 004 changes the wording of invariant 3 (RTMPS ingest no longer implies relay). OK?
+1. **Resolved:** independent RTMPS and the invariant-3 wording were approved and
+   merged through #1102. Do not request that approval again.
 2. Who registers the production Google OAuth client and owns the verification (privacy
    policy URL, homepage, demo video)?
-3. One YouTube channel per **event** (proposed) or per room?
-4. Captions to YouTube: floor language only (proposed default) or allow one translation?
+3. **Implemented in the pending 005 PRs:** one YouTube channel per event; the PRs
+   still need fixes, review and merge.
+4. **Decision to record before 006 part 2:** original language by default, optionally
+   one enabled translation, as proposed. Record the final default and operator choice.

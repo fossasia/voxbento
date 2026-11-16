@@ -1,7 +1,7 @@
 """add meeting analysis settings and the meeting_reports table
 
-Revision ID: 042
-Revises: 041
+Revision ID: 045
+Revises: 044
 Create Date: 2026-11-01 12:00:00.000000
 
 """
@@ -14,8 +14,8 @@ import sqlalchemy as sa
 
 from alembic import op
 
-revision: str = "042"
-down_revision: Union[str, Sequence[str], None] = "041"
+revision: str = "045"
+down_revision: Union[str, Sequence[str], None] = "044"
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
 
