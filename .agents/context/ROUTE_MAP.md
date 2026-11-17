@@ -96,6 +96,10 @@ room-deletion helper to clear self-relay and incoming relay references and delet
 dependent data. Publishing booths return 409; missing or foreign events/rooms
 return 404; successful deletion returns 204.
 
+Every booth delete, from the admin pages, the guided room setup or this API, also
+closes the removed booth's sockets, stops its transcription worker and drops its
+in-memory state.
+
 ## WebSocket Endpoints
 
 | Path | Auth | Protocol |

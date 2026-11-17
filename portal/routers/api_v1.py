@@ -488,9 +488,6 @@ async def delete_event(
             status_code=status.HTTP_409_CONFLICT, detail="Cannot delete event while active booths are running."
         )
 
-    for b in active_booths:
-        await booths.remove_booth(event_slug, b["room_id"], b["language_code"])
-
     await revoke_booths_for_deleted_entity(db, level="event", target_id=event.id)
     event.deleted_at = datetime.now(timezone.utc)
 
@@ -503,6 +500,12 @@ async def delete_event(
     )
     db.add(audit)
     await db.flush()
+    # Only once the delete is flushed, so a failed one leaves the booths running.
+    for b in active_booths:
+        try:
+            await stop_transcription_worker(b["booth_id"])
+        finally:
+            await booths.remove_booth(event_slug, b["room_id"], b["language_code"])
     return None
 
 
@@ -848,9 +851,6 @@ async def delete_room(
             status_code=status.HTTP_409_CONFLICT, detail="Cannot delete room while active booths are running."
         )
 
-    for b in room_booths:
-        await booths.remove_booth(event_slug, b["room_id"], b["language_code"])
-
     await revoke_booths_for_deleted_entity(db, level="room", target_id=room.id)
     await delete_db_room(db, room.id)
 
@@ -863,6 +863,11 @@ async def delete_room(
     )
     db.add(audit)
     await db.flush()
+    for b in room_booths:
+        try:
+            await stop_transcription_worker(b["booth_id"])
+        finally:
+            await booths.remove_booth(event_slug, b["room_id"], b["language_code"])
     return None
 
 
@@ -1006,6 +1011,10 @@ async def delete_booth_endpoint(
 
     await revoke_booths_for_deleted_entity(db, level="booth", target_id=booth.id)
     await delete_booth(db, booth.id)
+    try:
+        await stop_transcription_worker(make_booth_id(event_slug, target_room_id, language_code))
+    finally:
+        await booths.remove_booth(event_slug, target_room_id, language_code)
     return {"status": "deleted"}
 
 
