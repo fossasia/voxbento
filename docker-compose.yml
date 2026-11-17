@@ -133,7 +133,7 @@ services:
     restart: unless-stopped
 
   jitsi-prosody:
-    image: ghcr.io/jitsi/prosody:stable-11248
+    image: ghcr.io/jitsi/prosody:stable-11509
     read_only: true
     tmpfs:
       - /run:size=16M,uid=1000,gid=1000,mode=1750,exec
