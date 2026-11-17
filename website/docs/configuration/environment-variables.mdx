@@ -84,6 +84,7 @@ These variables configure how Voxbento talks to MediaMTX and other local Docker 
 | --- | --- | --- |
 | `MEDIAMTX_API_BASE` | `http://localhost:9997` | MediaMTX Control API URL. |
 | `MEDIAMTX_RTSP_BASE` | `rtsp://mediamtx:8554` | Internal RTSP URL for floor audio transcription. |
+| `MAX_TRANSCRIPTION_WORKERS` | `10` | Maximum concurrent transcription workers (ffmpeg + provider) running across all booths. |
 | `MEDIAMTX_AUTH_HOOK_SECRET` | _(none)_ | Shared secret used to authenticate private internal MediaMTX webhooks to `/internal/media-auth`. Required in production. |
 | `FLOOR_BOT_BASE` | `http://floor-bot:8080` | URL for the floor-bot container. |
 | `MEETING_AGENT_MAX_RESTARTS` | `5` | Automatic meeting-agent restarts per incident before the room reports **Needs attention**. |
@@ -134,9 +135,12 @@ These variables control external encoder ingest and YouTube RTMPS forwarding.
 | `LIVE_DEMO_MAX_SESSION_SECONDS` | `120` | Longest single demo run. |
 | `LIVE_DEMO_SESSIONS_PER_IP_PER_HOUR` | `12` | Demo runs one client address may start per hour. |
 | `NVIDIA_FUNCTION_ID` | _(empty)_ | Optional function ID for NVIDIA Cloud Riva integrations. |
+| `LOCAL_TRANSLATION_MODELS` | `nllb-200-distilled-600M` | Comma-separated built-in (NLLB) translation models rooms and booths may use. The first one is the default. Each name can be at most 100 characters. Only these can be selected or downloaded, and only Admins can start a download. The live demo uses its own `LIVE_DEMO_TRANSLATION_MODEL` and downloads it itself. A name that isn't in the registry is loaded as your own build, from a Hugging Face repository or a folder on the server. Leave empty to turn built-in translation off. |
 | `SELF_HOSTED_LLM_BASE_URL` | _(empty)_ | Base URL of your own OpenAI-compatible server, for example `http://localhost:11434/v1`, without `/chat/completions`. Must be `http` or `https` with a valid port and no credentials, query string or fragment. Only the server sets it; rooms can't. |
 | `SELF_HOSTED_LLM_MODELS` | _(empty)_ | Comma-separated models rooms and booths may use, spelled exactly as the server names them (for Ollama, as `ollama list` shows them). The first one is the default. Each name can be at most 100 characters. Self-hosted translation is offered only when this and the URL are both set. |
 | `SELF_HOSTED_LLM_API_KEY` | _(empty)_ | Optional bearer token, for servers started with an API key (for example vLLM `--api-key`). |
+| `MEETING_ANALYSIS_OLLAMA_BASE_URL` | `http://localhost:11434` | Ollama (or OpenAI-compatible) server used for meeting reports when an event chooses the Local service. |
+| `MEETING_ANALYSIS_OLLAMA_NUM_CTX` | `32768` | Context window, in tokens, requested from Ollama for meeting reports. |
 
 The other `LIVE_DEMO_*` values are defaults: once an Admin saves **Admin → Live demo**, the saved settings are used instead (`LIVE_DEMO_TRANSLATION_MODEL` stays server-only). The demo runs Whisper, NLLB and, with voice on, Supertonic in the portal process: about 1.2 GB of models, downloaded on first use and kept in memory while in use.
 
