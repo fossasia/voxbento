@@ -2,13 +2,13 @@
 
 from __future__ import annotations
 
-import hashlib
 from datetime import datetime, timedelta, timezone
 from unittest.mock import AsyncMock
 
 import pytest
 from httpx import ASGITransport, AsyncClient
 from sqlalchemy.exc import SQLAlchemyError
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from fastapi_app import app
 from portal.auth import create_user_token
@@ -18,6 +18,7 @@ from portal.globals import booths
 from portal.models import DBBooth, DeveloperAccount, Event, EventMembership, OAuthClient, OAuthToken, Room, User
 from portal.roles import EVENT_OWNER, INTERPRETER
 from portal.routers import admin, api_v1
+from portal.routers.oauth import hash_token
 from portal.transcription.providers.base import ProviderConfig
 from portal.transcription.worker import TranscriptionWorkerSession, active_workers
 
@@ -81,7 +82,7 @@ async def site():
                 user_id=owner.id,
                 event_id=main.id,
                 scopes=["events:write", "rooms:write", "booths:write"],
-                access_token_hash=hashlib.sha256(API_TOKEN.encode()).hexdigest(),
+                access_token_hash=hash_token(API_TOKEN),
                 expires_at=datetime.now(timezone.utc) + timedelta(hours=1),
             )
         )
@@ -355,3 +356,50 @@ async def test_a_booth_still_leaves_memory_when_stopping_its_captions_fails(site
     with pytest.raises(RuntimeError):
         await admin._end_deleted_booths([("main", site["hall"], "es")])
     assert booths.get_booth_sync(ids["es"]) is None
+
+
+async def _place_stray_booth(site) -> tuple[str, int]:
+    """A live booth of the ``other`` event placed in the ``hall`` room of ``main``."""
+    async with get_session() as s:
+        row = await create_booth(
+            s, event_id=site["other"], room_id=site["hall"], language_code="pt", language_name="Portuguese"
+        )
+        row_id = row.id
+    stray = await _make_live("other", site["hall"], "pt")
+    await booths.take_changes()
+    return stray, row_id
+
+
+async def test_api_v1_room_delete_ends_another_events_booth_in_the_room(site):
+    stray, row_id = await _place_stray_booth(site)
+    async with _client() as c:
+        resp = await c.delete("/api/v1/events/main/rooms/hall", headers=API_HEADERS)
+    assert resp.status_code == 204
+    async with get_session() as s:
+        assert await s.get(DBBooth, row_id) is None
+    changes = await booths.take_changes()
+    await _assert_ended(stray, changes)
+    _assert_running(site["booth_ids"]["it"], changes)
+
+
+@pytest.mark.parametrize(
+    "path", ["/api/v1/events/main/rooms/hall/booths/es", "/api/v1/events/main/rooms/hall", "/api/v1/events/main"]
+)
+async def test_api_v1_delete_ends_the_booth_only_after_the_commit(site, monkeypatch, path):
+    """A delete that fails to commit is rolled back, so its booths must still be running then."""
+    order = []
+    real_commit = AsyncSession.commit
+
+    async def commit(self):
+        order.append("commit")
+        await real_commit(self)
+
+    async def stop(_booth_id):
+        order.append("stop")
+
+    monkeypatch.setattr(AsyncSession, "commit", commit)
+    monkeypatch.setattr(api_v1, "stop_transcription_worker", stop)
+    async with _client() as c:
+        resp = await c.delete(path, headers=API_HEADERS)
+    assert resp.status_code in (200, 204)
+    assert "stop" in order and order.index("commit") < order.index("stop")
