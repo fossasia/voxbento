@@ -141,10 +141,10 @@
             <input id='program-srt-server' class='input' readonly placeholder='Not configured on this server'>
             <button type='button' class='btn btn-outline' id='program-copy-srt'>Copy URL</button>
           </div>
-          <div id='program-srt-backup-row' style='margin-top: 0.75rem;'>
-            <div style='display: flex; align-items: center; justify-content: space-between; margin-bottom: 0.25rem;'>
-              <label for='program-srt-backup' style='margin-bottom: 0;'>Backup Feed Stream URL</label>
-              <label style='display: flex; align-items: center; gap: 0.35rem; font-size: 0.85rem; cursor: pointer;'>
+          <div id='program-srt-backup-row' class='program-srt-backup-row'>
+            <div class='program-srt-backup-header'>
+              <label for='program-srt-backup'>Backup Feed Stream URL</label>
+              <label class='program-backup-toggle-label'>
                 <input type='checkbox' id='program-backup-toggle'>
                 <span>Enable backup</span>
               </label>
@@ -175,9 +175,9 @@
             <button type='button' class='btn btn-outline' id='program-copy'>Copy</button>
             <button type='button' class='btn btn-outline' id='program-dismiss' title='Close and clear from screen'>Done</button>
           </div>
-          <div class='program-copy-field' id='program-backup-secret-row' style='margin-top: 0.75rem;' hidden>
-            <div style='width: 100%; margin-bottom: 0.25rem;'>
-              <label for='program-backup-secret' style='font-size: 0.85rem; font-weight: 600;'>Backup SRT Passphrase</label>
+          <div class='program-copy-field program-backup-secret-row' id='program-backup-secret-row' hidden>
+            <div class='program-backup-secret-label-wrap'>
+              <label for='program-backup-secret' class='program-backup-secret-label'>Backup SRT Passphrase</label>
             </div>
             <input id='program-backup-secret' class='input' type='password' readonly autocomplete='off'>
             <button type='button' class='btn btn-outline' id='program-reveal-backup'>Show</button>

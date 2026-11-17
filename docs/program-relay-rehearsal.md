@@ -49,7 +49,7 @@ VoxBento accepts program contribution via **SRT Caller** (recommended for low-la
 * **Encoding Profile:** H.264 Main/High, CBR `5000 kbps`, Keyframe every `2 seconds`.
 * **Audio Profile:** AAC `48 kHz` stereo, `128 - 192 kbps`.
 
-### Haivision Makito X4 / AJA HELO (Hardware Encoders)
+### Haivision Makito X4 / AJA HELO Plus (Hardware Encoders)
 * **Protocol / Encapsulation:** TS over SRT (MPEG-TS container carrying H.264 video and AAC-LC audio)
 * **SRT Mode / Role:** Caller
 * **Destination Address / Host:** `<host>`
@@ -72,7 +72,7 @@ All profiles must be tested against a staging or production deployment prior to 
 | OBS Studio | Pending Validation | — | — | Pending Validation | SRT Caller, streamid publish, 5000kbps CBR, 2s GOP |
 | vMix | Pending Validation | — | — | Pending Validation | SRT Caller, port 8890, AES passphrase, 500ms latency |
 | Wirecast | Pending Validation | — | — | Pending Validation | SRT Caller, 500ms latency, AAC 48kHz |
-| Haivision Makito X4 | Pending Validation | — | — | Pending Validation | TS over SRT, packet size 1316, 60 frames GOP at 30fps |
+| Haivision Makito X4 / AJA HELO Plus | Pending Validation | — | — | Pending Validation | TS over SRT, packet size 1316, 60 frames GOP at 30fps |
 | AJA HELO | Pending Validation | — | — | Pending Validation | Hardware TS/SRT, 1316 byte payload, AES passphrase |
 
 ---
@@ -89,13 +89,13 @@ All profiles must be tested against a staging or production deployment prior to 
 
 | # | Step | Action | Expected Result |
 |---|------|--------|-----------------|
-| 1 | Configure Destination | Room page → *From streaming software* → paste YouTube stream key → **Save stream key** | Saved for `rtmps://a.rtmps.youtube.com/live2`; key write-only |
+| 1 | Configure Destination | (RTMPS Relay only) Room page → *From streaming software* → paste YouTube stream key → **Save stream key** | Saved for `rtmps://a.rtmps.youtube.com/live2`; key write-only |
 | 2 | Generate Credentials | Select SRT Contribution → **Create credentials** | SRT URL `srt://<host>:8890`, Stream ID `#!::r=...`, and Passphrase displayed |
-| 3 | Start Primary Feed | Start primary encoder using the profile in Section 1 | Room page shows *Encoder → VoxBento* **Connected** (H264, MPEG-4 Audio) |
-| 4 | Verify Relay & Health | Wait 15–30 seconds; monitor room page and YouTube Studio | *VoxBento → YouTube* **Live**; YouTube Studio shows *Good/Excellent* health and video preview |
-| 5 | Audio & AI Pipeline | Speak into floor feed for 5 minutes | Transcription, translation, and TTS work concurrently without relay degradation |
+| 3 | Start Primary Feed | Start primary encoder using the profile in Section 1 | Room page shows *Encoder → VoxBento* **Connected** (H264, MPEG-4 Audio / AAC) |
+| 4 | Verify Ingest & Health | Wait 15–30 seconds; monitor room page health indicators | Ingest health shows **Receiving** / **Processing** (or *VoxBento → YouTube* **Live** if testing RTMPS Relay) |
+| 5 | Audio & AI Pipeline | Speak into floor feed for 5 minutes | Transcription, translation, and TTS work concurrently without degradation |
 | 6 | Secondary Feed (Backup) | If backup enabled: start secondary encoder pointing to `floor_backup` | Room page shows backup feed connected and in standby |
-| 7 | Takeover Test | Disconnect primary encoder (or simulate stall) | Within 5s (`TAKEOVER_STALL_SECS`), room switches `program_active_feed = "backup"`; relay continues seamlessly |
+| 7 | Takeover Test | Disconnect primary encoder (or simulate stall) | After 5.0s stall threshold (`TAKEOVER_STALL_SECS`), failover completes within 5–7s total latency; active feed becomes `backup` |
 | 8 | Anti-Flapping Check | Reconnect primary encoder | Primary connects in standby; active feed stays on backup (no automatic flip-back) |
 | 9 | Manual Restore | Operator triggers `promote_primary_feed` | Active feed cleanly restores to primary |
 | 10 | Encoder Revocation | Click **Revoke credentials** | Encoder kicked immediately; subsequent reconnects rejected with auth failure |
@@ -121,11 +121,11 @@ Network / ISP:
 
 [ ] SRT Ingest Connected (:8890/udp)
 [ ] Codec Contract Verified (H.264 5000kbps, 2s keyframe, AAC 48kHz)
-[ ] YouTube Relay Live within 15s (Health: Good/Excellent)
+[ ] YouTube Relay Live within 15s (if testing RTMPS Relay mode)
 [ ] 10-Minute Sustained Stability (Zero dropped frames/restarts)
 [ ] Simultaneous Captions/TTS Verification (Active & Synchronized)
 [ ] Backup Feed Connected & Standby Verified
-[ ] Automatic Takeover on Primary Drop (< 5s)
+[ ] Automatic Takeover on Primary Drop (5–7s total latency, 5.0s stall threshold)
 [ ] Anti-Flapping Verified (Primary reconnect did not flap active feed)
 [ ] Operator Manual Switchback Verified
 [ ] Credential Revocation Verified

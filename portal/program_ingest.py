@@ -366,13 +366,10 @@ async def authorize_publish(data: MediaAuth) -> None:
                 if current_h and current_h.backup_session_id and current_h.backup_session_id != session_id:
                     if backup_recent:
                         raise HTTPException(409, "A backup floor publisher is already connected or connecting")
-                    try:
-                        live_backup = await media_path(make_backup_floor_path(event.slug, room.id))
-                        if live_backup and live_backup.source:
-                            raise HTTPException(409, "A backup floor publisher is already connected")
-                        current_h.backup_session_id = None
-                    except httpx.HTTPError:
-                        pass
+                    live_backup = await media_path(make_backup_floor_path(event.slug, room.id))
+                    if live_backup and live_backup.source:
+                        raise HTTPException(409, "A backup floor publisher is already connected")
+                    current_h.backup_session_id = None
             else:
                 # A DB reservation can outlive a MediaMTX session across a process restart.
                 # Clear it immediately when the path confirms that no source remains;
@@ -384,13 +381,10 @@ async def authorize_publish(data: MediaAuth) -> None:
                     and time.monotonic() - reservation.reservation_started_at < 5.0
                 )
                 if room.program_session_id and room.program_session_id != session_id and not reservation_recent:
-                    try:
-                        live_path = await media_path(make_mediamtx_path(event.slug, room.id, "floor"))
-                        if live_path is None or live_path.source is None:
-                            room.program_session_id = None
-                            health.pop(room.id, None)
-                    except httpx.HTTPError:
-                        pass
+                    live_path = await media_path(make_mediamtx_path(event.slug, room.id, "floor"))
+                    if live_path is None or live_path.source is None:
+                        room.program_session_id = None
+                        health.pop(room.id, None)
                 if room.program_session_id and room.program_session_id != session_id:
                     raise HTTPException(409, "A floor publisher is already connected or connecting")
 

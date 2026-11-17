@@ -26,6 +26,7 @@ SPEC.loader.exec_module(service)
 KEY = "test-secret-stream-key-1234"
 DEST_FATAL_AUTH = f"rtmps://a.rtmps.youtube.com/live2/fatal-auth-{KEY}"
 DEST_FATAL_ENDED = f"rtmps://a.rtmps.youtube.com/live2/fatal-ended-{KEY}"
+DEST_FATAL_PROGRESS = f"rtmps://a.rtmps.youtube.com/live2/fatal-progress-{KEY}"
 DEST_TRANSIENT = f"rtmps://a.rtmps.youtube.com/live2/transient-{KEY}"
 
 FAKE_FFMPEG_SCRIPT = """
@@ -37,6 +38,12 @@ if "fatal-auth" in destination:
     sys.exit(1)
 elif "fatal-ended" in destination:
     sys.stderr.write(f"[flv] Error output {destination}: broadcast complete, stream ended\\n")
+    sys.exit(1)
+elif "fatal-progress" in destination:
+    sys.stderr.write("[flv] Error opening output: 401 Unauthorized stream key invalid\\n")
+    sys.stdout.write("out_time_us=1000000\\ntotal_size=1024\\ntotal_size=2048\\n")
+    sys.stdout.flush()
+    time.sleep(0.05)
     sys.exit(1)
 elif "transient" in destination:
     sys.stderr.write(f"[flv] Error output {destination}: Connection refused: network is unreachable\\n")
@@ -130,6 +137,8 @@ class TestClassifyUnit:
             "broken pipe",
             "connection reset by peer",
             "unexpected eof while reading",
+            "[tls @ 0x7f403123] Connection reset by peer",
+            "[tls @ 0x7f401abc] broken pipe",
         ],
     )
     def test_transient_peer_drop_errors(self, line: str):
@@ -229,6 +238,33 @@ class TestRelayLifecycle:
             time.sleep(0.3)
             assert relay.restarts == 0
             assert relay.state == "failed"
+        finally:
+            manager.stop_all()
+
+    def test_fatal_error_with_trailing_stdout_progress_retains_failed_state(self, fake_ffmpeg):
+        manager = service.RelayManager(
+            source_base="rtsp://mediamtx:8554",
+            allowed_hosts={"a.rtmps.youtube.com"},
+            max_relays=2,
+            ffmpeg=[sys.executable, fake_ffmpeg],
+            backoff_base=0.05,
+        )
+        try:
+            status, view = manager.ensure(
+                relay_id="109",
+                source="test/109/floor",
+                destination=DEST_FATAL_PROGRESS,
+                fingerprint="f" * 32,
+            )
+            assert status == 200
+            relay = manager.relays["109"]
+
+            assert wait_for(lambda: relay.state == "failed")
+            assert relay.stop.is_set()
+            time.sleep(0.2)
+            # Must remain failed, not overwritten by live from trailing stdout progress
+            assert relay.state == "failed"
+            assert relay.reason == "Destination rejected the stream key — update the YouTube stream key."
         finally:
             manager.stop_all()
 

@@ -84,7 +84,7 @@ VoxBento guarantees that downstream consumers (`program-relay` forwarding to You
 The portal reconciler continuously monitors feed health:
 * **Trigger Conditions:** If the primary feed stalls (0 byte progress for $\ge 5.0$ seconds via `TAKEOVER_STALL_SECS`) or completely disconnects, and `program_backup_enabled` is active with a live connected backup feed, takeover triggers immediately.
 * **Promotion Action:** The reconciler sets `room.program_active_feed = "backup"`, rebinds `program-relay` to the RTSP path of `floor_backup`, and rebinds the STT worker.
-* **Failover Latency:** Takeover completes within 5–7 seconds, preventing YouTube broadcast termination while preserving caption continuity.
+* **Failover Latency:** Takeover completes within 5–7 seconds (combining the 5.0s stall threshold and the 2.0s reconciler polling cycle), preventing broadcast disruption while preserving caption continuity.
 
 ### 4. Anti-Flapping Protection
 If the primary encoder recovers or reconnects while the backup feed is actively carrying the broadcast, VoxBento **does not automatically revert** to the primary feed. Automatic failback during a live event creates dangerous stream flapping and multiple YouTube buffering interruptions.

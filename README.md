@@ -154,9 +154,9 @@ and [registration protection](docs/registration-protection.md) for signup contro
 docker compose up -d --build
 ```
 
-To enable SRT contribution ingest on port `8890/udp`, apply the SRT Compose overlay:
+To enable SRT contribution ingest on port `8890/udp`, add `docker-compose.srt.yml` to `COMPOSE_FILE` in your `.env` (recommended), or include all active overlays:
 ```bash
-docker compose -f docker-compose.yml -f docker-compose.srt.yml up -d --build
+docker compose -f docker-compose.yml [-f docker-compose.relay.yml] -f docker-compose.srt.yml up -d --build
 ```
 
 > **Deployment, Upgrades, and Rollback Procedures:**

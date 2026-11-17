@@ -52,7 +52,7 @@ TERMINATE_TIMEOUT_SECS = 3.0
 # Fatal errors indicate a misconfiguration that retrying cannot fix; the relay halts on these.
 FATAL_ERRORS = (
     (
-        re.compile(r"(?i)401|403|unauthori[sz]ed|forbidden|access denied|stream.*key.*invalid"),
+        re.compile(r"(?i)\b(?:401|403)\b|unauthori[sz]ed|forbidden|access denied|stream.*key.*invalid"),
         "Destination rejected the stream key — update the YouTube stream key.",
     ),
     (
@@ -66,8 +66,8 @@ TRANSIENT_ERRORS = (
         re.compile(r"(?i)connection refused|timed out|no route|network is unreachable|name or service"),
         "Destination temporarily unreachable.",
     ),
-    (re.compile(r"(?i)tls|ssl|certificate|handshake"), "TLS handshake with the destination failed."),
     (re.compile(r"(?i)broken pipe|connection reset|eof"), "Connection dropped by peer."),
+    (re.compile(r"(?i)tls|ssl|certificate|handshake"), "TLS handshake with the destination failed."),
     (
         re.compile(r"(?i)rtsp|404 not found|server returned 404"),
         "Floor stream unavailable at the media server.",
@@ -351,6 +351,8 @@ class RelayManager:
                 # A destination that stops reading blocks FFmpeg's writes: bytes stop growing
                 # although the process is alive. Treat that as not forwarding and reconnect.
                 while process.poll() is None and not relay.stop.wait(0.25):
+                    if relay.state == "failed":
+                        return
                     limit = self.stall_secs if relay.forwarding else self.start_timeout_secs
                     if time.monotonic() - relay.last_progress > limit:
                         relay.stalled = True
@@ -364,6 +366,8 @@ class RelayManager:
             threading.Thread(target=watchdog, daemon=True).start()
             assert process.stdout is not None
             for line in process.stdout:
+                if relay.stop.is_set() or relay.state == "failed":
+                    continue
                 key, _, value = line.strip().partition("=")
                 if key == "out_time_us" and value.lstrip("-").isdigit():
                     relay.out_time_us = max(relay.out_time_us, int(value))
@@ -374,7 +378,12 @@ class RelayManager:
                     if not first:
                         relay.forwarding = True
                         relay.last_progress = time.monotonic()
-                        if relay.state != "live" and not relay.stalled:
+                        if (
+                            relay.state != "live"
+                            and not relay.stalled
+                            and not relay.stop.is_set()
+                            and relay.state != "failed"
+                        ):
                             relay.state, relay.reason = "live", "Relaying the program feed to the destination."
                             attempt = 0
             process.wait()
