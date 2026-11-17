@@ -9,7 +9,7 @@ from typing import Annotated, Any
 from fastapi import APIRouter, Depends, Header, HTTPException, Query, Request, status
 from fastapi.responses import PlainTextResponse
 from pydantic import BaseModel, Field, field_validator
-from sqlalchemy import select, update
+from sqlalchemy import and_, or_, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from portal.auth import coordinates_room, load_membership_scope, require_oauth_scope
@@ -1128,6 +1128,8 @@ class TranscriptExportResponse(BaseModel):
     language_code: str = Field(description="Language code of source transcript")
     target_lang: str | None = Field(default=None, description="Target translation language code if requested")
     segments: list[TranscriptExportItem] = Field(description="Chronological transcript segments")
+    has_more: bool = Field(default=False, description="True if more segments exist beyond the requested limit")
+    next_cursor: str | None = Field(default=None, description="Continuation cursor for fetching subsequent segments")
 
 
 def _to_utc(dt: datetime | None) -> datetime | None:
@@ -1287,7 +1289,15 @@ async def export_transcript(
     before: datetime | None = Query(None, description="Filter segments created before this UTC datetime"),
     start_time: datetime | None = Query(None, description="Alias for after"),
     end_time: datetime | None = Query(None, description="Alias for before"),
-    limit: int = Query(1000, ge=1, le=5000, description="Maximum number of segments to export"),
+    after_id: int | None = Query(
+        None,
+        ge=1,
+        description="Optional segment ID tie-breaker for continuation when created_at matches after/start_time",
+    ),
+    cursor: str | None = Query(
+        None, description="Continuation cursor ('<iso_timestamp>_<id>' or '<id>') from previous response"
+    ),
+    limit: int | None = Query(None, ge=1, description="Optional maximum number of segments to export (default: all)"),
     accept: str | None = Header(
         None, description="Content negotiation header (e.g. text/vtt, text/srt, application/x-subrip)"
     ),
@@ -1297,8 +1307,8 @@ async def export_transcript(
     """Export source transcript segments or translations for a room booth in chronological order.
 
     Supports JSON (default), WebVTT (text/vtt), and SubRip (text/plain, text/srt, application/x-subrip).
-    Results can be filtered by time range (after/start_time, before/end_time)
-    and bounded by limit.
+    By default, exports the complete transcript without truncation. Results can be filtered by time range
+    (after/start_time, before/end_time) and optionally bounded by limit with cursor/after_id continuation.
     """
     target_lang = target_lang if isinstance(target_lang, str) else None
 
@@ -1325,48 +1335,90 @@ async def export_transcript(
 
     raw_after = after if isinstance(after, datetime) else (start_time if isinstance(start_time, datetime) else None)
     raw_before = before if isinstance(before, datetime) else (end_time if isinstance(end_time, datetime) else None)
+    parsed_after_id = after_id if isinstance(after_id, int) and after_id >= 1 else None
+    parsed_limit = limit if isinstance(limit, int) and limit >= 1 else None
+
+    if cursor and isinstance(cursor, str):
+        cursor_clean = cursor.strip()
+        if "_" in cursor_clean:
+            ts_part, _, id_part = cursor_clean.rpartition("_")
+            try:
+                if not raw_after:
+                    raw_after = datetime.fromisoformat(ts_part)
+                if parsed_after_id is None and id_part.isdigit():
+                    parsed_after_id = int(id_part)
+            except (ValueError, TypeError):
+                pass
+        elif cursor_clean.isdigit() and parsed_after_id is None:
+            parsed_after_id = int(cursor_clean)
+
     after_dt = _to_utc(raw_after)
     before_dt = _to_utc(raw_before)
 
-    limit_val = limit if isinstance(limit, int) else 1000
-    safe_limit = min(max(1, limit_val), 5000)
+    conditions = [
+        TranscriptSegment.room_id == target_room_id,
+        TranscriptSegment.language_code == language_code,
+    ]
+    if after_dt and parsed_after_id is not None:
+        conditions.append(
+            or_(
+                TranscriptSegment.created_at > after_dt,
+                and_(
+                    TranscriptSegment.created_at == after_dt,
+                    TranscriptSegment.id > parsed_after_id,
+                ),
+            )
+        )
+    elif after_dt:
+        conditions.append(TranscriptSegment.created_at > after_dt)
+    elif parsed_after_id is not None:
+        conditions.append(TranscriptSegment.id > parsed_after_id)
+
+    if before_dt:
+        conditions.append(TranscriptSegment.created_at < before_dt)
 
     if target_lang:
         stmt = (
             select(TranscriptSegment, TranscriptTranslation)
             .join(TranscriptSegment, TranscriptTranslation.segment_id == TranscriptSegment.id)
             .where(
-                TranscriptSegment.room_id == target_room_id,
-                TranscriptSegment.language_code == language_code,
+                *conditions,
                 TranscriptTranslation.language_code == target_lang,
             )
             .order_by(TranscriptSegment.created_at, TranscriptSegment.id)
-            .limit(safe_limit)
         )
-        if after_dt:
-            stmt = stmt.where(TranscriptSegment.created_at > after_dt)
-        if before_dt:
-            stmt = stmt.where(TranscriptSegment.created_at < before_dt)
+        if parsed_limit is not None:
+            stmt = stmt.limit(parsed_limit + 1)
 
         result = await db.execute(stmt)
-        items = [SimpleNamespace(id=seg.id, text=tr.text, created_at=seg.created_at) for seg, tr in result.all()]
+        all_rows = result.all()
+        if parsed_limit is not None and len(all_rows) > parsed_limit:
+            has_more = True
+            rows = all_rows[:parsed_limit]
+        else:
+            has_more = False
+            rows = all_rows
+
+        items = [SimpleNamespace(id=seg.id, text=tr.text, created_at=seg.created_at) for seg, tr in rows]
     else:
-        stmt = (
-            select(TranscriptSegment)
-            .where(
-                TranscriptSegment.room_id == target_room_id,
-                TranscriptSegment.language_code == language_code,
-            )
-            .order_by(TranscriptSegment.created_at, TranscriptSegment.id)
-            .limit(safe_limit)
-        )
-        if after_dt:
-            stmt = stmt.where(TranscriptSegment.created_at > after_dt)
-        if before_dt:
-            stmt = stmt.where(TranscriptSegment.created_at < before_dt)
+        stmt = select(TranscriptSegment).where(*conditions).order_by(TranscriptSegment.created_at, TranscriptSegment.id)
+        if parsed_limit is not None:
+            stmt = stmt.limit(parsed_limit + 1)
 
         result = await db.execute(stmt)
-        items = result.scalars().all()
+        all_rows = result.scalars().all()
+        if parsed_limit is not None and len(all_rows) > parsed_limit:
+            has_more = True
+            items = all_rows[:parsed_limit]
+        else:
+            has_more = False
+            items = all_rows
+
+    if has_more and items:
+        last_item = items[-1]
+        next_cursor = f"{_to_utc(last_item.created_at).isoformat()}_{last_item.id}"
+    else:
+        next_cursor = None
 
     format_str = format if isinstance(format, str) else None
     accepted_types = _parse_accept_header(accept)
@@ -1392,10 +1444,16 @@ async def export_transcript(
                 resolved_format = "json"
                 break
 
+    headers: dict[str, str] = {}
+    if has_more:
+        headers["X-Has-More"] = "true"
+    if next_cursor:
+        headers["X-Next-Cursor"] = next_cursor
+
     if resolved_format == "vtt":
-        return PlainTextResponse(_to_vtt(items), media_type="text/vtt")
+        return PlainTextResponse(_to_vtt(items), media_type="text/vtt", headers=headers)
     if resolved_format == "srt":
-        return PlainTextResponse(_to_srt(items), media_type=srt_media_type)
+        return PlainTextResponse(_to_srt(items), media_type=srt_media_type, headers=headers)
 
     return {
         "event_slug": event_slug,
@@ -1410,6 +1468,8 @@ async def export_transcript(
             }
             for item in items
         ],
+        "has_more": has_more,
+        "next_cursor": next_cursor,
     }
 
 

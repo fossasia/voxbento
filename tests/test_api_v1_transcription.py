@@ -218,6 +218,8 @@ async def test_export_returns_segments_for_a_booth(event):
             {"id": 1, "text": "Hello world", "created_at": now.isoformat()},
             {"id": 2, "text": "Second segment", "created_at": now.isoformat()},
         ],
+        "has_more": False,
+        "next_cursor": None,
     }
 
 
@@ -289,6 +291,8 @@ async def test_export_returns_translations_when_target_lang_given(event):
         "segments": [
             {"id": 5, "text": "Bonjour le monde", "created_at": now.isoformat()},
         ],
+        "has_more": False,
+        "next_cursor": None,
     }
 
 
@@ -775,3 +779,110 @@ async def test_export_explicit_format_preserves_behavior_with_accept(event):
     )
     assert res2.media_type == "text/vtt"
     assert "WEBVTT" in res2.body.decode("utf-8")
+
+
+@pytest.mark.anyio
+async def test_export_more_than_1000_segments_without_truncation(real_db):
+    """Verify default export returns >1,000 segments completely without silent truncation."""
+    event = await create_event(real_db, slug=EVENT_SLUG, display_name="PyCon 2026 Large")
+    room = await create_room(real_db, event_id=event.id, display_name="Large Hall")
+    await create_booth(real_db, event_id=event.id, room_id=room.id, language_code="en", language_name="English")
+
+    t0 = datetime(2026, 10, 24, 10, 0, 0, tzinfo=timezone.utc)
+    total_count = 1005
+    segments = [
+        TranscriptSegment(
+            room_id=room.id,
+            language_code="en",
+            text=f"Utterance {i}",
+            created_at=t0 + timedelta(seconds=i),
+        )
+        for i in range(total_count)
+    ]
+    real_db.add_all(segments)
+    await real_db.flush()
+
+    # 1. JSON complete export returns all 1,005 rows with has_more=False
+    res_json = await api_v1.export_transcript(EVENT_SLUG, room.id, "en", db=real_db, token=object())
+    assert len(res_json["segments"]) == total_count
+    assert res_json["has_more"] is False
+    assert res_json["next_cursor"] is None
+    assert res_json["segments"][0]["text"] == "Utterance 0"
+    assert res_json["segments"][-1]["text"] == f"Utterance {total_count - 1}"
+
+    # 2. WebVTT complete export includes first and last cues
+    res_vtt = await api_v1.export_transcript(EVENT_SLUG, room.id, "en", format="vtt", db=real_db, token=object())
+    vtt_body = res_vtt.body.decode("utf-8")
+    assert "Utterance 0" in vtt_body
+    assert f"Utterance {total_count - 1}" in vtt_body
+    assert res_vtt.headers.get("X-Has-More") is None
+
+
+@pytest.mark.anyio
+async def test_export_continuation_with_equal_timestamps(real_db):
+    """Verify cursor and after_id continuation uses ID tie-breaker when created_at timestamps collide."""
+    event = await create_event(real_db, slug=EVENT_SLUG, display_name="PyCon 2026 Ties")
+    room = await create_room(real_db, event_id=event.id, display_name="Tie Hall")
+    await create_booth(real_db, event_id=event.id, room_id=room.id, language_code="en", language_name="English")
+
+    t0 = datetime(2026, 10, 24, 10, 0, 0, tzinfo=timezone.utc)
+    t1 = datetime(2026, 10, 24, 10, 1, 0, tzinfo=timezone.utc)
+    t2 = datetime(2026, 10, 24, 10, 2, 0, tzinfo=timezone.utc)
+
+    s1 = TranscriptSegment(room_id=room.id, language_code="en", text="Segment 1", created_at=t0)
+    s2 = TranscriptSegment(room_id=room.id, language_code="en", text="Segment 2 tied", created_at=t1)
+    s3 = TranscriptSegment(room_id=room.id, language_code="en", text="Segment 3 tied", created_at=t1)
+    s4 = TranscriptSegment(room_id=room.id, language_code="en", text="Segment 4", created_at=t2)
+    real_db.add_all([s1, s2, s3, s4])
+    await real_db.flush()
+
+    # Page 1: limit=2 returns s1 and s2, has_more=True, cursor bound to s2
+    p1 = await api_v1.export_transcript(EVENT_SLUG, room.id, "en", limit=2, db=real_db, token=object())
+    assert [s["text"] for s in p1["segments"]] == ["Segment 1", "Segment 2 tied"]
+    assert p1["has_more"] is True
+    expected_cursor = f"{t1.isoformat()}_{s2.id}"
+    assert p1["next_cursor"] == expected_cursor
+
+    # Page 2 via next_cursor: continues after (t1, s2.id), returning s3 and s4 without dropping s3
+    p2 = await api_v1.export_transcript(
+        EVENT_SLUG, room.id, "en", cursor=p1["next_cursor"], limit=2, db=real_db, token=object()
+    )
+    assert [s["text"] for s in p2["segments"]] == ["Segment 3 tied", "Segment 4"]
+    assert p2["has_more"] is False
+    assert p2["next_cursor"] is None
+
+    # Page 2 via explicit after and after_id yields identical continuation
+    p2_explicit = await api_v1.export_transcript(
+        EVENT_SLUG, room.id, "en", after=t1, after_id=s2.id, db=real_db, token=object()
+    )
+    assert [s["text"] for s in p2_explicit["segments"]] == ["Segment 3 tied", "Segment 4"]
+
+
+@pytest.mark.anyio
+async def test_export_vtt_and_srt_headers_when_truncated(event):
+    """Verify WebVTT and SRT responses expose X-Has-More and X-Next-Cursor headers when limited."""
+    booth = SimpleNamespace(id=10, room_id=ROOM_ID, language_code="en")
+    t0 = datetime(2026, 10, 24, 12, 0, 0, tzinfo=timezone.utc)
+    t1 = t0 + timedelta(seconds=5)
+    segments = [
+        SimpleNamespace(id=1, text="First cue", language_code="en", created_at=t0),
+        SimpleNamespace(id=2, text="Second cue", language_code="en", created_at=t1),
+    ]
+
+    db_vtt = _db(_result(first=event), _result(first=booth), _result(all_=segments))
+    res_vtt = await api_v1.export_transcript(
+        EVENT_SLUG, ROOM_ID, "en", format="vtt", limit=1, db=db_vtt, token=object()
+    )
+    assert res_vtt.headers.get("X-Has-More") == "true"
+    assert res_vtt.headers.get("X-Next-Cursor") == f"{t0.isoformat()}_1"
+    assert "First cue" in res_vtt.body.decode("utf-8")
+    assert "Second cue" not in res_vtt.body.decode("utf-8")
+
+    db_srt = _db(_result(first=event), _result(first=booth), _result(all_=segments))
+    res_srt = await api_v1.export_transcript(
+        EVENT_SLUG, ROOM_ID, "en", format="srt", limit=1, db=db_srt, token=object()
+    )
+    assert res_srt.headers.get("X-Has-More") == "true"
+    assert res_srt.headers.get("X-Next-Cursor") == f"{t0.isoformat()}_1"
+    assert "First cue" in res_srt.body.decode("utf-8")
+    assert "Second cue" not in res_srt.body.decode("utf-8")
