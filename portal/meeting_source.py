@@ -28,7 +28,7 @@ from portal.database import get_session
 from portal.globals import get_http_client
 from portal.models import Event, Room
 from portal.outage_log import OutageLog
-from portal.program_ingest import MediaPath, configure_source, media_paths, pipeline_problem, room_lock
+from portal.program_ingest import MediaPath, configure_source, floor_workers, media_paths, pipeline_problem, room_lock
 from portal.transcription.process import audio_progress
 from portal.transcription.providers.base import ProviderConfig, ProviderEnum, get_api_key
 from portal.transcription.worker import start_transcription_worker, stop_transcription_worker
@@ -487,10 +487,10 @@ async def _stop_stale_agents(agents: dict[str, dict]) -> None:
 
 
 async def _stop_deleted_event_workers(room_ids: set[int]) -> None:
-    """Stop the floor worker of rooms whose event was deleted.
+    """Stop the floor worker of rooms that were deleted, or whose event was.
 
     A delete can commit after a reconcile pass already read the room and started its worker, so
-    the reconciler cleans up rather than the delete: once the event is deleted it no longer sees the room.
+    the reconciler cleans up rather than the delete: once the room or its event is deleted it no longer sees the room.
     """
     if not room_ids:
         return
@@ -500,8 +500,19 @@ async def _stop_deleted_event_workers(room_ids: set[int]) -> None:
                 select(Room.id, Event.slug).join(Event).where(Room.id.in_(room_ids), Event.deleted_at.is_not(None))
             )
         ).all()
-    for room_id, slug in rows:
-        await _stop_worker(health.get(room_id) or AgentHealth(), make_booth_id(slug, room_id, "floor"))
+        slugs = dict(
+            (await session.execute(select(Room.id, Event.slug).join(Event).where(Room.id.in_(room_ids)))).all()
+        )
+    booth_ids = {room_id: make_booth_id(slug, room_id, "floor") for room_id, slug in rows}
+    # The admin pages delete the room outright, leaving no row to read its slug from; the running worker has it.
+    # SQLite can give that id to a new room in another event, so a different booth id also means deleted.
+    booth_ids.update(
+        (room_id, booth_id)
+        for room_id, booth_id in floor_workers().items()
+        if room_id in room_ids and (room_id not in slugs or booth_id != make_booth_id(slugs[room_id], room_id, "floor"))
+    )
+    for room_id, booth_id in booth_ids.items():
+        await _stop_worker(health.get(room_id) or AgentHealth(), booth_id)
 
 
 async def reconcile_once() -> None:

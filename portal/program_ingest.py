@@ -735,13 +735,8 @@ async def reconcile_processing(
         current.processing_state, current.processing_reason = current.state, current.reason
 
 
-async def stop_deleted_event_workers() -> None:
-    """Stop the floor worker of rooms whose event was deleted.
-
-    A delete can commit after a reconcile pass already read the room and started its worker, and
-    ``health`` can lose the room before that (``close_sender_session``), so find the workers among
-    the running ones instead: once the event is deleted the reconciler no longer sees the room.
-    """
+def floor_workers() -> dict[int, str]:
+    """Booth ids of the running floor workers, by room id."""
     booth_ids: dict[int, str] = {}
     for booth_id in list(active_workers):
         try:
@@ -750,16 +745,32 @@ async def stop_deleted_event_workers() -> None:
             continue
         if language_code == "floor":
             booth_ids[room_id] = booth_id
+    return booth_ids
+
+
+async def stop_deleted_event_workers() -> None:
+    """Stop the floor worker of rooms that were deleted, or whose event was.
+
+    A delete can commit after a reconcile pass already read the room and started its worker, and
+    ``health`` can lose the room before that (``close_sender_session``), so find the workers among
+    the running ones instead: once the room or its event is deleted the reconciler no longer sees it.
+    The admin pages delete the rows outright, so a room with no row left counts as deleted too.
+    """
+    booth_ids = floor_workers()
     if not booth_ids:
         return
     async with get_session() as session:
-        deleted_room_ids = (
-            await session.scalars(
-                select(Room.id).join(Event).where(Room.id.in_(booth_ids), Event.deleted_at.is_not(None))
-            )
-        ).all()
-    for room_id in deleted_room_ids:
-        await stop_room_worker(health.get(room_id) or IngestHealth(), booth_ids[room_id], room_id)
+        live = dict(
+            (
+                await session.execute(
+                    select(Room.id, Event.slug).join(Event).where(Room.id.in_(booth_ids), Event.deleted_at.is_(None))
+                )
+            ).all()
+        )
+    for room_id, booth_id in sorted(booth_ids.items()):
+        # SQLite can give a deleted room's id to a new room in another event, so match the whole booth id.
+        if room_id not in live or booth_id != make_booth_id(live[room_id], room_id, "floor"):
+            await stop_room_worker(health.get(room_id) or IngestHealth(), booth_id, room_id)
 
 
 async def release_deleted_event_sessions() -> None:
