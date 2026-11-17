@@ -11,6 +11,7 @@
 events (1)
   └── rooms (n)  ─── relay_booth_id → booths.id (nullable FK, SET NULL)
         └── room_memberships (n) ─── user_id → users.id
+        └── meeting_reports (n) ─── event_id → events.id
   └── booths (n)
         └── invite_tokens (n)
         └── booth_memberships (n) ─── user_id → users.id
@@ -308,7 +309,8 @@ Tracks which languages the translation worker should generate for a given room o
 | 042 | `042_add_booth_live_state.py` | `booth_live_state` table (TD-03) |
 | 043 | `043_add_live_demo_settings.py` | `live_demo_settings` singleton for the home-page live demo |
 | 044 | `044_youtube_connections.py` | `youtube_connections` table (one per event), `rooms.youtube_broadcast_id`, `rooms.youtube_stream_id` (#1087) |
-| 045 | `045_add_sarvam_api_key.py` | events.sarvam_api_key (Text nullable, Fernet-encrypted) (#1173) |
+| 045 | `045_meeting_analysis.py` | `events.meeting_analysis_*`, `meeting_reports` table (#1080) |
+| 046 | `046_add_sarvam_api_key.py` | events.sarvam_api_key (Text nullable, Fernet-encrypted) (#1173) |
 
 Run migrations: `uv run alembic upgrade head`
 
@@ -401,6 +403,25 @@ No links or email content are shown in the administration history.
 `show_logo` (default true) and an optional https `logo_url` (empty means the
 VoxBento logo served by the site). No row means the defaults.
 
+## Migration 045 — meeting reports (#1080)
+
+Adds `events.meeting_analysis_enabled` (default false),
+`events.meeting_analysis_provider` (default `local`) and
+`events.meeting_analysis_model` (empty means the provider's recommended model),
+and the `meeting_reports` table: `event_id`/`room_id` (CASCADE), `channel_id`
+(`floor` or a booth language code, matching `transcript_segments.language_code`),
+`channel_label`, `language_code`, `provider`, `model`, `status`
+(`pending` → `running` → `done` | `failed`), `error`, `title`, `summary`
+(the overview), `sections_json` (`[{heading, points}]`), `last_segment_id` (the
+last transcript segment the report read), `session_started_at`/`session_ended_at`
+(the session the report covers: a stretch of segments with no gap longer than
+30 minutes), `covered_until` (the last line the report read, earlier than the
+session end when the session was too long), `segment_count`,
+`truncated`, `tokens_used`, `created_at`, `generated_at`. Index
+`(room_id, created_at)` and partial unique index `uq_meeting_reports_room_in_progress`
+(one `pending`/`running` report per room). CRUD: `create_meeting_report`, `list_meeting_reports`,
+`get_meeting_report`. See `docs/meeting-analysis.md`.
+
 ## Migration 043 — home-page live demo settings
 
 `live_demo_settings` holds one row (id 1), edited at `/admin/live-demo/`: `enabled`,
@@ -448,7 +469,7 @@ Final floor sequence increments atomically and survives worker/portal restarts.
 Raw credentials are only returned at create/rotate. YouTube keys exist only in
 relay mode, encrypted (migration 028).
 
-## Migration 045 — Sarvam AI API key (#1173)
+## Migration 046 — Sarvam AI API key (#1173)
 
 Adds nullable `events.sarvam_api_key` (`Text`, mapped as `encrypted_sarvam_api_key`)
 stored Fernet-encrypted via `portal.crypto.encrypt_val` and read through

@@ -155,6 +155,7 @@ def is_supported_sarvam_language(language_code: str | None) -> bool:
 def build_sarvam_ws_url(language_code: str | None, model_variant: str | None) -> str:
     """Construct the Sarvam streaming WebSocket URL with verified query parameters."""
     model = validate_sarvam_model(model_variant)
+    # TODO(#1164): Pass room/booth glossary terms via Sarvam's 'prompt' parameter once glossary integration is available.
     params = {
         "language-code": map_sarvam_language_code(language_code),
         "model": model,
