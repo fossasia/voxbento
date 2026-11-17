@@ -1736,6 +1736,17 @@ class TranslationLanguageError(HTTPException):
     """A translation-language validation error that can be shown on its settings form."""
 
 
+BOOTH_IN_USE_MESSAGE = (
+    "Someone is in this booth or it is on air. Change its language code once it is off air and everyone has left."
+)
+
+
+def _booth_in_use(booth_id: str) -> bool:
+    """Whether anyone is in the booth (or reconnecting to it), it is on air, or its captions are running."""
+    state = booths.get_booth_sync(booth_id)
+    return booth_id in active_workers or (state is not None and (bool(state.participants) or state.broadcast_unlocked))
+
+
 async def _translation_form_response(
     request: Request, error: TranslationLanguageError, event_id: int, room_id: int, booth_id: int | None = None
 ):
@@ -2869,10 +2880,15 @@ async def admin_booth_translation_settings(
     dependencies=[Depends(require_event_owner), Depends(require_admin_csrf)],
 )
 async def admin_edit_booth(request: Request, event_id: int, room_id: int, booth_id: int):
-    """Update booth identity only when its translation model supports the new language."""
+    """Update booth identity only when its translation model supports the new language.
+
+    The language code is also the booth's live identity (its sockets, stream path and invite
+    sessions), so it can't change while anyone is using the booth.
+    """
     form = await request.form()
     language_name = form.get("language_name", "").strip()
     language_code_raw = form.get("language_code", "").strip()
+    old_booth_key: tuple[str, int, str] | None = None
     try:
         async with get_session() as session:
             booth = await booth_in_room(session, event_id, room_id, booth_id)
@@ -2883,6 +2899,11 @@ async def admin_edit_booth(request: Request, event_id: int, room_id: int, booth_
                     language_code = validate_language_code(language_code_raw)
                 except ValueError as e:
                     raise HTTPException(status_code=400, detail=str(e))
+                if language_code != booth.language_code:
+                    event = await get_event_by_id(session, event_id)
+                    old_booth_key = (event.slug, room_id, booth.language_code)
+                    if _booth_in_use(make_booth_id(*old_booth_key)):
+                        raise TranslationLanguageError(status_code=409, detail=BOOTH_IN_USE_MESSAGE)
                 # The booth's language is what its translation model translates from.
                 if language_code != booth.language_code and booth.translation_enabled:
                     _require_translatable(
@@ -2894,6 +2915,11 @@ async def admin_edit_booth(request: Request, event_id: int, room_id: int, booth_
             await session.flush()
     except TranslationLanguageError as error:
         return await _translation_form_response(request, error, event_id, room_id, booth_id)
+    if old_booth_key is not None:
+        old_booth_id = make_booth_id(*old_booth_key)
+        # Nobody was in it, but its chat is still in memory under the old code.
+        if booths.get_booth_sync(old_booth_id) is not None and not _booth_in_use(old_booth_id):
+            await booths.remove_booth(*old_booth_key)
     return safe_redirect(
         url=_booth_saved_url(request, event_id, room_id, booth_id, "settings"),
         status_code=status.HTTP_303_SEE_OTHER,
