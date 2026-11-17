@@ -48,7 +48,7 @@ from portal.transcription.providers.local import get_model as get_whisper_model
 from portal.transcription.providers.local import is_model_loaded as whisper_loaded
 from portal.translations.engine import Language, TranslationContext
 from portal.translations.providers.local import LocalProvider as LocalTranslator
-from portal.translations.providers.local import get_model_and_tokenizer
+from portal.translations.providers.local import get_download_progress, get_model_and_tokenizer, trigger_download
 from portal.translations.providers.local import is_model_loaded as translator_loaded
 from portal.translations.registry import NLLB_200_DISTILLED_600M
 from portal.translations.vocabulary import (
@@ -768,6 +768,8 @@ LOCAL_ENGINES = Engines(transcribe=_local_transcribe, translate=_local_translate
 
 
 _warm_lock = asyncio.Lock()
+# How often warm-up checks on a model download someone else started.
+_DOWNLOAD_POLL_SECONDS = 1.0
 
 
 def models_ready(demo: DemoSettings) -> bool:
@@ -797,7 +799,14 @@ async def warm_up(demo: DemoSettings) -> None:
         if models_ready(demo):
             return
         await asyncio.to_thread(get_whisper_model, demo.whisper_model)
-        await asyncio.to_thread(get_model_and_tokenizer, settings.live_demo_translation_model)
+        translation_model = settings.live_demo_translation_model
+        if get_download_progress(translation_model).get("status") != "completed":
+            # Loading never downloads an NLLB model (#1191); the demo's model is the operator's own setting.
+            await asyncio.to_thread(trigger_download, translation_model)
+        while get_download_progress(translation_model).get("status") == "downloading":
+            # An Admin's download from the Translation models page is still running.
+            await asyncio.sleep(_DOWNLOAD_POLL_SECONDS)
+        await asyncio.to_thread(get_model_and_tokenizer, translation_model)
         if demo.voice:
             # A short synthesis loads the engine and the English voice style.
             await _local_synthesize("Hello.", "en")
