@@ -5,10 +5,12 @@ import hashlib
 import hmac
 import json
 import logging
+import socket
 import time
 from datetime import datetime, timedelta, timezone
 
 import httpx
+from fastapi import HTTPException
 from sqlalchemy import select, update
 from sqlalchemy.exc import SQLAlchemyError
 
@@ -51,6 +53,30 @@ def sign_payload(secret: str, payload_str: str, timestamp: int) -> str:
     return mac.hexdigest()
 
 
+async def post_to_vetted_ip(
+    client: httpx.AsyncClient, target_url: str, vetted_ips: list[str] | None, content: str, headers: dict
+) -> httpx.Response:
+    """POST to the IPs vetted by validate_ssrf, keeping the original Host header and TLS hostname."""
+    if vetted_ips is None:
+        return await client.post(target_url, content=content, headers=headers)
+
+    url = httpx.URL(target_url)
+    headers = {**headers, "Host": url.netloc.decode("ascii")}
+    extensions = {"sni_hostname": url.raw_host.decode("ascii")}
+    # One address per family falls back across IPv6 and IPv4 without letting a name with
+    # many unreachable records hold the worker for one connect timeout each.
+    first_per_family: dict[bool, str] = {}
+    for ip in vetted_ips:
+        first_per_family.setdefault(":" in ip, ip)
+    *fallbacks, last = first_per_family.values()
+    for ip in fallbacks:
+        try:
+            return await client.post(url.copy_with(host=ip), content=content, headers=headers, extensions=extensions)
+        except (httpx.ConnectError, httpx.ConnectTimeout):
+            continue
+    return await client.post(url.copy_with(host=last), content=content, headers=headers, extensions=extensions)
+
+
 async def process_delivery(client: httpx.AsyncClient, db, delivery: WebhookDelivery) -> None:
     result = await db.execute(select(WebhookSubscription).where(WebhookSubscription.id == delivery.subscription_id))
     sub = result.scalars().first()
@@ -60,12 +86,15 @@ async def process_delivery(client: httpx.AsyncClient, db, delivery: WebhookDeliv
         delivery.last_error = "Subscription is inactive or deleted."
         return
 
+    last_error = None
     try:
-        validate_ssrf(sub.target_url)
-    except Exception as e:
-        delivery.status = "dead"
-        delivery.last_error = f"SSRF Validation failed at dispatch: {e}"
-        return
+        vetted_ips = await validate_ssrf(sub.target_url)
+    except HTTPException as e:
+        if not isinstance(e.__cause__, socket.gaierror):
+            delivery.status = "dead"
+            delivery.last_error = f"SSRF Validation failed at dispatch: {e}"
+            return
+        last_error = f"DNS resolution failed: {e.__cause__}"
 
     envelope = {
         "delivery_id": delivery.id,
@@ -81,12 +110,12 @@ async def process_delivery(client: httpx.AsyncClient, db, delivery: WebhookDeliv
 
     delivery.attempt_count += 1
     success = False
-    last_error = None
 
     try:
-        response = await client.post(sub.target_url, content=payload_str, headers=headers)
-        response.raise_for_status()
-        success = True
+        if last_error is None:
+            response = await post_to_vetted_ip(client, sub.target_url, vetted_ips, payload_str, headers)
+            response.raise_for_status()
+            success = True
     except httpx.RequestError as e:
         last_error = f"Request error: {str(e)}"
     except httpx.HTTPStatusError as e:
@@ -141,7 +170,12 @@ async def process_delivery(client: httpx.AsyncClient, db, delivery: WebhookDeliv
 
 async def webhook_worker_loop():
     """Background polling worker for webhooks."""
-    async with httpx.AsyncClient(timeout=5.0) as client:
+    # Delivery connects to the IP vetted by validate_ssrf. Pooled connections are keyed by
+    # that IP, so keep-alive would reuse a TLS session verified for one webhook hostname for
+    # another. The explicit transport also skips environment proxies, which would tunnel to
+    # the IP and verify TLS against it.
+    transport = httpx.AsyncHTTPTransport(limits=httpx.Limits(max_keepalive_connections=0))
+    async with httpx.AsyncClient(timeout=5.0, transport=transport) as client:
         while True:
             try:
                 claimed = False

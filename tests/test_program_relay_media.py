@@ -36,7 +36,7 @@ from fastapi_app import app
 from portal import globals as pg
 from portal import program_ingest as ingest
 from portal import program_relay as relay
-from portal.auth import create_user_token
+from portal.auth import create_user_token, decode_token, generate_admin_csrf_token
 from portal.config import settings
 from portal.database import configure, create_user, dispose, get_session, init_db
 from portal.models import Event, Room
@@ -249,7 +249,10 @@ class Stack:
         response = await self.client.post(
             self.admin_url(room, "program-ingest"), json={"action": "enable", "mode": "rtmps_relay"}
         )
-        assert response.status_code == 200, response.text
+        assert response.status_code == 200, (
+            f"status={response.status_code}, location={response.headers.get('location')}, "
+            f"body={response.text}"
+        )
         return response.json()["secret"], response.json()["stream_key"]
 
     async def set_destination(self, room: Room, port: int) -> None:
@@ -257,7 +260,10 @@ class Stack:
             self.admin_url(room, "program-relay"),
             json={"server_url": f"rtmps://127.0.0.1:{port}/sink", "stream_key": SINK_KEY},
         )
-        assert response.status_code == 200, response.text
+        assert response.status_code == 200, (
+            f"status={response.status_code}, location={response.headers.get('location')}, "
+            f"body={response.text}"
+        )
 
     async def publish(self, url: str, *rtmp_options: str) -> asyncio.subprocess.Process:
         # "Server" + "/" + "Stream Key" as one URL, H.264 + AAC over RTMPS.
@@ -420,7 +426,12 @@ paths:
                 await asyncio.sleep(0.1)
             else:
                 pytest.fail((tmp_path / "media.log").read_text())
-            client.cookies.set("user_token", create_user_token(user_id=admin.id, email=admin.email, is_admin=True))
+            token = create_user_token(user_id=admin.id, email=admin.email, is_admin=True)
+            session_id = str(decode_token(token)["jti"])
+            csrf_token = generate_admin_csrf_token(session_id)
+            client.cookies.set("user_token", token)
+            client.cookies.set("admin_csrf", csrf_token)
+            client.headers["X-CSRF-Token"] = csrf_token
             stack = Stack(client=client, event=event, rooms=rooms, manager=manager, ports=ports, tmp_path=tmp_path)
             yield stack
     finally:

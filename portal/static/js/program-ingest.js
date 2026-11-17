@@ -1,4 +1,5 @@
 const card = document.getElementById('program-ingest');
+const csrfToken = () => document.querySelector('meta[name="csrf-token"]')?.content || '';
 const status = document.getElementById('program-status');
 const secret = document.getElementById('program-secret');
 const offset = document.getElementById('program-offset');
@@ -291,7 +292,11 @@ card.querySelectorAll('[data-ingest-action]').forEach(button => {
     document.getElementById('program-secret-panel').hidden = true;
     try {
       const response = await fetch(card.dataset.url, {
-        method: 'POST', headers: {'Content-Type': 'application/json'},
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'X-CSRF-Token': csrfToken()
+        },
         body: JSON.stringify({action, sync_offset_ms: Number(offset.value), mode}),
       });
       const data = await readError(response);
@@ -342,7 +347,7 @@ destinationForm.addEventListener('submit', async event => {
   event.preventDefault();
   if (!destinationForm.reportValidity()) return;
   const saved = await changeDestination(() => fetch(card.dataset.relayUrl, {
-    method: 'PUT', headers: {'Content-Type': 'application/json'},
+    method: 'PUT', headers: {'Content-Type': 'application/json', 'X-CSRF-Token': csrfToken()},
     body: JSON.stringify({server_url: relayServer.value.trim() || null, stream_key: relayKey.value.trim()}),
   }), 'YouTube destination update failed');
   if (saved) relayKey.value = '';
@@ -351,7 +356,7 @@ destinationForm.addEventListener('submit', async event => {
 document.getElementById('program-relay-clear').addEventListener('click', async () => {
   if (destinationPending || busy) return;
   if (!window.confirm('Remove the saved YouTube stream key? Forwarding stops and YouTube stops receiving this room.')) return;
-  await changeDestination(() => fetch(card.dataset.relayUrl, {method: 'DELETE'}), 'YouTube destination removal failed');
+  await changeDestination(() => fetch(card.dataset.relayUrl, {method: 'DELETE', headers: {'X-CSRF-Token': csrfToken()}}), 'YouTube destination removal failed');
 });
 
 document.getElementById('program-reveal').addEventListener('click', () => {

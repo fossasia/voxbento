@@ -131,7 +131,7 @@ function renderFloorCaptions(room) {
       const [text, tone] = CAPTION_STATES[data.state] || [String(data.state || 'Unknown').replace(/_/g, ' '), 'is-busy'];
       status.textContent = text;
       status.className = `mc-pill ${tone}`;
-      reason.textContent = data.state === 'stopped' ? '' : data.reason || '';
+      reason.textContent = data.reason || '';
       start.hidden = data.enabled;
       stop.hidden = !data.enabled;
     } catch (err) {
@@ -145,7 +145,10 @@ function renderFloorCaptions(room) {
     start.disabled = true;
     stop.disabled = true;
     try {
-      const res = await fetch(`/api/rooms/${room.id}/floor-transcription/${action}`, { method: 'POST' });
+      const res = await fetch(`/api/rooms/${room.id}/floor-transcription/${action}`, {
+        method: 'POST',
+        headers: { 'X-CSRF-Token': document.querySelector('meta[name="csrf-token"]')?.content || '' },
+      });
       if (!res.ok) {
         const body = await res.json().catch(() => ({}));
         showToast(body.detail || `Couldn't ${action} the floor captions.`, 'error');
@@ -189,7 +192,7 @@ function connectWs(boothId) {
     try { data = JSON.parse(e.data); } catch { return; }
 
     if (data.type === 'booth:state') {
-      entry.state = { ...data.state, room_name: entry.state.room_name };
+      entry.state = { ...data.state, room_name: data.state.room_name ?? entry.state.room_name };
       renderCard(boothId);
     }
     // Silently ignore booth:joined — we do not join as a participant.
@@ -306,7 +309,12 @@ function renderCard(boothId) {
       const name = el('span', 'mc-person-name', p.display_name);
       if (isActive) name.appendChild(el('span', 'mc-person-tag', 'live'));
       row.appendChild(name);
-      row.appendChild(el('span', `mc-pill ${p.mic_active ? 'is-on' : 'is-off'}`, p.mic_active ? 'Speaking' : 'Muted'));
+      if (p.connected === false) {
+        // Their connection dropped; the server keeps their place while they reconnect.
+        row.appendChild(el('span', 'mc-pill is-off', 'Reconnecting…'));
+      } else {
+        row.appendChild(el('span', `mc-pill ${p.mic_active ? 'is-on' : 'is-off'}`, p.mic_active ? 'Speaking' : 'Muted'));
+      }
       list.appendChild(row);
     });
     people.appendChild(list);

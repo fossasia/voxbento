@@ -12,6 +12,7 @@ AudioCallback = Callable[[bytes], Awaitable[None]]
 class TTSProviderEnum(str, enum.Enum):
     DEEPGRAM = "deepgram"
     SUPERTONIC = "supertonic"
+    ELEVENLABS = "elevenlabs"
 
 
 class TTSProvider(ABC):
@@ -36,7 +37,9 @@ class TTSProvider(ABC):
         raise NotImplementedError
 
 
-def get_tts_provider(provider: str, *, deepgram_api_key: str | None = None) -> TTSProvider:
+def get_tts_provider(
+    provider: str, *, deepgram_api_key: str | None = None, elevenlabs_api_key: str | None = None
+) -> TTSProvider:
     """Factory returning a TTS provider instance for the given provider name.
 
     Falls back to Deepgram for unknown provider values to preserve existing
@@ -48,6 +51,11 @@ def get_tts_provider(provider: str, *, deepgram_api_key: str | None = None) -> T
         from portal.tts.providers.supertonic import SupertonicTTSProvider
 
         return SupertonicTTSProvider()
+
+    if provider == TTSProviderEnum.ELEVENLABS.value:
+        from portal.tts.providers.elevenlabs import ElevenLabsTTSProvider
+
+        return ElevenLabsTTSProvider(api_key=elevenlabs_api_key or "")
 
     from portal.tts.providers.deepgram import DeepgramTTSProvider
 

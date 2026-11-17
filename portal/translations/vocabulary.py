@@ -3,14 +3,17 @@ from __future__ import annotations
 import asyncio
 import csv
 import io
+import itertools
 import re
+import unicodedata
+from collections.abc import Iterable
 from dataclasses import dataclass
 
 import pycountry
 from sqlalchemy import or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from portal.models import AIVocabularyEntry
+from portal.models import AIVocabularyEntry, DBBooth, Room
 from portal.translations.prompts import MAX_DESCRIPTION_CHARS, MAX_TERM_CHARS
 
 REQUIRED_COLUMNS = {"source_term", "target_language", "target_term"}
@@ -206,6 +209,169 @@ def _term_matches(entry: AIVocabularyEntry, transcript_text: str) -> bool:
     return needle in haystack
 
 
+# NLLB keeps "[1]" to "[15]" as single tokens and copies them through unchanged in about
+# 95% of segments; "⟦1⟧" is not in its vocabulary and never survives. Matched loosely, so a
+# mangled copy such as "[ 1]", "[01]", "［1］" or "【1】" is caught instead of shown to listeners.
+TERM_PLACEHOLDER = re.compile(r"[\[［【]\s*\d+\s*[\]］】]")
+_SPACED_PLACEHOLDER = re.compile(rf"(\s?)({TERM_PLACEHOLDER.pattern})(\s?)")
+# Chinese and Japanese, which never put a space between two of their characters.
+_CJK_SCRIPTS = ("CJK", "HIRAGANA", "KATAKANA")
+# Scripts written without spaces between words, where a term can start or end anywhere.
+_UNSPACED_SCRIPTS = (*_CJK_SCRIPTS, "THAI", "LAO", "KHMER", "MYANMAR")
+
+
+@dataclass(frozen=True)
+class ProtectedSegment:
+    text: str
+    target_terms: tuple[str, ...]
+    # Placeholder numbers whose target term keeps the glossary's casing, even when it opens a sentence.
+    exact_case: frozenset[int] = frozenset()
+
+
+def _in_word(char: str) -> bool:
+    # Combining marks (accents, Indic vowel signs) are part of the letter they follow.
+    return char.isalnum() or char == "_" or unicodedata.category(char).startswith("M")
+
+
+def _in_scripts(char: str, scripts: tuple[str, ...]) -> bool:
+    return bool(char) and unicodedata.name(char, "").startswith(scripts)
+
+
+def _cuts_word(edge: str, neighbour: str) -> bool:
+    """Whether a match would cut a word apart between its ``edge`` character and the ``neighbour`` outside it."""
+    return _in_word(neighbour) and not any(_in_scripts(char, _UNSPACED_SCRIPTS) for char in (edge, neighbour))
+
+
+def _keeps_case(entry: VocabularyEntryInput | AIVocabularyEntry) -> bool:
+    # "Keep as is" entries (npm -> npm) and case-sensitive ones are written exactly as the glossary says.
+    return entry.case_sensitive or entry.target_term.casefold() == entry.source_term.casefold()
+
+
+# Abbreviations that end in a full stop but rarely end a sentence: titles and "for example" forms.
+# Words such as "etc." that often close a sentence are left out.
+_ABBREVIATIONS = frozenset("dr mr mrs ms prof m mme mlle sr sra srta hr nr ex vs cf vgl bzw".split())
+
+
+def _opens_sentence(before: str) -> bool:
+    """Whether a placeholder that follows ``before`` starts a sentence of the translation."""
+    # Opening quotes and marks such as "«" or "¿" are not words.
+    words = [word for word in before.split() if any(char.isalnum() for char in word) or word[-1] in ".!?"]
+    if not words:
+        return True
+    last = words[-1].rstrip("\"'»”’)")
+    if last.endswith(("!", "?")):
+        return True
+    if not last.endswith("."):
+        return False
+    stem = last[:-1]
+    # Dotted ("e.g.") and common title or "for example" abbreviations ("Dr.", "par ex.") do not end a sentence.
+    if "." in stem or stem.casefold() in _ABBREVIATIONS:
+        return False
+    previous = words[-2] if len(words) > 1 else ""
+    # The second part of a spaced abbreviation such as "z. B." or "p. ex.".
+    if len(previous) == 2 and previous[0].isalpha() and previous[1] == "." and (stem.islower() or len(stem) == 1):
+        return False
+    if len(stem) == 1 and stem.isalpha():
+        # An initial follows a capitalised name ("John F."); "plan B." ends its sentence.
+        return not previous[:1].isupper()
+    return True
+
+
+def find_term_spans(entry: VocabularyEntryInput | AIVocabularyEntry, text: str) -> list[tuple[int, int]]:
+    """Where ``entry`` occurs in ``text`` as whole words, folded as in ``_term_matches``.
+
+    Phrase entries are matched inside words when picking glossary lines for a prompt, but
+    replacing such a match would cut the surrounding word apart ("AI" in "said"). Chinese,
+    Japanese and other scripts written without spaces have no word boundaries to keep.
+    """
+    term = entry.source_term if entry.case_sensitive else entry.source_term.casefold()
+    if not term:
+        return []
+    pieces = [char if entry.case_sensitive else char.casefold() for char in text]
+    folded = "".join(pieces)
+    # Case folding can lengthen the text ("ß" -> "ss"), so map folded offsets back to the original ones.
+    offsets = dict(zip(itertools.accumulate(map(len, pieces), initial=0), range(len(text) + 1)))
+    spans = []
+    for match in re.finditer(re.escape(term), folded):
+        start, end = match.span()
+        # A match that starts or ends inside a folded character cannot be cut out without taking letters
+        # the term did not match; that occurrence is translated as usual.
+        if start not in offsets or end not in offsets:
+            continue
+        if start > 0 and _cuts_word(folded[start], folded[start - 1]):
+            continue
+        # A combining mark after the match belongs to its last letter, whatever the script.
+        if end < len(folded) and (
+            unicodedata.category(folded[end]).startswith("M") or _cuts_word(folded[end - 1], folded[end])
+        ):
+            continue
+        spans.append((offsets[start], offsets[end]))
+    return spans
+
+
+def protect_terms(text: str, entries: Iterable[VocabularyEntryInput | AIVocabularyEntry]) -> ProtectedSegment:
+    """Replace glossary matches with numbered placeholders for a model that takes no instructions."""
+    # Numbers already in brackets could not be told apart from the placeholders.
+    if TERM_PLACEHOLDER.search(text):
+        return ProtectedSegment(text, ())
+    spans = sorted(
+        (
+            (start, end, rank, entry.target_term, _keeps_case(entry))
+            for rank, entry in enumerate(entries)
+            for start, end in find_term_spans(entry, text)
+        ),
+        # The longest match wins an overlap; ties go to the entry the resolver ranked first.
+        key=lambda span: (span[0] - span[1], span[2], span[0]),
+    )
+    chosen: list[tuple[int, int, int, str, bool]] = []
+    for span in spans:
+        if all(span[1] <= other[0] or span[0] >= other[1] for other in chosen):
+            chosen.append(span)
+    chosen.sort()
+    parts: list[str] = []
+    cursor = 0
+    for number, (start, end, _, _, _) in enumerate(chosen, 1):
+        # A placeholder only touches a letter in text written without spaces. Spacing it there keeps NLLB
+        # from gluing it to a word of the translation ("We met at[1]").
+        before = " " if start > 0 and _in_word(text[start - 1]) else ""
+        after = " " if end < len(text) and _in_word(text[end]) else ""
+        parts += (text[cursor:start], f"{before}[{number}]{after}")
+        cursor = end
+    parts.append(text[cursor:])
+    return ProtectedSegment(
+        "".join(parts),
+        tuple(span[3] for span in chosen),
+        frozenset(number for number, span in enumerate(chosen, 1) if span[4]),
+    )
+
+
+def restore_terms(translated: str, segment: ProtectedSegment) -> str | None:
+    """Swap placeholders for target terms, or return None unless each one came back intact, exactly once."""
+    numbers = {f"[{number}]": number for number in range(1, len(segment.target_terms) + 1)}
+    if sorted(TERM_PLACEHOLDER.findall(translated)) != sorted(numbers):
+        return None
+
+    def target_term(match: re.Match[str]) -> str:
+        space_before, placeholder, space_after = match.groups()
+        number = numbers[placeholder]
+        term = segment.target_terms[number - 1]
+        # A lowercase term that opens a sentence ("[1] ouvre…") takes a capital, unless the glossary fixes its
+        # casing ("npm"); "iPhone" is not lowercase, so it always stays as written.
+        if term.islower() and number not in segment.exact_case and _opens_sentence(translated[: match.start(2)]):
+            term = term.capitalize()
+        # NLLB can keep the spaces around a placeholder, which do not belong between two Chinese or Japanese
+        # characters ("我们在 展台 见面"). Thai and the like do use spaces, between phrases.
+        char_before = translated[match.start() - 1 : match.start()]
+        char_after = translated[match.end() : match.end() + 1]
+        if _in_scripts(term[:1], _CJK_SCRIPTS) and _in_scripts(char_before, _CJK_SCRIPTS):
+            space_before = ""
+        if _in_scripts(term[-1:], _CJK_SCRIPTS) and _in_scripts(char_after, _CJK_SCRIPTS):
+            space_after = ""
+        return space_before + term + space_after
+
+    return _SPACED_PLACEHOLDER.sub(target_term, translated)
+
+
 async def resolve_vocabulary_entries(
     session: AsyncSession,
     event_id: int,
@@ -303,3 +469,74 @@ def serialize_vocabulary_csv(entries: list[AIVocabularyEntry]) -> str:
             )
         )
     return output.getvalue()
+
+
+# Deepgram allows 500 keyterm tokens per request; the estimate below is deliberately pessimistic,
+# so a glossary near the limit still connects instead of being rejected.
+MAX_KEYTERM_TOKENS = 450
+MAX_KEYTERMS = 100
+
+
+_CONTROL_CHARS = re.compile(r"[\x00-\x1f\x7f]+")
+
+
+def clean_speech_term(term: str) -> str:
+    """One line of plain text with single spaces, as a recogniser expects a term."""
+    return " ".join(_CONTROL_CHARS.sub(" ", term).split())
+
+
+def _estimated_keyterm_tokens(term: str) -> int:
+    # Roughly three characters a token, rounded up; no tokenizer is shared with Deepgram.
+    return max(1, -(-len(term) // 3))
+
+
+async def speech_keyterms(session: AsyncSession, room_id: int) -> list[str]:
+    """The glossary's source terms for a room, to help speech recognition hear them.
+
+    The source terms are what the floor speaker says, whatever language they are translated
+    into, so every event-wide entry and every entry of this room or one of its booths counts.
+    Each term is listed once, the most important first, until Deepgram's budget is used up.
+    Empty when the room has switched its glossary off.
+    """
+    room = (
+        await session.execute(select(Room.event_id, Room.floor_ai_vocabulary_enabled).where(Room.id == room_id))
+    ).first()
+    if room is None or not room.floor_ai_vocabulary_enabled:
+        return []
+    event_id = room.event_id
+    source_terms = await session.scalars(
+        select(AIVocabularyEntry.source_term)
+        .where(
+            AIVocabularyEntry.event_id == event_id,
+            or_(
+                AIVocabularyEntry.room_id == room_id,
+                AIVocabularyEntry.room_id.is_(None) & AIVocabularyEntry.booth_id.is_(None),
+                # A booth entry saved without its room still belongs to the room its booth is in.
+                AIVocabularyEntry.room_id.is_(None)
+                & AIVocabularyEntry.booth_id.in_(select(DBBooth.id).where(DBBooth.room_id == room_id)),
+            ),
+        )
+        # Room entries before event-wide ones of the same priority; oldest first after that.
+        .order_by(
+            AIVocabularyEntry.priority.desc(),
+            AIVocabularyEntry.room_id.is_(None),
+            AIVocabularyEntry.id,
+        )
+    )
+    keyterms: list[str] = []
+    seen: set[str] = set()
+    budget = MAX_KEYTERM_TOKENS
+    for source_term in source_terms:
+        term = clean_speech_term(source_term)
+        folded = term.casefold()
+        if not term or folded in seen:
+            continue
+        cost = _estimated_keyterm_tokens(term)
+        if cost > budget:
+            continue
+        seen.add(folded)
+        keyterms.append(term)
+        budget -= cost
+        if len(keyterms) >= MAX_KEYTERMS:
+            break
+    return keyterms

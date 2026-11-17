@@ -374,3 +374,30 @@ test('later AudioContext suspension reinstalls gesture recovery and Stop removes
   assert.equal(ctx.onstatechange, null);
   assert.equal(h.listeners.size, 0);
 });
+
+test('a rejected play from a replaced source cannot mark the new source blocked', async () => {
+  const h = harness(), pending = deferred();
+  h.audio.play = () => pending.promise;
+  h.start(); await flush();
+  h.peers[0].dispatch('track', { track: { kind: 'audio' }, streams: [{ id: 'old' }] });
+  h.start('https://media.test/b/whep'); await flush();
+  const count = h.states.length;
+  pending.reject(Object.assign(new Error('gesture required'), { name: 'NotAllowedError' }));
+  await flush();
+  assert.equal(h.states.length, count);
+  h.client.stop();
+  assert.equal(h.states.at(-1).playbackBlocked, false);
+});
+
+test('blocked delayed element playback is recoverable even when its context is running', async () => {
+  const h = audioHarness();
+  h.audio.play = () => Promise.reject(Object.assign(new Error('gesture required'), { name: 'NotAllowedError' }));
+  h.start(); await flush(); h.track(); await flush();
+  assert.equal(h.contexts[0].state, 'running');
+  assert.equal(h.states.at(-1).playbackBlocked, true);
+  h.audio.play = function () { this.paused = false; return Promise.resolve(); };
+  h.client.resume(); await flush();
+  assert.equal(h.states.at(-1).playbackBlocked, false);
+  assert.equal(h.states.at(-1).audioActive, true);
+  h.client.stop();
+});

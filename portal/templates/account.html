@@ -7,6 +7,7 @@
 {% block head %}
 <link rel="stylesheet" href="{{ url_for('static', path='css/account-area.css') }}?v={{ asset_version }}" />
 <link rel="stylesheet" href="{{ url_for('static', path='css/app-header.css') }}?v={{ asset_version }}" />
+<meta name="csrf-token" content="{{ csrf_token }}" />
 <script type="module" src="{{ url_for('static', path='js/user-menu.js') }}?v={{ asset_version }}"></script>
 <script type="module" src="{{ url_for('static', path='js/account.js') }}?v={{ asset_version }}"></script>
 {% endblock %}
@@ -56,6 +57,7 @@
     </div>
     <div class="aa-card-body">
       <form method="post" action="/account/profile" class="aa-field">
+        <input type="hidden" name="csrf_token" value="{{ request.state.admin_csrf_token }}" />
         <label for="display-name">Display name</label>
         <div class="aa-input-row">
           <input class="aa-input" id="display-name" name="display_name" type="text" value="{{ user.display_name }}"

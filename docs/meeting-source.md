@@ -55,6 +55,8 @@ reconnect budget, so fixing a wrong URL recovers a room that shows **Needs atten
 - There is at most one agent process per room. Repeated **Connect** clicks
   adopt the running agent instead of joining a second participant, and the floor
   worker is keyed by the canonical floor booth ID.
+- Replacing the event's speech-provider API key restarts affected floor processing
+  on the next reconciliation pass. Saving the same key again keeps the worker running.
 - A failed agent restarts after 2, 5, 10, 20 and 30 seconds, up to
   `MEETING_AGENT_MAX_RESTARTS` (default 5) attempts per incident. Sixty seconds
   of healthy processing ends the incident and refills the budget. When the
@@ -75,6 +77,12 @@ reconnect budget, so fixing a wrong URL recovers a room that shows **Needs atten
 - Rooms of a deleted event (`DELETE /api/v1/events/{slug}`) no longer count as wanting an
   agent. The next reconcile stops their agent and floor transcription worker, within 30
   seconds when no other room wants one.
+- When the agent has been the only participant for `BOT_EMPTY_ROOM_GRACE_SECONDS`
+  (default 90, set on the `floor-bot` service) it leaves the meeting. The portal
+  treats this as a stop, not a failure: the room's agent is switched off, floor
+  processing stops, and the status reads "The meeting agent stopped because the
+  room remained empty." until an owner connects again. A value that is not a
+  finite number uses the default.
 
 ## Deployment
 

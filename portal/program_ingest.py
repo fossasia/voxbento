@@ -626,14 +626,9 @@ async def reconcile_room(room: Room, event: Event, path: MediaPath | None) -> tu
     now = time.monotonic()
     # A short-lived sender secret gates new publishes, not an already-connected session.
     session_live = bool(path and path.source and room.program_session_id and path.source.id == room.program_session_id)
-    # Switching RTMPS ingest off or deleting the event also ends a feed that is already live.
+    # Switching RTMPS ingest off also ends a feed that is already live.
     rtmps_off = room.program_ingest_mode == program_relay.RTMPS_MODE and not settings.rtmps_ingest_enabled
-    permitted = bool(
-        settings.program_ingest_enabled
-        and event.deleted_at is None
-        and not rtmps_off
-        and (has_valid_credential(room) or session_live)
-    )
+    permitted = bool(settings.program_ingest_enabled and not rtmps_off and (has_valid_credential(room) or session_live))
     if path and path.source and (not permitted or path.source.id != room.program_session_id):
         await kick(path_name, path.source)
         path = None
@@ -714,7 +709,7 @@ async def reconcile_processing(
     if current.worker_config and current.worker_config != config:
         if not await stop_room_worker(current, booth_id, room.id):
             return
-    await start_transcription_worker(
+    started = await start_transcription_worker(
         event_slug=event.slug,
         language_code="floor",
         booth_id=booth_id,
@@ -724,10 +719,12 @@ async def reconcile_processing(
         config=ProviderConfig(api_key=api_key),
         transcription_language=room.floor_language_code,
         room_id=room.id,
+        restart_on_key_change=True,
     )
     current.worker_config = config
-    if current.worker_started_at is None:
-        current.worker_started_at = now
+    if started is True or current.worker_started_at is None:
+        # Read the clock again: replacing the old worker can take a while, and the grace period starts now.
+        current.worker_started_at = time.monotonic()
     last_audio = audio_progress.get(booth_id)
     if now - (last_audio or current.worker_started_at) > settings.program_ingest_stall_secs:
         current.state, current.reason = "degraded", "Audio decoder stalled or failed; restarting the processing worker."

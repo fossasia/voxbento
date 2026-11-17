@@ -25,8 +25,11 @@ function assert(condition, message) {
   }
 }
 
+let lastPc = null;
 class FakePeerConnection {
   constructor() {
+    lastPc = this;
+    this.listeners = {};
     this.connectionState = 'new';
     this.iceConnectionState = 'new';
     this.signalingState = 'stable';
@@ -34,7 +37,9 @@ class FakePeerConnection {
     this.localDescription = null;
   }
   addTransceiver() {}
-  addEventListener() {}
+  addEventListener(type, handler) {
+    this.listeners[type] = handler;
+  }
   removeEventListener() {}
   async createOffer() {
     return { type: 'offer', sdp: 'v=0' };
@@ -104,6 +109,44 @@ async function run() {
   const stopped = states[states.length - 1];
   assert(stopped.peerConnection === 'closed', 'stop reports a closed connection');
   assert(stopped.retrying === false, 'stop clears retrying, so a stopped client is not shown as reconnecting');
+
+  console.log('\n── Blocked autoplay ──');
+
+  let allowPlay = false;
+  const audioEl = {
+    paused: true,
+    srcObject: null,
+    muted: false,
+    play() {
+      if (!allowPlay) {
+        const err = new Error('play() needs a user gesture');
+        err.name = 'NotAllowedError';
+        return Promise.reject(err);
+      }
+      this.paused = false;
+      return Promise.resolve();
+    },
+  };
+  const playStates = [];
+  failFetch = false;
+  WhepListener.start({ whepUrl: 'http://mtx/floor/whep', audioEl, onState: (s) => playStates.push(s) });
+  await flush();
+  lastPc.listeners.track({ track: { kind: 'audio' }, streams: [{ id: 'remote' }] });
+  await flush();
+  assert(playStates[playStates.length - 1].playbackBlocked === true, 'a blocked play() is reported as playbackBlocked');
+
+  allowPlay = true;
+  WhepListener.resume();
+  await flush();
+  const resumed = playStates[playStates.length - 1];
+  assert(resumed.playbackBlocked === false && resumed.audioActive === true, 'resume() after a tap starts playback');
+
+  allowPlay = false;
+  audioEl.paused = true;
+  lastPc.listeners.track({ track: { kind: 'audio' }, streams: [{ id: 'remote' }] });
+  await flush();
+  WhepListener.stop();
+  assert(playStates[playStates.length - 1].playbackBlocked === false, 'stop clears playbackBlocked');
 
   console.log('\n' + passed + ' passed, ' + failed + ' failed');
   process.exit(failed > 0 ? 1 : 0);

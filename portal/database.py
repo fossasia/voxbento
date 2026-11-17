@@ -40,6 +40,7 @@ from portal.models import (
     EventMembership,
     HostingRequest,
     InviteToken,
+    MeetingReport,
     Room,
     RoomMembership,
     TranscriptSegment,
@@ -1110,8 +1111,20 @@ async def redeem_auth_token(session: AsyncSession, jti: str, expected_type: str)
     if tok.token_type != expected_type:
         raise ValueError("Invalid token type.")
 
-    tok.used_at = datetime.now(tz=timezone.utc)
-    await session.flush()
+    now = datetime.now(tz=timezone.utc)
+    result = await session.execute(
+        sa.update(AuthToken)
+        .where(
+            AuthToken.jti == jti,
+            AuthToken.token_type == expected_type,
+            AuthToken.used_at.is_(None),
+            AuthToken.expires_at > now,
+        )
+        .values(used_at=now)
+        .execution_options(synchronize_session="fetch")
+    )
+    if result.rowcount != 1:
+        raise ValueError("Token has already been used or has expired.")
     return tok
 
 
@@ -1263,3 +1276,24 @@ async def get_booth_language_name(booth_id: str) -> str | None:
         logger.warning("Database error while resolving language for booth '%s': %s", booth_id, exc, exc_info=True)
         return None
     return None
+
+
+async def create_meeting_report(session: AsyncSession, **fields: object) -> MeetingReport:
+    report = MeetingReport(**fields)
+    session.add(report)
+    await session.flush()
+    return report
+
+
+async def list_meeting_reports(session: AsyncSession, room_id: int, limit: int = 50) -> list[MeetingReport]:
+    result = await session.scalars(
+        select(MeetingReport)
+        .where(MeetingReport.room_id == room_id)
+        .order_by(MeetingReport.created_at.desc(), MeetingReport.id.desc())
+        .limit(limit)
+    )
+    return list(result.all())
+
+
+async def get_meeting_report(session: AsyncSession, report_id: int) -> MeetingReport | None:
+    return await session.get(MeetingReport, report_id)

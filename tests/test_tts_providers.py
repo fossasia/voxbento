@@ -145,3 +145,120 @@ async def test_only_ai_voice_languages_are_spoken(monkeypatch):
     # German is set to AI text: translated for reading, never spoken.
     assert await worker.synthesize(1, "Hallo", "de") is None
     assert provider.languages == ["fr"]
+
+
+# ── ElevenLabs ───────────────────────────────────────────────────────────
+
+import json  # noqa: E402
+
+import httpx  # noqa: E402
+
+from portal.tts.providers import elevenlabs  # noqa: E402
+from portal.tts.providers.elevenlabs import ElevenLabsTTSProvider  # noqa: E402
+
+
+async def _byte_chunks(*chunks: bytes):
+    for chunk in chunks:
+        yield chunk
+
+
+@pytest.fixture
+def elevenlabs_api(monkeypatch):
+    """A fake ElevenLabs API: answers each model with the status and audio chunks given for it."""
+    monkeypatch.setattr(elevenlabs, "_refused_models", set())
+    requests: list[httpx.Request] = []
+    answers: dict[str, tuple[int, tuple[bytes, ...]]] = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        status, chunks = answers[json.loads(request.content)["model_id"]]
+        if status != 200:
+            return httpx.Response(status, json={"detail": "nope"})
+        return httpx.Response(200, content=_byte_chunks(*chunks))
+
+    client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    monkeypatch.setattr(elevenlabs, "get_http_client", lambda: client)
+    return requests, answers
+
+
+async def _speak(text: str, language_code: str = "th") -> list[bytes]:
+    emitted: list[bytes] = []
+
+    async def on_audio(chunk: bytes):
+        emitted.append(chunk)
+
+    await ElevenLabsTTSProvider(api_key="xi-secret").synthesize_stream(
+        text_chunks=_achunks(*text.split("|")), language_code=language_code, voice="M1", on_audio=on_audio
+    )
+    return emitted
+
+
+def test_factory_returns_elevenlabs_provider():
+    provider = get_tts_provider("elevenlabs", elevenlabs_api_key="xi-secret")
+    assert isinstance(provider, ElevenLabsTTSProvider)
+    assert provider.api_key == "xi-secret"
+    assert TTSProviderEnum.ELEVENLABS.value == "elevenlabs"
+
+
+@pytest.mark.anyio
+async def test_elevenlabs_speaks_the_whole_phrase_in_one_request(elevenlabs_api):
+    requests, answers = elevenlabs_api
+    answers["eleven_v4_turbo"] = (200, (b"\x01\x02\x03", b"\x04\x05\x06"))
+
+    emitted = await _speak("สวัสดีครับ |ยินดีต้อนรับ", language_code="th-TH")
+
+    # Whole 16-bit samples only: the odd byte waits for the next chunk.
+    assert emitted == [b"\x01\x02", b"\x03\x04\x05\x06"]
+    (request,) = requests
+    assert request.url.params["output_format"] == "pcm_24000"
+    assert request.headers["xi-api-key"] == "xi-secret"
+    body = json.loads(request.content)
+    assert body["inputs"] == [{"text": "สวัสดีครับ ยินดีต้อนรับ", "voice_id": elevenlabs.ELEVENLABS_DEFAULT_VOICE_ID}]
+    assert body["language_code"] == "th"
+
+
+@pytest.mark.anyio
+async def test_elevenlabs_falls_back_to_v4_and_remembers(elevenlabs_api):
+    requests, answers = elevenlabs_api
+    answers["eleven_v4_turbo"] = (422, ())
+    answers["eleven_v4"] = (200, (b"\x00\x01",))
+
+    assert await _speak("สวัสดี") == [b"\x00\x01"]
+    assert await _speak("ครับ") == [b"\x00\x01"]
+    # The refused model is tried once, then later phrases go straight to v4.
+    assert [json.loads(r.content)["model_id"] for r in requests] == ["eleven_v4_turbo", "eleven_v4", "eleven_v4"]
+
+
+@pytest.mark.anyio
+async def test_elevenlabs_auth_failure_gives_no_audio(elevenlabs_api):
+    requests, answers = elevenlabs_api
+    answers["eleven_v4_turbo"] = (401, ())
+
+    assert await _speak("สวัสดี") == []
+    # A bad key is not a refused model: no second request, and turbo stays in use.
+    assert len(requests) == 1 and not elevenlabs._refused_models
+
+
+@pytest.mark.anyio
+async def test_elevenlabs_stream_broken_mid_phrase_is_raised(monkeypatch):
+    """Half a phrase must not be played as if it were complete: the caller drops it on the error."""
+    monkeypatch.setattr(elevenlabs, "_refused_models", set())
+
+    async def broken_stream():
+        yield b"\x00\x01"
+        raise httpx.ReadError("connection reset")
+
+    client = httpx.AsyncClient(
+        transport=httpx.MockTransport(lambda request: httpx.Response(200, content=broken_stream()))
+    )
+    monkeypatch.setattr(elevenlabs, "get_http_client", lambda: client)
+
+    with pytest.raises(httpx.ReadError):
+        await _speak("สวัสดี")
+
+
+@pytest.mark.anyio
+async def test_elevenlabs_skips_empty_text(elevenlabs_api):
+    requests, _ = elevenlabs_api
+    assert await _speak("  ") == []
+    assert requests == []

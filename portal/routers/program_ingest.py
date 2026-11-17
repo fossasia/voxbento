@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import hmac
 import ipaddress
 import json
@@ -11,8 +12,8 @@ from fastapi import APIRouter, Depends, Header, HTTPException, Request
 from fastapi.responses import JSONResponse, Response
 from pydantic import BaseModel, Field, ValidationError
 
-from portal import program_relay
-from portal.auth import require_event_owner
+from portal import program_relay, youtube_account
+from portal.auth import require_admin_csrf, require_event_owner
 from portal.booth_identity import make_mediamtx_path
 from portal.config import settings
 from portal.database import get_event_by_id, get_room_by_id, get_session
@@ -59,6 +60,23 @@ def _check_origin(request: Request) -> None:
     origin = request.headers.get("origin")
     if origin and origin.rstrip("/") != settings.public_base_url.rstrip("/"):
         raise HTTPException(403, "Origin mismatch")
+
+
+async def _youtube_status(session, room) -> dict | None:
+    """The linked broadcast's YouTube-side status, or None when the room has none to show."""
+    if not settings.youtube_connect_enabled or not room.youtube_broadcast_id:
+        return None
+    connection = await youtube_account.get_connection(session, room.event_id)
+    if connection is None:
+        return None
+    try:
+        # Bounded, so a slow Google API never stalls the room page's status poll.
+        return await asyncio.wait_for(youtube_account.room_status(connection, room), youtube_account.TIMEOUT)
+    except (youtube_account.YouTubeAuthError, youtube_account.YouTubeAPIError) as exc:
+        return {"error": youtube_account.describe(exc)}
+    except Exception:
+        logger.warning("youtube status_failed room_id=%s", room.id)
+        return {"error": "YouTube status unavailable."}
 
 
 @router.post("/internal/media-auth", include_in_schema=False)
@@ -109,6 +127,7 @@ async def ingest_status(event_id: int, room_id: int) -> JSONResponse:
             warnings.append("Enable floor transcription to generate captions.")
         if not room.floor_language_code or room.floor_transcription_provider == "none":
             warnings.append("Choose a floor source language and transcription provider.")
+        youtube = await _youtube_status(session, room)
         return JSONResponse(
             {
                 "available": settings.program_ingest_enabled,
@@ -151,12 +170,17 @@ async def ingest_status(event_id: int, room_id: int) -> JSONResponse:
                         "reason": current.processing_reason if enabled and current else "",
                     },
                 },
+                # Only when the room is linked to a broadcast on the event's connected channel.
+                **({"youtube": youtube} if youtube is not None else {}),
             },
             headers={"Cache-Control": "no-store"},
         )
 
 
-@router.post("/admin/events/{event_id}/rooms/{room_id}/program-ingest", dependencies=[Depends(require_event_owner)])
+@router.post(
+    "/admin/events/{event_id}/rooms/{room_id}/program-ingest",
+    dependencies=[Depends(require_event_owner), Depends(require_admin_csrf)],
+)
 async def ingest_change(request: Request, event_id: int, room_id: int, change: IngestChange) -> JSONResponse:
     _check_origin(request)
     if change.action in {"enable", "rotate"} and not settings.program_ingest_enabled:
@@ -229,7 +253,10 @@ async def ingest_change(request: Request, event_id: int, room_id: int, change: I
 SENDER_PATH = "/admin/events/{event_id}/rooms/{room_id}/program-sender"
 
 
-@router.post(SENDER_PATH, dependencies=[Depends(require_event_owner)])
+@router.post(
+    SENDER_PATH,
+    dependencies=[Depends(require_event_owner), Depends(require_admin_csrf)],
+)
 async def sender_session_start(
     request: Request, event_id: int, room_id: int, body: SenderSessionRequest
 ) -> JSONResponse:
@@ -256,7 +283,7 @@ async def sender_session_start(
     )
 
 
-@router.delete(SENDER_PATH, dependencies=[Depends(require_event_owner)])
+@router.delete(SENDER_PATH, dependencies=[Depends(require_event_owner), Depends(require_admin_csrf)])
 async def sender_session_stop(
     request: Request,
     event_id: int,
@@ -280,7 +307,7 @@ async def sender_session_stop(
 RELAY_PATH = "/admin/events/{event_id}/rooms/{room_id}/program-relay"
 
 
-@router.put(RELAY_PATH, dependencies=[Depends(require_event_owner)])
+@router.put(RELAY_PATH, dependencies=[Depends(require_event_owner), Depends(require_admin_csrf)])
 async def relay_destination_set(
     request: Request, event_id: int, room_id: int, destination: RelayDestination
 ) -> JSONResponse:
@@ -305,7 +332,7 @@ async def relay_destination_set(
     return JSONResponse({"configured": True, "server_url": server_url}, headers={"Cache-Control": "no-store"})
 
 
-@router.delete(RELAY_PATH, dependencies=[Depends(require_event_owner)])
+@router.delete(RELAY_PATH, dependencies=[Depends(require_event_owner), Depends(require_admin_csrf)])
 async def relay_destination_clear(request: Request, event_id: int, room_id: int) -> JSONResponse:
     """Revoke the stored YouTube destination and stop the room's relay."""
     _check_origin(request)
