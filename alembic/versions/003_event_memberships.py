@@ -31,7 +31,7 @@ def upgrade() -> None:
     op.create_index("ix_membership_user_event", "event_memberships", ["user_id", "event_id"], unique=True)
 
     # Add is_admin to users
-    op.add_column("users", sa.Column("is_admin", sa.Boolean(), nullable=False, server_default=sa.text("0")))
+    op.add_column("users", sa.Column("is_admin", sa.Boolean(), nullable=False, server_default=sa.false()))
 
     # Drop role from users (SQLite doesn't support DROP COLUMN before 3.35)
     # Use batch mode for SQLite compatibility
