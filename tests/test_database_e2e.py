@@ -472,13 +472,13 @@ def test_no_sqlite_specific_types():
 
 
 # ---------------------------------------------------------------------------
-# Alembic migration test
+# Schema creation test
 # ---------------------------------------------------------------------------
 
 
 @pytest.mark.anyio
-async def test_alembic_migration_creates_all_tables():
-    """Run Alembic upgrade head on a fresh SQLite and verify tables."""
+async def test_create_all_creates_the_core_tables():
+    """Create the schema from the models on a fresh SQLite and verify the core tables."""
     fd, path = tempfile.mkstemp(suffix=".db")
     os.close(fd)
     os.unlink(path)
@@ -486,7 +486,7 @@ async def test_alembic_migration_creates_all_tables():
     url = f"sqlite+aiosqlite:///{path}"
     engine = create_async_engine(url, echo=False)
 
-    # Use metadata.create_all (equivalent to alembic upgrade head for initial)
+    # Build the schema straight from the models; the migrations are covered by test_migration_schema.py
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
 

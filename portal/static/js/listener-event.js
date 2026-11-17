@@ -693,14 +693,8 @@ function pumpSegmentQueue() {
   var isTranslationActive =
     Boolean(translationLangSelect.value) && mode !== "original";
   if (isTranslationActive) {
+    // Failed, pending or downloading translations show nothing; only real text renders.
     var tText = nextSeg.translation;
-    if (!tText && nextSeg.error === "pipeline_failed") {
-      tText = "(Translation failed)";
-    } else if (!tText && nextSeg.error === "model_downloading") {
-      tText = "(Downloading translation model...)";
-    } else if (!tText && !nextSeg.empty) {
-      tText = "(Translation pending...)";
-    }
     if (tText) {
       var fakeData = {
         type: "translation",
