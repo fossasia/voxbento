@@ -308,7 +308,8 @@ Tracks which languages the translation worker should generate for a given room o
 | 042 | `042_add_booth_live_state.py` | `booth_live_state` table (TD-03) |
 | 043 | `043_add_live_demo_settings.py` | `live_demo_settings` singleton for the home-page live demo |
 | 044 | `044_youtube_connections.py` | `youtube_connections` table (one per event), `rooms.youtube_broadcast_id`, `rooms.youtube_stream_id` (#1087) |
-| 045 | `045_add_srt_and_backup_contribution.py` | `rooms.program_srt_passphrase_enc`, `rooms.program_srt_passphrase_expires_at`, `rooms.program_backup_enabled`, `rooms.program_backup_key_enc`, `rooms.program_backup_key_expires_at`, `rooms.program_active_feed`, `rooms.program_backup_connected_at` (#750) |
+| 045 | `045_meeting_analysis.py` | `meeting_reports` table, `events.meeting_analysis_enabled`, `events.meeting_analysis_provider`, `events.meeting_analysis_model` (#1080) |
+| 046 | `046_add_srt_and_backup_contribution.py` | `rooms.program_srt_passphrase_enc`, `rooms.program_srt_passphrase_expires_at`, `rooms.program_backup_enabled`, `rooms.program_backup_key_enc`, `rooms.program_backup_key_expires_at`, `rooms.program_active_feed`, `rooms.program_backup_connected_at` (#750) |
 
 Run migrations: `uv run alembic upgrade head`
 
@@ -373,7 +374,7 @@ URL), `program_relay_key_enc` (Fernet ciphertext of the YouTube stream key; writ
 never serialize or log) and `program_relay_updated_at`. Helpers live in
 `portal/program_relay.py` (`store_destination`, `clear_destination`, `destination`).
 
-## Migration 045 — SRT contribution ingest and backup takeover (#750)
+## Migration 046 — SRT contribution ingest and backup takeover (#750)
 
 Room fields:
 - `program_srt_passphrase_enc` (Text, nullable): Fernet-encrypted random 256-bit passphrase for SRT contribution ingest on MediaMTX UDP 8890; write-only, never logged.
