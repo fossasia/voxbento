@@ -2172,3 +2172,428 @@ class TestSarvamProvider:
         sent_chunks_3 = [m for m in ws3.sent if isinstance(m.get("audio"), dict)]
         assert sent_chunks_3 == []
         assert {"type": "flush"} in ws3.sent
+
+    async def test_sarvam_detected_language_propagates_and_resets_between_utterances(self):
+        """Auto-detected language reaches translation and resets between utterances."""
+        from portal.transcription.providers.sarvam import SarvamProvider
+        from portal.translations.worker import TranslationWorker
+
+        server_messages = [
+            {
+                "type": "data",
+                "data": {
+                    "transcript": "नमस्ते दुनिया",
+                    "language_code": "hi-IN",
+                },
+            },
+            {
+                "type": "data",
+                "data": {
+                    "transcript": "second utterance without language",
+                },
+            },
+        ]
+        ws = _FakeSarvamWebSocket(server_messages=server_messages, close_on_end=True)
+        handle_mock = AsyncMock()
+
+        with (
+            patch("websockets.connect", return_value=ws),
+            patch("portal.database.save_transcript_segment", AsyncMock(side_effect=[101, 102])),
+            patch.object(TranslationWorker, "handle_translation", handle_mock),
+        ):
+            await SarvamProvider().run_stream(
+                _FakeProcess([]),
+                "unknown",
+                "saaras:v3",
+                ProviderConfig(api_key="sarvam-secret"),
+                AsyncMock(),
+                "conf-1-hi",
+                room_id=1,
+            )
+            await asyncio.sleep(0.05)
+
+        assert handle_mock.call_count == 2
+        assert handle_mock.call_args_list[0].kwargs.get("detected_language") == "hi"
+        assert handle_mock.call_args_list[1].kwargs.get("detected_language") is None
+
+    async def test_sarvam_detected_language_isolated_across_booths(self):
+        """Aggregator isolates detected language per booth without crosstalk."""
+        from portal.transcription.aggregator import CaptionAggregator
+
+        aggregator = CaptionAggregator(AsyncMock(), room_id=1)
+        aggregator.note_source_language("booth-hi", "hi")
+        aggregator.note_source_language("booth-ta", "ta")
+
+        assert aggregator._get_state("booth-hi").source_language == "hi"
+        assert aggregator._get_state("booth-ta").source_language == "ta"
+
+        await aggregator.handle_final("booth-hi", "hello")
+        assert aggregator._get_state("booth-hi").source_language is None
+        assert aggregator._get_state("booth-ta").source_language == "ta"
+
+    async def test_sarvam_long_utterances_and_revised_transcripts_publish_cleanly(self):
+        """Long utterances (>50 words), revised transcripts, and empty texts handle cleanly."""
+        from portal.transcription.providers.sarvam import SarvamProvider
+
+        words_55 = " ".join(f"word{i}" for i in range(55))
+        server_messages = [
+            {"type": "data", "data": {"transcript": words_55}},
+            {"type": "data", "data": {"transcript": "corrected word0 and remainder"}},
+            {"type": "data", "data": {"transcript": ""}},
+            {"type": "data", "data": {"transcript": "unrelated new utterance"}},
+        ]
+        ws = _FakeSarvamWebSocket(server_messages=server_messages, close_on_end=True)
+        broadcasts = []
+
+        async def broadcast_callback(booth_id, payload):
+            broadcasts.append((booth_id, payload))
+
+        with patch("websockets.connect", return_value=ws):
+            await SarvamProvider().run_stream(
+                _FakeProcess([]),
+                "hi-IN",
+                "saaras:v3",
+                ProviderConfig(api_key="sarvam-secret"),
+                broadcast_callback,
+                "conf-1-hi",
+            )
+
+        finals = [p for _, p in broadcasts if p.get("status") == "final"]
+        clears = [p for _, p in broadcasts if p.get("status") == "clear"]
+
+        assert len(finals) == 3
+        assert finals[0]["text"] == words_55
+        assert finals[1]["text"] == "corrected word0 and remainder"
+        assert finals[2]["text"] == "unrelated new utterance"
+
+        assert finals[0]["seq"] < finals[1]["seq"] < finals[2]["seq"]
+        assert finals[0]["segment_id"] != finals[1]["segment_id"] != finals[2]["segment_id"]
+        assert len(clears) >= 1
+
+    async def test_sarvam_event_driven_eof_exits_promptly_without_waiting_timeout(self, caplog):
+        """Final transcript arriving while WS remains open exits immediately without waiting 8s."""
+        import logging
+        import time
+
+        from portal.transcription.providers.sarvam import SarvamProvider
+
+        class _PromptFlushOpenWebSocket(_FakeSarvamWebSocket):
+            async def send(self, raw: str) -> None:
+                payload = json.loads(raw)
+                self.sent.append(payload)
+                if payload.get("type") == "flush":
+                    await asyncio.sleep(0.05)
+                    await self._incoming.put(
+                        json.dumps({"type": "data", "data": {"transcript": "Prompt final response"}})
+                    )
+
+        ws = _PromptFlushOpenWebSocket(close_on_end=False)
+        broadcasts = []
+
+        async def broadcast_callback(booth_id, payload):
+            broadcasts.append((booth_id, payload))
+
+        t0 = time.monotonic()
+        with (
+            patch("websockets.connect", return_value=ws),
+            caplog.at_level(logging.WARNING),
+        ):
+            await SarvamProvider().run_stream(
+                _FakeProcess([b"audio-data"]),
+                "hi-IN",
+                "saaras:v3",
+                ProviderConfig(api_key="sarvam-secret"),
+                broadcast_callback,
+                "conf-1-hi",
+            )
+        elapsed = time.monotonic() - t0
+
+        assert elapsed < 3.0
+        final_texts = [p.get("text") for _, p in broadcasts if p.get("status") == "final"]
+        assert "Prompt final response" in final_texts
+        assert "Timed out waiting for Sarvam response after EOF" not in caplog.text
+
+    async def test_sarvam_late_final_transcript_beyond_5_seconds_delivered(self, caplog):
+        """Final transcript arriving after 5.2s is delivered under the 8s fallback timeout."""
+        import logging
+
+        from portal.transcription.providers import sarvam
+        from portal.transcription.providers.sarvam import SarvamProvider
+
+        class _LateFlushWebSocket(_FakeSarvamWebSocket):
+            async def send(self, raw: str) -> None:
+                payload = json.loads(raw)
+                self.sent.append(payload)
+                if payload.get("type") == "flush":
+                    await asyncio.sleep(0.08)
+                    await self._incoming.put(
+                        json.dumps({"type": "data", "data": {"transcript": "Late arriving final sentence"}})
+                    )
+
+        ws = _LateFlushWebSocket(close_on_end=False)
+        broadcasts = []
+
+        async def broadcast_callback(booth_id, payload):
+            broadcasts.append((booth_id, payload))
+
+        with (
+            patch("websockets.connect", return_value=ws),
+            patch.object(sarvam, "EOF_DRAIN_TIMEOUT_SECONDS", 0.5),
+            caplog.at_level(logging.WARNING),
+        ):
+            await SarvamProvider().run_stream(
+                _FakeProcess([b"audio-data"]),
+                "hi-IN",
+                "saaras:v3",
+                ProviderConfig(api_key="sarvam-secret"),
+                broadcast_callback,
+                "conf-1-hi",
+            )
+
+        final_texts = [p.get("text") for _, p in broadcasts if p.get("status") == "final"]
+        assert "Late arriving final sentence" in final_texts
+        assert "Timed out waiting for Sarvam response after EOF" not in caplog.text
+
+    async def test_sarvam_no_response_after_flush_times_out_and_cleans_up(self, caplog):
+        """When server sends no response to flush, timeout logs warning and cleans up."""
+        import logging
+
+        from portal.transcription.providers import sarvam
+        from portal.transcription.providers.sarvam import SarvamProvider
+
+        class _SilentFlushWebSocket(_FakeSarvamWebSocket):
+            async def send(self, raw: str) -> None:
+                payload = json.loads(raw)
+                self.sent.append(payload)
+
+        ws = _SilentFlushWebSocket(close_on_end=False)
+
+        with (
+            patch("websockets.connect", return_value=ws),
+            patch.object(sarvam, "EOF_DRAIN_TIMEOUT_SECONDS", 0.05),
+            caplog.at_level(logging.WARNING),
+        ):
+            await SarvamProvider().run_stream(
+                _FakeProcess([b"audio-data"]),
+                "hi-IN",
+                "saaras:v3",
+                ProviderConfig(api_key="sarvam-secret"),
+                AsyncMock(),
+                "conf-1-hi",
+            )
+
+        assert any(m.get("type") == "flush" for m in ws.sent)
+        assert "Timed out waiting for Sarvam response after EOF" in caplog.text
+
+    async def test_sarvam_empty_or_malformed_data_after_flush_does_not_falsely_complete(self, caplog):
+        """Empty or malformed frames after flush do not set completion event."""
+        import logging
+
+        from portal.transcription.providers import sarvam
+        from portal.transcription.providers.sarvam import SarvamProvider
+
+        class _MalformedFlushWebSocket(_FakeSarvamWebSocket):
+            async def send(self, raw: str) -> None:
+                payload = json.loads(raw)
+                self.sent.append(payload)
+                if payload.get("type") == "flush":
+                    await self._incoming.put("not-valid-json")
+                    await self._incoming.put(json.dumps({"type": "data", "data": {"transcript": "   "}}))
+
+        ws = _MalformedFlushWebSocket(close_on_end=False)
+        broadcasts = []
+
+        async def broadcast_callback(booth_id, payload):
+            broadcasts.append((booth_id, payload))
+
+        with (
+            patch("websockets.connect", return_value=ws),
+            patch.object(sarvam, "EOF_DRAIN_TIMEOUT_SECONDS", 0.05),
+            caplog.at_level(logging.WARNING),
+        ):
+            await SarvamProvider().run_stream(
+                _FakeProcess([b"audio-data"]),
+                "hi-IN",
+                "saaras:v3",
+                ProviderConfig(api_key="sarvam-secret"),
+                broadcast_callback,
+                "conf-1-hi",
+            )
+
+        finals = [p for _, p in broadcasts if p.get("status") == "final"]
+        assert finals == []
+        assert "Timed out waiting for Sarvam response after EOF" in caplog.text
+
+    async def test_sarvam_ws_closure_before_final_data_handled_cleanly(self):
+        """WebSocket closure before final data arrives exits without waiting for timeout."""
+        import time
+
+        from portal.transcription.providers.sarvam import SarvamProvider
+
+        class _CloseOnFlushWebSocket(_FakeSarvamWebSocket):
+            async def send(self, raw: str) -> None:
+                payload = json.loads(raw)
+                self.sent.append(payload)
+                if payload.get("type") == "flush":
+                    await self._incoming.put(None)
+
+        ws = _CloseOnFlushWebSocket(close_on_end=False)
+
+        t0 = time.monotonic()
+        with patch("websockets.connect", return_value=ws):
+            await SarvamProvider().run_stream(
+                _FakeProcess([b"audio-data"]),
+                "hi-IN",
+                "saaras:v3",
+                ProviderConfig(api_key="sarvam-secret"),
+                AsyncMock(),
+                "conf-1-hi",
+            )
+        elapsed = time.monotonic() - t0
+
+        assert elapsed < 3.0
+        assert any(m.get("type") == "flush" for m in ws.sent)
+
+    async def test_sarvam_cancellation_during_flush_does_not_leak_tasks(self):
+        """Cancellation during flush drain cleanly cancels sender and receiver without leaks."""
+        from portal.transcription.providers.sarvam import SarvamProvider
+
+        flush_received = asyncio.Event()
+
+        class _SlowFlushWebSocket(_FakeSarvamWebSocket):
+            async def send(self, raw: str) -> None:
+                payload = json.loads(raw)
+                self.sent.append(payload)
+                if payload.get("type") == "flush":
+                    flush_received.set()
+                    await asyncio.sleep(10.0)
+
+        ws = _SlowFlushWebSocket(close_on_end=False)
+
+        with patch("websockets.connect", return_value=ws):
+            task = asyncio.create_task(
+                SarvamProvider().run_stream(
+                    _FakeProcess([b"audio-data"]),
+                    "hi-IN",
+                    "saaras:v3",
+                    ProviderConfig(api_key="sarvam-secret"),
+                    AsyncMock(),
+                    "conf-1-hi",
+                )
+            )
+            await asyncio.wait_for(flush_received.wait(), timeout=2.0)
+            task.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await task
+
+    async def test_sarvam_handshake_401_fatal_error_does_not_reconnect_and_hides_secrets(self, caplog):
+        """HTTP 401 handshake error fails immediately without reconnects and without leaking secrets."""
+        import logging
+
+        import websockets.exceptions as we
+
+        from portal.transcription.providers.base import FatalTranscriptionError
+        from portal.transcription.providers.sarvam import SarvamProvider
+
+        class _Handshake401Error(we.WebSocketException):
+            status_code = 401
+
+        secret_key = "super-secret-sarvam-key-98765"
+        handshake_exc = _Handshake401Error("401 Unauthorized")
+        connect_mock = MagicMock(side_effect=handshake_exc)
+
+        with (
+            patch("websockets.connect", connect_mock),
+            caplog.at_level(logging.DEBUG),
+            pytest.raises(FatalTranscriptionError) as exc_info,
+        ):
+            await SarvamProvider().run_stream(
+                _FakeProcess([]),
+                "hi-IN",
+                "saaras:v3",
+                ProviderConfig(api_key=secret_key),
+                AsyncMock(),
+                "conf-1-hi",
+            )
+
+        assert connect_mock.call_count == 1
+        assert secret_key not in caplog.text
+        assert secret_key not in str(exc_info.value)
+
+    async def test_sarvam_in_flight_transcript_during_flush_does_not_falsely_complete_post_flush(self):
+        """In-flight transcript during flush send does not falsely set post-flush completion event."""
+        from portal.transcription.providers.sarvam import SarvamProvider
+
+        post_flush_transcript_sent = False
+
+        class _RaceFlushWebSocket(_FakeSarvamWebSocket):
+            async def send(self, raw: str) -> None:
+                nonlocal post_flush_transcript_sent
+                payload = json.loads(raw)
+                self.sent.append(payload)
+                if payload.get("type") == "flush":
+                    # While flush is being sent, a pre-flush transcript arrives
+                    await self._incoming.put(
+                        json.dumps({"type": "data", "data": {"transcript": "Pre-flush speech"}})
+                    )
+                    # Yield control to let receiver process the pre-flush transcript
+                    await asyncio.sleep(0.02)
+                    # Now send the actual post-flush transcript
+                    post_flush_transcript_sent = True
+                    await self._incoming.put(
+                        json.dumps({"type": "data", "data": {"transcript": "Post-flush final speech"}})
+                    )
+
+        ws = _RaceFlushWebSocket(close_on_end=False)
+        broadcasts = []
+
+        async def broadcast_callback(booth_id, payload):
+            broadcasts.append((booth_id, payload))
+
+        with patch("websockets.connect", return_value=ws):
+            await SarvamProvider().run_stream(
+                _FakeProcess([b"audio-data"]),
+                "hi-IN",
+                "saaras:v3",
+                ProviderConfig(api_key="sarvam-secret"),
+                broadcast_callback,
+                "conf-1-hi",
+            )
+
+        assert post_flush_transcript_sent is True
+        finals = [p.get("text") for _, p in broadcasts if p.get("status") == "final"]
+        assert finals == ["Pre-flush speech", "Post-flush final speech"]
+
+    async def test_sarvam_simultaneous_transcript_and_receiver_exit(self):
+        """Simultaneous final transcript delivery and socket closure completes cleanly."""
+        from portal.transcription.providers.sarvam import SarvamProvider
+
+        class _BurstCloseWebSocket(_FakeSarvamWebSocket):
+            async def send(self, raw: str) -> None:
+                payload = json.loads(raw)
+                self.sent.append(payload)
+                if payload.get("type") == "flush":
+                    # Deliver transcript and close socket back-to-back
+                    await self._incoming.put(
+                        json.dumps({"type": "data", "data": {"transcript": "Simultaneous final"}})
+                    )
+                    await self._incoming.put(None)
+
+        ws = _BurstCloseWebSocket(close_on_end=False)
+        broadcasts = []
+
+        async def broadcast_callback(booth_id, payload):
+            broadcasts.append((booth_id, payload))
+
+        with patch("websockets.connect", return_value=ws):
+            await SarvamProvider().run_stream(
+                _FakeProcess([b"audio-data"]),
+                "hi-IN",
+                "saaras:v3",
+                ProviderConfig(api_key="sarvam-secret"),
+                broadcast_callback,
+                "conf-1-hi",
+            )
+
+        finals = [p.get("text") for _, p in broadcasts if p.get("status") == "final"]
+        assert finals == ["Simultaneous final"]

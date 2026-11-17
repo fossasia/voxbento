@@ -156,9 +156,12 @@ class TranslationWorker:
         booth_id_str: str,
         uuid_segment_id: str = "",
         seq: int = 0,
+        detected_language: str | None = None,
     ) -> list | None:
         """Process a completed sentence segment by resolving the job and executing translation tasks."""
-        job = await self._resolve_translation_job(session, room_id, segment, booth_id_str)
+        job = await self._resolve_translation_job(
+            session, room_id, segment, booth_id_str, detected_language=detected_language
+        )
         if job is None:
             return None
 
@@ -169,7 +172,14 @@ class TranslationWorker:
         return tasks
 
     async def handle_translation(
-        self, room_id: int, segment_id: int, text: str, booth_id_str: str, uuid_segment_id: str = "", seq: int = 0
+        self,
+        room_id: int,
+        segment_id: int,
+        text: str,
+        booth_id_str: str,
+        uuid_segment_id: str = "",
+        seq: int = 0,
+        detected_language: str | None = None,
     ):
         """Called when a finalized STT segment is saved. Fires off LLM requests for enabled target languages."""
         from sqlalchemy import select
@@ -188,11 +198,19 @@ class TranslationWorker:
 
             sentence = self._accumulate_sentence(text)
             await self._process_completed_sentence(
-                session, room_id, segment, segment_id, sentence, booth_id_str, uuid_segment_id, seq
+                session,
+                room_id,
+                segment,
+                segment_id,
+                sentence,
+                booth_id_str,
+                uuid_segment_id,
+                seq,
+                detected_language=detected_language,
             )
 
     async def _resolve_translation_job(
-        self, session, room_id: int, segment, booth_id_str: str
+        self, session, room_id: int, segment, booth_id_str: str, detected_language: str | None = None
     ) -> _ResolvedTranslation | None:
         """Resolve the room, provider, model, enabled languages and source language for a segment.
 
@@ -200,7 +218,9 @@ class TranslationWorker:
         """
         from sqlalchemy import select
 
-        context = await self._resolve_job_context(session, room_id, segment, booth_id_str)
+        context = await self._resolve_job_context(
+            session, room_id, segment, booth_id_str, detected_language=detected_language
+        )
         if not context:
             return None
 
@@ -225,12 +245,18 @@ class TranslationWorker:
             source_booth_id=segment.booth_id,
         )
 
-    async def _resolve_job_context(self, session, room_id: int, segment, booth_id_str: str) -> _JobContext | None:
+    async def _resolve_job_context(
+        self, session, room_id: int, segment, booth_id_str: str, detected_language: str | None = None
+    ) -> _JobContext | None:
         """Fetch the room/booth config and validate that all required settings exist."""
         if segment.booth_id is None:
-            context = await self._resolve_floor_context(session, room_id, booth_id_str)
+            context = await self._resolve_floor_context(
+                session, room_id, booth_id_str, detected_language=detected_language
+            )
         else:
-            context = await self._resolve_booth_context(session, room_id, segment)
+            context = await self._resolve_booth_context(
+                session, room_id, segment, detected_language=detected_language
+            )
 
         if not context:
             return None
@@ -244,7 +270,9 @@ class TranslationWorker:
 
         return context
 
-    async def _resolve_floor_context(self, session, room_id: int, booth_id_str: str) -> _JobContext | None:
+    async def _resolve_floor_context(
+        self, session, room_id: int, booth_id_str: str, detected_language: str | None = None
+    ) -> _JobContext | None:
         """Floor translation configuration from the room."""
         from sqlalchemy import select
         from sqlalchemy.orm import selectinload
@@ -263,10 +291,13 @@ class TranslationWorker:
             provider=room.floor_translation_provider,
             model=room.floor_translation_model,
             enabled_langs=_enabled_translation_langs(room),
-            source_lang_code=room.floor_language_code,
+            # A language the room names wins; auto-detecting rooms use what the provider heard.
+            source_lang_code=room.floor_language_code or detected_language,
         )
 
-    async def _resolve_booth_context(self, session, room_id: int, segment) -> _JobContext | None:
+    async def _resolve_booth_context(
+        self, session, room_id: int, segment, detected_language: str | None = None
+    ) -> _JobContext | None:
         """Booth translation configuration from the booth."""
         from sqlalchemy import select
         from sqlalchemy.orm import selectinload
@@ -286,7 +317,7 @@ class TranslationWorker:
             provider=booth.translation_provider,
             model=booth.translation_model,
             enabled_langs=_enabled_translation_langs(booth),
-            source_lang_code=booth.language_code,
+            source_lang_code=booth.language_code or detected_language,
         )
 
     def _build_language_tasks(

@@ -24,7 +24,7 @@ SARVAM_ALLOWED_MODELS = frozenset({SARVAM_DEFAULT_MODEL})
 SARVAM_SAMPLE_RATE = 16000
 AUDIO_CHUNK_BYTES = 4096
 STABLE_SESSION_SECONDS = 10.0
-EOF_DRAIN_TIMEOUT_SECONDS = 5.0
+EOF_DRAIN_TIMEOUT_SECONDS = 8.0
 MAX_RECONNECT_ATTEMPTS = 5
 BACKOFF_BASE_SECONDS = 1.0
 BACKOFF_MAX_SECONDS = 16.0
@@ -441,6 +441,8 @@ class SarvamProvider(TranscriptionProvider):
                     ) as ws:
                         send_lock = asyncio.Lock()
                         receiver_done = asyncio.Event()
+                        flush_sent = False
+                        post_flush_transcript_received = asyncio.Event()
 
                         async def send_json(payload: dict) -> None:
                             async with send_lock:
@@ -501,12 +503,25 @@ class SarvamProvider(TranscriptionProvider):
                                                 f"{type(raw_text).__name__}"
                                             )
                                             continue
+                                        raw_lang = (
+                                            inner_data.get("language_code")
+                                            or inner_data.get("language")
+                                            or inner_data.get("detected_language")
+                                            or data.get("language_code")
+                                            or data.get("language")
+                                        )
+                                        if isinstance(raw_lang, str) and raw_lang.strip():
+                                            aggregator.note_source_language(
+                                                booth_id, raw_lang.strip().split("-")[0].lower()
+                                            )
                                         transcript_received = True
                                         consecutive_errors = 0
                                         outage_logged = False
                                         text = raw_text.strip() if isinstance(raw_text, str) else ""
                                         if text:
                                             await aggregator.handle_final(booth_id, text)
+                                            if flush_sent:
+                                                post_flush_transcript_received.set()
                                         else:
                                             await aggregator.handle_clear(booth_id)
                                     elif msg_type == "events":
@@ -532,6 +547,7 @@ class SarvamProvider(TranscriptionProvider):
                                 receiver_done.set()
 
                         async def handle_eof(recv_task: asyncio.Task) -> None:
+                            nonlocal flush_sent
                             if recv_task.done():
                                 recv_exc = None if recv_task.cancelled() else recv_task.exception()
                                 if isinstance(recv_exc, _SarvamFatalError):
@@ -542,6 +558,7 @@ class SarvamProvider(TranscriptionProvider):
                                     )
                                     try:
                                         await send_json({"type": "flush"})
+                                        flush_sent = True
                                     except (WebSocketException, OSError, TimeoutError, RuntimeError) as exc:
                                         logger.debug(f"[{booth_id}] Sarvam flush signal failed during EOF: {exc}")
                                 return
@@ -549,21 +566,33 @@ class SarvamProvider(TranscriptionProvider):
                             if _is_ws_usable(ws, None):
                                 try:
                                     await send_json({"type": "flush"})
+                                    flush_sent = True
                                 except (WebSocketException, OSError, TimeoutError, RuntimeError) as exc:
                                     logger.debug(f"[{booth_id}] Sarvam flush signal failed during EOF: {exc}")
 
                             if not recv_task.done():
+                                wait_post_flush = asyncio.create_task(post_flush_transcript_received.wait())
                                 try:
-                                    await asyncio.wait_for(
-                                        asyncio.shield(recv_task),
+                                    done, _ = await asyncio.wait(
+                                        {wait_post_flush, recv_task},
                                         timeout=EOF_DRAIN_TIMEOUT_SECONDS,
+                                        return_when=asyncio.FIRST_COMPLETED,
                                     )
-                                except TimeoutError:
-                                    logger.warning(f"[{booth_id}] Timed out waiting for Sarvam response after EOF")
+                                    if wait_post_flush in done:
+                                        pass
+                                    elif recv_task in done:
+                                        if not recv_task.cancelled():
+                                            recv_exc = recv_task.exception()
+                                            if isinstance(recv_exc, _SarvamFatalError):
+                                                raise recv_exc
+                                    else:
+                                        logger.warning(f"[{booth_id}] Timed out waiting for Sarvam response after EOF")
                                 except _SarvamFatalError:
                                     raise
                                 except (WebSocketException, _SarvamTransientError, OSError, RuntimeError) as exc:
                                     logger.debug(f"[{booth_id}] Receiver closed during EOF drain: {exc}")
+                                finally:
+                                    await _cancel_and_await(wait_post_flush)
 
                             if recv_task.done() and not recv_task.cancelled():
                                 recv_exc = recv_task.exception()
