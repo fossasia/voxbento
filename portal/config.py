@@ -221,6 +221,10 @@ class Settings(BaseSettings):
     self_hosted_llm_api_key: str = Field(default="", repr=False)
     self_hosted_llm_models: str = ""
 
+    # Built-in translation models this server offers to events (#1191), comma-separated; the
+    # first is the default. Models are large, so only the operator chooses what may be downloaded.
+    local_translation_models: str = "nllb-200-distilled-600M"
+
     # Supertonic synthesis quality/speed trade-off. Fewer diffusion steps =
     # faster (lower real-time factor) at a small quality cost. 4 keeps CPU
     # synthesis at/below real-time so audio never backs up; 8 is reference
@@ -230,6 +234,8 @@ class Settings(BaseSettings):
     # (uses all physical cores).
     supertonic_intra_op_threads: int = 0
 
+    meeting_analysis_ollama_base_url: str = "http://localhost:11434"
+    meeting_analysis_ollama_num_ctx: int = 32768
     # Home-page live demo (/ws/demo/live): visitors speak and get captions, translations and a
     # voice from the server's own models. Public, so its load is capped per server and per IP.
     # Admins switch it on at /admin/live-demo/ (off until then); False forbids it on this server.
@@ -318,6 +324,30 @@ class Settings(BaseSettings):
         if self.self_hosted_llm_allows(model):
             return model
         return self.self_hosted_llm_model_list[0] if self.self_hosted_llm_enabled else None
+
+    @field_validator("local_translation_models")
+    @classmethod
+    def validate_local_translation_models(cls, value: str) -> str:
+        """Model names are stored on rooms and booths, whose columns hold 100 characters."""
+        if any(len(m.strip()) > 100 for m in value.split(",")):
+            raise ValueError("each LOCAL_TRANSLATION_MODELS name must be 100 characters or fewer")
+        return value
+
+    @property
+    def local_translation_model_list(self) -> tuple[str, ...]:
+        """The built-in translation models events may use, in the order the operator listed them."""
+        return tuple(dict.fromkeys(m.strip() for m in self.local_translation_models.split(",") if m.strip()))
+
+    def local_translation_allows(self, model: str | None) -> bool:
+        """Whether rooms and booths may use ``model`` as their built-in translator right now."""
+        return model in self.local_translation_model_list
+
+    def local_translation_model_or_default(self, model: str | None) -> str | None:
+        """``model`` when allowed, else the default (first listed) model, else None when none is offered."""
+        if self.local_translation_allows(model):
+            return model
+        models = self.local_translation_model_list
+        return models[0] if models else None
 
 
 settings = Settings()
