@@ -735,12 +735,12 @@ async def reconcile_processing(
         current.processing_state, current.processing_reason = current.state, current.reason
 
 
-async def deleted_floor_workers() -> list[tuple[int, str]]:
-    """``(room id, booth id)`` of each running floor worker whose room was deleted, or whose event was.
+async def deleted_floor_workers() -> list[tuple[int, str, bool]]:
+    """``(room id, booth id, reused)`` of each running floor worker whose room was deleted, or whose event was.
 
     The admin pages delete the rows outright, so a room with no row left counts as deleted too. SQLite can
     give a deleted room's id to a new room in another event, so the whole booth id has to match, and two
-    workers can share a room id.
+    workers can share a room id. ``reused`` says the room id now belongs to that new room.
     """
     workers = []
     for booth_id in list(active_workers):
@@ -763,7 +763,7 @@ async def deleted_floor_workers() -> list[tuple[int, str]]:
             ).all()
         )
     return sorted(
-        (room_id, booth_id)
+        (room_id, booth_id, room_id in live)
         for room_id, booth_id in workers
         if room_id not in live or booth_id != make_booth_id(live[room_id], room_id, "floor")
     )
@@ -776,8 +776,10 @@ async def stop_deleted_event_workers() -> None:
     ``health`` can lose the room before that (``close_sender_session``), so find the workers among
     the running ones instead: once the room or its event is deleted the reconciler no longer sees it.
     """
-    for room_id, booth_id in await deleted_floor_workers():
-        await stop_room_worker(health.get(room_id) or IngestHealth(), booth_id, room_id)
+    for room_id, booth_id, reused in await deleted_floor_workers():
+        # A reused room id's health record is the new room's, so leave its worker settings alone.
+        current = IngestHealth() if reused else health.get(room_id) or IngestHealth()
+        await stop_room_worker(current, booth_id, room_id)
 
 
 async def release_deleted_event_sessions() -> None:

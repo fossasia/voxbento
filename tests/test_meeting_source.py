@@ -842,7 +842,7 @@ async def test_worker_of_a_deleted_room_is_stopped_when_another_event_reuses_its
     replacement = make_booth_id("other-event", env["room_id"], "floor")
     monkeypatch.setitem(active_workers, replacement, object())
     # Only the old worker counts as deleted; the new room's own reconcile decides about its worker.
-    assert await deleted_floor_workers() == [(env["room_id"], env["booth_id"])]
+    assert await deleted_floor_workers() == [(env["room_id"], env["booth_id"], True)]
     env["stop"].reset_mock()
     env["clock"].now += meeting.IDLE_SWEEP_SECS
     await meeting.reconcile_once()

@@ -717,9 +717,13 @@ async def test_worker_of_a_deleted_room_is_stopped_when_another_event_reuses_its
         session.add(Room(id=room.id, event_id=other.id, display_name="Reused"))
     # The new room's own worker shares the room id and must keep running.
     monkeypatch.setitem(active_workers, f"other-event-{room.id}-floor", object())
+    # Its settings live in the shared health record, which stopping the old worker must not clear.
+    replacement_config = ("local", "tiny", "en")
+    ingest.health.setdefault(room.id, ingest.IngestHealth()).worker_config = replacement_config
     stop.reset_mock()
-    await ingest.reconcile_once()
+    await ingest.stop_deleted_event_workers()
     assert [call.args[0] for call in stop.await_args_list] == [booth_id]
+    assert ingest.health[room.id].worker_config == replacement_config
 
 
 @pytest.mark.anyio

@@ -508,10 +508,11 @@ async def _stop_deleted_event_workers(room_ids: set[int]) -> None:
                     select(Room.id, Event.slug).join(Event).where(Room.id.in_(room_ids), Event.deleted_at.is_not(None))
                 )
             ).all()
-    booth_ids = {make_booth_id(slug, room_id, "floor"): room_id for room_id, slug in rows}
-    booth_ids.update((booth_id, room_id) for room_id, booth_id in await deleted_floor_workers())
-    for booth_id, room_id in booth_ids.items():
-        await _stop_worker(health.get(room_id) or AgentHealth(), booth_id)
+    booth_ids = {make_booth_id(slug, room_id, "floor"): (room_id, False) for room_id, slug in rows}
+    booth_ids.update((booth_id, (room_id, reused)) for room_id, booth_id, reused in await deleted_floor_workers())
+    for booth_id, (room_id, reused) in booth_ids.items():
+        # A reused room id's health record is the new room's, so leave its worker settings alone.
+        await _stop_worker(AgentHealth() if reused else health.get(room_id) or AgentHealth(), booth_id)
 
 
 async def reconcile_once() -> None:
