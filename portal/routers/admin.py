@@ -1411,9 +1411,11 @@ async def admin_event_api_settings_post(
     clear_gemini_api_key: bool | None = Form(False),
     clear_anthropic_api_key: bool | None = Form(False),
     clear_groq_api_key: bool | None = Form(False),
+    clear_google_translate_api_key: bool | None = Form(False),
     meeting_analysis_enabled: bool | None = Form(False),
     meeting_analysis_provider: str | None = Form(None),
 ):
+    """Save the event's provider keys: a filled field replaces its key, a ticked Clear removes it, a blank field keeps it."""
     form = await request.form()
     meeting_analysis_model = form.get("meeting_analysis_model")
     if meeting_analysis_model is not None:

@@ -1388,6 +1388,9 @@ class TestEventCRUD:
             page = await c.get(f"/admin/events/{event.id}/api-settings/", cookies=admin_cookie)
         assert page.status_code == 200
         assert "google-translate-secret" not in page.text
+        # The form offers the field and its Clear box, so the key can be entered and removed from the page.
+        assert 'name="google_translate_api_key"' in page.text
+        assert 'name="clear_google_translate_api_key"' in page.text
         assert updated.encrypted_google_translate_api_key not in page.text
 
         async with _client() as c:
