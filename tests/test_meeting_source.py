@@ -19,6 +19,7 @@ from portal.booth_identity import make_booth_id, make_mediamtx_path
 from portal.config import settings
 from portal.database import configure, create_user, dispose, get_session, init_db
 from portal.models import Event, Room
+from portal.program_ingest import deleted_floor_workers
 from portal.transcription.worker import active_workers
 
 SECRET_URL = "https://meet.example.org/TrackA?jwt=meeting-secret-token"
@@ -836,9 +837,30 @@ async def test_worker_of_a_deleted_room_is_stopped_when_another_event_reuses_its
         other = Event(slug="other-event", display_name="Other")
         session.add(other)
         await session.flush()
-        session.add(Room(id=env["room_id"], event_id=other.id, display_name="Reused"))
+        # Still enabled, so the reconciler sees the id as a live room, not a stale one.
+        session.add(Room(id=env["room_id"], event_id=other.id, display_name="Reused", meeting_agent_enabled=True))
+    replacement = make_booth_id("other-event", env["room_id"], "floor")
+    monkeypatch.setitem(active_workers, replacement, object())
+    # Only the old worker counts as deleted; the new room's own reconcile decides about its worker.
+    assert await deleted_floor_workers() == [(env["room_id"], env["booth_id"])]
     env["stop"].reset_mock()
     env["clock"].now += meeting.IDLE_SWEEP_SECS
+    await meeting.reconcile_once()
+    assert env["booth_id"] in [call.args[0] for call in env["stop"].await_args_list]
+
+
+@pytest.mark.anyio
+async def test_worker_of_a_room_deleted_outright_is_stopped_when_its_health_record_is_gone(env, monkeypatch):
+    response = await env["client"].post(
+        env["url"], json={"action": "connect", "meeting_url": "https://meet.example.org/TrackA"}
+    )
+    assert response.status_code == 200, response.text
+    monkeypatch.setitem(active_workers, env["booth_id"], object())  # the running worker
+    assert (
+        await env["client"].post(f"/admin/events/{env['event_id']}/rooms/{env['room_id']}/delete")
+    ).status_code == 303
+    meeting.health.pop(env["room_id"], None)
+    env["stop"].reset_mock()
     await meeting.reconcile_once()
     env["stop"].assert_awaited_once_with(env["booth_id"])
 

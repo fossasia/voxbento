@@ -735,17 +735,38 @@ async def reconcile_processing(
         current.processing_state, current.processing_reason = current.state, current.reason
 
 
-def floor_workers() -> dict[int, str]:
-    """Booth ids of the running floor workers, by room id."""
-    booth_ids: dict[int, str] = {}
+async def deleted_floor_workers() -> list[tuple[int, str]]:
+    """``(room id, booth id)`` of each running floor worker whose room was deleted, or whose event was.
+
+    The admin pages delete the rows outright, so a room with no row left counts as deleted too. SQLite can
+    give a deleted room's id to a new room in another event, so the whole booth id has to match, and two
+    workers can share a room id.
+    """
+    workers = []
     for booth_id in list(active_workers):
         try:
             _, room_id, language_code = parse_booth_id(booth_id)
         except ValueError:
             continue
         if language_code == "floor":
-            booth_ids[room_id] = booth_id
-    return booth_ids
+            workers.append((room_id, booth_id))
+    if not workers:
+        return []
+    async with get_session() as session:
+        live = dict(
+            (
+                await session.execute(
+                    select(Room.id, Event.slug)
+                    .join(Event)
+                    .where(Room.id.in_({room_id for room_id, _ in workers}), Event.deleted_at.is_(None))
+                )
+            ).all()
+        )
+    return sorted(
+        (room_id, booth_id)
+        for room_id, booth_id in workers
+        if room_id not in live or booth_id != make_booth_id(live[room_id], room_id, "floor")
+    )
 
 
 async def stop_deleted_event_workers() -> None:
@@ -754,23 +775,9 @@ async def stop_deleted_event_workers() -> None:
     A delete can commit after a reconcile pass already read the room and started its worker, and
     ``health`` can lose the room before that (``close_sender_session``), so find the workers among
     the running ones instead: once the room or its event is deleted the reconciler no longer sees it.
-    The admin pages delete the rows outright, so a room with no row left counts as deleted too.
     """
-    booth_ids = floor_workers()
-    if not booth_ids:
-        return
-    async with get_session() as session:
-        live = dict(
-            (
-                await session.execute(
-                    select(Room.id, Event.slug).join(Event).where(Room.id.in_(booth_ids), Event.deleted_at.is_(None))
-                )
-            ).all()
-        )
-    for room_id, booth_id in sorted(booth_ids.items()):
-        # SQLite can give a deleted room's id to a new room in another event, so match the whole booth id.
-        if room_id not in live or booth_id != make_booth_id(live[room_id], room_id, "floor"):
-            await stop_room_worker(health.get(room_id) or IngestHealth(), booth_id, room_id)
+    for room_id, booth_id in await deleted_floor_workers():
+        await stop_room_worker(health.get(room_id) or IngestHealth(), booth_id, room_id)
 
 
 async def release_deleted_event_sessions() -> None:

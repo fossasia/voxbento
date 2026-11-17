@@ -715,6 +715,8 @@ async def test_worker_of_a_deleted_room_is_stopped_when_another_event_reuses_its
         session.add(other)
         await session.flush()
         session.add(Room(id=room.id, event_id=other.id, display_name="Reused"))
+    # The new room's own worker shares the room id and must keep running.
+    monkeypatch.setitem(active_workers, f"other-event-{room.id}-floor", object())
     stop.reset_mock()
     await ingest.reconcile_once()
     assert [call.args[0] for call in stop.await_args_list] == [booth_id]
