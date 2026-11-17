@@ -78,10 +78,11 @@ def test_room_header_stays_on_the_left_when_the_page_header_stacks():
         if width and selector == ".page-header" and _declarations(body).get("flex-direction") == "column"
     ]
     assert stacks_at, ".page-header no longer stacks on narrow screens"
-    # The last rule that applies at that width wins, so a later plain rule would undo the fix.
-    applied = [
-        _declarations(body)["align-items"]
-        for width, selector, body in rules
-        if selector == ".room-header" and "align-items" in _declarations(body) and (width or 10**6) >= max(stacks_at)
-    ]
-    assert applied and applied[-1] == "flex-start"
+    # Check every width where a rule can change, so a later or narrower rule can't undo the fix.
+    for screen in {w for w, *_ in rules if w and w <= max(stacks_at)}:
+        applied = [
+            _declarations(body)["align-items"]
+            for width, selector, body in rules
+            if selector == ".room-header" and "align-items" in _declarations(body) and (width or screen) >= screen
+        ]
+        assert applied and applied[-1] == "flex-start", screen
