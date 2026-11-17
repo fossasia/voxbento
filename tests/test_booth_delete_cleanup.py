@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import asyncio
+import contextlib
 from datetime import datetime, timedelta, timezone
 from unittest.mock import AsyncMock
 
@@ -419,3 +421,29 @@ async def test_a_booth_added_back_while_the_old_worker_stops_keeps_its_state(sit
     await admin._end_deleted_booths([("main", site["hall"], "es")])
     booth = booths.get_booth_sync(booth_id)
     assert booth is not None and not booth.chat_messages
+
+
+@pytest.mark.parametrize("path", ["/api/v1/events/main/rooms/hall", "/api/v1/events/main"])
+async def test_api_v1_delete_clears_every_booth_before_a_stop_is_cut_short(site, monkeypatch, path):
+    """A stop cut short by shutdown must not leave the other booths' live state saved for the next start."""
+    ids = site["booth_ids"]
+
+    async def cut_short(_booth_id):
+        raise asyncio.CancelledError
+
+    monkeypatch.setattr(api_v1, "stop_transcription_worker", cut_short)
+    # The middleware turns the cancel into its own error; only what is left in memory matters here.
+    with contextlib.suppress(BaseException):
+        async with _client() as c:
+            await c.delete(path, headers=API_HEADERS)
+    for code in ("es", "fr"):
+        assert booths.get_booth_sync(ids[code]) is None
+
+
+async def test_admin_delete_clears_every_booth_before_a_stop_is_cut_short(site, monkeypatch):
+    ids = site["booth_ids"]
+    monkeypatch.setattr(admin, "stop_transcription_worker", AsyncMock(side_effect=asyncio.CancelledError))
+    with pytest.raises(asyncio.CancelledError):
+        await admin._end_deleted_booths([("main", site["hall"], "es"), ("main", site["hall"], "fr")])
+    for code in ("es", "fr"):
+        assert booths.get_booth_sync(ids[code]) is None

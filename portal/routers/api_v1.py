@@ -503,6 +503,7 @@ async def delete_event(
     await db.commit()
     for b in active_booths:
         await booths.remove_booth(event_slug, b["room_id"], b["language_code"])
+    for b in active_booths:
         await stop_transcription_worker(b["booth_id"])
     return None
 
@@ -871,6 +872,7 @@ async def delete_room(
     await db.commit()
     for booth_event_slug, language_code in room_booth_keys:
         await booths.remove_booth(booth_event_slug, room.id, language_code)
+    for booth_event_slug, language_code in room_booth_keys:
         await stop_transcription_worker(make_booth_id(booth_event_slug, room.id, language_code))
     return None
 

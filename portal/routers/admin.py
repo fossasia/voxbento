@@ -3148,12 +3148,14 @@ async def _end_deleted_booths(keys: Iterable[tuple[str, int, str]]) -> None:
     The worker and the live state are in memory, not in the deleted rows. Left there, the worker keeps its
     slot until a restart, and a booth added back with the same language comes back live with the old chat.
     """
+    keys = list(keys)
+    # Clear every booth's live state before any worker's shutdown yields: a booth added back meanwhile keeps
+    # its own, and a stop cut short leaves no saved state behind to restore.
     for event_slug, room_id, language_code in keys:
-        booth_id = make_booth_id(event_slug, room_id, language_code)
-        await manager.close_booth_sessions(booth_id)
-        # Clear the live state before the worker's shutdown yields, so a booth added back meanwhile keeps its own.
+        await manager.close_booth_sessions(make_booth_id(event_slug, room_id, language_code))
         await booths.remove_booth(event_slug, room_id, language_code)
-        await stop_transcription_worker(booth_id)
+    for event_slug, room_id, language_code in keys:
+        await stop_transcription_worker(make_booth_id(event_slug, room_id, language_code))
 
 
 def invalid_role_redirect(request: Request, path: str, role: str) -> RedirectResponse:
