@@ -100,6 +100,12 @@ def _kicked_ids(mediamtx) -> list[str]:
     return [call.args[1].id for call in mediamtx.kick.await_args_list]
 
 
+def _recorded_ids(path: str) -> set[str]:
+    from portal.booth_publish import _publishers
+
+    return set(_publishers.get(path, {}))
+
+
 def _kicked(mediamtx) -> list[tuple[str, str, str]]:
     """Each kick as (path, source type, session id) — hashable, so order-independent sets work."""
     return [(call.args[0], call.args[1].type, call.args[1].id) for call in mediamtx.kick.await_args_list]
@@ -149,16 +155,19 @@ async def test_revoking_the_publisher_kicks_the_session_they_started(mediamtx):
 
 
 @pytest.mark.anyio
-async def test_revoking_a_backup_who_is_not_publishing_touches_nothing(mediamtx):
+async def test_revoking_a_backup_leaves_the_active_interpreters_live_session_alone(mediamtx):
     booth_id, path, channel = _booth("backup")
     ana = await _join(booth_id, channel, "Ana")
     ben = await _join(booth_id, channel, "Ben")
     await _start_publishing(booth_id, path, channel, ana, ANA_SESSION)
+    # Ana is the one publishing; revoking the backup must not end her session, by record or by path.
+    mediamtx.lookup.return_value = MediaPath(
+        name=path, available=True, source=MediaSource(type="webRTCSession", id=ANA_SESSION)
+    )
 
     await release_participant(_session(booth_id, channel, ben, "Ben"), immediate=True)
 
     mediamtx.kick.assert_not_awaited()
-    mediamtx.lookup.assert_not_awaited()
 
 
 @pytest.mark.anyio
@@ -187,7 +196,33 @@ async def test_an_offer_that_never_became_the_live_source_is_still_ended(mediamt
     await release_participant(_session(booth_id, channel, ana, "Ana"), immediate=True)
 
     assert _kicked_ids(mediamtx) == [ANA_SESSION]
-    mediamtx.lookup.assert_not_awaited()
+
+
+@pytest.mark.anyio
+async def test_a_live_session_evicted_from_the_record_is_still_ended_via_the_path(mediamtx):
+    """The per-path cap must not drop a live session: a later cluster of offers evicts it, but
+    revocation confirms the live publisher and ends it anyway (#1285, P1)."""
+    import uuid
+
+    from portal.booth_publish import MAX_SESSIONS_PER_PATH, publisher_for
+
+    booth_id, path, channel = _booth("evicted")
+    ana = await _join(booth_id, channel, "Ana", user_id=12)
+    await _start_publishing(booth_id, path, channel, ana, ANA_SESSION)  # the live session, recorded first
+    # Enough later offers from the same owner to evict ANA_SESSION under the cap.
+    for _ in range(MAX_SESSIONS_PER_PATH):
+        secret = issue_ticket(booth_id, ana.participant_id, path)
+        assert await authorize_booth_publish(path, secret, str(uuid.uuid4()))
+    assert ANA_SESSION not in _recorded_ids(path)
+    assert publisher_for(path) is not None  # the offers are still recorded
+    # MediaMTX still has Ana's original session live.
+    mediamtx.lookup.return_value = MediaPath(
+        name=path, available=True, source=MediaSource(type="webRTCSession", id=ANA_SESSION)
+    )
+
+    await release_participant(_session(booth_id, channel, ana, "Ana"), immediate=True)
+
+    assert ANA_SESSION in _kicked_ids(mediamtx)
 
 
 @pytest.mark.anyio
