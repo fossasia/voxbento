@@ -4,8 +4,8 @@
 and voice services of ``room_id`` ("room"), which use that room's event API keys.
 ``daily_minutes`` caps the visitor audio the demo accepts per UTC day.
 
-Revision ID: 044
-Revises: 043
+Revision ID: 046
+Revises: 045
 """
 
 from __future__ import annotations
@@ -16,8 +16,8 @@ import sqlalchemy as sa
 
 from alembic import op
 
-revision: str = "044"
-down_revision: Union[str, Sequence[str], None] = "043"
+revision: str = "046"
+down_revision: Union[str, Sequence[str], None] = "045"
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
 
@@ -27,9 +27,7 @@ def upgrade() -> None:
         batch.add_column(sa.Column("ai_source", sa.String(length=20), nullable=False, server_default="built_in"))
         batch.add_column(sa.Column("room_id", sa.Integer(), nullable=True))
         batch.add_column(sa.Column("daily_minutes", sa.Integer(), nullable=False, server_default="120"))
-        batch.create_foreign_key(
-            "fk_live_demo_settings_room_id", "rooms", ["room_id"], ["id"], ondelete="SET NULL"
-        )
+        batch.create_foreign_key("fk_live_demo_settings_room_id", "rooms", ["room_id"], ["id"], ondelete="SET NULL")
 
 
 def downgrade() -> None:

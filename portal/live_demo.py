@@ -56,7 +56,7 @@ from portal.transcription.providers.local import is_model_loaded as whisper_load
 from portal.transcription.worker import PROVIDERS as SPEECH_PROVIDERS
 from portal.translations.engine import Language, TranslationContext
 from portal.translations.providers.local import LocalProvider as LocalTranslator
-from portal.translations.providers.local import get_model_and_tokenizer
+from portal.translations.providers.local import get_download_progress, get_model_and_tokenizer, trigger_download
 from portal.translations.providers.local import is_model_loaded as translator_loaded
 from portal.translations.registry import NLLB_200_DISTILLED_600M
 from portal.translations.vocabulary import (
@@ -968,6 +968,8 @@ def engines_for(demo: DemoSettings) -> Engines:
 
 
 _warm_lock = asyncio.Lock()
+# How often warm-up checks on a model download someone else started.
+_DOWNLOAD_POLL_SECONDS = 1.0
 
 
 def _local_models(demo: DemoSettings) -> tuple[str | None, str | None, bool]:
@@ -1015,6 +1017,11 @@ async def warm_up(demo: DemoSettings) -> None:
         if whisper:
             await asyncio.to_thread(get_whisper_model, whisper)
         if nllb:
+            if get_download_progress(nllb).get("status") != "completed":
+                # Loading never downloads an NLLB model; the demo's model is the operator's choice.
+                await asyncio.to_thread(trigger_download, nllb)
+            while get_download_progress(nllb).get("status") == "downloading":
+                await asyncio.sleep(_DOWNLOAD_POLL_SECONDS)
             await asyncio.to_thread(get_model_and_tokenizer, nllb)
         if voice:
             # A short synthesis loads the engine and the English voice style.
