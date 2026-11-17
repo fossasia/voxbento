@@ -502,10 +502,8 @@ async def delete_event(
     # Commit first, so a failed delete leaves the booths running.
     await db.commit()
     for b in active_booths:
-        try:
-            await stop_transcription_worker(b["booth_id"])
-        finally:
-            await booths.remove_booth(event_slug, b["room_id"], b["language_code"])
+        await booths.remove_booth(event_slug, b["room_id"], b["language_code"])
+        await stop_transcription_worker(b["booth_id"])
     return None
 
 
@@ -872,10 +870,8 @@ async def delete_room(
     db.add(audit)
     await db.commit()
     for booth_event_slug, language_code in room_booth_keys:
-        try:
-            await stop_transcription_worker(make_booth_id(booth_event_slug, room.id, language_code))
-        finally:
-            await booths.remove_booth(booth_event_slug, room.id, language_code)
+        await booths.remove_booth(booth_event_slug, room.id, language_code)
+        await stop_transcription_worker(make_booth_id(booth_event_slug, room.id, language_code))
     return None
 
 
@@ -1020,10 +1016,8 @@ async def delete_booth_endpoint(
     await revoke_booths_for_deleted_entity(db, level="booth", target_id=booth.id)
     await delete_booth(db, booth.id)
     await db.commit()
-    try:
-        await stop_transcription_worker(make_booth_id(event_slug, target_room_id, language_code))
-    finally:
-        await booths.remove_booth(event_slug, target_room_id, language_code)
+    await booths.remove_booth(event_slug, target_room_id, language_code)
+    await stop_transcription_worker(make_booth_id(event_slug, target_room_id, language_code))
     return {"status": "deleted"}
 
 

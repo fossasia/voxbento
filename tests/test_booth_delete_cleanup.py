@@ -403,3 +403,19 @@ async def test_api_v1_delete_ends_the_booth_only_after_the_commit(site, monkeypa
         resp = await c.delete(path, headers=API_HEADERS)
     assert resp.status_code in (200, 204)
     assert "stop" in order and order.index("commit") < order.index("stop")
+
+
+async def test_a_booth_added_back_while_the_old_worker_stops_keeps_its_state(site, monkeypatch):
+    """Stopping a worker waits for it to finish; a booth added back and joined meanwhile is the new one."""
+    booth_id = site["booth_ids"]["es"]
+    channel = make_mediamtx_path("main", site["hall"], "es")
+
+    async def slow_stop(_booth_id):
+        await booths.join_participant(
+            booth_id, "Bea", INTERPRETER, "es", channel, room_id=site["hall"], joined_by="session-new"
+        )
+
+    monkeypatch.setattr(admin, "stop_transcription_worker", slow_stop)
+    await admin._end_deleted_booths([("main", site["hall"], "es")])
+    booth = booths.get_booth_sync(booth_id)
+    assert booth is not None and not booth.chat_messages

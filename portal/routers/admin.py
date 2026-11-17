@@ -3151,10 +3151,9 @@ async def _end_deleted_booths(keys: Iterable[tuple[str, int, str]]) -> None:
     for event_slug, room_id, language_code in keys:
         booth_id = make_booth_id(event_slug, room_id, language_code)
         await manager.close_booth_sessions(booth_id)
-        try:
-            await stop_transcription_worker(booth_id)
-        finally:
-            await booths.remove_booth(event_slug, room_id, language_code)
+        # Clear the live state before the worker's shutdown yields, so a booth added back meanwhile keeps its own.
+        await booths.remove_booth(event_slug, room_id, language_code)
+        await stop_transcription_worker(booth_id)
 
 
 def invalid_role_redirect(request: Request, path: str, role: str) -> RedirectResponse:
