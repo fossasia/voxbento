@@ -1172,7 +1172,7 @@ async def save_transcript_segment(booth_id_str: str, text: str, room_id: int | N
                 )
                 booth_id = await session.scalar(stmt)
 
-            segment = TranscriptSegment(room_id=room_id, booth_id=booth_id, language_code=language_code, text=text)
+            segment = TranscriptSegment(room_id=parsed_room_id, booth_id=booth_id, language_code=language_code, text=text)
             session.add(segment)
             await session.flush()
             return segment.id
