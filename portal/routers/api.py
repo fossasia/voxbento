@@ -808,8 +808,8 @@ def resolve_transcription_config(db_booth: DBBooth, event: Event | None = None) 
     model_size = db_booth.transcription_model
     try:
         provider_enum = ProviderEnum(provider)
-    except ValueError:
-        raise HTTPException(status_code=400, detail="Invalid transcription provider")
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail="Invalid transcription provider") from e
     evt = event if event is not None else db_booth.event
     if not evt.transcription_api_enabled and provider_enum != ProviderEnum.LOCAL:
         raise HTTPException(status_code=400, detail="External API transcription is disabled for this event.")
@@ -817,11 +817,11 @@ def resolve_transcription_config(db_booth: DBBooth, event: Event | None = None) 
     if provider_enum != ProviderEnum.LOCAL:
         try:
             api_key = get_api_key(evt, provider_enum)
-        except ValueError:
+        except ValueError as e:
             raise HTTPException(
                 status_code=400,
                 detail="API Key decryption failed. The encryption key has rotated. Please go to the Admin portal, clear your existing keys, and re-enter them.",
-            )
+            ) from e
         if not api_key:
             raise HTTPException(status_code=400, detail=f"{provider} API key missing. Cannot start transcription.")
     config = ProviderConfig(api_key=api_key)
@@ -891,8 +891,13 @@ async def api_transcription_start(
                         Event.deleted_at.is_(None),
                         DBBooth.room_id == room_id,
                         DBBooth.language_code == language_code,
+                        DBBooth.transcription_enabled.is_(True),
+                        DBBooth.transcription_provider == provider,
+                        DBBooth.transcription_model == model_size,
                     )
                 )
+                if provider.lower() != "local":
+                    check_stmt = check_stmt.where(Event.transcription_api_enabled.is_(True))
                 return (await s.scalar(check_stmt)) is not None
 
         result = await start_transcription_worker(
@@ -909,7 +914,7 @@ async def api_transcription_start(
             revalidate_active=_revalidate_active,
         )
     except ValueError as e:
-        raise HTTPException(status_code=429, detail=str(e))
+        raise HTTPException(status_code=429, detail=str(e)) from e
     if isinstance(result, TranscriptionStartResult):
         if result.status == "failed":
             logger.error("[%s] Transcription worker failed to start: %s", booth_id, result.error)

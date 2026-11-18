@@ -132,7 +132,7 @@ async def _cleanup_test_worker(booth_id: str):
             stopped_cleanly = True
         elif task is None:
             stopped_cleanly = True
-    except TimeoutError:
+    except TimeoutError as err:
         # Stop timed out: cancel task as last resort
         task = getattr(session, "task", None)
         if task is not None and not task.done():
@@ -143,12 +143,11 @@ async def _cleanup_test_worker(booth_id: str):
                 pass
             if task.done():
                 stopped_cleanly = True
-        raise AssertionError(f"worker did not stop within 2s: {booth_id}")
+        raise AssertionError(f"worker did not stop within 2s: {booth_id}") from err
     finally:
         task = getattr(session, "task", None)
-        if stopped_cleanly and (task is None or task.done()):
-            if active_workers.get(booth_id) is session:
-                active_workers.pop(booth_id, None)
+        if stopped_cleanly and (task is None or task.done()) and active_workers.get(booth_id) is session:
+            active_workers.pop(booth_id, None)
 
 
 # ── stop ──────────────────────────────────────────────────────────────────────
@@ -164,6 +163,28 @@ async def test_stop_uses_the_room_scoped_booth_id(event):
 
     assert response == {"status": "stopped", "booth_id": "pycon2026-3-en"}
     stop.assert_awaited_once_with("pycon2026-3-en")
+
+
+@pytest.mark.anyio
+async def test_stop_commits_db_transaction_before_worker_stop(event):
+    """stop_transcription ends the DB transaction and releases the connection before awaiting worker shutdown."""
+    call_order = []
+    db = _db(_result(first=event))
+
+    async def mock_commit():
+        call_order.append("commit")
+
+    db.commit = mock_commit
+
+    async def mock_stop(_bid):
+        call_order.append("stop")
+        return True
+
+    with patch.object(api_v1, "stop_transcription_worker", mock_stop):
+        response = await api_v1.stop_transcription(EVENT_SLUG, ROOM_ID, "en", db=db, token=object())
+
+    assert response == {"status": "stopped", "booth_id": "pycon2026-3-en"}
+    assert call_order == ["commit", "stop"]
 
 
 @pytest.mark.anyio
@@ -2111,7 +2132,7 @@ async def test_started_webhook_enqueue_failure_does_not_abort_worker():
             await stop_transcription_worker(booth_id)
             assert session.state == State.STOPPED
             stopped_webhooks = [e for e in emitted_events if e[0] == "booth.transcription.stopped"]
-            assert len(stopped_webhooks) == 0
+            assert stopped_webhooks == []
         finally:
             await _cleanup_test_worker(booth_id)
 
@@ -2702,6 +2723,9 @@ def test_floor_language_matching_all_edge_cases():
     assert _languages_match(normal_en_session, None, "EN") is True
     assert _languages_match(normal_en_session, None, "  en  ") is True
     assert _languages_match(normal_en_session, None, "fr") is False
+    # English booth changed to floor auto-detection: must not match so worker is restarted
+    assert _effective_language("en", "floor") == ""
+    assert _languages_match(normal_en_session, "floor", "en") is False
 
 
 @pytest.mark.anyio
@@ -2861,3 +2885,341 @@ async def test_admin_start_revalidation_timeout_returns_503(event, monkeypatch):
         assert booth_id not in active_workers
 
     assert active_workers_lock.locked() is False
+
+
+@pytest.mark.anyio
+async def test_api_v1_start_revalidates_transcription_enabled(event):
+    """When captions are disabled in DB before revalidation runs, api_v1 start_transcription aborts with 404."""
+    booth_id = make_booth_id(EVENT_SLUG, ROOM_ID, "en")
+    mock_booth = MagicMock()
+    db_booth = SimpleNamespace(
+        id=77,
+        transcription_enabled=True,
+        transcription_provider="local",
+        transcription_model="tiny",
+        language_code="en",
+        room_id=ROOM_ID,
+        event_id=event.id,
+        event=event,
+    )
+    db = _db(_result(first=event), _result(first=db_booth))
+
+    from contextlib import asynccontextmanager
+
+    from portal.database import configure, dispose, get_session, init_db
+    from portal.models import DBBooth
+    from portal.models import Event as DBEvent
+    from portal.models import Room as DBRoom
+
+    await dispose()
+    configure("sqlite+aiosqlite://")
+    await init_db()
+
+    try:
+        async with get_session() as s:
+            dev = DBEvent(id=event.id, slug=EVENT_SLUG, display_name="Test Event")
+            s.add(dev)
+            await s.flush()
+            dr = DBRoom(id=ROOM_ID, event_id=dev.id, display_name="Main")
+            s.add(dr)
+            await s.flush()
+            dbb = DBBooth(
+                id=77,
+                event_id=dev.id,
+                room_id=dr.id,
+                language_code="en",
+                language_name="English",
+                transcription_enabled=False,
+                transcription_provider="local",
+                transcription_model="tiny",
+            )
+            s.add(dbb)
+            await s.commit()
+
+        with (
+            patch.object(api_v1.booths, "get_booth_sync", return_value=mock_booth),
+            patch.object(api_v1, "get_session", get_session),
+        ):
+            with pytest.raises(api_v1.HTTPException) as exc_info:
+                await api_v1.start_transcription(EVENT_SLUG, ROOM_ID, "en", db=db, token=object())
+            assert exc_info.value.status_code == 404
+            assert exc_info.value.detail == "Booth is no longer active"
+            assert booth_id not in active_workers
+    finally:
+        await dispose()
+
+
+@pytest.mark.anyio
+async def test_api_v1_start_revalidates_provider_changed(event):
+    """When provider is changed in DB before revalidation runs, api_v1 start_transcription aborts with 404."""
+    booth_id = make_booth_id(EVENT_SLUG, ROOM_ID, "en")
+    mock_booth = MagicMock()
+    db_booth = SimpleNamespace(
+        id=77,
+        transcription_enabled=True,
+        transcription_provider="local",
+        transcription_model="tiny",
+        language_code="en",
+        room_id=ROOM_ID,
+        event_id=event.id,
+        event=event,
+    )
+    db = _db(_result(first=event), _result(first=db_booth))
+
+    from portal.database import configure, dispose, get_session, init_db
+    from portal.models import DBBooth
+    from portal.models import Event as DBEvent
+    from portal.models import Room as DBRoom
+
+    await dispose()
+    configure("sqlite+aiosqlite://")
+    await init_db()
+
+    try:
+        async with get_session() as s:
+            dev = DBEvent(id=event.id, slug=EVENT_SLUG, display_name="Test Event")
+            s.add(dev)
+            await s.flush()
+            dr = DBRoom(id=ROOM_ID, event_id=dev.id, display_name="Main")
+            s.add(dr)
+            await s.flush()
+            dbb = DBBooth(
+                id=77,
+                event_id=dev.id,
+                room_id=dr.id,
+                language_code="en",
+                language_name="English",
+                transcription_enabled=True,
+                transcription_provider="deepgram",
+                transcription_model="tiny",
+            )
+            s.add(dbb)
+            await s.commit()
+
+        with (
+            patch.object(api_v1.booths, "get_booth_sync", return_value=mock_booth),
+            patch.object(api_v1, "get_session", get_session),
+        ):
+            with pytest.raises(api_v1.HTTPException) as exc_info:
+                await api_v1.start_transcription(EVENT_SLUG, ROOM_ID, "en", db=db, token=object())
+            assert exc_info.value.status_code == 404
+            assert exc_info.value.detail == "Booth is no longer active"
+            assert booth_id not in active_workers
+    finally:
+        await dispose()
+
+
+@pytest.mark.anyio
+async def test_api_v1_start_revalidates_model_changed(event):
+    """When model is changed in DB before revalidation runs, api_v1 start_transcription aborts with 404."""
+    booth_id = make_booth_id(EVENT_SLUG, ROOM_ID, "en")
+    mock_booth = MagicMock()
+    db_booth = SimpleNamespace(
+        id=77,
+        transcription_enabled=True,
+        transcription_provider="local",
+        transcription_model="tiny",
+        language_code="en",
+        room_id=ROOM_ID,
+        event_id=event.id,
+        event=event,
+    )
+    db = _db(_result(first=event), _result(first=db_booth))
+
+    from portal.database import configure, dispose, get_session, init_db
+    from portal.models import DBBooth
+    from portal.models import Event as DBEvent
+    from portal.models import Room as DBRoom
+
+    await dispose()
+    configure("sqlite+aiosqlite://")
+    await init_db()
+
+    try:
+        async with get_session() as s:
+            dev = DBEvent(id=event.id, slug=EVENT_SLUG, display_name="Test Event")
+            s.add(dev)
+            await s.flush()
+            dr = DBRoom(id=ROOM_ID, event_id=dev.id, display_name="Main")
+            s.add(dr)
+            await s.flush()
+            dbb = DBBooth(
+                id=77,
+                event_id=dev.id,
+                room_id=dr.id,
+                language_code="en",
+                language_name="English",
+                transcription_enabled=True,
+                transcription_provider="local",
+                transcription_model="base",
+            )
+            s.add(dbb)
+            await s.commit()
+
+        with (
+            patch.object(api_v1.booths, "get_booth_sync", return_value=mock_booth),
+            patch.object(api_v1, "get_session", get_session),
+        ):
+            with pytest.raises(api_v1.HTTPException) as exc_info:
+                await api_v1.start_transcription(EVENT_SLUG, ROOM_ID, "en", db=db, token=object())
+            assert exc_info.value.status_code == 404
+            assert exc_info.value.detail == "Booth is no longer active"
+            assert booth_id not in active_workers
+    finally:
+        await dispose()
+
+
+@pytest.mark.anyio
+async def test_admin_api_start_revalidates_transcription_enabled(event):
+    """When captions are disabled in DB before revalidation runs, admin api_transcription_start aborts with 404."""
+    import portal.routers.api as api_admin
+
+    booth_id = make_booth_id(EVENT_SLUG, ROOM_ID, "en")
+    mock_booth = MagicMock()
+    mock_request = MagicMock()
+
+    from contextlib import asynccontextmanager
+
+    from portal.database import configure, dispose, get_session, init_db
+    from portal.models import DBBooth
+    from portal.models import Event as DBEvent
+    from portal.models import Room as DBRoom
+
+    await dispose()
+    configure("sqlite+aiosqlite://")
+    await init_db()
+
+    try:
+        async with get_session() as s:
+            dev = DBEvent(id=event.id, slug=EVENT_SLUG, display_name="Test Event")
+            s.add(dev)
+            await s.flush()
+            dr = DBRoom(id=ROOM_ID, event_id=dev.id, display_name="Main")
+            s.add(dr)
+            await s.flush()
+            dbb = DBBooth(
+                id=88,
+                event_id=dev.id,
+                room_id=dr.id,
+                language_code="en",
+                language_name="English",
+                transcription_enabled=False,
+                transcription_provider="local",
+                transcription_model="tiny",
+            )
+            s.add(dbb)
+            await s.commit()
+
+        db_booth_initial = SimpleNamespace(
+            id=88,
+            transcription_enabled=True,
+            transcription_provider="local",
+            transcription_model="tiny",
+            language_code="en",
+            room_id=ROOM_ID,
+            event_id=event.id,
+            event=event,
+        )
+
+        first_query = True
+        real_get_session = get_session
+
+        @asynccontextmanager
+        async def racing_get_session():
+            nonlocal first_query
+            if first_query:
+                first_query = False
+                mock_s = MagicMock()
+                mock_s.scalar = AsyncMock(return_value=db_booth_initial)
+                yield mock_s
+            else:
+                async with real_get_session() as s:
+                    yield s
+
+        with (
+            patch.object(api_admin, "get_session", racing_get_session),
+            patch.object(api_admin, "get_event_by_slug", AsyncMock(return_value=event)),
+            patch.object(api_admin, "_verify_resource_access", AsyncMock()),
+            patch.object(api_admin, "_require_same_origin_for_cookies", MagicMock()),
+            patch.object(api_admin.booths, "get_booth_sync", return_value=mock_booth),
+        ):
+            with pytest.raises(api_admin.HTTPException) as exc_info:
+                await api_admin.api_transcription_start(EVENT_SLUG, ROOM_ID, "en", request=mock_request)
+            assert exc_info.value.status_code == 404
+            assert exc_info.value.detail == "Booth is no longer active"
+            assert booth_id not in active_workers
+    finally:
+        await dispose()
+
+
+@pytest.mark.anyio
+async def test_api_v1_stale_start_request_does_not_stop_active_worker(event):
+    """When an active worker is already running with updated settings and a stale start request arrives,
+    revalidation fails before teardown, preserving the active worker (#1110)."""
+    booth_id = make_booth_id(EVENT_SLUG, ROOM_ID, "en")
+    mock_booth = MagicMock()
+
+    active_worker = TranscriptionWorkerSession(
+        EVENT_SLUG, "en", booth_id, MagicMock(), "openai", "whisper-1", ProviderConfig(api_key="key"), room_id=ROOM_ID
+    )
+    active_worker.state = State.RUNNING
+    active_workers[booth_id] = active_worker
+
+    from portal.database import configure, dispose, get_session, init_db
+    from portal.models import DBBooth
+    from portal.models import Event as DBEvent
+    from portal.models import Room as DBRoom
+
+    await dispose()
+    configure("sqlite+aiosqlite://")
+    await init_db()
+
+    try:
+        async with get_session() as s:
+            dev = DBEvent(id=event.id, slug=EVENT_SLUG, display_name="Test Event")
+            s.add(dev)
+            await s.flush()
+            dr = DBRoom(id=ROOM_ID, event_id=dev.id, display_name="Main")
+            s.add(dr)
+            await s.flush()
+            dbb = DBBooth(
+                id=77,
+                event_id=dev.id,
+                room_id=dr.id,
+                language_code="en",
+                language_name="English",
+                transcription_enabled=True,
+                transcription_provider="openai",
+                transcription_model="whisper-1",
+            )
+            s.add(dbb)
+            await s.commit()
+
+        stale_db_booth = SimpleNamespace(
+            id=77,
+            transcription_enabled=True,
+            transcription_provider="local",
+            transcription_model="tiny",
+            language_code="en",
+            room_id=ROOM_ID,
+            event_id=event.id,
+            event=event,
+        )
+        stale_db = _db(_result(first=event), _result(first=stale_db_booth))
+
+        with (
+            patch.object(api_v1.booths, "get_booth_sync", return_value=mock_booth),
+            patch.object(api_v1, "get_session", get_session),
+        ):
+            with pytest.raises(api_v1.HTTPException) as exc_info:
+                await api_v1.start_transcription(EVENT_SLUG, ROOM_ID, "en", db=stale_db, token=object())
+            assert exc_info.value.status_code == 404
+            assert exc_info.value.detail == "Booth is no longer active"
+
+        assert booth_id in active_workers
+        assert active_workers[booth_id] is active_worker
+        assert active_worker.state == State.RUNNING
+        assert active_worker.stop_event.is_set() is False
+    finally:
+        active_workers.pop(booth_id, None)
+        await dispose()

@@ -17,6 +17,7 @@ from portal.transcription.worker import (
     stop_transcription_worker,
     wait_for_worker_start,
 )
+from portal.webhooks.worker import enqueue_webhook as _real_enqueue_webhook
 
 _ORIGINAL_FFMPEG_AENTER = FfmpegProcess.__aenter__
 
@@ -115,7 +116,9 @@ async def test_transcription_worker_cancellation(mock_providers):
     stop_task = asyncio.create_task(stop_transcription_worker(booth_id))
 
     # Wait for the stop to finish
-    await stop_task
+    stop_result = await stop_task
+    assert stop_result is True
+    assert isinstance(stop_result, bool)
 
     # Verify cleanup
     assert worker.state == State.STOPPED
@@ -147,6 +150,14 @@ async def test_wait_for_worker_start_is_false_when_ffmpeg_cannot_be_launched(moc
 @pytest.mark.anyio
 async def test_wait_for_worker_start_ignores_a_booth_without_a_worker():
     assert await wait_for_worker_start("booth_without_worker") is True
+
+
+@pytest.mark.anyio
+async def test_stop_transcription_worker_returns_true_bool_for_booth_without_worker():
+    """stop_transcription_worker must return True (and strictly bool, not None) when no worker is running."""
+    result = await stop_transcription_worker("booth_without_worker")
+    assert result is True
+    assert isinstance(result, bool)
 
 
 @pytest.mark.anyio
@@ -649,3 +660,279 @@ async def test_perform_cleanup_swallows_process_lookup_error(monkeypatch):
     with patch.object(FfmpegProcess, "_kill_windows_tree", new=AsyncMock(side_effect=ProcessLookupError())):
         # Must not raise.
         await fp._perform_cleanup()
+
+
+@pytest.mark.anyio
+async def test_transcription_worker_webhook_lifecycle(mock_providers):
+    """Verify that started and stopped webhooks are emitted across worker lifecycle,
+    deduplicated across retries, and never emitted if startup fails."""
+    emitted = []
+
+    async def track_enqueue(event_type: str, payload: dict) -> bool:
+        emitted.append((event_type, payload.get("booth_id")))
+        return True
+
+    with patch("portal.transcription.worker._wh_worker.enqueue_webhook", side_effect=track_enqueue):
+        # Case 1: Normal startup and graceful stop emit started then stopped
+        async def idle(*args, **kwargs):
+            await asyncio.sleep(10)
+
+        mock_providers["local"].run_stream = idle
+        booth_id = "test_webhook_lifecycle"
+
+        res = await start_transcription_worker("evt", "en", booth_id, None, "local", "base", None, wait_for_ready=True)
+        assert res.status == "started"
+        assert booth_id in active_workers
+        assert active_workers[booth_id].started_webhook_emitted
+        assert emitted == [("booth.transcription.started", booth_id)]
+
+        stopped = await stop_transcription_worker(booth_id)
+        assert stopped is True
+        assert emitted == [
+            ("booth.transcription.started", booth_id),
+            ("booth.transcription.stopped", booth_id),
+        ]
+
+        # Case 2: Startup failure emits neither started nor stopped
+        emitted.clear()
+        failed_booth = "test_webhook_failed_startup"
+        with patch.object(FfmpegProcess, "__aenter__", side_effect=RuntimeError("ffmpeg failed")):
+            res2 = await start_transcription_worker(
+                "evt", "en", failed_booth, None, "local", "base", None, wait_for_ready=True
+            )
+            assert res2.status == "failed"
+            assert failed_booth not in active_workers
+            assert not emitted
+
+        # Case 3: Retries in stream loop do not duplicate booth.transcription.started
+        emitted.clear()
+        retry_booth = "test_webhook_retry_dedup"
+        stream_attempts = 0
+
+        async def retry_stream(*args, **kwargs):
+            nonlocal stream_attempts
+            stream_attempts += 1
+            if stream_attempts == 1:
+                raise RuntimeError("transient stream error")
+            await asyncio.sleep(10)
+
+        mock_providers["local"].run_stream = retry_stream
+        res3 = await start_transcription_worker(
+            "evt", "en", retry_booth, None, "local", "base", None, wait_for_ready=True
+        )
+        assert res3.status == "started"
+        for _ in range(50):
+            if stream_attempts >= 2:
+                break
+            await asyncio.sleep(0.1)
+        assert stream_attempts >= 2
+        assert emitted == [("booth.transcription.started", retry_booth)]
+
+        await stop_transcription_worker(retry_booth)
+        assert emitted == [
+            ("booth.transcription.started", retry_booth),
+            ("booth.transcription.stopped", retry_booth),
+        ]
+
+
+@pytest.mark.anyio
+async def test_real_enqueue_webhook_lifecycle_with_retry(mock_providers, tmp_path):
+    """Test full webhook emission lifecycle using the real enqueue_webhook implementation.
+
+    Verifies that enqueue_webhook returns a boolean (True on success), ensuring:
+    1. started_webhook_emitted is set to True.
+    2. Stream retry in the worker loop does NOT duplicate booth.transcription.started.
+    3. Normal worker stop emits booth.transcription.stopped.
+    4. An independent DB session observes exactly one started and one stopped delivery.
+    """
+    from sqlalchemy import select
+
+    from portal.database import configure, dispose, get_session, init_db
+    from portal.models import DeveloperAccount, User, WebhookDelivery, WebhookSubscription
+
+    await dispose()
+    configure(f"sqlite+aiosqlite:///{tmp_path / 'webhook_lifecycle.db'}")
+    await init_db()
+
+    try:
+        # Seed User, DeveloperAccount, and WebhookSubscription in DB
+        async with get_session() as session:
+            user = User(
+                email=f"webhook_test_{uuid.uuid4().hex[:8]}@example.com",
+                display_name="Webhook Tester",
+                password_hash="dummy_hash",
+                is_active=True,
+            )
+            session.add(user)
+            await session.flush()
+            dev_account = DeveloperAccount(user_id=user.id, status="approved")
+            session.add(dev_account)
+            await session.flush()
+            sub = WebhookSubscription(
+                developer_account_id=dev_account.id,
+                target_url="https://example.com/webhook",
+                secret_key="secret123",
+                event_types=["booth.transcription.started", "booth.transcription.stopped"],
+                is_active=True,
+            )
+            session.add(sub)
+            await session.commit()
+            sub_id = sub.id
+
+        stream_attempts = 0
+
+        async def retry_stream(*args, **kwargs):
+            nonlocal stream_attempts
+            stream_attempts += 1
+            if stream_attempts == 1:
+                raise RuntimeError("transient stream error")
+            await asyncio.sleep(10)
+
+        mock_providers["local"].run_stream = retry_stream
+        booth_id = f"test_real_wh_{uuid.uuid4().hex[:8]}"
+
+        with patch("portal.transcription.worker._wh_worker.enqueue_webhook", side_effect=_real_enqueue_webhook):
+            res = await start_transcription_worker(
+                "evt", "en", booth_id, None, "local", "base", None, wait_for_ready=True
+            )
+            assert res.status == "started"
+            assert booth_id in active_workers
+
+            # Wait for started webhook to finish enqueuing (real DB async insert runs right after ready_event.set)
+            for _ in range(50):
+                if active_workers[booth_id].started_webhook_emitted:
+                    break
+                await asyncio.sleep(0.05)
+            assert active_workers[booth_id].started_webhook_emitted
+
+            # Wait deterministically for stream retry attempt
+            for _ in range(50):
+                if stream_attempts >= 2:
+                    break
+                await asyncio.sleep(0.1)
+            assert stream_attempts >= 2
+
+            stopped = await stop_transcription_worker(booth_id)
+            assert stopped is True
+
+        # Verify deliveries from an independent DB session
+        async with get_session() as s:
+            deliveries = (
+                await s.scalars(
+                    select(WebhookDelivery)
+                    .where(WebhookDelivery.subscription_id == sub_id)
+                    .order_by(WebhookDelivery.id.asc())
+                )
+            ).all()
+
+        assert len(deliveries) == 2
+        assert deliveries[0].event_type == "booth.transcription.started"
+        assert deliveries[0].payload["booth_id"] == booth_id
+        assert deliveries[0].status == "pending"
+        assert deliveries[1].event_type == "booth.transcription.stopped"
+        assert deliveries[1].payload["booth_id"] == booth_id
+        assert deliveries[1].status == "pending"
+    finally:
+        await dispose()
+
+
+@pytest.mark.anyio
+async def test_pre_entry_stop_guard_prevents_ffmpeg_startup():
+    """When a stop condition is set immediately before entering FfmpegProcess,
+    the pre-entry guard breaks and FfmpegProcess.__aenter__ is never invoked.
+    """
+    from portal.transcription.worker import TranscriptionWorkerSession
+
+    worker = TranscriptionWorkerSession(
+        "evt", "en", "test-pre-entry-guard", AsyncMock(), "local", "base", None
+    )
+    mock_aenter = AsyncMock()
+    first_call = True
+    orig_is_set = worker.stop_event.is_set
+
+    def intercepted_is_set():
+        nonlocal first_call
+        if first_call:
+            first_call = False
+            # Transition worker to STOPPING immediately before entering context manager
+            worker.stop()
+            return False
+        return orig_is_set()
+
+    worker.stop_event.is_set = intercepted_is_set
+    with patch.object(FfmpegProcess, "__aenter__", mock_aenter):
+        await worker._run_loop()
+
+    mock_aenter.assert_not_called()
+    assert worker.state == State.STOPPED
+
+
+@pytest.mark.anyio
+async def test_start_worker_revalidation_failure_prevents_registration():
+    """When revalidate_active returns False, start_transcription_worker aborts
+    and no worker session is registered in active_workers.
+    """
+    booth_id = f"test_reval_fail_{uuid.uuid4().hex[:8]}"
+
+    async def mock_revalidate():
+        return False
+
+    res = await start_transcription_worker(
+        "evt",
+        "en",
+        booth_id,
+        AsyncMock(),
+        "local",
+        "base",
+        None,
+        revalidate_active=mock_revalidate,
+    )
+    assert res.status == "failed"
+    assert res.error_code == "booth_deleted"
+    assert booth_id not in active_workers
+
+
+@pytest.mark.anyio
+async def test_stale_start_request_does_not_stop_active_worker():
+    """When an active worker is running with new configuration and a stale start request
+    arrives whose revalidation fails, the running worker must NOT be stopped and no
+    stale worker may be registered (#1110).
+    """
+    from portal.transcription.providers.base import ProviderConfig
+    from portal.transcription.worker import TranscriptionWorkerSession
+
+    booth_id = f"test_stale_req_{uuid.uuid4().hex[:8]}"
+    active_worker = TranscriptionWorkerSession(
+        "evt", "en", booth_id, AsyncMock(), "openai", "whisper-1", ProviderConfig(api_key="new-key")
+    )
+    active_worker.state = State.RUNNING
+    active_workers[booth_id] = active_worker
+
+    stale_revalidate_called = False
+
+    async def stale_revalidate():
+        nonlocal stale_revalidate_called
+        stale_revalidate_called = True
+        return False
+
+    res = await start_transcription_worker(
+        "evt",
+        "en",
+        booth_id,
+        AsyncMock(),
+        "local",
+        "tiny",
+        ProviderConfig(api_key=None),
+        revalidate_active=stale_revalidate,
+    )
+
+    # 1. Stale request must be rejected
+    assert res.status == "failed"
+    assert res.error_code == "booth_deleted"
+    assert stale_revalidate_called is True
+
+    # 2. The active worker must still be running and not stopped
+    assert booth_id in active_workers
+    assert active_workers[booth_id] is active_worker
+    assert active_worker.state == State.RUNNING
+    assert active_worker.stop_event.is_set() is False

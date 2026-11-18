@@ -5,6 +5,7 @@ import hmac
 import inspect
 import logging
 import uuid
+from dataclasses import dataclass
 from enum import Enum
 from typing import Awaitable, Callable, Dict
 
@@ -157,21 +158,19 @@ class TranscriptionWorkerSession:
             return False
         if self.start_error is not None:
             return False
-        if self.task is not None and self.task.done():
-            return False
-        return True
+        return self.task is None or not self.task.done()
 
     async def _run_loop(self):
         """Run provider retries and finish process, webhook, and model cleanup on exit."""
         self.loop_entered = True
         retry_count = 0
         try:
-            while self.state != State.STOPPING and not self.stop_event.is_set():
-                # Narrow the race window: check STOPPING immediately before spawning ffmpeg
-                if self.state in (State.STOPPING, State.STOPPED) or self.stop_event.is_set():
-                    break
-
+            # Stop if stopping or stopped; STOPPED prevents re-entering loop if stop() ran before task execution
+            while self.state not in (State.STOPPING, State.STOPPED) and not self.stop_event.is_set():
                 try:
+                    if self.state in (State.STOPPING, State.STOPPED) or self.stop_event.is_set():
+                        break
+
                     # The context manager entirely encapsulates ffmpeg process lifecycle and cleanup.
                     async with FfmpegProcess(self.rtsp_url, self.sample_rate, self.booth_id) as process:
                         if self.state in (State.STOPPING, State.STOPPED) or self.stop_event.is_set():
@@ -349,13 +348,8 @@ active_workers: Dict[str, TranscriptionWorkerSession] = {}
 
 
 def _effective_language(language_code: str | None, transcription_language: str | None) -> str:
-    lc = (language_code or "").strip().lower()
-    tl = (transcription_language or "").strip().lower()
-    if tl == "floor":
-        tl = ""
-    if lc == "floor":
-        return tl
-    return tl or lc
+    lang = (transcription_language or language_code or "").strip().lower()
+    return "" if lang == "floor" else lang
 
 
 def _languages_match(
@@ -390,6 +384,45 @@ def _worker_config_matches(
     return hmac.compare_digest(str(existing_key).encode("utf-8"), str(new_key).encode("utf-8"))
 
 
+async def _revalidate_booth_active(
+    booth_id: str,
+    provider: str,
+    model_size: str,
+    revalidate_active: Callable[[], bool | Awaitable[bool]] | None,
+) -> TranscriptionStartResult | None:
+    if revalidate_active is None:
+        return None
+    try:
+        is_active = revalidate_active()
+        if inspect.isawaitable(is_active):
+            is_active = await asyncio.wait_for(
+                is_active,
+                timeout=settings.transcription_startup_timeout_secs,
+            )
+    except TimeoutError:
+        logger.error(
+            "[%s] Timed out revalidating booth status; aborting transcription start.",
+            booth_id,
+        )
+        return TranscriptionStartResult(
+            status="failed",
+            provider=provider,
+            model=model_size,
+            error="Timed out revalidating booth status",
+            error_code=ERROR_CODE_REVALIDATION_TIMEOUT,
+        )
+    if not is_active:
+        logger.info("[%s] Booth is no longer active; aborting transcription start.", booth_id)
+        return TranscriptionStartResult(
+            status="failed",
+            provider=provider,
+            model=model_size,
+            error="Booth is no longer active",
+            error_code="booth_deleted",
+        )
+    return None
+
+
 async def start_transcription_worker(
     event_slug: str,
     language_code: str,
@@ -411,35 +444,9 @@ async def start_transcription_worker(
         async with active_workers_lock:
             existing_session = active_workers.get(booth_id)
             if not existing_session:
-                if revalidate_active is not None:
-                    try:
-                        is_active = revalidate_active()
-                        if inspect.isawaitable(is_active):
-                            is_active = await asyncio.wait_for(
-                                is_active,
-                                timeout=settings.transcription_startup_timeout_secs,
-                            )
-                    except TimeoutError:
-                        logger.error(
-                            "[%s] Timed out revalidating booth status; aborting transcription start.",
-                            booth_id,
-                        )
-                        return TranscriptionStartResult(
-                            status="failed",
-                            provider=provider,
-                            model=model_size,
-                            error="Timed out revalidating booth status",
-                            error_code=ERROR_CODE_REVALIDATION_TIMEOUT,
-                        )
-                    if not is_active:
-                        logger.info("[%s] Booth is no longer active; aborting transcription start.", booth_id)
-                        return TranscriptionStartResult(
-                            status="failed",
-                            provider=provider,
-                            model=model_size,
-                            error="Booth is no longer active",
-                            error_code="booth_deleted",
-                        )
+                reval_result = await _revalidate_booth_active(booth_id, provider, model_size, revalidate_active)
+                if reval_result is not None:
+                    return reval_result
 
                 if len(active_workers) >= MAX_TOTAL_WORKERS:
                     raise WorkerCapacityError(
@@ -478,7 +485,6 @@ async def start_transcription_worker(
                         active_workers.pop(booth_id, None)
                     continue
                 # Session is tearing down in the background. We must strictly serialize.
-                pass
             else:
                 if _worker_config_matches(
                     existing_session,
@@ -518,22 +524,32 @@ async def start_transcription_worker(
                 keys_differ = not hmac.compare_digest(str(existing_key).encode("utf-8"), str(new_key).encode("utf-8"))
 
                 if settings_match and keys_differ and not restart_on_key_change:
-                    logger.info(
-                        "Transcription worker for %s is already running; key rotation not requested.",
-                        booth_id,
-                    )
-                    return TranscriptionStartResult(
-                        status="already_running",
-                        provider=existing_session.provider_name,
-                        model=existing_session.model_size,
-                    )
+                    if existing_session.state == State.RUNNING:
+                        logger.info(
+                            "Transcription worker for %s is already running; key rotation not requested.",
+                            booth_id,
+                        )
+                        return TranscriptionStartResult(
+                            status="already_running",
+                            provider=existing_session.provider_name,
+                            model=existing_session.model_size,
+                        )
+
+                    session_to_wait = existing_session
+                    is_new_session = False
+                    break
+
+                # Before stopping the running worker, revalidate incoming request's settings.
+                # If incoming settings are stale, abort without stopping the running worker (#1110).
+                reval_result = await _revalidate_booth_active(booth_id, provider, model_size, revalidate_active)
+                if reval_result is not None:
+                    return reval_result
 
                 logger.info(
                     "[%s] Configuration changed for running worker; restarting with new settings.",
                     booth_id,
                 )
                 existing_session.stop()
-                pass
 
         # We dropped the active_workers_lock and the session is STOPPING. Wait for it to die completely.
         logger.info(
@@ -625,9 +641,70 @@ async def wait_for_worker_start(booth_id: str, timeout: float = 3.0) -> bool:
     return session.start_error is None
 
 
-async def stop_transcription_worker(booth_id: str, timeout: float | None = None) -> bool:
+class WorkerSupersededError(Exception):
+    """Raised when a worker operation is superseded by a newer change."""
+
+
+class WorkerRevalidationTimeoutError(Exception):
+    """Raised when revalidating booth status times out."""
+
+
+class WorkerRevalidationError(Exception):
+    """Raised when an unexpected error occurs during revalidation."""
+
+
+@dataclass(frozen=True)
+class WorkerSnapshot:
+    state: State
+    provider_name: str
+    model_size: str
+
+
+async def get_worker_snapshot(booth_id: str) -> WorkerSnapshot | None:
+    """Return a point-in-time snapshot of the worker for booth_id under active_workers_lock."""
+    async with active_workers_lock:
+        session = active_workers.get(booth_id)
+        if session is None:
+            return None
+        return WorkerSnapshot(
+            state=session.state,
+            provider_name=getattr(session, "provider_name", ""),
+            model_size=getattr(session, "model_size", ""),
+        )
+
+
+async def stop_transcription_worker(
+    booth_id: str,
+    timeout: float | None = None,
+    *,
+    revalidate: Callable[[], Awaitable[bool]] | None = None,
+) -> bool:
     session = None
     async with active_workers_lock:
+        if revalidate is not None:
+            try:
+                is_active = await asyncio.wait_for(
+                    revalidate(),
+                    timeout=settings.transcription_startup_timeout_secs,
+                )
+            except TimeoutError as err:
+                logger.error(
+                    "[%s] Timed out revalidating booth status before stop; aborting stop.",
+                    booth_id,
+                )
+                raise WorkerRevalidationTimeoutError(f"Timed out revalidating booth status for {booth_id}") from err
+            except Exception as err:
+                logger.error(
+                    "[%s] Unexpected error revalidating booth status before stop: %s",
+                    booth_id,
+                    err,
+                    exc_info=True,
+                )
+                raise WorkerRevalidationError(f"Error revalidating booth status for {booth_id}: {err}") from err
+            if not is_active:
+                logger.info("[%s] Booth settings superseded; aborting worker stop.", booth_id)
+                raise WorkerSupersededError(f"Transcription stop for booth {booth_id} superseded by newer state")
+
         session = active_workers.get(booth_id)
         if session:
             session.stop()

@@ -996,7 +996,7 @@ async def delete_booth_endpoint(
     try:
         canonical_language = validate_language_code(language_code)
     except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e))
+        raise HTTPException(status_code=400, detail=str(e)) from e
 
     result = await db.execute(
         select(DBBooth).where(
@@ -1042,7 +1042,7 @@ async def start_transcription(
     try:
         canonical_language = validate_language_code(language_code)
     except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e))
+        raise HTTPException(status_code=400, detail=str(e)) from e
 
     booth_id = make_booth_id(event_slug, target_room_id, canonical_language)
 
@@ -1077,8 +1077,13 @@ async def start_transcription(
                     Event.deleted_at.is_(None),
                     DBBooth.room_id == target_room_id,
                     DBBooth.language_code == canonical_language,
+                    DBBooth.transcription_enabled.is_(True),
+                    DBBooth.transcription_provider == provider,
+                    DBBooth.transcription_model == model_size,
                 )
             )
+            if provider.lower() != "local":
+                check_stmt = check_stmt.where(Event.transcription_api_enabled.is_(True))
             return (await s.scalar(check_stmt)) is not None
 
     try:
@@ -1096,7 +1101,7 @@ async def start_transcription(
             revalidate_active=_revalidate_active,
         )
     except ValueError as e:
-        raise HTTPException(status_code=429, detail=str(e))
+        raise HTTPException(status_code=429, detail=str(e)) from e
 
     if not isinstance(result, TranscriptionStartResult):
         logger.error("[%s] Unexpected start_transcription_worker result type: %s", booth_id, type(result))
@@ -1153,6 +1158,9 @@ async def stop_transcription(
     room = await _verify_token_rbac(db, token, event, room_id, lock_event=True, write_lock=True)
     target_room_id = _extract_room_id(room, room_id)
     language_code = _validate_lang(language_code)
+
+    # End the database transaction and release the connection before waiting on worker shutdown
+    await db.commit()
 
     booth_id = make_booth_id(event_slug, target_room_id, language_code)
     stopped = await stop_transcription_worker(booth_id)
