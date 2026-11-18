@@ -1106,6 +1106,10 @@ async def save_transcript_segment(booth_id_str: str, text: str, room_id: int | N
         except Exception as exc:
             logger.warning("Booth ID '%s' has a non-integer room segment: '%s'", booth_id_str, exc, exc_info=True)
 
+    if room_id is None:
+        logger.error("Cannot save transcript segment: no room_id for booth %r", booth_id_str)
+        return None
+
     try:
         async with get_session() as session:
             booth_id = None
