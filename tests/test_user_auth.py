@@ -128,6 +128,26 @@ class TestRegistration:
         assert b"Create your account" in resp.content
 
     @pytest.mark.anyio
+    async def test_register_page_renders_accessible_password_toggles(self, setup_db):
+        async with _client() as c:
+            resp = await c.get("/register")
+        assert resp.status_code == 200
+        content = resp.text
+
+        assert content.count('class="password-input-wrapper"') == 2
+        assert "js/password-toggle.js" in content
+        for btn_id, input_id in (("toggle-password", "password"), ("toggle-password-confirm", "password_confirm")):
+            toggle_btn_match = re.search(r'<button\b[^>]*id=["\']' + btn_id + r'["\'][^>]*>', content)
+            assert toggle_btn_match is not None, f"Toggle button #{btn_id} not found in rendered HTML"
+            assert re.search(r'\btype=["\']button["\']', toggle_btn_match.group(0)) is not None, (
+                f"Rendered toggle button #{btn_id} must have type='button' to prevent form submission"
+            )
+            assert f'aria-controls="{input_id}"' in toggle_btn_match.group(0)
+        assert 'aria-label="Show password"' in content
+        assert "password-toggle-icon--show" in content
+        assert "password-toggle-icon--hide hidden" in content
+
+    @pytest.mark.anyio
     async def test_register_creates_listener_account(self, setup_db):
         async with _client() as c:
             resp = await c.post(
@@ -560,12 +580,15 @@ class TestUserLogin:
         assert ".password-input-wrapper" in auth_css
         assert ".password-toggle-btn" in auth_css
 
-        # 5. JS module contains setupPasswordToggle
-        login_js = (Path(__file__).resolve().parent.parent / "portal" / "static" / "js" / "login.js").read_text(
-            encoding="utf-8"
-        )
-        assert "setupPasswordToggle" in login_js
-        assert "toggle-password" in login_js
+        # 5. Shared JS module contains setupPasswordToggle and wires every toggle
+        assert "js/password-toggle.js" in content
+        toggle_js = (
+            Path(__file__).resolve().parent.parent / "portal" / "static" / "js" / "password-toggle.js"
+        ).read_text(encoding="utf-8")
+        assert "setupPasswordToggle" in toggle_js
+        assert "setupAllPasswordToggles" in toggle_js
+        assert "password-toggle-btn" in toggle_js
+        assert "aria-controls" in toggle_js
 
         # 6. Execute the Node unit test suite for interactive toggle behavior
         node_bin = shutil.which("node")
@@ -835,6 +858,29 @@ class TestPasswordReset:
         assert resp.status_code == 200
         assert b'<form method="post" action="/auth/reset/valid-reset-token"' in resp.content
         assert b"alert-error" not in resp.content
+
+    @pytest.mark.anyio
+    async def test_reset_password_page_renders_accessible_password_toggle(self, setup_db):
+        from portal.database import create_auth_token, get_session
+
+        user = await _create_test_user(email="reset-toggle@example.com")
+        async with get_session() as s:
+            await create_auth_token(s, jti="toggle-reset-token", user_id=user.id, token_type="password_reset")
+
+        async with _client() as c:
+            resp = await c.get("/auth/reset/toggle-reset-token")
+        assert resp.status_code == 200
+        content = resp.text
+
+        assert content.count('class="password-input-wrapper"') == 1
+        assert "js/password-toggle.js" in content
+        toggle_btn_match = re.search(r'<button\b[^>]*id=["\']toggle-password["\'][^>]*>', content)
+        assert toggle_btn_match is not None, "Toggle button #toggle-password not found in rendered HTML"
+        assert re.search(r'\btype=["\']button["\']', toggle_btn_match.group(0)) is not None, (
+            "Rendered toggle button must have type='button' to prevent form submission"
+        )
+        assert 'aria-controls="password"' in toggle_btn_match.group(0)
+        assert 'aria-label="Show password"' in content
 
     @pytest.mark.anyio
     async def test_reset_password_page_rejects_nonexistent_token(self, setup_db):

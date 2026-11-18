@@ -51,27 +51,6 @@ function initCrossTabAuth() {
   }
 }
 
-function setupPasswordToggle(passwordInput, toggleBtn) {
-  if (!passwordInput || !toggleBtn) return;
-
-  const showIcon = toggleBtn.querySelector('.password-toggle-icon--show');
-  const hideIcon = toggleBtn.querySelector('.password-toggle-icon--hide');
-
-  toggleBtn.addEventListener('click', (e) => {
-    e.preventDefault();
-    const isPassword = passwordInput.type === 'password';
-    passwordInput.type = isPassword ? 'text' : 'password';
-    const newLabel = isPassword ? 'Hide password' : 'Show password';
-    toggleBtn.setAttribute('aria-label', newLabel);
-    toggleBtn.setAttribute('title', newLabel);
-
-    if (showIcon && hideIcon) {
-      showIcon.classList.toggle('hidden', isPassword);
-      hideIcon.classList.toggle('hidden', !isPassword);
-    }
-  });
-}
-
 function initLogin() {
   initCrossTabAuth();
 
@@ -81,8 +60,6 @@ function initLogin() {
 
   const loginMethods = document.getElementById('login-methods');
   const passwordForm = document.getElementById('password-form');
-  const passwordInput = document.getElementById('password');
-  const togglePasswordBtn = document.getElementById('toggle-password');
   const magicDivider = document.getElementById('magic-divider');
   const magicLinkBtn = document.getElementById('magic-link-btn');
   const passEmailInput = document.getElementById('pass_email');
@@ -92,8 +69,6 @@ function initLogin() {
   const waitingContainer = document.getElementById('waiting-container');
   const requestNewLink = document.getElementById('request-new-link');
   const forgotPasswordLink = document.getElementById('forgot-password-link');
-
-  setupPasswordToggle(passwordInput, togglePasswordBtn);
 
   let currentEmail = '';
 
@@ -241,11 +216,3 @@ if (typeof document !== 'undefined') {
     initLogin();
   }
 }
-
-if (typeof window !== 'undefined') {
-  window.setupPasswordToggle = setupPasswordToggle;
-}
-if (typeof module !== 'undefined' && module.exports) {
-  module.exports = { setupPasswordToggle };
-}
-
