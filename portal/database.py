@@ -1140,15 +1140,22 @@ async def save_transcript_segment(booth_id_str: str, text: str, room_id: int | N
     from portal.models import DBBooth, Event
 
     parts = booth_id_str.split("-")
+    parsed_room_id = room_id
     if len(parts) < 3:
         # Fallback for floor or invalid
         language_code = parts[-1] if parts else "floor"
         event_slug = "-".join(parts[:-1]) if len(parts) > 1 else ""
-        parsed_room_id = room_id
     else:
         language_code = parts[-1]
-        parsed_room_id = int(parts[-2])
         event_slug = "-".join(parts[:-2])
+        try:
+            parsed_room_id = int(parts[-2])
+        except Exception as exc:
+            logger.warning("Booth ID '%s' has a non-integer room segment: %s", booth_id_str, exc, exc_info=True)
+
+    if parsed_room_id is None:
+        logger.error("Cannot save transcript segment: no room_id for booth '%s'", booth_id_str)
+        return None
 
     try:
         async with get_session() as session:
