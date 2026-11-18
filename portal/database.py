@@ -1167,7 +1167,7 @@ async def save_transcript_segment(booth_id_str: str, text: str, room_id: int | N
                     .join(Event)
                     .where(
                         Event.slug == event_slug,
-                        DBBooth.room_id == parsed_room_id,
+                        DBBooth.room_id == resolved_room_id,
                         DBBooth.language_code == language_code,
                     )
                 )
