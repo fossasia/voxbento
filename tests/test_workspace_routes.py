@@ -80,6 +80,10 @@ def client():
             "/workspace/events/1/rooms/2/ai-vocabulary/delete",
             "/admin/events/1/rooms/2/ai-vocabulary/delete",
         ),
+        ("/workspace/events/1/attendance", "/admin/events/1/attendance"),
+        ("/workspace/events/1/attendance/", "/admin/events/1/attendance/"),
+        ("/workspace/events/1/attendance/export", "/admin/events/1/attendance/export"),
+        ("/workspace/events/1/attendance/export/", "/admin/events/1/attendance/export/"),
     ],
 )
 @pytest.mark.anyio
@@ -113,6 +117,10 @@ async def test_my_events_is_not_mapped_but_legacy_admin_home_still_points_to_it(
         "/workspace/events/1/rooms/2/booths/3/tokens/" + "A1B2C3D4" * 8 + "/revoke",
         "/workspace/events/1/rooms/2/booths/3/tokens/" + "a1b2c3d4" * 8 + "0/revoke",
         "/workspace/events/1/rooms/2/ai-vocabulary/bogus",
+        "/workspace/events/1/attendance/anything",
+        "/workspace/events/1/attendance//",
+        "/workspace/events/1/attendancepoof",
+        "/workspace/events/1/attendance/export/extra",
     ],
 )
 @pytest.mark.anyio
@@ -598,3 +606,50 @@ async def test_admin_token_navigation_points_to_admin():
     assert home.status_code == 200
     assert 'href="/admin/"' in home.text
     assert '<span class="max-sm:hidden">Dashboard</span>' in home.text
+
+
+@pytest.mark.anyio
+async def test_workspace_attendance_page_loads_with_and_without_trailing_slash(organizer):
+    async with AsyncClient(
+        transport=ASGITransport(app=app),
+        base_url="http://test",
+        cookies=organizer["cookies"],
+        headers={"X-CSRF-Token": organizer["cookies"]["admin_csrf"]},
+    ) as http:
+        for path in (
+            f"/workspace/events/{organizer['event_id']}/attendance",
+            f"/workspace/events/{organizer['event_id']}/attendance/",
+        ):
+            response = await http.get(path, follow_redirects=True)
+            assert response.status_code == 200
+            assert "Interpreter attendance" in response.text
+
+
+@pytest.mark.anyio
+async def test_legacy_admin_attendance_url_redirects_owner(organizer):
+    async with client() as http:
+        for path, expected_target in (
+            (
+                f"/admin/events/{organizer['event_id']}/attendance",
+                f"/workspace/events/{organizer['event_id']}/attendance",
+            ),
+            (
+                f"/admin/events/{organizer['event_id']}/attendance/",
+                f"/workspace/events/{organizer['event_id']}/attendance/",
+            ),
+        ):
+            response = await http.get(path, cookies=organizer["cookies"], follow_redirects=False)
+            assert response.status_code == 307
+            assert response.headers["location"] == expected_target
+
+
+@pytest.mark.anyio
+async def test_workspace_attendance_export_download(organizer):
+    async with client() as http:
+        response = await http.get(
+            f"/workspace/events/{organizer['event_id']}/attendance/export",
+            cookies=organizer["cookies"],
+        )
+        assert response.status_code == 200
+        assert "text/csv" in response.headers.get("content-type", "")
+        assert "Interpreter" in response.text
