@@ -737,9 +737,13 @@ async def get_hosting_request(session: AsyncSession, request_id: int) -> Hosting
 
 
 async def get_open_hosting_request(session: AsyncSession, user_id: int) -> HostingRequest | None:
-    stmt = select(HostingRequest).options(joinedload(HostingRequest.user)).where(
-        HostingRequest.user_id == user_id,
-        HostingRequest.status == HOSTING_REQUEST_OPEN,
+    stmt = (
+        select(HostingRequest)
+        .options(joinedload(HostingRequest.user))
+        .where(
+            HostingRequest.user_id == user_id,
+            HostingRequest.status == HOSTING_REQUEST_OPEN,
+        )
     )
     return (await session.execute(stmt)).scalars().first()
 
@@ -1088,15 +1092,19 @@ async def save_transcript_segment(booth_id_str: str, text: str, room_id: int | N
     from portal.models import DBBooth, Event
 
     parts = booth_id_str.split("-")
+    parsed_room_id = room_id
+
     if len(parts) < 3:
         # Fallback for floor or invalid
         language_code = parts[-1] if parts else "floor"
         event_slug = "-".join(parts[:-1]) if len(parts) > 1 else ""
-        parsed_room_id = room_id
     else:
         language_code = parts[-1]
-        parsed_room_id = int(parts[-2])
         event_slug = "-".join(parts[:-2])
+        try:
+            parsed_room_id = int(parts[-2])
+        except Exception as exc:
+            logger.warning("Booth ID '%s' has a non-integer room segment: '%s'", booth_id_str, exc, exc_info=True)
 
     try:
         async with get_session() as session:
