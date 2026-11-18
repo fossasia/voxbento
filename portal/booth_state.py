@@ -55,6 +55,13 @@ class Participant:
     # Who this is, for attendance records (#1215). Server-only.
     user_id: int | None = field(default=None, repr=False)
     invite_public_id: str | None = field(default=None, repr=False)
+    # The socket that currently holds this record. A reconnect that reclaims the
+    # record replaces it, so a late disconnect from the old socket changes nothing. Server-only.
+    connection_id: str | None = field(default=None, repr=False)
+
+
+# Participant fields that never leave the server.
+_SERVER_ONLY_FIELDS = ("joined_by", "user_id", "invite_public_id", "connection_id")
 
 
 def participant_public_dict(participant: Participant) -> dict:
@@ -64,7 +71,7 @@ def participant_public_dict(participant: Participant) -> dict:
     names, so roles stay defined only in portal.roles.
     """
     public = asdict(participant)
-    for server_only in ("joined_by", "user_id", "invite_public_id"):
+    for server_only in _SERVER_ONLY_FIELDS:
         del public[server_only]
     return {
         **public,
@@ -114,6 +121,34 @@ class Booth:
             "connected" if any(p.ingest_connected for p in self.participants.values()) else "disconnected"
         )
 
+    def live_record(self) -> dict | None:
+        """What must survive a portal restart, or None when nothing here is live.
+
+        Mission Control's Go Live switch and who holds the active slot. Only an
+        active interpreter with a session key is kept: that key is what lets the
+        same person take the slot back after the restart, and nobody else.
+        """
+        active = self.participants.get(self.active_interpreter_id) if self.active_interpreter_id else None
+        if active is not None and not active.joined_by:
+            active = None
+        if not self.broadcast_unlocked and active is None:
+            return None
+        return {
+            "booth_id": self.booth_id,
+            "language": self.language,
+            "channel_id": self.channel_id,
+            "room_id": self.room_id,
+            "broadcast_unlocked": self.broadcast_unlocked,
+            "active_participant_id": active.participant_id if active else None,
+            "active_session_key": active.joined_by if active else None,
+            "active_display_name": active.display_name if active else None,
+            "active_role": str(active.role) if active else None,
+            "active_user_id": active.user_id if active else None,
+            "active_invite_public_id": active.invite_public_id if active else None,
+            "active_mic_active": bool(active and active.mic_active),
+            "active_ingest_connected": bool(active and active.ingest_connected),
+        }
+
     def as_public_dict(self) -> dict:
         return {
             "booth_id": self.booth_id,
@@ -142,7 +177,8 @@ def _pick_next_interpreter(booth: Booth) -> str | None:
     present when the participant is actually in the interpreter booth.
     """
     for p in booth.participants.values():
-        if can_go_live(p.role):
+        # Someone whose socket dropped gets the slot back on reconnect if it is still free.
+        if can_go_live(p.role) and p.connected:
             return p.participant_id
     return None
 
@@ -153,6 +189,81 @@ class BoothRegistry:
         self._lock = asyncio.Lock()
         # Told about every participant change, under the lock (#1215).
         self.attendance = attendance or AttendanceTracker()
+        # Booths whose live record may have changed since portal.booth_recovery last saved it.
+        self._dirty: set[str] = set()
+        self._dirty_event = asyncio.Event()
+
+    def _changed(self, booth: Booth) -> None:
+        """Record a change to *booth*'s participants or live state. Caller holds the lock."""
+        self.attendance.observe(booth)
+        self._mark_dirty(booth.booth_id)
+
+    def _mark_dirty(self, booth_id: str) -> None:
+        self._dirty.add(booth_id)
+        self._dirty_event.set()
+
+    async def wait_for_changes(self) -> None:
+        """Return once a booth's live record may have changed since the last ``take_changes``."""
+        await self._dirty_event.wait()
+
+    async def take_changes(self) -> dict[str, dict | None]:
+        """Live records of the booths changed since the last call; None for a booth with nothing live."""
+        async with self._lock:
+            self._dirty_event.clear()
+            changed = {}
+            for booth_id in self._dirty:
+                booth = self._booths.get(booth_id)
+                changed[booth_id] = booth.live_record() if booth is not None else None
+            self._dirty.clear()
+            return changed
+
+    def requeue_changes(self, booth_ids: set[str]) -> None:
+        """Save these booths again on the next pass (after a failed save)."""
+        for booth_id in booth_ids:
+            self._mark_dirty(booth_id)
+
+    def booth_ids(self) -> list[str]:
+        return list(self._booths)
+
+    async def restore(self, records: list[dict]) -> list[tuple[str, str]]:
+        """Rebuild booths from the live records saved before a restart.
+
+        Each active interpreter comes back as a disconnected placeholder that only
+        the same session can reclaim (see ``join_participant``). Returns
+        ``(booth_id, participant_id)`` for each placeholder, so the caller can
+        let it expire if nobody reclaims it.
+        """
+        placeholders = []
+        async with self._lock:
+            for record in records:
+                booth = self._get_or_create_booth(
+                    record["booth_id"], record["language"], record["channel_id"], room_id=record["room_id"]
+                )
+                booth.broadcast_unlocked = bool(record["broadcast_unlocked"])
+                participant_id = record.get("active_participant_id")
+                session_key = record.get("active_session_key")
+                role = record.get("active_role")
+                if participant_id and session_key and role and can_go_live(role):
+                    booth.participants[participant_id] = Participant(
+                        participant_id=participant_id,
+                        display_name=record.get("active_display_name") or "Interpreter",
+                        role=role,
+                        language=booth.language,
+                        channel_id=booth.channel_id,
+                        mic_active=bool(record.get("active_mic_active")),
+                        ingest_connected=bool(record.get("active_ingest_connected")),
+                        connected=False,
+                        joined_by=session_key,
+                        user_id=record.get("active_user_id"),
+                        invite_public_id=record.get("active_invite_public_id"),
+                    )
+                    booth.active_interpreter_id = participant_id
+                    placeholders.append((booth.booth_id, participant_id))
+                booth.refresh_ingest_status()
+                self.attendance.observe(booth)
+                # Saved again so the recovery heartbeat keeps these rows current.
+                self._mark_dirty(booth.booth_id)
+        return placeholders
 
     def _get_or_create_booth(
         self,
@@ -259,13 +370,17 @@ class BoothRegistry:
         joined_by: str | None = None,
         user_id: int | None = None,
         invite_public_id: str | None = None,
+        connection_id: str | None = None,
     ) -> tuple[Participant, dict]:
         """Add a participant, auto-assigning the active slot if it is free.
 
-        An ID already present in the booth is honoured only with ``reclaim``
-        (the caller's own socket already holds it); anyone else naming it gets a
-        fresh ID instead of taking over that record, e.g. the active interpreter's.
-        ``joined_by`` records the session that joined, for checks made outside the socket.
+        An ID already present in the booth is taken back, with its active slot and
+        live flags, when ``reclaim`` says the caller's own socket holds it or when
+        the same session (``joined_by``) joined it: a reconnect after a network
+        drop or a portal restart. Anyone else naming it gets a fresh ID instead of
+        taking over that record, e.g. the active interpreter's.
+        ``joined_by`` records the session that joined, for checks made outside the
+        socket; ``connection_id`` names the socket that now holds the record.
         """
         fields = [
             ("display_name", display_name, DISPLAY_NAME_MAX_LENGTH),
@@ -281,7 +396,14 @@ class BoothRegistry:
                 raise ValueError(f"{name} must not exceed {max_length} characters.")
         async with self._lock:
             booth = self._get_or_create_booth(booth_id, language, channel_id, room_id=room_id)
-            if participant_id in booth.participants and not reclaim:
+            existing = booth.participants.get(participant_id) if participant_id else None
+            if existing is not None:
+                same_session = joined_by is not None and existing.joined_by == joined_by
+                if reclaim or same_session:
+                    self._reclaim(booth, existing, display_name, role, language, channel_id, connection_id,
+                                  user_id=user_id, invite_public_id=invite_public_id)
+                    self._changed(booth)
+                    return existing, booth.as_public_dict()
                 participant_id = None
             participant = Participant(
                 participant_id=participant_id or uuid4().hex,
@@ -292,6 +414,7 @@ class BoothRegistry:
                 joined_by=joined_by,
                 user_id=user_id,
                 invite_public_id=invite_public_id,
+                connection_id=connection_id,
             )
             booth.participants[participant.participant_id] = participant
             # Auto-assign active slot to any role that can go live.
@@ -302,15 +425,135 @@ class BoothRegistry:
                 and booth.active_interpreter_id is None
             ):
                 booth.active_interpreter_id = participant.participant_id
-            self.attendance.observe(booth)
+            self._changed(booth)
             return participant, booth.as_public_dict()
 
-    async def leave_participant(self, booth_id: str, participant_id: str, language: str, channel_id: str) -> dict:
+    @staticmethod
+    def _reclaim(
+        booth: Booth,
+        participant: Participant,
+        display_name: str,
+        role: ParticipantRole,
+        language: str,
+        channel_id: str,
+        connection_id: str | None,
+        *,
+        user_id: int | None,
+        invite_public_id: str | None,
+    ) -> None:
+        """Hand *participant* to a new socket, keeping its active slot and live flags.
+
+        The WHIP publish goes straight to MediaMTX, so an interpreter's audio can
+        outlive their booth socket; keeping the flags keeps the booth showing it.
+        """
+        participant.display_name = display_name.strip() or participant.display_name
+        participant.role = role
+        participant.language = language.strip() or participant.language
+        participant.channel_id = channel_id.strip() or participant.channel_id
+        participant.connected = True
+        participant.connection_id = connection_id
+        participant.user_id = user_id if user_id is not None else participant.user_id
+        participant.invite_public_id = invite_public_id or participant.invite_public_id
+        participant.updated_at = utc_now_iso()
+        if not can_go_live(role):
+            # The session lost the right to go live while it was away.
+            participant.mic_active = False
+            participant.ingest_connected = False
+            if booth.active_interpreter_id == participant.participant_id:
+                booth.active_interpreter_id = _pick_next_interpreter(booth)
+                booth.handoff_state = "idle"
+                booth.handoff_initiator_id = None
+            booth.refresh_ingest_status()
+        elif booth.active_interpreter_id is None:
+            booth.active_interpreter_id = participant.participant_id
+
+    async def leave_participant(
+        self,
+        booth_id: str,
+        participant_id: str,
+        language: str,
+        channel_id: str,
+        *,
+        connection_id: str | None = None,
+    ) -> dict:
+        """Remove a participant now. With ``connection_id``, only if that socket still holds them."""
         async with self._lock:
             booth = self._get_or_create_booth(booth_id, language, channel_id)
-            participant = booth.participants.pop(participant_id, None)
-            if participant is None:
-                return booth.as_public_dict()
+            participant = booth.participants.get(participant_id)
+            if participant is not None and (connection_id is None or participant.connection_id == connection_id):
+                self._remove_participant(booth, participant_id)
+            return booth.as_public_dict()
+
+    async def disconnect_participant(self, booth_id: str, participant_id: str, connection_id: str) -> dict | None:
+        """Mark a participant whose socket dropped as reconnecting, keeping their place.
+
+        Returns the new state, or None when another socket already holds the record.
+        """
+        async with self._lock:
+            booth = self._booths.get(booth_id)
+            participant = booth.participants.get(participant_id) if booth else None
+            if participant is None or participant.connection_id != connection_id:
+                return None
+            participant.connected = False
+            participant.updated_at = utc_now_iso()
+            # Their mic request or offer lapses: accepting it would hand the mic to someone not there.
+            if booth.handoff_initiator_id == participant_id:
+                booth.handoff_state = "idle"
+                booth.handoff_initiator_id = None
+            self._changed(booth)
+            return booth.as_public_dict()
+
+    async def expire_participant(self, booth_id: str, participant_id: str, connection_id: str | None) -> dict | None:
+        """Remove a participant who did not reconnect in time.
+
+        Returns the new state, or None when they came back (or left) meanwhile.
+        """
+        async with self._lock:
+            booth = self._booths.get(booth_id)
+            participant = booth.participants.get(participant_id) if booth else None
+            if participant is None or participant.connected or participant.connection_id != connection_id:
+                return None
+            self._remove_participant(booth, participant_id)
+            return booth.as_public_dict()
+
+    async def remove_disconnected(
+        self,
+        *,
+        user_id: int | None = None,
+        invite_public_id: str | None = None,
+        booth_id: str | None = None,
+    ) -> list[tuple[str, dict]]:
+        """Remove participants kept after their socket dropped, for a user or invite whose access ended.
+
+        Covers records held for the reconnect grace and placeholders restored after a restart,
+        which have no socket for revocation to close. Returns ``(booth_id, state)`` per changed booth.
+        """
+        if user_id is None and invite_public_id is None:
+            return []
+        changed: list[tuple[str, dict]] = []
+        async with self._lock:
+            for key, booth in list(self._booths.items()):
+                if booth_id is not None and key != booth_id:
+                    continue
+                matches = [
+                    p.participant_id
+                    for p in booth.participants.values()
+                    if not p.connected
+                    and (
+                        (user_id is not None and p.user_id == user_id)
+                        or (invite_public_id is not None and p.invite_public_id == invite_public_id)
+                    )
+                ]
+                for participant_id in matches:
+                    self._remove_participant(booth, participant_id)
+                if matches:
+                    changed.append((key, booth.as_public_dict()))
+        return changed
+
+    def _remove_participant(self, booth: Booth, participant_id: str) -> None:
+        """Take *participant_id* out of *booth* and hand on what they held. Caller holds the lock."""
+        participant = booth.participants.pop(participant_id, None)
+        if participant is not None:
             was_active = booth.active_interpreter_id == participant_id
             if was_active:
                 booth.active_interpreter_id = _pick_next_interpreter(booth)
@@ -321,11 +564,10 @@ class BoothRegistry:
             # The booth is no longer live if the participant who left was the one publishing.
             if participant.ingest_connected:
                 booth.refresh_ingest_status()
-            if not booth.participants:
-                booth.ingest_status = "disconnected"
-                booth.handoff_state = "idle"
-            self.attendance.observe(booth)
-            return booth.as_public_dict()
+        if not booth.participants:
+            booth.ingest_status = "disconnected"
+            booth.handoff_state = "idle"
+        self._changed(booth)
 
     async def set_broadcast_unlocked(
         self,
@@ -348,7 +590,7 @@ class BoothRegistry:
                     participant.ingest_connected = False
                     participant.updated_at = utc_now_iso()
                 booth.ingest_status = "disconnected"
-            self.attendance.observe(booth)
+            self._changed(booth)
 
             # Enqueue webhook in background
             import asyncio
@@ -405,7 +647,7 @@ class BoothRegistry:
                 p.mic_active = p.participant_id == target_id and p.mic_active
                 p.updated_at = utc_now_iso()
             booth.refresh_ingest_status()
-            self.attendance.observe(booth)
+            self._changed(booth)
             return booth.as_public_dict()
 
     async def initiate_handoff(
@@ -489,6 +731,9 @@ class BoothRegistry:
                 new_active = initiator_id
             else:
                 raise ValueError(f"Unexpected handoff state: {booth.handoff_state}")
+            incoming = booth.participants.get(new_active)
+            if incoming is None or not incoming.connected:
+                raise ValueError("That interpreter has disconnected; the mic stays where it is.")
 
             # Flip active interpreter
             booth.active_interpreter_id = new_active
@@ -501,7 +746,7 @@ class BoothRegistry:
                 p.mic_active = p.participant_id == new_active and p.mic_active
                 p.updated_at = utc_now_iso()
             booth.refresh_ingest_status()
-            self.attendance.observe(booth)
+            self._changed(booth)
             return booth.as_public_dict()
 
     async def cancel_handoff(
@@ -587,7 +832,7 @@ class BoothRegistry:
                 participant.connected = connected
             participant.updated_at = utc_now_iso()
             booth.refresh_ingest_status()
-            self.attendance.observe(booth)
+            self._changed(booth)
             return booth.as_public_dict()
 
     async def check_publish_permission(
@@ -657,6 +902,7 @@ class BoothRegistry:
         async with self._lock:
             self._booths.pop(booth_id, None)
             self.attendance.forget_booth(booth_id)
+            self._mark_dirty(booth_id)
 
     async def validate_booth_event(self, booth_id: str, expected_event: str) -> None:
         """Raise PermissionError if *booth_id* does not belong to *expected_event*.
