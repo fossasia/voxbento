@@ -737,13 +737,9 @@ async def get_hosting_request(session: AsyncSession, request_id: int) -> Hosting
 
 
 async def get_open_hosting_request(session: AsyncSession, user_id: int) -> HostingRequest | None:
-    stmt = (
-        select(HostingRequest)
-        .options(joinedload(HostingRequest.user))
-        .where(
-            HostingRequest.user_id == user_id,
-            HostingRequest.status == HOSTING_REQUEST_OPEN,
-        )
+    stmt = select(HostingRequest).options(joinedload(HostingRequest.user)).where(
+        HostingRequest.user_id == user_id,
+        HostingRequest.status == HOSTING_REQUEST_OPEN,
     )
     return (await session.execute(stmt)).scalars().first()
 
