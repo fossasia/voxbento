@@ -5,11 +5,91 @@ const speechDelivery = createDeliveryQueue();
 
 var captionsContainer = document.getElementById("captions-container");
 var toggleCaptionsBtn = document.getElementById("toggle-captions-btn");
+var captionsFocusBtn = document.getElementById("captions-focus-btn");
+var captionsFocusReturnTarget = null;
+var captionsWasMinimized = false;
 toggleCaptionsBtn.addEventListener("click", function () {
   var hidden = captionsContainer.classList.toggle("minimized");
   toggleCaptionsBtn.textContent = hidden ? "Show" : "Hide";
   toggleCaptionsBtn.setAttribute("aria-expanded", String(!hidden));
   if (!hidden) scrollCaptionsToLatest();
+});
+
+function syncCaptionsFocusMode(active) {
+  captionsContainer.classList.toggle("focus-mode", active);
+  document.body.classList.toggle("listener-captions-focus", active);
+  captionsFocusBtn.setAttribute("aria-pressed", String(active));
+  captionsFocusBtn.setAttribute(
+    "aria-label",
+    active ? "Exit captions-only full screen" : "Enter captions-only full screen",
+  );
+  captionsFocusBtn.textContent = active ? "Exit full screen" : "Full screen";
+  if (!active) {
+    captionsContainer.classList.toggle("minimized", captionsWasMinimized);
+    toggleCaptionsBtn.textContent = captionsWasMinimized ? "Show" : "Hide";
+    toggleCaptionsBtn.setAttribute("aria-expanded", String(!captionsWasMinimized));
+    if (captionsFocusReturnTarget instanceof HTMLElement) {
+      captionsFocusReturnTarget.focus();
+    }
+    captionsFocusReturnTarget = null;
+  }
+}
+
+async function enterCaptionsFocusMode() {
+  if (captionsContainer.classList.contains("focus-mode")) return;
+
+  captionsFocusReturnTarget = document.activeElement;
+  captionsWasMinimized = captionsContainer.classList.contains("minimized");
+  if (captionsWasMinimized) {
+    captionsContainer.classList.remove("minimized");
+    toggleCaptionsBtn.textContent = "Hide";
+    toggleCaptionsBtn.setAttribute("aria-expanded", "true");
+  }
+  syncCaptionsFocusMode(true);
+  scrollCaptionsToLatest();
+
+  if (typeof captionsContainer.requestFullscreen === "function") {
+    try {
+      await captionsContainer.requestFullscreen();
+    } catch (error) {
+      console.warn("Unable to enter browser full screen; using captions focus layout.", error);
+    }
+  }
+}
+
+function exitCaptionsFocusMode() {
+  if (document.fullscreenElement === captionsContainer) {
+    document.exitFullscreen().catch(function (error) {
+      console.warn("Unable to exit browser full screen.", error);
+    });
+    return;
+  }
+  syncCaptionsFocusMode(false);
+}
+
+captionsFocusBtn.addEventListener("click", function () {
+  if (captionsContainer.classList.contains("focus-mode")) {
+    exitCaptionsFocusMode();
+  } else {
+    enterCaptionsFocusMode();
+  }
+});
+
+document.addEventListener("fullscreenchange", function () {
+  if (document.fullscreenElement !== captionsContainer && captionsContainer.classList.contains("focus-mode")) {
+    syncCaptionsFocusMode(false);
+  }
+});
+
+document.addEventListener("keydown", function (event) {
+  if (
+    event.key === "Escape" &&
+    captionsContainer.classList.contains("focus-mode") &&
+    document.fullscreenElement !== captionsContainer &&
+    !(document.activeElement instanceof HTMLSelectElement)
+  ) {
+    exitCaptionsFocusMode();
+  }
 });
 
 // Caption text size, remembered per browser.
