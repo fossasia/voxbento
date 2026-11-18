@@ -1561,8 +1561,9 @@ code { font-family: var(--font-mono); font-size: 0.85em; background: var(--color
 /* User page */
 .ud-breadcrumb { display: flex; gap: 8px; margin: -14px 0 20px; font-size: 0.9375rem; color: var(--color-text-secondary); }
 .ud-breadcrumb a { color: var(--color-primary); text-decoration: underline; text-underline-offset: 2px; font-weight: 500; }
-.ud-breadcrumb [aria-current="page"] { color: var(--color-text); }
+.ud-breadcrumb [aria-current="page"] { color: var(--color-text); min-width: 0; overflow-wrap: anywhere; }
 .ud-header { display: flex; justify-content: space-between; align-items: flex-start; gap: 16px; margin-bottom: 24px; }
+.ud-header h1 { overflow-wrap: anywhere; }
 .ud-pill { margin-top: 14px; padding: 3px 10px; border-radius: 999px; font-size: 0.8125rem; font-weight: 600; white-space: nowrap; }
 .ud-pill--active { background: #d1fae5; color: #065f46; }
 .ud-pill--off { background: #eef1f6; color: #475467; }
