@@ -8,6 +8,7 @@ var toggleCaptionsBtn = document.getElementById("toggle-captions-btn");
 var captionsFocusBtn = document.getElementById("captions-focus-btn");
 var captionsFocusReturnTarget = null;
 var captionsWasMinimized = false;
+var captionsFocusInertElements = [];
 toggleCaptionsBtn.addEventListener("click", function () {
   var hidden = captionsContainer.classList.toggle("minimized");
   toggleCaptionsBtn.textContent = hidden ? "Show" : "Hide";
@@ -15,9 +16,34 @@ toggleCaptionsBtn.addEventListener("click", function () {
   if (!hidden) scrollCaptionsToLatest();
 });
 
+function setCaptionsFocusPageInert(active) {
+  if (active) {
+    captionsFocusInertElements = [];
+    var current = captionsContainer;
+    while (current && current !== document.body) {
+      var parent = current.parentElement;
+      if (!parent) break;
+      Array.from(parent.children).forEach(function (sibling) {
+        if (sibling !== current && !sibling.contains(captionsContainer)) {
+          captionsFocusInertElements.push({ element: sibling, inert: sibling.inert });
+          sibling.inert = true;
+        }
+      });
+      current = parent;
+    }
+    return;
+  }
+
+  captionsFocusInertElements.forEach(function (item) {
+    item.element.inert = item.inert;
+  });
+  captionsFocusInertElements = [];
+}
+
 function syncCaptionsFocusMode(active) {
   captionsContainer.classList.toggle("focus-mode", active);
   document.body.classList.toggle("listener-captions-focus", active);
+  setCaptionsFocusPageInert(active);
   captionsFocusBtn.setAttribute("aria-pressed", String(active));
   captionsFocusBtn.setAttribute(
     "aria-label",
@@ -28,7 +54,7 @@ function syncCaptionsFocusMode(active) {
     captionsContainer.classList.toggle("minimized", captionsWasMinimized);
     toggleCaptionsBtn.textContent = captionsWasMinimized ? "Show" : "Hide";
     toggleCaptionsBtn.setAttribute("aria-expanded", String(!captionsWasMinimized));
-    if (captionsFocusReturnTarget instanceof HTMLElement) {
+    if (captionsFocusReturnTarget && typeof captionsFocusReturnTarget.focus === "function") {
       captionsFocusReturnTarget.focus();
     }
     captionsFocusReturnTarget = null;
@@ -51,6 +77,12 @@ async function enterCaptionsFocusMode() {
   if (typeof captionsContainer.requestFullscreen === "function") {
     try {
       await captionsContainer.requestFullscreen();
+      if (
+        !captionsContainer.classList.contains("focus-mode") &&
+        document.fullscreenElement === captionsContainer
+      ) {
+        await document.exitFullscreen();
+      }
     } catch (error) {
       console.warn("Unable to enter browser full screen; using captions focus layout.", error);
     }
@@ -67,30 +99,32 @@ function exitCaptionsFocusMode() {
   syncCaptionsFocusMode(false);
 }
 
-captionsFocusBtn.addEventListener("click", function () {
-  if (captionsContainer.classList.contains("focus-mode")) {
-    exitCaptionsFocusMode();
-  } else {
-    enterCaptionsFocusMode();
-  }
-});
+if (captionsFocusBtn) {
+  captionsFocusBtn.addEventListener("click", function () {
+    if (captionsContainer.classList.contains("focus-mode")) {
+      exitCaptionsFocusMode();
+    } else {
+      enterCaptionsFocusMode();
+    }
+  });
 
-document.addEventListener("fullscreenchange", function () {
-  if (document.fullscreenElement !== captionsContainer && captionsContainer.classList.contains("focus-mode")) {
-    syncCaptionsFocusMode(false);
-  }
-});
+  document.addEventListener("fullscreenchange", function () {
+    if (document.fullscreenElement !== captionsContainer && captionsContainer.classList.contains("focus-mode")) {
+      syncCaptionsFocusMode(false);
+    }
+  });
 
-document.addEventListener("keydown", function (event) {
-  if (
-    event.key === "Escape" &&
-    captionsContainer.classList.contains("focus-mode") &&
-    document.fullscreenElement !== captionsContainer &&
-    !(document.activeElement instanceof HTMLSelectElement)
-  ) {
-    exitCaptionsFocusMode();
-  }
-});
+  document.addEventListener("keydown", function (event) {
+    if (
+      event.key === "Escape" &&
+      !event.defaultPrevented &&
+      captionsContainer.classList.contains("focus-mode") &&
+      document.fullscreenElement !== captionsContainer
+    ) {
+      exitCaptionsFocusMode();
+    }
+  });
+}
 
 // Caption text size, remembered per browser.
 var CAPTION_SIZES = [0.875, 1, 1.125, 1.25, 1.5, 1.75];

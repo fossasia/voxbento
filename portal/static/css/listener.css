@@ -461,6 +461,11 @@ body.listener-captions-focus {
 .captions-container:fullscreen .captions-settings > div {
     flex: 1 1 10rem;
 }
+.captions-container.focus-mode .custom-options,
+.captions-container:fullscreen .custom-options {
+    max-height: min(300px, calc(100dvh - 10rem));
+    overflow-y: auto;
+}
 .captions-container.focus-mode .captions-body,
 .captions-container:fullscreen .captions-body {
     display: flex;
@@ -476,7 +481,7 @@ body.listener-captions-focus {
     max-height: none;
     flex: 1;
     padding: clamp(1rem, 4vw, 3rem);
-    font-size: clamp(1.5rem, calc(var(--caption-font-size) * 1.5), 3rem);
+    font-size: clamp(1.3125rem, calc(var(--caption-font-size) * 1.5), 3rem);
 }
 .captions-container.focus-mode .jump-to-latest,
 .captions-container:fullscreen .jump-to-latest {
