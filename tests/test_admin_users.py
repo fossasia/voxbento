@@ -486,6 +486,21 @@ async def test_user_page_sections_roles_and_owned_events(admin):
 
 
 @pytest.mark.anyio
+async def test_user_detail_wraps_email_derived_name_in_breadcrumb_and_heading(admin):
+    display_name = "longlocalpart" * 8
+    user_id = await make_user(f"{display_name}@example.org", display_name)
+    async with client() as http:
+        html = (await http.get(f"/admin/users/{user_id}/", cookies=admin["cookies"])).text
+
+    assert re.search(
+        rf'<nav class="ud-breadcrumb"[^>]*>.*?<span aria-current="page">{re.escape(display_name)}</span>.*?</nav>',
+        html,
+        re.S,
+    )
+    assert re.search(rf'<div class="ud-header">\s*<div>\s*<h1>{re.escape(display_name)}</h1>', html, re.S)
+
+
+@pytest.mark.anyio
 async def test_user_page_hosting_states(admin):
     requester = await make_user("req@example.org", "Req")
     invited = await make_user("inv@example.org", "Inv", password=False)

@@ -3,8 +3,7 @@ from __future__ import annotations
 import re
 from pathlib import Path
 
-REPO_ROOT = Path(__file__).resolve().parent.parent
-CSS_DIR = REPO_ROOT / "portal" / "static" / "css"
+CSS_DIR = Path(__file__).resolve().parent.parent / "portal" / "static" / "css"
 
 
 def _rules(css_file: str = "admin.css"):
@@ -89,7 +88,3 @@ def test_long_user_display_names_wrap_in_heading_and_breadcrumb():
     assert rules[".ud-header h1"].get("overflow-wrap") == "anywhere"
     assert rules['.ud-breadcrumb [aria-current="page"]'].get("min-width") == "0"
     assert rules['.ud-breadcrumb [aria-current="page"]'].get("overflow-wrap") == "anywhere"
-
-    template = (REPO_ROOT / "portal" / "templates" / "admin" / "user_detail.html").read_text(encoding="utf-8")
-    assert "<span aria-current=\"page\">{{ u.display_name }}</span>" in template
-    assert "<h1>{{ u.display_name }}</h1>" in template
