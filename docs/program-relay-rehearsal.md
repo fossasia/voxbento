@@ -13,8 +13,8 @@ paste stream keys, VoxBento credentials or the full YouTube ingest URL into the 
 
 ## Prerequisites
 
-- `docker-compose.relay.yml` deployed; `PROGRAM_RELAY_ENABLED=true`; TCP 1936 reachable with a
-  trusted certificate for the RTMPS hostname; migration 028 applied.
+- `scripts/setup-youtube-relay.sh` run (relay checks passed); TCP 1936 reachable with a trusted
+  certificate for the RTMPS hostname; migration 028 applied.
 - A YouTube channel with live streaming enabled and a **new unlisted** live event
   (YouTube Studio → Create → Go live → Stream, visibility *Unlisted*, low latency).
 - One room with floor transcription configured (provider, source language) and at least one
@@ -24,18 +24,18 @@ paste stream keys, VoxBento credentials or the full YouTube ingest URL into the 
 
 | # | Step | Expected |
 |---|------|----------|
-| 1 | Room page → Delivery mode *VoxBento relays to YouTube* → **Enable relay ingest** | RTMPS server and one-time stream key shown |
-| 2 | Paste YouTube's RTMPS server URL and stream key → **Save destination** | "Configured for rtmps://a.rtmps.youtube.com/live2"; key not shown again |
-| 3 | OBS: Custom, Server + Stream Key from step 1, x264/NVENC H.264, keyframe 2 s, AAC 128 kb/s, start streaming | Contribution ingest **Connected** (H264, MPEG-4 Audio) |
-| 4 | Wait 30 s | YouTube relay **Live**; YouTube Studio shows *Excellent/Good* stream health and the preview plays |
+| 1 | Room page → *VoxBento forwards to YouTube* → step 1: paste the YouTube stream key → **Save stream key** | "Saved … for rtmps://a.rtmps.youtube.com/live2"; key not shown again |
+| 2 | Step 2 → **Create stream key** | RTMPS server and one-time stream key shown |
+| 3 | OBS: Custom, Server + Stream Key from step 2, x264/NVENC H.264, keyframe 2 s, AAC 128 kb/s, start streaming | *Encoder → VoxBento* **Connected** (H264, MPEG-4 Audio) |
+| 4 | Wait 30 s | *VoxBento → YouTube* **Live**, badge *Live on YouTube*; YouTube Studio shows *Excellent/Good* stream health and the preview plays |
 | 5 | Stream for **10 minutes** with speech | No relay restarts; YouTube health stays good; captions/translation/TTS work for listeners |
 | 6 | Check the unlisted watch page from a second device | Picture and audio match the encoder output |
-| 7 | **Save a new YouTube key** (create a second unlisted event or reset the key) | Relay restarts once and is Live on the new event; old event ends |
-| 8 | `docker compose ... restart portal` | Relay keeps running (or resumes within one reconcile); no duplicate relay |
-| 9 | `docker compose ... restart program-relay` | YouTube shows a short interruption; relay health reports it and returns to Live |
+| 7 | **Replace stream key** with a new YouTube key (create a second unlisted event or reset the key) | Old event stops receiving video; relay restarts once and is Live on the new event. End the old event in YouTube Studio (with Auto-stop off it does not end by itself) |
+| 8 | `docker compose restart portal` | Relay keeps running (or resumes within one reconcile); no duplicate relay |
+| 9 | `docker compose restart program-relay` | YouTube shows a short interruption; relay health reports it and returns to Live |
 | 10 | Stop OBS for 30 s, then start again | Ingest Disconnected → Connected; relay resumes; YouTube resumes |
-| 11 | **Revoke token** | OBS disconnects immediately; relay stops; OBS reconnect with the old key fails |
-| 12 | **Remove destination** | Stored key cleared; relay health *Not configured* |
+| 11 | **Revoke stream key** | OBS disconnects immediately; relay stops; OBS reconnect with the old key fails |
+| 12 | Step 1 → **Remove** | Stored key cleared; *VoxBento → YouTube* *Not configured* |
 | 13 | Review logs (`portal`, `mediamtx`, `program-relay`) | No YouTube key, no `floor?key=`, no full ingest URL anywhere |
 | 14 | End the YouTube event | — |
 

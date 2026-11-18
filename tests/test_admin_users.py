@@ -10,7 +10,12 @@ import pytest
 from httpx import ASGITransport, AsyncClient
 
 from fastapi_app import app
-from portal.auth import create_user_token, hash_password
+from portal.auth import (
+    create_user_token,
+    decode_token,
+    generate_admin_csrf_token,
+    hash_password,
+)
 from portal.database import (
     configure,
     create_auth_token,
@@ -29,8 +34,14 @@ from portal.database import (
 )
 
 os.environ["BOOTH_ACCESS_TOKEN"] = ""
-JSON = {"origin": "http://test", "accept": "application/json"}
-FORM = {"origin": "http://test"}
+JSON = {
+    "origin": "http://test",
+    "accept": "application/json",
+}
+FORM = {
+    "origin": "http://test",
+    "content-type": "application/x-www-form-urlencoded",
+}
 
 
 @pytest.fixture(autouse=True)
@@ -59,7 +70,13 @@ async def make_user(email: str, name: str, *, password: bool = True, **kwargs) -
 
 
 def cookies_for(user_id: int, email: str, is_admin: bool = False) -> dict[str, str]:
-    return {"user_token": create_user_token(user_id=user_id, email=email, is_admin=is_admin)}
+    user_token = create_user_token(user_id=user_id, email=email, is_admin=is_admin)
+    session_id = str(decode_token(user_token)["jti"])
+    csrf_token = generate_admin_csrf_token(session_id)
+    return {
+        "user_token": user_token,
+        "admin_csrf": csrf_token,
+    }
 
 
 @pytest.fixture
@@ -79,11 +96,15 @@ def switch(html: str, field: str, user_id: int) -> str:
     return match.group(1)
 
 
-async def set_access(http: AsyncClient, cookies, user_id: int, field: str, value: bool, headers=JSON):
+async def set_access(http: AsyncClient, cookies, user_id: int, field: str, value: bool, headers=None):
+    request_headers = {**JSON, **(headers or {})}
+    if "content-type" in request_headers:
+        request_headers.pop("accept", None)
+    request_headers["X-CSRF-Token"] = cookies["admin_csrf"]
     return await http.post(
         f"/admin/users/{user_id}/access",
         data={"field": field, "value": "true" if value else "false"},
-        headers=headers,
+        headers=request_headers,
         cookies=cookies,
         follow_redirects=False,
     )
@@ -153,9 +174,26 @@ async def test_switch_states_and_safeguards(admin):
 async def test_sorting_keeps_search_and_filter(admin):
     async with client() as http:
         res = await http.get("/admin/users/?search=Hong&show=admins", cookies=admin["cookies"])
-        empty = await http.get("/admin/users/?search=nobody", cookies=admin["cookies"])
     assert 'href="?sort_by=email&sort_order=asc&search=Hong&show=admins&limit=50" class="sort-link">User' in res.text
-    assert "No users match “nobody”." in empty.text
+
+
+@pytest.mark.anyio
+async def test_empty_state_offers_clear_filters(admin):
+    await make_user("wiki@example.org", "Wikimania team", can_host=True)
+    async with client() as http:
+        search = await http.get("/admin/users/?search=nobody", cookies=admin["cookies"])
+        filtered = await http.get("/admin/users/?show=unverified", cookies=admin["cookies"])
+        listed = await http.get("/admin/users/", cookies=admin["cookies"])
+
+    assert '<div class="empty-state" role="status" aria-live="polite">' in search.text
+    assert "No users found" in search.text
+    assert "Nobody matches “nobody”." in search.text
+    assert 'href="/admin/users/" class="btn btn-outline">Clear filters</a>' in search.text
+
+    assert "No users match the selected filter." in filtered.text
+    assert 'href="/admin/users/" class="btn btn-outline">Clear filters</a>' in filtered.text
+
+    assert "Clear filters" not in listed.text
 
 
 # ---------------------------------------------------------------------------
@@ -169,7 +207,7 @@ async def test_hosting_switch_grants_and_removes_access(admin):
     async with get_session() as session:
         await create_hosting_request(session, user_id=user_id, organization="A", event_name="B", languages="en")
     async with client() as http:
-        with patch("portal.routers.admin.send_hosting_granted_email", new_callable=AsyncMock) as granted:
+        with patch("portal.routers.admin.queue_notification", new_callable=AsyncMock) as granted:
             on = await set_access(http, admin["cookies"], user_id, "hosting", True)
             again = await set_access(http, admin["cookies"], user_id, "hosting", True)
         off = await set_access(http, admin["cookies"], user_id, "hosting", False)
@@ -295,18 +333,23 @@ async def test_access_endpoint_validation(admin):
     user_id = await make_user("x@example.org", "X")
     async with client() as http:
         cross = await set_access(
-            http, admin["cookies"], user_id, "admin", True, headers={"origin": "https://evil.example"}
+            http,
+            admin["cookies"],
+            user_id,
+            "admin",
+            True,
+            headers={**JSON, "origin": "https://evil.example"},
         )
         bad_field = await http.post(
             f"/admin/users/{user_id}/access",
             data={"field": "is_admin", "value": "true"},
-            headers=JSON,
+            headers={**JSON, "X-CSRF-Token": admin["cookies"]["admin_csrf"]},
             cookies=admin["cookies"],
         )
         bad_value = await http.post(
             f"/admin/users/{user_id}/access",
             data={"field": "admin", "value": "yes"},
-            headers=JSON,
+            headers={**JSON, "X-CSRF-Token": admin["cookies"]["admin_csrf"]},
             cookies=admin["cookies"],
         )
         missing = await set_access(http, admin["cookies"], 9999, "admin", True)
@@ -343,12 +386,21 @@ async def test_plain_form_posts_return_to_the_page_with_a_message(admin):
 @pytest.mark.anyio
 async def test_legacy_toggles_follow_the_same_rules(admin):
     async with client() as http:
-        no_origin = await http.post(f"/admin/users/{admin['id']}/toggle-admin", cookies=admin["cookies"])
+        no_origin = await http.post(
+            f"/admin/users/{admin['id']}/toggle-admin",
+            headers={"X-CSRF-Token": admin["cookies"]["admin_csrf"]},
+            cookies=admin["cookies"],
+        )
         self_demote = await http.post(
-            f"/admin/users/{admin['id']}/toggle-admin", headers=FORM, cookies=admin["cookies"], follow_redirects=False
+            f"/admin/users/{admin['id']}/toggle-admin",
+            headers={**FORM, "X-CSRF-Token": admin["cookies"]["admin_csrf"]},
+            cookies=admin["cookies"],
+            follow_redirects=False,
         )
         owner_route = await http.post(
-            f"/admin/users/{admin['id']}/events/1/toggle-owner", headers=FORM, cookies=admin["cookies"]
+            f"/admin/users/{admin['id']}/events/1/toggle-owner",
+            headers={**FORM, "X-CSRF-Token": admin["cookies"]["admin_csrf"]},
+            cookies=admin["cookies"],
         )
     assert no_origin.status_code == 400
     assert self_demote.headers["location"].endswith("error=self_admin")
@@ -369,21 +421,21 @@ async def test_delete_needs_the_email_typed_and_never_self(admin):
         wrong = await http.post(
             f"/admin/users/{user_id}/delete",
             data={"confirm_email": "lukas@example.com"},
-            headers=FORM,
+            headers={**FORM, "X-CSRF-Token": admin["cookies"]["admin_csrf"]},
             cookies=admin["cookies"],
             follow_redirects=False,
         )
         self_delete = await http.post(
             f"/admin/users/{admin['id']}/delete",
             data={"confirm_email": "hong@example.org"},
-            headers=FORM,
+            headers={**FORM, "X-CSRF-Token": admin["cookies"]["admin_csrf"]},
             cookies=admin["cookies"],
             follow_redirects=False,
         )
         ok = await http.post(
             f"/admin/users/{user_id}/delete",
             data={"confirm_email": " LUKAS@example.org "},
-            headers=FORM,
+            headers={**FORM, "X-CSRF-Token": admin["cookies"]["admin_csrf"]},
             cookies=admin["cookies"],
             follow_redirects=False,
         )

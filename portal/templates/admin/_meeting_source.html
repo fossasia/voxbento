@@ -3,18 +3,18 @@
   <div class='program-ingest-head'>
     <div>
       <p class='program-ingest-eyebrow'>Live source</p>
-      <h3>Meeting source</h3>
+      <h3>Online meeting</h3>
       <p class='program-ingest-lede'>VoxBento joins this room's online meeting and turns its audio into live captions, translation, and speech.</p>
     </div>
     <span id='meeting-state-badge' class='program-state-badge' data-state='loading'>Checking status</span>
   </div>
 
-  <div class='program-signal-path' aria-label='The Jitsi meeting is joined by the VoxBento agent, which produces captions, translations, and speech'>
+  <div class='program-signal-path' aria-label='The Jitsi meeting is joined by VoxBento, which makes captions, translations, and speech'>
     <span class='program-signal-node'>Jitsi meeting</span>
     <span class='program-signal-arrow' aria-hidden='true'>→</span>
-    <span class='program-signal-node program-signal-node--active'>VoxBento agent</span>
+    <span class='program-signal-node program-signal-node--active'>VoxBento</span>
     <span class='program-signal-arrow' aria-hidden='true'>→</span>
-    <span class='program-signal-output'>Captions · Translation · TTS</span>
+    <span class='program-signal-output'>Captions · Translation · Voice</span>
   </div>
 
   <div id='meeting-warning' class='program-ingest-warning' role='alert' hidden>
@@ -31,7 +31,7 @@
         <span class='program-step'>1</span>
         <div>
           <h4>Choose the meeting</h4>
-          <p>The agent joins muted as <strong>VoxBento FloorBot</strong> and only listens.</p>
+          <p>VoxBento joins muted as <strong>VoxBento FloorBot</strong> and only listens.</p>
         </div>
       </div>
 
@@ -60,7 +60,7 @@
       <div class='program-section-head'>
         <span class='program-step'>2</span>
         <div>
-          <h4 id='meeting-monitor-title'>Monitor the agent</h4>
+          <h4 id='meeting-monitor-title'>Status</h4>
           <p id='meeting-status' role='status' aria-live='polite'>Loading meeting status…</p>
         </div>
       </div>
@@ -71,7 +71,7 @@
         <li data-step='processing'>Processing</li>
       </ol>
       <dl class='program-ingest-facts'>
-        <div><dt>Floor owner</dt><dd id='meeting-owner'>—</dd></div>
+        <div><dt>Listening to</dt><dd id='meeting-owner'>—</dd></div>
         <div><dt>Automatic reconnects</dt><dd id='meeting-restarts'>—</dd></div>
       </dl>
     </aside>

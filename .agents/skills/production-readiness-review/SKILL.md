@@ -70,7 +70,6 @@ Manual browser check:
 | Item | Impact | Status |
 |---|---|---|
 | In-memory booth state lost on restart | Active sessions dropped on deploy | Not fixed — deploy in low-traffic window |
-| No rate limiting on /login | Brute-force risk | Not fixed |
 | No CSRF on admin forms | Low risk with lax cookies | Not fixed |
 | Loss of all administrator accounts | Administrative access is unavailable | Maintain two administrators and follow `docs/admin-password-removal-migration.md` for controlled recovery |
 | `_created_paths` cache not invalidated on MTX restart | WHIP may fail | Mitigated by PATCH fallback |
@@ -81,10 +80,10 @@ Manual browser check:
 
 | Component | Limitation |
 |---|---|
-| Transcription workers | `MAX_TOTAL_WORKERS = 10` — hard limit |
+| Transcription workers | `MAX_TRANSCRIPTION_WORKERS` (default 10, range 1–100) |
 | Booth state | Single-process; no horizontal scaling |
 | MediaMTX streams | One per language channel; limited by server resources |
 | Jitsi participants | Limited by JVB server capacity |
 | DB connections | SQLAlchemy async pool (default settings) |
 
-For events with >10 simultaneous transcribed booths: increase `MAX_TOTAL_WORKERS` in `worker.py` or add a settings override.
+For events with >10 simultaneous transcribed booths: set `MAX_TRANSCRIPTION_WORKERS` in `.env` (or configure `settings.max_transcription_workers`).

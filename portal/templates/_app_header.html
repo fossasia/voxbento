@@ -12,6 +12,8 @@
     <circle cx="12" cy="8" r="4" /><path d="M4 21a8 8 0 0 1 16 0" />
   {%- elif name == 'code' -%}
     <path d="m16 18 6-6-6-6M8 6l-6 6 6 6" />
+  {%- elif name == 'mic' -%}
+    <rect x="9" y="2" width="6" height="12" rx="3" /><path d="M5 10a7 7 0 0 0 14 0M12 17v5M8 22h8" />
   {%- elif name == 'shield' -%}
     <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z" />
   {%- elif name == 'logout' -%}
@@ -22,6 +24,48 @@
     <path d="m6 9 6 6 6-6" />
   {%- endif -%}
   </svg>
+{%- endmacro %}
+
+{#- The signed-in person's menu (My events, My booths, Account, ... Logout). Used by
+    app_header and by the booth's compact top bar. Renders nothing when signed out. -#}
+{% macro user_menu_dropdown() -%}
+{% if user_menu %}
+  <div class="app-user" data-user-menu>
+    <button type="button" class="app-user-button" aria-expanded="false" aria-controls="app-user-menu" aria-label="User menu - {{ user_menu.display_name }}" data-user-menu-button>
+      {{ menu_icon('user') }}
+      <span class="app-user-name">{{ user_menu.short_name }}</span>
+      <span class="app-user-chevron">{{ menu_icon('chevron') }}</span>
+    </button>
+    <div class="app-user-menu" id="app-user-menu" hidden>
+      <div class="app-user-head">
+        <p class="app-user-head-name">{{ user_menu.display_name }}</p>
+        <p class="app-user-head-email">{{ user_menu.email }}</p>
+      </div>
+      <nav aria-label="User menu">
+        <ul class="app-user-list">
+          {% for entry in user_menu.entries %}
+          {% set is_current = entry.area == user_menu.area %}
+          <li>
+            <a class="app-user-item{{ ' is-current' if is_current else '' }}" href="{{ entry.href }}"{% if is_current %} aria-current="true"{% endif %}>
+              {{ menu_icon(entry.icon) }}
+              <span>{{ entry.label }}</span>
+              {% if is_current %}<span class="app-user-check">{{ menu_icon('check') }}</span>{% endif %}
+            </a>
+          </li>
+          {% endfor %}
+        </ul>
+        <ul class="app-user-list app-user-list--end">
+          <li>
+            <a class="app-user-item app-user-item--logout" href="/logout">
+              {{ menu_icon('logout') }}
+              <span>Logout</span>
+            </a>
+          </li>
+        </ul>
+      </nav>
+    </div>
+  </div>
+{% endif %}
 {%- endmacro %}
 
 {% macro app_header() -%}
@@ -39,43 +83,7 @@
       {{ nav_links }}
     </nav>
     {% endif %}
-    {% if user_menu %}
-    <div class="app-user" data-user-menu>
-      <button type="button" class="app-user-button" aria-expanded="false" aria-controls="app-user-menu" aria-label="User menu - {{ user_menu.display_name }}" data-user-menu-button>
-        {{ menu_icon('user') }}
-        <span class="app-user-name">{{ user_menu.short_name }}</span>
-        <span class="app-user-chevron">{{ menu_icon('chevron') }}</span>
-      </button>
-      <div class="app-user-menu" id="app-user-menu" hidden>
-        <div class="app-user-head">
-          <p class="app-user-head-name">{{ user_menu.display_name }}</p>
-          <p class="app-user-head-email">{{ user_menu.email }}</p>
-        </div>
-        <nav aria-label="User menu">
-          <ul class="app-user-list">
-            {% for entry in user_menu.entries %}
-            {% set is_current = entry.area == user_menu.area %}
-            <li>
-              <a class="app-user-item{{ ' is-current' if is_current else '' }}" href="{{ entry.href }}"{% if is_current %} aria-current="true"{% endif %}>
-                {{ menu_icon(entry.icon) }}
-                <span>{{ entry.label }}</span>
-                {% if is_current %}<span class="app-user-check">{{ menu_icon('check') }}</span>{% endif %}
-              </a>
-            </li>
-            {% endfor %}
-          </ul>
-          <ul class="app-user-list app-user-list--end">
-            <li>
-              <a class="app-user-item app-user-item--logout" href="/logout">
-                {{ menu_icon('logout') }}
-                <span>Logout</span>
-              </a>
-            </li>
-          </ul>
-        </nav>
-      </div>
-    </div>
-    {% endif %}
+    {{ user_menu_dropdown() }}
   </div>
 </header>
 {%- endmacro %}

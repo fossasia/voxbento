@@ -17,7 +17,7 @@ These variables must be set before running Voxbento in any non-trivial environme
 | Variable | Default | Description |
 | --- | --- | --- |
 | `SECRET_KEY` | `change-me` | JWT signing key used to sign and verify session tokens. Use 64 or more random characters in production. Never use the default value in a live deployment. |
-| `API_KEY_ENCRYPTION_KEY` | _(none)_ | 32-character minimum key used to encrypt third-party API keys (e.g. cloud transcription credentials) at rest in the database. Required if you use any cloud transcription provider. |
+| `API_KEY_ENCRYPTION_KEY` | _(none)_ | 32-character minimum key used to encrypt third-party API keys (e.g. cloud transcription credentials) and queued emails at rest in the database. Required: production refuses to start without it, because sign-in, invitation and password-reset emails can't be sent without it. |
 
 :::warning
 The default `SECRET_KEY` value (`change-me`) is publicly known. Any deployment that uses it can have its session tokens forged. Always replace it before going live.
@@ -54,6 +54,17 @@ Voxbento uses SQLite by default for zero-configuration local development. For an
 | --- | --- | --- |
 | `DATABASE_URL` | `sqlite+aiosqlite:///./interpretation.db` | Database connection string. For production PostgreSQL, use the format: `postgresql+asyncpg://user:pass@host:5432/dbname`. Database migrations run automatically on startup — no manual steps needed when using Docker Compose. |
 
+## Booth Recovery Variables
+
+These keep a live booth on air when an interpreter's connection drops or the portal restarts during an event. Interpreter audio goes from the browser to MediaMTX directly, so when only the connection to the portal drops, the audio keeps playing while the booth page reconnects. If the interpreter's own network goes down, the audio stops too until it comes back.
+
+| Variable | Default | Description |
+| --- | --- | --- |
+| `BOOTH_RECONNECT_GRACE_SECONDS` | `20` | How long a participant whose booth connection dropped keeps their place, including the active slot. Set `0` to remove them at once. |
+| `BOOTH_STATE_RECOVERY_ENABLED` | `true` | Save each booth's Go Live switch and active interpreter to the database and restore them when the portal starts. |
+| `BOOTH_RESTART_GRACE_SECONDS` | `60` | After a restart, how long the active slot waits for the interpreter who held it to reconnect. |
+| `BOOTH_STATE_MAX_AGE_SECONDS` | `600` | Saved booth state is not restored if it was last saved longer ago than this. A live booth's state is saved when it changes and at least once a minute, so this counts the time since that last save, including any time before the portal stopped. |
+
 ## Jitsi Variables
 
 Voxbento embeds a Jitsi Meet instance so interpreters can monitor the conference floor. These variables configure how the portal connects to and displays Jitsi.
@@ -73,6 +84,7 @@ These variables configure how Voxbento talks to MediaMTX and other local Docker 
 | --- | --- | --- |
 | `MEDIAMTX_API_BASE` | `http://localhost:9997` | MediaMTX Control API URL. |
 | `MEDIAMTX_RTSP_BASE` | `rtsp://mediamtx:8554` | Internal RTSP URL for floor audio transcription. |
+| `MAX_TRANSCRIPTION_WORKERS` | `10` | Maximum concurrent transcription workers (ffmpeg + provider) running across all booths. |
 | `MEDIAMTX_AUTH_HOOK_SECRET` | _(none)_ | Shared secret used to authenticate private internal MediaMTX webhooks to `/internal/media-auth`. Required in production. |
 | `FLOOR_BOT_BASE` | `http://floor-bot:8080` | URL for the floor-bot container. |
 | `MEETING_AGENT_MAX_RESTARTS` | `5` | Automatic meeting-agent restarts per incident before the room reports **Needs attention**. |
@@ -90,8 +102,12 @@ These variables control external encoder ingest and YouTube RTMPS forwarding.
 | `PROGRAM_INGEST_DISCONNECT_GRACE_SECS` | `15.0` | Grace period in seconds before marking a disconnected encoder stream as terminated. |
 | `PROGRAM_INGEST_STALL_SECS` | `30.0` | Duration without packets before declaring a stream stalled. |
 | `PROGRAM_SENDER_SESSION_TTL_SECS` | `150` | Browser sender publish window for WHIP session negotiation. |
+| `PROGRAM_RTMPS_ENABLED` | `false` | Accepts room-authenticated RTMPS ingest without relaying, so a streaming tool can add VoxBento as an extra destination (`docker-compose.rtmps.yml`). Relay deployments imply it. Needs `PROGRAM_INGEST_ENABLED`. |
 | `PROGRAM_RELAY_ENABLED` | `false` | Enables operator-controlled RTMPS relaying to YouTube destinations via the `program-relay` service (`docker-compose.relay.yml`). |
 | `PROGRAM_RTMPS_PUBLIC_BASE` | _(none)_ | Public base RTMPS URL (e.g. `rtmps://voxbento.com:1936`) for incoming RTMP/RTMPS encoder streams. |
+| `PROGRAM_RTMPS_CERT_DIR` | _(none)_ | Directory holding the RTMPS certificate and key, e.g. Caddy's certificate directory for the hostname. MediaMTX reloads renewed files. |
+| `PROGRAM_RTMPS_CERT_NAME` | `rtmps` | File name stem inside `PROGRAM_RTMPS_CERT_DIR` (`<name>.crt`, `<name>.key`); Caddy uses the hostname. |
+| `COMPOSE_FILE` | _(none)_ | Set to `docker-compose.yml:docker-compose.relay.yml` so every `docker compose` command and the deploy workflow include relay mode. `scripts/setup-youtube-relay.sh` sets this and the variables above. |
 | `PROGRAM_RELAY_BASE` | `http://program-relay:8090` | Internal URL of the dedicated `program-relay` media service. |
 | `PROGRAM_RELAY_CONTROL_SECRET` | _(none)_ | Shared Bearer token (min 32 characters) for authenticating commands to `program-relay`. |
 | `PROGRAM_RELAY_MAX` | `4` | Maximum concurrent active YouTube relay streams. |
@@ -111,7 +127,22 @@ These variables control external encoder ingest and YouTube RTMPS forwarding.
 | --- | --- | --- |
 | `SUPERTONIC_TOTAL_STEPS` | `4` | Diffusion steps for self-hosted Supertonic ONNX TTS. `4` provides real-time CPU synthesis; `8` offers reference quality. |
 | `SUPERTONIC_INTRA_OP_THREADS` | `0` | Intra-op threads for ONNX Runtime (`0` defaults to all available CPU cores). |
+| `LIVE_DEMO_ENABLED` | `true` | Allows the "Your voice" demo on the home page, where visitors speak and get captions, translations and a voice from this server's own models. The demo stays off until an Admin switches it on at **Admin → Live demo**; `false` keeps it off on this server whatever is saved there. |
+| `LIVE_DEMO_VOICE_ENABLED` | `true` | Speaks the translation aloud with Supertonic. Needs the `supertonic` extra; without it the demo shows captions only. |
+| `LIVE_DEMO_WHISPER_MODEL` | `base` | faster-whisper model for demo captions (`tiny`, `base`, `small`, …). Larger models are more accurate but slower on CPU. |
+| `LIVE_DEMO_TRANSLATION_MODEL` | `nllb-200-distilled-600M` | Self-hosted translation model for the demo. |
+| `LIVE_DEMO_MAX_SESSIONS` | `2` | Demo sessions allowed at once on this server; further visitors are asked to try again shortly. |
+| `LIVE_DEMO_MAX_SESSION_SECONDS` | `120` | Longest single demo run. |
+| `LIVE_DEMO_SESSIONS_PER_IP_PER_HOUR` | `12` | Demo runs one client address may start per hour. |
 | `NVIDIA_FUNCTION_ID` | _(empty)_ | Optional function ID for NVIDIA Cloud Riva integrations. |
+| `LOCAL_TRANSLATION_MODELS` | `nllb-200-distilled-600M` | Comma-separated built-in (NLLB) translation models rooms and booths may use. The first one is the default. Each name can be at most 100 characters. Only these can be selected or downloaded, and only Admins can start a download. The live demo uses its own `LIVE_DEMO_TRANSLATION_MODEL` and downloads it itself. A name that isn't in the registry is loaded as your own build, from a Hugging Face repository or a folder on the server. Leave empty to turn built-in translation off. |
+| `SELF_HOSTED_LLM_BASE_URL` | _(empty)_ | Base URL of your own OpenAI-compatible server, for example `http://localhost:11434/v1`, without `/chat/completions`. Must be `http` or `https` with a valid port and no credentials, query string or fragment. Only the server sets it; rooms can't. |
+| `SELF_HOSTED_LLM_MODELS` | _(empty)_ | Comma-separated models rooms and booths may use, spelled exactly as the server names them (for Ollama, as `ollama list` shows them). The first one is the default. Each name can be at most 100 characters. Self-hosted translation is offered only when this and the URL are both set. |
+| `SELF_HOSTED_LLM_API_KEY` | _(empty)_ | Optional bearer token, for servers started with an API key (for example vLLM `--api-key`). |
+| `MEETING_ANALYSIS_OLLAMA_BASE_URL` | `http://localhost:11434` | Ollama (or OpenAI-compatible) server used for meeting reports when an event chooses the Local service. |
+| `MEETING_ANALYSIS_OLLAMA_NUM_CTX` | `32768` | Context window, in tokens, requested from Ollama for meeting reports. |
+
+The other `LIVE_DEMO_*` values are defaults: once an Admin saves **Admin → Live demo**, the saved settings are used instead (`LIVE_DEMO_TRANSLATION_MODEL` stays server-only). The demo runs Whisper, NLLB and, with voice on, Supertonic in the portal process: about 1.2 GB of models, downloaded on first use and kept in memory while in use.
 
 ## Email and Notification Variables
 
@@ -124,8 +155,9 @@ Configured for transactional emails (invitations, password resets, hosting acces
 | `SMTP_USER` | _(none)_ | SMTP authentication username. |
 | `SMTP_PASSWORD` | _(none)_ | SMTP authentication password. |
 | `SMTP_FROM_EMAIL` | `noreply@voxbento.com` | Sender address on outgoing notification emails. |
+| `SMTP_FROM_NAME` | `VoxBento` | Sender name shown next to the address. Leave empty to send the bare address. |
 | `HOSTING_REQUESTS_EMAIL` | `voxbento.dev@gmail.com` | Team inbox alerted when users request event hosting access. |
-| `PUBLIC_BASE_URL` | `https://voxbento.com` | Canonical public URL used to build invite and confirmation links. |
+| `PUBLIC_BASE_URL` | `https://voxbento.com` | Canonical public URL used to build invite and confirmation links. An `https://` value with `DEBUG=false` also marks session cookies `Secure` and sends `Strict-Transport-Security`. Plain-HTTP deployments must set an `http://` URL, otherwise browsers discard the login cookies. |
 
 ## Jitsi Internal Auth Variables
 
@@ -162,7 +194,7 @@ Update `API_KEY_ENCRYPTION_KEY` in your `.env` to `NEW_KEY,OLD_KEY`. Deploy this
 Trigger a re-encryption pass for all stored API keys (via the admin panel or the relevant management command). Once complete, all data is encrypted under the new key.
   ### Remove the old key
 
-Update `API_KEY_ENCRYPTION_KEY` to contain only `NEW_KEY` and redeploy. The old key is no longer needed.
+Before removing the old key, check that **Admin → Emails** shows nothing waiting to send: emails queued before the rotation are encrypted with the old key and can't be sent once it is gone. Then update `API_KEY_ENCRYPTION_KEY` to contain only `NEW_KEY` and redeploy. The old key is no longer needed.
 
 :::tip
 Generate any secret key with `openssl rand -hex 32`. This produces a 64-character hexadecimal string, which meets the 32-character minimum and is suitable for production use.

@@ -1,0 +1,71 @@
+/* Subtitle overlay for OBS / vMix browser sources (1920x1080, transparent). */
+html,
+body {
+  margin: 0;
+  height: 100%;
+  background: transparent;
+  overflow: hidden;
+}
+
+.overlay {
+  --overlay-font-size: 36px;
+  --overlay-bg-alpha: 0.7;
+  box-sizing: border-box;
+  display: flex;
+  justify-content: center;
+  height: 100%;
+  padding: 4vh 5vw;
+  font-family: var(--vb-font);
+}
+
+.overlay--top {
+  align-items: flex-start;
+}
+
+.overlay--center {
+  align-items: center;
+}
+
+.overlay--bottom {
+  align-items: flex-end;
+}
+
+.overlay-lines {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 0.3em;
+  max-width: 100%;
+  font-size: var(--overlay-font-size);
+  line-height: 1.3;
+  text-align: center;
+}
+
+.overlay-line {
+  box-sizing: border-box;
+  max-width: 100%;
+  overflow-wrap: anywhere;
+  unicode-bidi: plaintext;
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: var(--caption-line-limit, 1);
+  overflow: hidden;
+  padding: 0 0.5em;
+  border-radius: var(--vb-radius-sm);
+  background: rgba(0, 0, 0, var(--overlay-bg-alpha));
+  color: var(--vb-color-surface);
+  font-weight: 600;
+  text-shadow: 0 1px 2px rgba(0, 0, 0, 0.8);
+}
+
+/* Older lines fade back so the newest line reads first. */
+.overlay-line--older {
+  font-size: 0.8em;
+}
+
+/* Chromium before 111 (OBS 30 and earlier) would drop the colour to inherited black. */
+@supports (color: color-mix(in srgb, white 72%, transparent)) {
+  .overlay-line--older {
+    color: color-mix(in srgb, var(--vb-color-surface) 72%, transparent);
+  }
+}

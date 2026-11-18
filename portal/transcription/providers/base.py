@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 import asyncio
 import io
 import logging
@@ -44,6 +46,7 @@ def get_api_key(event: Event, provider: ProviderEnum) -> str | None:
         ProviderEnum.DEEPGRAM: event.encrypted_deepgram_api_key,
         ProviderEnum.NVIDIA: event.encrypted_nvidia_api_key,
         ProviderEnum.ELEVENLABS: event.encrypted_elevenlabs_api_key,
+        ProviderEnum.ATLASCLOUD: event.encrypted_atlascloud_api_key,
     }
     encrypted = key_map.get(provider)
     return decrypt_val(encrypted) if encrypted else None
@@ -67,6 +70,9 @@ class BoothTranscriptionState:
 
 
 class TranscriptionProvider:
+    # PCM rate ffmpeg outputs for this provider
+    sample_rate = 16000
+
     async def process_chunk(
         self,
         chunk: bytes,
@@ -90,7 +96,7 @@ class TranscriptionProvider:
         from portal.transcription.aggregator import CaptionAggregator
 
         aggregator = CaptionAggregator(broadcast_callback, room_id=room_id)
-        chunk_size_bytes = 16000 * 2 * 3  # 3 seconds
+        chunk_size_bytes = self.sample_rate * 2 * 3  # 3 seconds
         queue = asyncio.Queue(maxsize=2)
         booth_state = BoothTranscriptionState(booth_id=booth_id)
 

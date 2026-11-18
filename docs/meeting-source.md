@@ -13,7 +13,7 @@ and Webex need provider-specific agents and are not implied by this feature.
 ## Owner workflow
 
 1. Open **Workspace → Events → (event) → Rooms → (room)**.
-2. In **Meeting source**, keep **Jitsi Meet (self-hosted)**, confirm the meeting
+2. In **Room audio**, choose **From the online meeting**, keep **Jitsi Meet (self-hosted)**, confirm the meeting
    URL and click **Connect meeting**.
 3. Watch the status: **Starting → Joined → Receiving audio → Processing**.
 4. To move a connected agent to another meeting, edit the URL and click
@@ -55,6 +55,8 @@ reconnect budget, so fixing a wrong URL recovers a room that shows **Needs atten
 - There is at most one agent process per room. Repeated **Connect** clicks
   adopt the running agent instead of joining a second participant, and the floor
   worker is keyed by the canonical floor booth ID.
+- Replacing the event's speech-provider API key restarts affected floor processing
+  on the next reconciliation pass. Saving the same key again keeps the worker running.
 - A failed agent restarts after 2, 5, 10, 20 and 30 seconds, up to
   `MEETING_AGENT_MAX_RESTARTS` (default 5) attempts per incident. Sixty seconds
   of healthy processing ends the incident and refills the budget. When the
@@ -72,6 +74,15 @@ reconnect budget, so fixing a wrong URL recovers a room that shows **Needs atten
   disconnect that cannot reach the floor-bot service returns `202` with
   `cleanup_pending: true`; the desired state is already cleared and the stale
   agent is stopped on the next successful reconcile.
+- Rooms of a deleted event (`DELETE /api/v1/events/{slug}`) no longer count as wanting an
+  agent. The next reconcile stops their agent and floor transcription worker, within 30
+  seconds when no other room wants one.
+- When the agent has been the only participant for `BOT_EMPTY_ROOM_GRACE_SECONDS`
+  (default 90, set on the `floor-bot` service) it leaves the meeting. The portal
+  treats this as a stop, not a failure: the room's agent is switched off, floor
+  processing stops, and the status reads "The meeting agent stopped because the
+  room remained empty." until an owner connects again. A value that is not a
+  finite number uses the default.
 
 ## Deployment
 

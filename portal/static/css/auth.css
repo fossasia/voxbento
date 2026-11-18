@@ -371,6 +371,64 @@ body:has(.login-page) .portal-footer {
   transform: translate(-2px, -2px); 
 }
 
+/* Password visibility toggle */
+.password-input-wrapper {
+  position: relative;
+  display: flex;
+  align-items: center;
+  width: 100%;
+}
+
+.password-input-wrapper input {
+  width: 100%;
+  box-sizing: border-box;
+  padding-right: 44px;
+}
+
+.password-toggle-btn {
+  position: absolute;
+  right: 8px;
+  top: 50%;
+  transform: translateY(-50%);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 32px;
+  height: 32px;
+  padding: 0;
+  border: none;
+  background: transparent;
+  color: var(--color-text-secondary, #5b6577);
+  border-radius: 4px;
+  cursor: pointer;
+  transition: transform 0.2s ease, color 0.15s ease, background-color 0.15s ease;
+  z-index: 1;
+}
+
+.password-toggle-btn:hover {
+  color: var(--color-text);
+  background-color: color-mix(in srgb, var(--color-text) 6%, transparent);
+}
+
+.password-toggle-btn:focus {
+  outline: none;
+}
+
+.password-toggle-btn:focus-visible {
+  outline: 2px solid var(--color-primary, #2563eb);
+  outline-offset: 2px;
+}
+
+.password-input-wrapper:has(input:focus) .password-toggle-btn {
+  transform: translateY(-50%) translate(-2px, -2px);
+}
+
+/* Prevent duplicate eye icons in Edge / IE */
+.login-form input[type="password"]::-ms-reveal,
+.login-form input[type="password"]::-ms-clear {
+  display: none;
+}
+
 /* Brutalist Button Styles for Login/Register */
 .login-card .btn {
   border: 2px solid #0d0f10;
@@ -426,4 +484,83 @@ body:has(.login-page) .portal-footer {
   .portal-home-header { padding: 12px 16px; }
   .admin-main { padding: 16px; }
   .header-nav { gap: 12px; }
+}
+
+/* "Check your email" notice after asking for a sign-in link */
+.login-waiting-title { margin: 0 0 8px; font-weight: 600; }
+.login-waiting-text { margin: 0; font-size: 0.9em; line-height: 1.45; }
+.login-waiting-text a { color: inherit; font-weight: 600; text-decoration: underline; }
+
+/* ── Magic-link success page ──────────────────────────────────────────────── */
+
+.magic-success-wrapper {
+  max-width: 480px;
+  margin: 80px auto;
+  text-align: center;
+  background: #fff;
+  padding: 40px 20px;
+  border-radius: 12px;
+  box-shadow: 0 10px 15px -3px rgba(0, 0, 0, 0.05);
+  border: 1px solid #e2e8f0;
+}
+
+.magic-success-icon {
+  width: 64px;
+  height: 64px;
+  background: #22c55e;
+  color: white;
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 32px;
+  margin: 0 auto 20px;
+}
+
+.magic-success-heading {
+  margin-top: 0;
+  color: #0f172a;
+}
+
+.magic-success-subtext {
+  color: #64748b;
+  font-size: 16px;
+  margin-bottom: 24px;
+}
+
+.magic-success-banner {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  color: #1e40af;
+  font-weight: 500;
+  padding: 14px 18px;
+  background: #eff6ff;
+  border: 1px solid #bfdbfe;
+  border-radius: 8px;
+  line-height: 1.6;
+  margin-bottom: 20px;
+  text-align: left;
+}
+
+.magic-success-banner-icon {
+  font-size: 20px;
+}
+
+.magic-success-banner-title {
+  font-weight: 600;
+  color: #1e3a8a;
+}
+
+.magic-success-banner-body {
+  color: #3b82f6;
+  font-size: 14px;
+}
+
+.magic-success-manual-link {
+  color: #1d4ed8;
+  text-decoration: underline;
+  font-weight: 600;
+  cursor: pointer;
 }

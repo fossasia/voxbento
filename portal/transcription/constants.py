@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 from enum import Enum
 from typing import Dict, Set
 
@@ -10,13 +12,15 @@ class ProviderEnum(str, Enum):
     NVIDIA = "nvidia"
     ELEVENLABS = "elevenlabs"
     NONE = "none"
+    ATLASCLOUD = "atlascloud"
 
 
 ALLOWED_MODELS: Dict[ProviderEnum, Set[str]] = {
     ProviderEnum.LOCAL: {"tiny", "base", "small", "medium", "large-v2", "large-v3"},
     ProviderEnum.OPENAI: {"whisper-1", "gpt-4o-realtime-preview", "gpt-4o-mini-realtime-preview"},
-    ProviderEnum.DEEPGRAM: {"nova-2"},
+    ProviderEnum.DEEPGRAM: {"nova-3", "nova-2"},
     ProviderEnum.NVIDIA: {"parakeet-rnnt", "parakeet-ctc"},
     ProviderEnum.ELEVENLABS: {"scribe_v2_realtime"},
     ProviderEnum.NONE: {"none"},
+    ProviderEnum.ATLASCLOUD: {"bytedance/seed-asr-2.0"},
 }

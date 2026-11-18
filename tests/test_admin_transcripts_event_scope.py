@@ -70,3 +70,19 @@ async def test_transcripts_page_rejects_room_from_other_event(client):
 
     r = await client.get(f"/workspace/events/{ev_a}/rooms/{room_a}/transcripts/")
     assert r.status_code == 200
+
+
+@pytest.mark.anyio
+async def test_transcripts_page_loads_external_module_and_exposes_ids(client):
+    """The viewer must not use inline scripts/handlers and must pass ids via data attributes (#904)."""
+    token, ev_a, room_a, _room_b = await _setup()
+    client.cookies.set("user_token", token)
+
+    r = await client.get(f"/workspace/events/{ev_a}/rooms/{room_a}/transcripts/")
+
+    assert r.status_code == 200
+    assert "js/room-transcripts.js" in r.text
+    assert f'data-event-id="{ev_a}"' in r.text
+    assert f'data-room-id="{room_a}"' in r.text
+    assert 'onclick="fetchTranscripts()"' not in r.text
+    assert "function fetchTranscripts" not in r.text

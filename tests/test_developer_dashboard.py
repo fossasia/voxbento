@@ -8,16 +8,19 @@ Covers:
 
 from __future__ import annotations
 
+import hashlib
 import os
 
 os.environ["BOOTH_ACCESS_TOKEN"] = ""
 
 import re
+from html.parser import HTMLParser
 
 import pytest
 from sqlalchemy import select
 
 from portal.auth import create_user_token, hash_password
+from portal.config import settings
 from portal.database import configure, create_user, dispose, get_session, init_db
 from portal.models import DeveloperAccount, OAuthClient
 from portal.routers.developer import (
@@ -371,3 +374,114 @@ async def test_authorize_still_redirects_to_stored_http_urls(stored, setup_db):
 
     assert resp.status_code == 303
     assert resp.headers["location"] == f"{stored}?error=access_denied&state=S"
+
+
+@pytest.mark.anyio
+async def test_developer_dashboard_apps_table_has_four_headers_and_cells(setup_db):
+    """Ensure the Apps table header has 4 columns matching the 4 row cells."""
+    cookies = await _developer_cookies()
+    reg_resp = await _register(cookies, "Test App", "https://app.example/cb")
+    assert reg_resp.status_code == 200
+
+    async with _client() as c:
+        resp = await c.get("/developer", cookies=cookies)
+    assert resp.status_code == 200
+
+    # Scope strictly to the Apps table
+    match = re.search(r'<table class="data-table dev-table">.*?</table>', resp.text, re.DOTALL)
+    assert match is not None, "Apps table was not rendered"
+    apps_table_html = match.group(0)
+    assert "dev-client-name" in apps_table_html
+
+    # Verify header has 4 columns matching data row cells
+    thead_match = re.search(r'<thead>(.*?)</thead>', apps_table_html, re.DOTALL)
+    assert thead_match is not None
+    headers = re.findall(r'<th\b[^>]*>(.*?)</th>', thead_match.group(1), re.DOTALL)
+    header_texts = [re.sub(r'<[^>]+>', '', h).strip() for h in headers]
+    assert header_texts == ["Name", "Client ID", "Status", "Actions"]
+    assert len(headers) == 4
+
+    tbody_match = re.search(r'<tbody>(.*?)</tbody>', apps_table_html, re.DOTALL)
+    assert tbody_match is not None
+    rows = re.findall(r'<tr class="dev-row">(.*?)</tr>', tbody_match.group(1), re.DOTALL)
+    assert len(rows) == 1
+    cells = re.findall(r'<td\b[^>]*>', rows[0])
+    assert len(cells) == 4
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("forwarded_proto, secure", [("https", True), (None, False)])
+async def test_dashboard_csrf_cookie_secure_flag_follows_scheme(setup_db, monkeypatch, forwarded_proto, secure):
+    monkeypatch.setattr(settings, "public_base_url", "http://localhost:8000")
+    cookies = {"user_token": (await _developer_cookies())["user_token"]}
+    headers = {"x-forwarded-proto": forwarded_proto} if forwarded_proto else {}
+
+    async with _client() as c:
+        resp = await c.get("/developer", cookies=cookies, headers=headers)
+
+    cookie = next(v for k, v in resp.headers.multi_items() if k == "set-cookie" and v.startswith("dashboard_csrf="))
+    assert ("Secure" in cookie) is secure
+    assert "HttpOnly" in cookie
+
+
+# ---------------------------------------------------------------------------
+# Dashboard dialogs (#1243)
+# ---------------------------------------------------------------------------
+
+
+class _InlineScripts(HTMLParser):
+    """Collect every script without a `src`, whatever its case or spacing."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.found: list[dict[str, str | None]] = []
+
+    def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+        attributes = dict(attrs)
+        if tag == "script" and "src" not in attributes:
+            self.found.append(attributes)
+
+
+def _assert_labelled_dialog(html: str, dialog_id: str, title: str) -> None:
+    # A div never matches the dialog-only :not([open]) rule in admin.css, so the popups must be dialogs.
+    tag = re.search(rf'<(\w+) id="{dialog_id}"[^>]*>', html)
+    assert tag is not None and tag.group(1) == "dialog", dialog_id
+    assert " open" not in tag.group(0), "showModal() opens it; an open attribute would make it non-modal"
+    label = re.search(r'aria-labelledby="([^"]+)"', tag.group(0))
+    assert label is not None, dialog_id
+    assert re.search(rf'id="{label.group(1)}"[^>]*>{title}<', html), dialog_id
+
+
+@pytest.mark.anyio
+async def test_dashboard_create_app_popup_is_a_dialog_driven_by_developer_js(setup_db):
+    cookies = await _developer_cookies()
+    assert (await _register(cookies, "My Plugin", "https://app.example/cb")).status_code == 200
+    (client,) = await _stored_clients()
+
+    async with _client() as c:
+        resp = await c.get("/developer", cookies=cookies)
+
+    assert resp.status_code == 200
+    _assert_labelled_dialog(resp.text, "modal-create-app", "Create OAuth Client")
+    assert 'id="modal-new-secret"' not in resp.text
+    assert re.search(r'<script type="module" src="[^"]*/js/developer\.js\?v=', resp.text)
+    scripts = _InlineScripts()
+    scripts.feed(resp.text)
+    assert scripts.found == [], "no inline scripts"
+    assert "onclick=" not in resp.text
+    assert re.search(rf'<button type="button" class="copy-wrapper" data-copy-text="{client.client_id}">', resp.text)
+
+
+@pytest.mark.anyio
+async def test_new_secret_popup_is_a_dialog_with_copy_buttons(setup_db):
+    cookies = await _developer_cookies()
+
+    resp = await _register(cookies, "My Plugin", "https://app.example/cb")
+
+    assert resp.status_code == 200
+    _assert_labelled_dialog(resp.text, "modal-new-secret", "App Created Successfully")
+    (client,) = await _stored_clients()
+    secret = re.search(r'data-copy-text="(secret_[^"]+)"', resp.text).group(1)
+    assert hashlib.sha256(secret.encode()).hexdigest() == client.client_secret_hash
+    assert re.search(rf'<button type="button" class="[^"]*copy-wrapper" data-copy-text="{client.client_id}"', resp.text)
+    assert "onclick=" not in resp.text

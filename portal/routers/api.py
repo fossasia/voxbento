@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import logging
+
 import jwt as pyjwt
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
@@ -9,14 +11,18 @@ from sqlalchemy.orm import selectinload
 from sqlalchemy.orm.exc import ObjectDeletedError, StaleDataError
 
 from portal.auth import (
+    booth_session_key,
     coordinates_room,
     create_embed_token,
     create_listener_token,
     decode_token,
     get_booth_session,
+    get_booth_sessions,
+    is_invite_token_revoked,
     load_membership_scope,
     resolve_booth_role,
     security,
+    user_session_is_valid,
 )
 from portal.booth_identity import make_booth_id, make_mediamtx_path, validate_event_slug, validate_language_code
 from portal.config import settings
@@ -33,7 +39,7 @@ from portal.database import (
 from portal.globals import booths
 from portal.models import DBBooth, Event, Room
 from portal.rate_limit import check_rate_limit
-from portal.roles import INTERPRETER, Permission, has_permission
+from portal.roles import INTERPRETER, Permission, can_set_active, has_permission
 from portal.schemas.booth import CreateBoothRequest
 from portal.transcription import ProviderConfig, ProviderEnum, get_api_key
 from portal.transcription.worker import start_transcription_worker, stop_transcription_worker
@@ -45,6 +51,8 @@ from portal.utils import (
     verify_same_origin,
 )
 from portal.websockets.manager import broadcast_transcription
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api")
 bearer_scheme = HTTPBearer(auto_error=False)
@@ -98,7 +106,7 @@ async def _verify_event_access(
         except (TypeError, ValueError):
             user_id = 0
         user = await get_user_by_id(session, user_id)
-        if user is None or not user.is_active:
+        if not user_session_is_valid(user, payload):
             raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Invalid or inactive user.")
         if user.is_admin:
             return
@@ -174,6 +182,39 @@ def _require_same_origin_for_cookies(
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid request origin.")
 
 
+async def _require_live_interpreter_to_stop(
+    request: Request, credentials: HTTPAuthorizationCredentials | None, token: str, booth_id: str
+) -> None:
+    """Let a booth role that can only go live stop transcription only while it is live (#941).
+
+    Coordinators, event owners and Admins can reassign the live slot, so they can always
+    stop, as can the configured token and event API keys.
+    """
+    configured_token = settings.booth_access_token
+    if configured_token and (
+        token == configured_token or (credentials is not None and credentials.credentials == configured_token)
+    ):
+        return
+    sessions = list(get_booth_sessions(request).values())
+    if credentials is not None:
+        try:
+            payload = decode_token(credentials.credentials)
+        except pyjwt.InvalidTokenError:
+            # An event API key; _verify_resource_access already scoped it to this event.
+            return
+        # Without a configured token anyone can get a legacy_api token, so it proves nothing.
+        if payload.get("purpose") == "legacy_api" and configured_token:
+            return
+        sessions.append(payload)
+    if can_set_active(await resolve_booth_role(sessions, booth_id)):
+        return
+    session_keys = {key for key in map(booth_session_key, sessions) if key}
+    if not await booths.can_stop_live(booth_id, session_keys):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN, detail="Only the live interpreter can stop transcription."
+        )
+
+
 async def _verify_resource_access(
     session: AsyncSession,
     request: Request,
@@ -232,6 +273,9 @@ async def _verify_resource_access(
                 raise
             payload = participant_payload
         else:
+            if payload and not payload.get("user") and payload.get("token_id") is not None:
+                if await is_invite_token_revoked(str(payload["token_id"])):
+                    raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Invitation revoked.")
             return payload
     if credentials is None and payload and not payload.get("user") and request.cookies.get("user_token"):
         try:
@@ -243,6 +287,9 @@ async def _verify_resource_access(
             # independently scoped participant session from being used.
             pass
         else:
+            if payload and not payload.get("user") and payload.get("token_id") is not None:
+                if await is_invite_token_revoked(str(payload["token_id"])):
+                    raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Invitation revoked.")
             return payload
     if payload and payload.get("user") and not (settings.debug and payload.get("is_admin")):
         await _verify_event_access(
@@ -263,6 +310,9 @@ async def _verify_resource_access(
         )
     else:
         _require_access(request, credentials, token, session_payload=payload)
+    if payload and not payload.get("user") and payload.get("token_id") is not None:
+        if await is_invite_token_revoked(str(payload["token_id"])):
+            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Invitation revoked.")
     if not is_global_credential:
         _verify_participant_scope(
             request,
@@ -493,9 +543,6 @@ async def create_event_booth(
     "/events/{event_slug}/eventyay-rooms/{eventyay_room_id}/booths/{language_code}",
     status_code=status.HTTP_204_NO_CONTENT,
 )
-@router.delete(
-    "/events/{event_slug}/rooms/{eventyay_room_id}/booths/{language_code}", status_code=status.HTTP_204_NO_CONTENT
-)
 async def delete_event_booth(
     request: Request,
     event_slug: str,
@@ -600,7 +647,7 @@ async def list_event_booths(
                             "type": "ai",
                             "label": f"{tl.language_name} (AI)",
                             "is_ai": True,
-                            "floor_tts_enabled": room.floor_tts_enabled,
+                            "floor_tts_enabled": room.floor_tts_enabled and tl.tts_enabled,
                         }
                         booth_list.append(ai_stream)
 
@@ -758,6 +805,11 @@ async def api_transcription_start(
     token: str = Query(""),
     credentials: HTTPAuthorizationCredentials | None = Depends(security),
 ):
+    """Start the transcription worker for the specified booth if enabled.
+
+    Validates operator/booth access and verifies that transcription is enabled
+    and configured for the booth before starting the background worker session.
+    """
     booth_id = make_booth_id(event_slug, room_id, language_code)
     async with get_session() as session:
         event = await get_event_by_slug(session, event_slug)
@@ -787,12 +839,10 @@ async def api_transcription_start(
         )
         db_booth = await session.scalar(stmt)
         if not db_booth or not db_booth.transcription_enabled:
-            print(
-                "API START: Transcription disabled for booth",
+            logger.debug(
+                "Transcription disabled for booth %s (db_booth present: %s, enabled: %s)",
                 booth_id,
-                "db_booth=",
-                db_booth,
-                "enabled=",
+                db_booth is not None,
                 getattr(db_booth, "transcription_enabled", None),
             )
             return {"status": "disabled", "message": "Transcription is not enabled for this booth."}
@@ -820,7 +870,7 @@ async def api_transcription_start(
         )
     except ValueError as e:
         raise HTTPException(status_code=429, detail=str(e))
-    print("API START: Successfully started worker for booth", booth_id)
+    logger.info("Transcription worker running for booth %s (provider: %s)", booth_id, provider)
     return {"status": "started", "provider": provider, "model": model_size}
 
 
@@ -849,5 +899,6 @@ async def api_transcription_stop(
             booth_permission=Permission.BOOTH_GO_LIVE,
         )
         _require_same_origin_for_cookies(request, credentials, token)
+    await _require_live_interpreter_to_stop(request, credentials, token, booth_id)
     await stop_transcription_worker(booth_id)
     return {"status": "stopped"}

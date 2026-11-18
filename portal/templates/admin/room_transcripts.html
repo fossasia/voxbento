@@ -42,79 +42,20 @@
       </select>
     </div>
     <div class="form-group form-group-btn form-group--align-end">
-      <button type="button" class="btn btn-primary" id="refresh-transcripts-btn" onclick="fetchTranscripts()">Refresh</button>
+      <button type="button" class="btn btn-primary" id="refresh-transcripts-btn">Refresh</button>
       <a href="#" id="download-csv-btn" class="btn btn-outline" hidden>Download CSV</a>
     </div>
   </div>
 
-  <div id="transcript-viewer-container" class="transcript-viewer">
+  <div
+    id="transcript-viewer-container"
+    class="transcript-viewer"
+    data-event-id="{{ event.id }}"
+    data-room-id="{{ room.id }}"
+  >
     <p class="muted transcript-placeholder">Select a channel above to view its transcripts.</p>
   </div>
 </div>
 
-<script>
-  let currentLanguageCode = '';
-  const eventId = {{ event.id }};
-  const roomId = {{ room.id }};
-
-  document.getElementById('transcript_lang_select').addEventListener('change', function(e) {
-    currentLanguageCode = e.target.value;
-    if (currentLanguageCode) {
-      fetchTranscripts();
-    } else {
-      document.getElementById('transcript-viewer-container').innerHTML = '<p class="muted transcript-placeholder">Select a channel above to view its transcripts.</p>';
-      document.getElementById('download-csv-btn').hidden = true;
-    }
-  });
-
-  async function fetchTranscripts() {
-    if (!currentLanguageCode) return;
-    
-    const container = document.getElementById('transcript-viewer-container');
-    container.innerHTML = '<p class="muted transcript-placeholder">Loading...</p>';
-    
-    try {
-      const res = await fetch(`/api/admin/events/${eventId}/rooms/${roomId}/transcripts/${currentLanguageCode}`);
-      if (!res.ok) throw new Error('Failed to fetch transcripts');
-      
-      const data = await res.json();
-      if (data.length === 0) {
-        container.innerHTML = '<p class="muted transcript-placeholder">No transcripts recorded for this channel yet.</p>';
-        document.getElementById('download-csv-btn').hidden = true;
-        return;
-      }
-      
-      let html = '<table class="data-table transcript-table"><thead><tr><th class="transcript-time-col">Time</th><th>Text</th></tr></thead><tbody>';
-      let csvContent = "Time,Text\n";
-      
-      data.forEach(row => {
-        const d = new Date(row.created_at);
-        const timeStr = d.toLocaleTimeString();
-        html += `<tr><td class="muted">${timeStr}</td><td>${row.text}</td></tr>`;
-        
-        // Escape quotes for CSV
-        const escapedText = row.text.replace(/"/g, '""');
-        csvContent += `"${row.created_at}","${escapedText}"\n`;
-      });
-      html += '</tbody></table>';
-      
-      container.innerHTML = html;
-      
-      // Update Download link
-      const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
-      const url = URL.createObjectURL(blob);
-      const downloadBtn = document.getElementById('download-csv-btn');
-      downloadBtn.href = url;
-      const safeFilename = currentLanguageCode.replace(/[^a-zA-Z0-9_-]/g, '_');
-      downloadBtn.download = `transcripts_${safeFilename}.csv`;
-      downloadBtn.hidden = false;
-      
-      // Auto-scroll to bottom
-      container.scrollTop = container.scrollHeight;
-      
-    } catch (e) {
-      container.innerHTML = `<p class="danger-text transcript-placeholder">Error: ${e.message}</p>`;
-    }
-  }
-</script>
+<script type="module" src="{{ url_for('static', path='js/room-transcripts.js') }}?v={{ asset_version }}"></script>
 {% endblock %}

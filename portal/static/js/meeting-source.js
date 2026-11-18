@@ -56,8 +56,8 @@ function render(data) {
   if (lastError) statusText.textContent = lastError;
   renderLifecycle(data.state);
   document.getElementById('meeting-owner').textContent = data.floor_source === 'program_ingest'
-    ? 'Program ingest'
-    : (data.enabled ? 'Meeting agent' : 'None');
+    ? 'Streaming software or sound desk'
+    : (data.enabled ? 'Online meeting' : 'Nothing yet');
   document.getElementById('meeting-restarts').textContent = `${data.restarts} of ${data.max_restarts} used`;
 
   const attention = data.state === 'degraded' || data.state === 'reconnecting';
@@ -90,7 +90,10 @@ async function refresh() {
 async function change(action, confirmSourceChange = false) {
   const response = await fetch(card.dataset.url, {
     method: 'POST',
-    headers: {'Content-Type': 'application/json'},
+    headers: {
+      'Content-Type': 'application/json',
+      'X-CSRF-Token': document.querySelector('meta[name="csrf-token"]')?.content || ''
+    },
     body: JSON.stringify({action, meeting_url: urlInput.value, confirm_source_change: confirmSourceChange}),
   });
   let data;

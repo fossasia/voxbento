@@ -43,6 +43,10 @@ def generate_token() -> str:
     return secrets.token_hex(TOKEN_LENGTH // 2)
 
 
+def generate_public_id() -> str:
+    return secrets.token_urlsafe(12)
+
+
 # ---------------------------------------------------------------------------
 # Base
 # ---------------------------------------------------------------------------
@@ -72,6 +76,9 @@ class Event(Base):
     encrypted_elevenlabs_api_key: Mapped[str | None] = mapped_column(
         "elevenlabs_api_key", Text, nullable=True, default=None
     )
+    encrypted_atlascloud_api_key: Mapped[str | None] = mapped_column(
+        "atlascloud_api_key", Text, nullable=True, default=None
+    )
     encrypted_translation_openai_api_key: Mapped[str | None] = mapped_column(
         "translation_openai_api_key", Text, nullable=True, default=None
     )
@@ -84,6 +91,9 @@ class Event(Base):
     )
     encrypted_groq_api_key: Mapped[str | None] = mapped_column("groq_api_key", Text, nullable=True, default=None)
     listener_join_code: Mapped[str | None] = mapped_column(String(64), nullable=True, default=None)
+    meeting_analysis_enabled: Mapped[bool] = mapped_column(Boolean, default=False, server_default="0")
+    meeting_analysis_provider: Mapped[str] = mapped_column(String(50), default="local", server_default="local")
+    meeting_analysis_model: Mapped[str] = mapped_column(String(100), default="", server_default="")
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
     deleted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True, default=None)
 
@@ -110,7 +120,7 @@ class Event(Base):
 
 class Room(Base):
     __tablename__ = "rooms"
-    __table_args__ = (UniqueConstraint("event_id", "eventyay_room_id", name="uq_room_event_eventyay_id"),)
+    __table_args__ = (Index("uq_room_event_eventyay_id", "event_id", "eventyay_room_id", unique=True),)
 
     id: Mapped[int] = mapped_column(primary_key=True)
     event_id: Mapped[int] = mapped_column(ForeignKey("events.id", ondelete="CASCADE"))
@@ -137,12 +147,16 @@ class Room(Base):
     program_connected_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     program_disconnected_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     program_sync_offset_ms: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
-    # "whip" keeps the independent dual-output model; "rtmps_relay" puts VoxBento in the YouTube path (#749).
+    # "whip" and "rtmps" (#1087) keep YouTube independent (VoxBento is an extra destination over WHIP
+    # or RTMPS); "rtmps_relay" puts VoxBento in the YouTube path (#749).
     program_ingest_mode: Mapped[str] = mapped_column(String(20), default="whip", server_default="whip")
     program_relay_server: Mapped[str | None] = mapped_column(String(255), nullable=True)
     # Fernet-encrypted YouTube stream key; write-only from the API, never returned or logged.
     program_relay_key_enc: Mapped[str | None] = mapped_column(Text, nullable=True)
     program_relay_updated_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    # The YouTube broadcast this room streams to, and the stream bound to it in YouTube Studio.
+    youtube_broadcast_id: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    youtube_stream_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
     floor_caption_seq: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
 
     # Translation Settings
@@ -176,6 +190,12 @@ class Room(Base):
         back_populates="room", cascade="all, delete-orphan"
     )
 
+    @property
+    def has_floor_captions(self) -> bool:
+        """Floor transcription is on and has a real provider, so the floor has a caption channel."""
+        provider = (self.floor_transcription_provider or "").strip().lower()
+        return bool(self.floor_transcription_enabled) and provider not in {"", "none"}
+
     def __repr__(self) -> str:
         return f"<Room id={self.id} name={self.display_name!r}>"
 
@@ -204,7 +224,7 @@ class DBBooth(Base):
     language_name: Mapped[str] = mapped_column(String(100))
     transcription_enabled: Mapped[bool] = mapped_column(Boolean, default=False, server_default="0")
     transcription_provider: Mapped[str] = mapped_column(String(20), default="local", server_default=sa.text("'local'"))
-    transcription_model: Mapped[str] = mapped_column(String(20), default="tiny", server_default=sa.text("'tiny'"))
+    transcription_model: Mapped[str] = mapped_column(String(40), default="tiny", server_default=sa.text("'tiny'"))
 
     # Broadcast Lock
     broadcast_unlocked: Mapped[bool] = mapped_column(Boolean, default=False, server_default="0")
@@ -295,6 +315,8 @@ class RoomTranslationLanguage(Base):
     language_code: Mapped[str] = mapped_column(String(20))
     language_name: Mapped[str] = mapped_column(String(100))
     enabled: Mapped[bool] = mapped_column(Boolean, default=True, server_default="1")
+    # False for AI text languages: translated for reading, never spoken.
+    tts_enabled: Mapped[bool] = mapped_column(Boolean, default=True, server_default="1")
 
     room: Mapped[Room] = relationship(back_populates="translation_languages")
 
@@ -378,11 +400,13 @@ class InviteToken(Base):
     __tablename__ = "invite_tokens"
 
     token: Mapped[str] = mapped_column(String(TOKEN_LENGTH), primary_key=True, default=generate_token)
+    public_id: Mapped[str] = mapped_column(String(32), unique=True, index=True, nullable=False, default=generate_public_id)
     booth_id: Mapped[int] = mapped_column(ForeignKey("booths.id", ondelete="CASCADE"))
     role: Mapped[str] = mapped_column(String(20))
     label: Mapped[str] = mapped_column(String(200), default="")
     expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True, default=None)
     used_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True, default=None)
+    revoked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True, default=None)
     created_by: Mapped[str] = mapped_column(String(200), default="")
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
 
@@ -408,6 +432,10 @@ class InviteToken(Base):
     @property
     def is_used(self) -> bool:
         return self.used_at is not None
+
+    @property
+    def is_revoked(self) -> bool:
+        return self.revoked_at is not None
 
     def __repr__(self) -> str:
         return f"<InviteToken token={self.token[:8]}… role={self.role!r}>"
@@ -478,6 +506,8 @@ class User(Base):
     can_host: Mapped[bool] = mapped_column(Boolean, default=False, server_default="0")
     hosting_requested_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True, default=None)
     hosting_revoked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True, default=None)
+    sessions_valid_after: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True, default=None)
+    last_sign_in_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True, default=None)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
 
     memberships: Mapped[list[EventMembership]] = relationship(
@@ -693,6 +723,28 @@ class EventAPIKey(Base):
         return f"<EventAPIKey id={self.id} event={self.event_id} preview={self.preview!r}>"
 
 
+class YouTubeConnection(Base):
+    """One YouTube channel authorised per event. The refresh token is Fernet-encrypted and write-only."""
+
+    __tablename__ = "youtube_connections"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    event_id: Mapped[int] = mapped_column(ForeignKey("events.id", ondelete="CASCADE"), unique=True, index=True)
+    channel_id: Mapped[str] = mapped_column(String(64))
+    channel_title: Mapped[str] = mapped_column(String(200))
+    refresh_token_enc: Mapped[str] = mapped_column(Text)
+    scope: Mapped[str] = mapped_column(String(500))
+    connected_by_user_id: Mapped[int | None] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
+    last_error: Mapped[str | None] = mapped_column(String(300), nullable=True)
+    # When the owner last signed in; updated_at also moves when last_error changes.
+    connected_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now, onupdate=utc_now)
+
+    def __repr__(self) -> str:
+        return f"<YouTubeConnection id={self.id} event={self.event_id} channel={self.channel_id!r}>"
+
+
 class UsageMetric(Base):
     __tablename__ = "usage_metrics"
 
@@ -706,6 +758,74 @@ class UsageMetric(Base):
 
     def __repr__(self) -> str:
         return f"<UsageMetric event={self.event_id} metric={self.metric_name!r} value={self.value}>"
+
+
+# ---------------------------------------------------------------------------
+# Interpreter attendance (#1215)
+# ---------------------------------------------------------------------------
+
+
+class InterpreterAttendance(Base):
+    """One visit to an interpreter booth: from joining the booth page to leaving it.
+
+    Written in batches by ``portal.attendance`` (never on the live path). ``left_at`` is
+    unset while the visit is open; ``last_seen_at`` is the last time the portal saved it,
+    so a visit cut short by a restart is closed there. ``interpreting_seconds`` counts the
+    time the person was the active interpreter with the stream connected and the
+    microphone on.
+    """
+
+    __tablename__ = "interpreter_attendance"
+    __table_args__ = (Index("ix_interpreter_attendance_event_joined", "event_id", "joined_at"),)
+
+    id: Mapped[str] = mapped_column(String(32), primary_key=True)
+    event_id: Mapped[int] = mapped_column(ForeignKey("events.id", ondelete="CASCADE"))
+    # Plain values, not foreign keys: the record stays after a room or booth is removed.
+    room_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    language_code: Mapped[str] = mapped_column(String(10), default="")
+    user_id: Mapped[int | None] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"), nullable=True, index=True)
+    # Public id of the invite link used to join, for people without an account.
+    invite_public_id: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    display_name: Mapped[str] = mapped_column(String(200), default="")
+    role: Mapped[str] = mapped_column(String(32), default="")
+    joined_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    left_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True, default=None)
+    last_seen_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    interpreting_seconds: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
+
+    def __repr__(self) -> str:
+        return f"<InterpreterAttendance id={self.id} event={self.event_id} user={self.user_id}>"
+
+
+class BoothLiveState(Base):
+    """What a live booth needs to survive a portal restart (TD-03).
+
+    One row per booth with something live: Mission Control's Go Live switch and
+    who held the active slot. ``portal.booth_recovery`` keeps it in step with the
+    in-memory ``BoothRegistry`` and restores it at startup. ``booth_id`` is the
+    registry's key, not a foreign key, so a row never blocks deleting a booth.
+    """
+
+    __tablename__ = "booth_live_state"
+
+    booth_id: Mapped[str] = mapped_column(String(200), primary_key=True)
+    language: Mapped[str] = mapped_column(String(100), default="")
+    channel_id: Mapped[str] = mapped_column(String(200), default="")
+    room_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    broadcast_unlocked: Mapped[bool] = mapped_column(Boolean, default=False, server_default="0")
+    active_participant_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    # portal.auth.booth_session_key of the active interpreter: only that session may reclaim the slot.
+    active_session_key: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    active_display_name: Mapped[str | None] = mapped_column(String(200), nullable=True)
+    active_role: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    active_user_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    active_invite_public_id: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    active_mic_active: Mapped[bool] = mapped_column(Boolean, default=False, server_default="0")
+    active_ingest_connected: Mapped[bool] = mapped_column(Boolean, default=False, server_default="0")
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
+
+    def __repr__(self) -> str:
+        return f"<BoothLiveState booth={self.booth_id} unlocked={self.broadcast_unlocked}>"
 
 
 # ---------------------------------------------------------------------------
@@ -876,3 +996,143 @@ class WebhookDelivery(Base):
 
     def __repr__(self) -> str:
         return f"<WebhookDelivery id={self.id} status={self.status!r} attempt={self.attempt_count}>"
+
+
+# ---------------------------------------------------------------------------
+# Email notification outbox
+# ---------------------------------------------------------------------------
+
+
+class EmailTemplate(Base):
+    """The editable, published version of a named transactional email."""
+
+    __tablename__ = "email_templates"
+
+    key: Mapped[str] = mapped_column(String(80), primary_key=True)
+    draft_subject: Mapped[str | None] = mapped_column(Text, nullable=True)
+    draft_html: Mapped[str | None] = mapped_column(Text, nullable=True)
+    published_subject: Mapped[str | None] = mapped_column(Text, nullable=True)
+    published_html: Mapped[str | None] = mapped_column(Text, nullable=True)
+    published_version: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
+    updated_by_id: Mapped[int | None] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now, onupdate=utc_now)
+
+
+class EmailTemplateRevision(Base):
+    """Immutable audit trail for each published template version."""
+
+    __tablename__ = "email_template_revisions"
+    __table_args__ = (UniqueConstraint("template_key", "version", name="uq_email_template_revision"),)
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    template_key: Mapped[str] = mapped_column(ForeignKey("email_templates.key", ondelete="CASCADE"), index=True)
+    version: Mapped[int] = mapped_column(Integer)
+    subject: Mapped[str] = mapped_column(Text)
+    html: Mapped[str] = mapped_column(Text)
+    published_by_id: Mapped[int | None] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
+    published_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
+
+
+class EmailSettings(Base):
+    """Branding shared by every email (one row, id 1). No row means the defaults."""
+
+    __tablename__ = "email_settings"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    show_logo: Mapped[bool] = mapped_column(Boolean, default=True, server_default=sa.true())
+    # An https image URL; empty means the VoxBento logo served by this site.
+    logo_url: Mapped[str | None] = mapped_column(String(500), nullable=True)
+    updated_by_id: Mapped[int | None] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now, onupdate=utc_now)
+
+
+class LiveDemoSettings(Base):
+    """Admin settings for the home-page live demo (one row, id 1). No row means the server defaults.
+
+    The ``LIVE_DEMO_*`` environment variables supply those defaults, and ``LIVE_DEMO_ENABLED=false``
+    switches the demo off whatever is saved here.
+    """
+
+    __tablename__ = "live_demo_settings"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    enabled: Mapped[bool] = mapped_column(Boolean, default=True, server_default=sa.true())
+    voice_enabled: Mapped[bool] = mapped_column(Boolean, default=True, server_default=sa.true())
+    whisper_model: Mapped[str] = mapped_column(String(20), default="base", server_default="base")
+    max_sessions: Mapped[int] = mapped_column(Integer, default=2, server_default="2")
+    max_session_seconds: Mapped[int] = mapped_column(Integer, default=120, server_default="120")
+    sessions_per_ip_per_hour: Mapped[int] = mapped_column(Integer, default=12, server_default="12")
+    max_targets: Mapped[int] = mapped_column(Integer, default=3, server_default="3")
+    # One entry per line: "term", "term = translation" or "term = fr: translation".
+    glossary: Mapped[str] = mapped_column(Text, default="", server_default="")
+    updated_by_id: Mapped[int | None] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now, onupdate=utc_now)
+
+
+class EmailDelivery(Base):
+    """An encrypted rendered message awaiting SMTP delivery or its audit record."""
+
+    __tablename__ = "email_deliveries"
+    __table_args__ = (
+        Index("ix_email_deliveries_due", "status", "scheduled_at"),
+        Index("ix_email_deliveries_created", "created_at"),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    notification_key: Mapped[str] = mapped_column(String(80), index=True)
+    recipient: Mapped[str] = mapped_column(String(320))
+    encrypted_subject: Mapped[str] = mapped_column(Text)
+    encrypted_html: Mapped[str] = mapped_column(Text)
+    template_version: Mapped[int] = mapped_column(Integer, default=0)
+    status: Mapped[str] = mapped_column(String(20), default="pending", server_default="pending")
+    attempt_count: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
+    scheduled_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
+    claimed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    claim_until: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    accepted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    failed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    # The sign-in or invitation token this email links to. Deliberately not a foreign key:
+    # once the token is deleted the id must stay, so the outbox finds no token and drops the email.
+    auth_token_id: Mapped[int | None] = mapped_column(Integer, nullable=True, index=True)
+    last_error: Mapped[str | None] = mapped_column(String(1000), nullable=True)
+    idempotency_key: Mapped[str | None] = mapped_column(String(255), unique=True, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
+
+
+
+class MeetingReport(Base):
+    __tablename__ = "meeting_reports"
+    __table_args__ = (
+        Index("ix_meeting_reports_room_created", "room_id", "created_at"),
+        Index(
+            "uq_meeting_reports_room_in_progress",
+            "room_id",
+            unique=True,
+            sqlite_where=sa.text("status IN ('pending', 'running')"),
+            postgresql_where=sa.text("status IN ('pending', 'running')"),
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    event_id: Mapped[int] = mapped_column(ForeignKey("events.id", ondelete="CASCADE"))
+    room_id: Mapped[int] = mapped_column(ForeignKey("rooms.id", ondelete="CASCADE"))
+    channel_id: Mapped[str] = mapped_column(String(100))
+    channel_label: Mapped[str] = mapped_column(String(200))
+    language_code: Mapped[str] = mapped_column(String(20))
+    provider: Mapped[str] = mapped_column(String(50))
+    model: Mapped[str] = mapped_column(String(100))
+    status: Mapped[str] = mapped_column(String(20), default="pending")
+    error: Mapped[str | None] = mapped_column(String(500), nullable=True, default=None)
+    title: Mapped[str] = mapped_column(String(200), default="")
+    summary: Mapped[str] = mapped_column(Text, default="")
+    sections_json: Mapped[str] = mapped_column(Text, default="[]")
+    last_segment_id: Mapped[int | None] = mapped_column(Integer, nullable=True, default=None)
+    session_started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True, default=None)
+    session_ended_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True, default=None)
+    covered_until: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True, default=None)
+    segment_count: Mapped[int] = mapped_column(Integer, default=0)
+    truncated: Mapped[bool] = mapped_column(Boolean, default=False)
+    tokens_used: Mapped[int | None] = mapped_column(Integer, nullable=True, default=None)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
+    generated_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True, default=None)

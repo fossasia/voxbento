@@ -1,0 +1,42 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<meta name="color-scheme" content="light only" />
+<title>{{ subject }}</title>
+</head>
+<body style="margin:0;padding:0;background:#f1f4f9;">
+<span style="display:none;max-height:0;overflow:hidden;opacity:0;">{{ subject }}</span>
+<table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="background:#f1f4f9;">
+  <tr>
+    <td align="center" style="padding:32px 16px;font-family:Inter,-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif;">
+      <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="max-width:560px;">
+        {% if logo_url %}
+        <tr>
+          <td style="padding:0 4px 20px;">
+            {% if default_logo %}
+            <img src="{{ logo_url }}" alt="VoxBento" width="72" height="48" style="display:block;width:72px;height:48px;border:0;" />
+            {% else %}
+            <img src="{{ logo_url }}" alt="VoxBento" height="28" style="display:block;height:28px;width:auto;border:0;" />
+            {% endif %}
+          </td>
+        </tr>
+        {% endif %}
+        <tr>
+          <td style="background:#ffffff;border:1px solid #e5e7eb;border-radius:12px;padding:32px;">
+            {{ body }}
+          </td>
+        </tr>
+        <tr>
+          <td style="padding:20px 4px 0;font-size:12px;line-height:1.5;color:#6b7280;">
+            Sent by VoxBento{% if site_url %} · <a href="{{ site_url }}" style="color:#6b7280;">{{ site_host }}</a>{% endif %}.
+            You received this because of activity on your VoxBento account.
+          </td>
+        </tr>
+      </table>
+    </td>
+  </tr>
+</table>
+</body>
+</html>

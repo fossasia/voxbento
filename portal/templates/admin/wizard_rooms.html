@@ -1,5 +1,5 @@
 {% extends "admin/base.html" %}
-{% block title %}Add rooms — Setup{% endblock %}
+{% block title %}Rooms & languages — Setup{% endblock %}
 
 {% block content %}
 <div class="wizard">
@@ -7,30 +7,51 @@
   {% include "admin/wizard_steps.html" %}
 
   <div class="wizard-card">
-    <h2>Add rooms</h2>
-    <p class="wizard-sub">Rooms are the spaces at <strong>{{ event.display_name }}</strong> — like “Main Hall” or “Track A”. Each room can host multiple language booths.</p>
-
-    <form method="post" action="{{ management_prefix }}/events/{{ event.id }}/setup/rooms" class="inline-form">
-      <input type="text" name="display_name" placeholder="Room name (e.g. Main Hall)" required class="wizard-grow" autofocus />
-      <button type="submit" class="btn btn-primary">Add room</button>
-    </form>
+    <h2>Rooms &amp; languages</h2>
+    {% if request.query_params.get('error') == 'duplicate_language' %}
+    <div class="alert alert-danger">That room already has a booth for that language.</div>
+    {% endif %}
+    {% if request.query_params.get('error') == 'room_required' %}
+    <div class="alert alert-danger">Select a room before adding a booth.</div>
+    {% endif %}
+    {% if request.query_params.get('error') == 'room_not_found' %}
+    <div class="alert alert-danger">That room is not part of this event.</div>
+    {% endif %}
+    {% if request.query_params.get('error') == 'language_required' %}
+    <div class="alert alert-danger">Choose a language before adding a booth.</div>
+    {% endif %}
+    {% if request.query_params.get('error') == 'booth_create_failed' %}
+    <div class="alert alert-danger">The booth could not be created. Please try again.</div>
+    {% endif %}
+    <p class="wizard-sub">Add each space at <strong>{{ event.display_name }}</strong> where people speak, like “Main Hall” or “Track A”. For each room you choose its language, the languages listeners can pick, and whether interpreters, AI or both provide them.</p>
 
     {% if rooms %}
-    <ul class="mini-list">
+    <ul class="setup-room-list">
       {% for room in rooms %}
-      <li><span>🏛️ &nbsp;{{ room.display_name }}</span></li>
+      {% set s = summaries[room.id] %}
+      <li class="setup-room">
+        <div class="setup-room-main">
+          <span class="setup-room-name">{{ room.display_name }}</span>
+          {% include "admin/_room_summary_line.html" %}
+        </div>
+        <a href="{{ management_prefix }}/events/{{ event.id }}/rooms/{{ room.id }}/setup?from=setup" class="btn btn-sm">Change</a>
+      </li>
       {% endfor %}
     </ul>
+    <a href="{{ management_prefix }}/events/{{ event.id }}/rooms/new?from=setup" class="btn btn-outline setup-add-room">+ Add another room</a>
     {% else %}
-    <p class="text-secondary wizard-empty-hint">No rooms yet — add at least one to continue.</p>
+    <div class="setup-empty">
+      <p>No rooms yet. Most events start with one.</p>
+      <a href="{{ management_prefix }}/events/{{ event.id }}/rooms/new?from=setup" class="btn btn-primary btn-lg">+ Add your first room</a>
+    </div>
     {% endif %}
 
     <div class="wizard-actions">
-      <a href="{{ management_prefix }}/setup" class="btn">&larr; Back</a>
+      <a href="{{ management_prefix }}/events/{{ event.id }}/" class="btn">Finish later</a>
       {% if rooms %}
-      <a href="{{ management_prefix }}/events/{{ event.id }}/setup/booths" class="btn btn-primary btn-lg">Continue &rarr;</a>
+      <a href="{{ management_prefix }}/events/{{ event.id }}/setup/invite" class="btn btn-primary btn-lg">Continue &rarr;</a>
       {% else %}
-      <span class="btn btn-primary btn-lg is-disabled">Continue &rarr;</span>
+      <span class="btn btn-primary btn-lg is-disabled" aria-disabled="true">Continue &rarr;</span>
       {% endif %}
     </div>
   </div>

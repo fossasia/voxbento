@@ -23,7 +23,7 @@ Attendees receive sub-second audio via WHEP. All coordination flows through Fast
 | Floor monitoring | Jitsi Meet | `ghcr.io/jitsi/*:stable-11248` — rootless, read-only, self-hosted receive-only iframe |
 | DB (dev) | SQLite + aiosqlite | `sqlite+aiosqlite:///./interpretation.db` |
 | DB (prod) | PostgreSQL + asyncpg | via `DATABASE_URL` env override |
-| ORM / migrations | SQLAlchemy 2.0 async + Alembic | 31 migrations in `alembic/versions/` (001–031) |
+| ORM / migrations | SQLAlchemy 2.0 async + Alembic | 38 migrations in `alembic/versions/` (001–038) |
 | Auth | PyJWT (HS256) + bcrypt | three JWT token types (see Auth section) |
 | API key crypto | Fernet (cryptography) | `portal/crypto.py`; keys hashed via SHA-256 |
 | Transcription | faster-whisper + 4 cloud providers | `portal/transcription/` |
@@ -46,13 +46,14 @@ Attendees receive sub-second audio via WHEP. All coordination flows through Fast
 | `portal/models.py` | SQLAlchemy declarative models (events, rooms, booths, tokens, users, memberships, hosting requests, AI vocabulary) |
 | `portal/database.py` | Async engine, session factory, all CRUD helpers |
 | `portal/auth.py` | JWT creation/validation, user auth, role resolution |
-| `portal/booth_state.py` | In-memory booth registry (`BoothRegistry`), participant state |
+| `portal/booth_state.py` | In-memory booth registry (`BoothRegistry`), participant state, reconnect grace |
+| `portal/booth_recovery.py` | Saves and restores live booth state (`booth_live_state`) across restarts |
 | `portal/booth_identity.py` | `make_booth_id`, `make_mediamtx_path`, validation |
 | `portal/roles.py` | `Permission` enum, `ROLE_PERMISSIONS` mapping |
 | `portal/crypto.py` | `encrypt_val`/`decrypt_val` using Fernet |
 | `portal/transcription/` | Transcription subsystem (see `TRANSCRIPTION_MAP.md`) |
 | `portal/translations/` | Translation subsystem — LLM workers, contextual prompts (`prompts.py`), glossaries (`vocabulary.py`) |
-| `portal/tts/` | Direct-push Text-to-Speech (Deepgram Aura & Supertonic ONNX) |
+| `portal/tts/` | Direct-push Text-to-Speech (Deepgram Aura, ElevenLabs v4 & Supertonic ONNX) |
 | `portal/meeting_source.py` | Managed Jitsi floor agent lifecycle reconciler |
 | `portal/program_ingest.py` | Program Stream Ingest floor authorization and reconciliation |
 | `portal/program_relay.py` | YouTube RTMPS destination management and relay convergence |
@@ -65,7 +66,7 @@ Attendees receive sub-second audio via WHEP. All coordination flows through Fast
 | `mediamtx.yml` | MediaMTX config — WHIP/WHEP paths, RTSP, Control API |
 | `docker-compose.yml` | portal + mediamtx + jitsi-web/prosody/jicofo/jvb |
 | `Dockerfile` | Portal container (uv-based, runs alembic then uvicorn) |
-| `alembic/versions/` | 31 migrations (001–031) |
+| `alembic/versions/` | 38 migrations (001–038) |
 
 ---
 
@@ -151,7 +152,7 @@ Role is NEVER trusted from client data — always read from the server-side `Ses
 
 ### Additional Real-Time Feeds
 - Live captions feed: `/ws/captions/{booth_id}` — receives `caption` (`partial`, `final`, `clear`), `translated_caption`, and `booth:state` messages for listeners (authenticated via `resolve_ws_auth` when `BOOTH_ACCESS_TOKEN` is set). Supports canonical `{event_slug}-{room_id}-{language_code}`.
-- Direct-push TTS feed: `/ws/tts/{room_id}/{language_code}/{booth_id}` — authorized before acceptance; receives structured binary bundle messages (1-byte version, 4-byte header length, JSON metadata header, optional 24 kHz 16-bit mono PCM payload) synthesized via Deepgram Aura or Supertonic ONNX. Translations are delivered concurrently via the caption feed and the TTS bundle header.
+- Direct-push TTS feed: `/ws/tts/{room_id}/{language_code}/{booth_id}` — authorized before acceptance; receives structured binary bundle messages (1-byte version, 4-byte header length, JSON metadata header, optional 24 kHz 16-bit mono PCM payload) synthesized via Deepgram Aura, ElevenLabs v4 or Supertonic ONNX. Translations are delivered concurrently via the caption feed and the TTS bundle header.
 
 ---
 

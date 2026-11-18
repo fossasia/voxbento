@@ -1,10 +1,10 @@
-{# Reusable wizard progress stepper. Expects `step` (1-4) and optional `event`. #}
-{% set steps = [(1, 'Event'), (2, 'Rooms'), (3, 'Booths'), (4, 'Invite')] %}
+{# Reusable wizard progress stepper. Expects `step` (1-3) and optional `event`. #}
+{% set steps = [(1, 'Event', None), (2, 'Rooms & languages', 'rooms'), (3, 'Team & listeners', 'invite')] %}
 <div class="stepper" aria-label="Setup progress">
-  {% for num, label in steps %}
+  {% for num, label, slug in steps %}
   <div class="step {{ 'is-done' if num < step else ('is-active' if num == step else '') }}">
     {% if num < step and event %}
-      {% set target = management_prefix ~ '/setup' if num == 1 else (management_prefix ~ '/events/' ~ event.id ~ '/setup/' ~ (['rooms','booths','invite'][num-2])) %}
+      {% set target = management_prefix ~ '/setup' if not slug else management_prefix ~ '/events/' ~ event.id ~ '/setup/' ~ slug %}
       <a class="step-bubble" href="{{ target }}" aria-label="Go to {{ label }}">✓</a>
     {% else %}
       <span class="step-bubble">{{ num }}</span>

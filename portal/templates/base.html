@@ -5,6 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>{% block title %}Voxbento Interpreter Booth{% endblock %}</title>
     <link rel="icon" type="image/x-icon" href="{{ url_for('static', path='img/favicon.ico') }}" />
+    <link rel="stylesheet" href="{{ url_for('static', path='css/tokens.css') }}?v={{ asset_version }}" />
     <link rel="stylesheet" href="{{ url_for('static', path='css/fonts.css') }}?v={{ asset_version }}" />
     <link rel="stylesheet" href="{{ url_for('static', path='css/interpreter.css') }}?v={{ asset_version }}" />
     {% block head %}{% endblock %}
@@ -14,6 +15,7 @@
 
     <main class="portal-main">{% block content %}{% endblock %}</main>
     
+    {% block footer %}
     <footer class="portal-footer">
         <div class="footer-inner">
             <div>&copy; 2026 VoxBento.</div>
@@ -25,6 +27,7 @@
             </div>
         </div>
     </footer>
+    {% endblock %}
     
     <!-- Toast Container -->
     <div id="toast-container" class="toast-container"></div>
@@ -49,5 +52,6 @@
         window.showToast(msg, 'error');
       };
     </script>
+    {% include "_auth_sync.html" %}
   </body>
 </html>

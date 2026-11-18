@@ -10,6 +10,24 @@ import TabItem from "@theme/TabItem";
 
 The Voxbento API uses bearer token authentication. You call the `voxbento.com` token endpoint once with your booth access token, receive a signed JWT in return, and then include that JWT as an `Authorization: Bearer {token}` header on every subsequent request. Tokens expire after 24 hours by default, at which point you request a fresh one.
 
+## Binding an OAuth exchange to an event
+
+OAuth integrations using `/oauth/token` can send an `event` form field with
+`grant_type=authorization_code`. Its value must be the event slug retained by
+the integration's server when the flow started, alongside its validated OAuth
+state. Do not take this value from the returning browser or consent form.
+
+VoxBento checks that slug against the authorization code before consuming the
+code, creating tokens, or granting event membership. A mismatch returns HTTP 400
+with `error: "invalid_grant"`. Both successful authorization-code and refresh-token
+responses include `event`, the slug bound to the issued token.
+
+The parameter is optional for compatibility. Existing clients keep working, but
+omitting it does **not** prevent an event swap. Deploy the VoxBento support first,
+then update Eventyay or another integration to send its server-retained event on
+every authorization-code exchange. Also verify the returned event before storing
+the tokens. Checking only the response is too late to prevent a membership grant.
+
 ## Obtaining a Token
 
 Send a `POST` request to the Voxbento token endpoint with a JSON body containing the `token` field set to your booth access token. The `BOOTH_ACCESS_TOKEN` value is provided by the Voxbento platform.
