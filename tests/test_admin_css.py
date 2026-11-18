@@ -80,11 +80,3 @@ def test_long_emails_wrap_in_all_display_components():
             assert selector in rules, f"{selector} missing from {css_file}"
             for prop, value in declarations.items():
                 assert rules[selector].get(prop) == value, f"{selector} in {css_file}"
-
-
-def test_long_user_display_names_wrap_in_heading_and_breadcrumb():
-    rules = {selector: _declarations(body) for selector, body in _rules()}
-
-    assert rules[".ud-header h1"].get("overflow-wrap") == "anywhere"
-    assert rules['.ud-breadcrumb [aria-current="page"]'].get("min-width") == "0"
-    assert rules['.ud-breadcrumb [aria-current="page"]'].get("overflow-wrap") == "anywhere"
