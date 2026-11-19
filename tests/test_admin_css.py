@@ -3,11 +3,11 @@ from __future__ import annotations
 import re
 from pathlib import Path
 
-ADMIN_CSS = Path(__file__).resolve().parent.parent / "portal" / "static" / "css" / "admin.css"
+CSS_DIR = Path(__file__).resolve().parent.parent / "portal" / "static" / "css"
 
 
-def _rules():
-    css = re.sub(r"/\*.*?\*/", "", ADMIN_CSS.read_text(encoding="utf-8"), flags=re.S)
+def _rules(css_file: str = "admin.css"):
+    css = re.sub(r"/\*.*?\*/", "", (CSS_DIR / css_file).read_text(encoding="utf-8"), flags=re.S)
     return [(selector.strip(), body) for selector, body in re.findall(r"([^{}]+)\{([^{}]*)\}", css)]
 
 
@@ -15,8 +15,8 @@ def _declarations(body):
     return {name.strip(): value.strip() for name, value in (d.split(":", 1) for d in body.split(";") if ":" in d)}
 
 
-def _values_on(class_name, prop):
-    """Every value admin.css gives ``prop`` on an element with ``class_name``, in source order.
+def _values_on(class_name, prop, css_file: str = "admin.css"):
+    """Every value a stylesheet gives ``prop`` on an element with ``class_name``, in source order.
 
     Covers the plain class and any selector whose last part adds to it (``div.x``, ``.x.y``, ``.x:hover``),
     so an override anywhere in the cascade is seen, not only the first matching rule.
@@ -24,7 +24,7 @@ def _values_on(class_name, prop):
     targets = re.compile(rf"\.{re.escape(class_name)}(?![\w-])")
     return [
         declarations[prop]
-        for selector, body in _rules()
+        for selector, body in _rules(css_file)
         if prop in (declarations := _declarations(body))
         and any(targets.search(re.split(r"[\s>+~]+", item.strip())[-1]) for item in selector.split(","))
     ]
@@ -56,7 +56,7 @@ def test_modal_overlay_stacks_above_scrolling_tables():
 
 def _rules_in_order():
     """``(max-width in px or None, selector, body)`` for each rule, in source order, ``@media (max-width)`` included."""
-    css = re.sub(r"/\*.*?\*/", "", ADMIN_CSS.read_text(encoding="utf-8"), flags=re.S)
+    css = re.sub(r"/\*.*?\*/", "", (CSS_DIR / "admin.css").read_text(encoding="utf-8"), flags=re.S)
     found = []
     pattern = r"@media\s*\(max-width:\s*(\d+)px\)\s*\{((?:[^{}]*\{[^{}]*\})*)\s*\}|([^{}]+)\{([^{}]*)\}"
     for width, inner, selector, body in re.findall(pattern, css):
@@ -86,3 +86,31 @@ def test_room_header_stays_on_the_left_when_the_page_header_stacks():
             if selector == ".room-header" and "align-items" in _declarations(body) and (width or screen) >= screen
         ]
         assert applied and applied[-1] == "flex-start", screen
+
+
+def test_long_emails_wrap_in_all_display_components():
+    expected = {
+        "account-area.css": {".aa-notice-text": {"overflow-wrap": "anywhere"}},
+        "admin.css": {
+            ".mini-list li > span:first-child": {"min-width": "0", "overflow-wrap": "anywhere"},
+            ".data-table.dev-accounts-table td.dev-accounts-cell-email": {
+                "white-space": "normal",
+                "overflow-wrap": "anywhere",
+            },
+            ".ha-email-cell": {"white-space": "normal", "overflow-wrap": "anywhere"},
+            ".ud-email": {"overflow-wrap": "anywhere"},
+        },
+        "auth.css": {
+            ".login-card--centered .login-message": {"overflow-wrap": "anywhere"},
+            ".login-email-display": {"overflow-wrap": "anywhere"},
+            ".login-prompt": {"overflow-wrap": "anywhere"},
+        },
+        "oauth-consent.css": {".auth-card-header-text p.auth-signed-in": {"overflow-wrap": "anywhere"}},
+    }
+
+    for css_file, selectors in expected.items():
+        rules = {selector: _declarations(body) for selector, body in _rules(css_file)}
+        for selector, declarations in selectors.items():
+            assert selector in rules, f"{selector} missing from {css_file}"
+            for prop, value in declarations.items():
+                assert rules[selector].get(prop) == value, f"{selector} in {css_file}"
