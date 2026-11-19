@@ -727,25 +727,29 @@ async def upsert_room(
     booth_res = await db.execute(select(DBBooth).where(DBBooth.room_id == room.id))
     existing_booths = {b.language_code: b for b in booth_res.scalars().all()}
 
+    removed_codes: list[str] = []
     if "target_languages" in payload_dict and payload_dict["target_languages"] is not None:
         requested_langs = set(payload_dict["target_languages"])
 
         # Safe Delete Removed Booths & Languages
+        removed_codes = [code for code in existing_booths if code not in requested_langs]
+        # Check every removed booth first, so a refused update leaves all of them running.
+        for code in removed_codes:
+            # Active Session Guard — use BoothRegistry.get_booth_sync() (not .items())
+            from portal.booth_identity import make_booth_id
+
+            booth_id = make_booth_id(event_slug, room.id, code)
+            active_booth = booths.get_booth_sync(booth_id)
+            if active_booth is not None:
+                has_connected = active_booth.ingest_status == "connected"
+                if has_connected:
+                    raise HTTPException(
+                        status_code=status.HTTP_409_CONFLICT,
+                        detail=f"Cannot remove language '{code}' while it has an active session running.",
+                    )
         for code, b in existing_booths.items():
             if code not in requested_langs:
-                # Active Session Guard — use BoothRegistry.get_booth_sync() (not .items())
-                from portal.booth_identity import make_booth_id
-
-                booth_id = make_booth_id(event_slug, room.id, code)
-                active_booth = booths.get_booth_sync(booth_id)
-                if active_booth is not None:
-                    has_connected = active_booth.ingest_status == "connected"
-                    if has_connected:
-                        raise HTTPException(
-                            status_code=status.HTTP_409_CONFLICT,
-                            detail=f"Cannot remove language '{code}' while it has an active session running.",
-                        )
-                await booths.remove_booth(event_slug, room.id, code)
+                await revoke_booths_for_deleted_entity(db, level="booth", target_id=b.id)
                 await db.delete(b)
                 db.add(
                     OAuthAuditLog(
@@ -819,6 +823,12 @@ async def upsert_room(
         logger.exception("Error generating canonical WHEP URLs")
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Internal server error")
 
+    # Commit first, so a failed update leaves the removed booths running.
+    await db.commit()
+    for code in removed_codes:
+        await booths.remove_booth(event_slug, room.id, code)
+    for code in removed_codes:
+        await stop_transcription_worker(make_booth_id(event_slug, room.id, code))
     return {"status": "success", "room_id": room.id, "booths": returned_booths}
 
 

@@ -384,6 +384,53 @@ async def test_api_v1_room_delete_ends_another_events_booth_in_the_room(site):
     _assert_running(site["booth_ids"]["it"], changes)
 
 
+async def test_api_v1_room_update_ends_the_booths_of_dropped_languages(site):
+    ids = site["booth_ids"]
+    async with _client() as c:
+        resp = await c.put("/api/v1/events/main/rooms/hall", json={"target_languages": ["fr"]}, headers=API_HEADERS)
+    assert resp.status_code == 200, resp.text
+    assert [b["language"] for b in resp.json()["booths"]] == ["fr"]
+    changes = await booths.take_changes()
+    for code in ("es", "nl"):
+        await _assert_ended(ids[code], changes)
+    for code in ("fr", "de", "it"):
+        _assert_running(ids[code], changes)
+
+
+async def test_api_v1_room_update_refused_for_one_language_leaves_every_booth_running(site):
+    """es comes before fr, so a check made booth by booth would end es before refusing fr."""
+    ids = site["booth_ids"]
+    fr = booths.get_booth_sync(ids["fr"])
+    channel = make_mediamtx_path("main", site["hall"], "fr")
+    await booths.update_participant_state(ids["fr"], fr.active_interpreter_id, "fr", channel, ingest_connected=True)
+    await booths.take_changes()
+    async with _client() as c:
+        resp = await c.put("/api/v1/events/main/rooms/hall", json={"target_languages": ["nl"]}, headers=API_HEADERS)
+    assert resp.status_code == 409
+    changes = await booths.take_changes()
+    _assert_running(ids["es"], changes)
+    assert ids["fr"] in active_workers
+
+
+async def test_api_v1_room_update_ends_the_booths_only_after_the_commit(site, monkeypatch):
+    order = []
+    real_commit = AsyncSession.commit
+
+    async def commit(self):
+        order.append("commit")
+        await real_commit(self)
+
+    async def stop(_booth_id):
+        order.append("stop")
+
+    monkeypatch.setattr(AsyncSession, "commit", commit)
+    monkeypatch.setattr(api_v1, "stop_transcription_worker", stop)
+    async with _client() as c:
+        resp = await c.put("/api/v1/events/main/rooms/hall", json={"target_languages": ["fr"]}, headers=API_HEADERS)
+    assert resp.status_code == 200
+    assert "stop" in order and order.index("commit") < order.index("stop")
+
+
 @pytest.mark.parametrize(
     "path", ["/api/v1/events/main/rooms/hall/booths/es", "/api/v1/events/main/rooms/hall", "/api/v1/events/main"]
 )
