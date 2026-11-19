@@ -103,7 +103,7 @@ services:
   #   10000/udp → JVB media traffic
 
   jitsi-web:
-    image: ghcr.io/jitsi/web:stable-11248
+    image: ghcr.io/jitsi/web:stable-11509
     read_only: true
     tmpfs:
       - /run:size=16M,uid=1000,gid=1000,mode=1750,exec
