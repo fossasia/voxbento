@@ -105,11 +105,23 @@ class Owner:
     invite_public_id: str | None
 
 
-# path -> {mediamtx_session_id: Owner}. A path can briefly hold several authorised offers:
+@dataclass(frozen=True)
+class _Record:
+    """A recorded authorised offer: its owner and when (monotonic) it was recorded.
+
+    The timestamp lets the per-path prune spare an offer still inside its publish window, which
+    may be the one about to become the live source.
+    """
+
+    owner: Owner
+    recorded_at: float
+
+
+# path -> {mediamtx_session_id: _Record}. A path can briefly hold several authorised offers:
 # MediaMTX gives each its session id at creation (before the publish auth hook runs), and
 # overridePublisher swaps the live one in. Every authorised offer is recorded, so a pending
 # offer that passed the hook just before access ended is still ended, with no timer.
-_publishers: dict[str, dict[str, Owner]] = {}
+_publishers: dict[str, dict[str, _Record]] = {}
 # Bounds a single path, not the whole store, so a busy path cannot evict another path's owner.
 MAX_SESSIONS_PER_PATH = 16
 
@@ -117,7 +129,7 @@ MAX_SESSIONS_PER_PATH = 16
 def publisher_for(path: str) -> Owner | None:
     """The most recently recorded owner of *path*, if any (diagnostics and tests)."""
     sessions = _publishers.get(path)
-    return next(reversed(sessions.values())) if sessions else None
+    return next(reversed(sessions.values())).owner if sessions else None
 
 
 def booth_path(booth_id: str) -> str | None:
@@ -141,12 +153,47 @@ def _owner_of(ticket: PublishTicket) -> Owner:
     )
 
 
-def _record_publisher(path: str, session_id: str, owner: Owner) -> None:
+async def _record_publisher(path: str, session_id: str, owner: Owner) -> None:
     sessions = _publishers.setdefault(path, {})
     sessions.pop(session_id, None)  # re-insert so the newest offer sorts last
-    sessions[session_id] = owner
-    while len(sessions) > MAX_SESSIONS_PER_PATH:
-        del sessions[next(iter(sessions))]
+    sessions[session_id] = _Record(owner, time.monotonic())
+    if len(sessions) > MAX_SESSIONS_PER_PATH:
+        await _prune_publishers(path)
+
+
+async def _prune_publishers(path: str) -> None:
+    """Bring *path* back under the per-path cap without dropping a session that may still publish.
+
+    Dropping the live session's owner would let its audio run on after a revocation, because the
+    revocation would then find only the later offers and never the live one (#1285 P1). So the
+    live source and any offer still inside its publish window (``TICKET_TTL_SECS``) are kept, and
+    only older, non-live offers are evicted, oldest first. When the live publisher cannot be
+    confirmed, or only live/pending offers remain, the cap is left soft rather than evicting blind.
+    """
+    import httpx
+
+    try:
+        live_id = await _live_source_id(path)
+    except (httpx.HTTPError, ValueError):
+        logger.warning(
+            "Could not confirm the live publisher while pruning %s; keeping every record", path, exc_info=True
+        )
+        return
+    # The await above suspended us, so read the record again: a concurrent hook may have changed it.
+    sessions = _publishers.get(path)
+    if sessions is None:
+        return
+    now = time.monotonic()
+    for session_id in list(sessions):  # insertion order: oldest first
+        if len(sessions) <= MAX_SESSIONS_PER_PATH:
+            break
+        if session_id == live_id:
+            continue
+        if now - sessions[session_id].recorded_at < TICKET_TTL_SECS:
+            continue  # still inside its publish window; it may be the one about to go live
+        del sessions[session_id]
+    if len(sessions) > MAX_SESSIONS_PER_PATH:
+        logger.warning("Publisher record for %s held above the cap: %d live/pending sessions", path, len(sessions))
 
 
 def _forget(path: str, session_id: str) -> None:
@@ -175,7 +222,7 @@ async def authorize_booth_publish(path: str, secret: str, session_id: str = "") 
     if ticket is None or not still_entitled(ticket):
         return False
     if session_id:
-        _record_publisher(path, session_id, _owner_of(ticket))
+        await _record_publisher(path, session_id, _owner_of(ticket))
     return True
 
 
@@ -200,6 +247,21 @@ async def _kick_sessions(path: str, session_ids: list[str]) -> None:
         _forget(path, session_id)
 
 
+async def _live_source_id(path: str) -> str | None:
+    """The id of the WebRTC session MediaMTX reports live on *path*, or None when nothing is.
+
+    Raises on a MediaMTX read error, so a caller can tell "nothing is publishing" (None) from a
+    failed lookup (the exception) and refuse to act on the uncertainty.
+    """
+    from portal.program_ingest import media_path
+
+    current = await media_path(path)
+    source = current.source if current is not None else None
+    if source is None or source.type != "webRTCSession":
+        return None
+    return source.id
+
+
 async def _live_owned_session(
     path: str,
     *,
@@ -208,32 +270,29 @@ async def _live_owned_session(
 ) -> str | None:
     """The live source MediaMTX reports for *path*, when it should be ended, else None.
 
-    The record can miss the live session — it is pruned under the per-path cap, or an offer was
-    recorded before the live one — so revocation confirms the live publisher directly rather than
-    trusting the record alone. *match* decides ownership by the live source's recorded owner; when
-    the live source is unrecorded (evicted, or publishing predates a restart) it is claimed only when
-    *claim_unrecorded*. *match* is None for a booth that is stopping or going away, which ends whatever
-    is live. A down or slow MediaMTX yields None, leaving the recorded sessions to carry the revocation.
+    The record can miss the live session — an offer was recorded before the live one — so revocation
+    confirms the live publisher directly rather than trusting the record alone. *match* decides
+    ownership by the live source's recorded owner; when the live source is unrecorded it is claimed
+    only when *claim_unrecorded* (an active interpreter whose record predates a restart). *match* is
+    None for a booth that is stopping or going away, which ends whatever is live. A down or slow
+    MediaMTX yields None, leaving the recorded sessions to carry the revocation.
     """
     import httpx
 
-    from portal.program_ingest import media_path
-
     try:
-        current = await media_path(path)
+        source_id = await _live_source_id(path)
     except (httpx.HTTPError, ValueError):
         logger.warning("Could not read the live publisher of %s", path, exc_info=True)
         return None
-    source = current.source if current is not None else None
-    if source is None or source.type != "webRTCSession":
+    if source_id is None:
         return None
     # The await above suspended us, so read the record again: a replacement may have been recorded.
-    owner = _publishers.get(path, {}).get(source.id)
+    record = _publishers.get(path, {}).get(source_id)
     if match is None:
-        return source.id
-    if owner is not None:
-        return source.id if match(owner) else None
-    return source.id if claim_unrecorded else None
+        return source_id
+    if record is not None:
+        return source_id if match(record.owner) else None
+    return source_id if claim_unrecorded else None
 
 
 async def end_booth_publish(
@@ -252,10 +311,9 @@ async def end_booth_publish(
 
     With an identity (``participant_id``/``user_id``/``invite_public_id``), the owner's recorded sessions
     are ended, and the live session on the path is ended too when it is theirs — or, when it is
-    unrecorded and they were the active interpreter (``was_active``), after a restart or a record
-    eviction. A backup who never published, or a replacement recorded during the path lookup, is left
-    alone. Without an identity the booth itself is stopping or going away, so every recorded session and
-    whatever is live are ended.
+    unrecorded and they were the active interpreter (``was_active``), after a restart. A backup who never
+    published, or a replacement recorded during the path lookup, is left alone. Without an identity the
+    booth itself is stopping or going away, so every recorded session and whatever is live are ended.
 
     Never raises for an expected failure: a revocation must complete when MediaMTX is down or slow.
     Floor booths are never touched; floor ownership belongs to the Jitsi bot or program ingest.
@@ -267,14 +325,18 @@ async def end_booth_publish(
     sessions = _publishers.get(path, {})
     by_identity = participant_id is not None or user_id is not None or invite_public_id is not None
     if by_identity:
-        targets = {sid for sid, owner in sessions.items() if _owner_matches(owner, participant_id, user_id, invite_public_id)}
+        targets = {
+            sid
+            for sid, record in sessions.items()
+            if _owner_matches(record.owner, participant_id, user_id, invite_public_id)
+        }
         match = lambda owner: _owner_matches(owner, participant_id, user_id, invite_public_id)  # noqa: E731
     else:
         targets = set(sessions)
         match = None
 
     # Always confirm the live publisher: the record can miss it, and then the recorded targets alone
-    # would leave the real session running (a cap eviction after a cluster of later offers, #1285 P1).
+    # would leave the real session running (a live offer that predates a restart, #1285 P1).
     live = await _live_owned_session(path, match=match, claim_unrecorded=was_active)
     if live is not None:
         targets.add(live)
@@ -301,11 +363,13 @@ async def end_publishers_for(
         paths = list(_publishers)
     match = lambda owner: _owner_matches(owner, None, user_id, invite_public_id)  # noqa: E731
     for path in paths:
-        targets = {sid for sid, owner in _publishers.get(path, {}).items() if match(owner)}
+        targets = {sid for sid, record in _publishers.get(path, {}).items() if match(record.owner)}
         if not targets:
-            continue  # the owner published nothing here, so there is no live session of theirs to find
-        # The owner published here, so an unrecorded live source is their evicted session: claim it.
-        live = await _live_owned_session(path, match=match, claim_unrecorded=True)
+            continue  # the owner published nothing here; the per-path prune keeps a live session recorded
+        # The owner's live session, if any, stays recorded because the prune never evicts a live offer,
+        # so the recorded match above already covers it. An unrecorded live source cannot be shown to
+        # belong to this owner — it may be a different, still-entitled publisher — so it is left alone.
+        live = await _live_owned_session(path, match=match, claim_unrecorded=False)
         if live is not None:
             targets.add(live)
         await _kick_sessions(path, list(targets))

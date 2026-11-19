@@ -199,30 +199,101 @@ async def test_an_offer_that_never_became_the_live_source_is_still_ended(mediamt
 
 
 @pytest.mark.anyio
-async def test_a_live_session_evicted_from_the_record_is_still_ended_via_the_path(mediamtx):
-    """The per-path cap must not drop a live session: a later cluster of offers evicts it, but
-    revocation confirms the live publisher and ends it anyway (#1285, P1)."""
+async def test_the_live_session_is_kept_under_the_per_path_cap_and_still_ended(mediamtx):
+    """The per-path cap must never drop the live session: a later cluster of offers cannot evict it
+    while it is the live source, so a revocation still finds and ends it (#1285, P1)."""
     import uuid
 
-    from portal.booth_publish import MAX_SESSIONS_PER_PATH, publisher_for
+    from portal.booth_publish import MAX_SESSIONS_PER_PATH
 
     booth_id, path, channel = _booth("evicted")
     ana = await _join(booth_id, channel, "Ana", user_id=12)
-    await _start_publishing(booth_id, path, channel, ana, ANA_SESSION)  # the live session, recorded first
-    # Enough later offers from the same owner to evict ANA_SESSION under the cap.
-    for _ in range(MAX_SESSIONS_PER_PATH):
-        secret = issue_ticket(booth_id, ana.participant_id, path)
-        assert await authorize_booth_publish(path, secret, str(uuid.uuid4()))
-    assert ANA_SESSION not in _recorded_ids(path)
-    assert publisher_for(path) is not None  # the offers are still recorded
-    # MediaMTX still has Ana's original session live.
+    # MediaMTX reports Ana's session live throughout, so the prune can confirm and protect it.
     mediamtx.lookup.return_value = MediaPath(
         name=path, available=True, source=MediaSource(type="webRTCSession", id=ANA_SESSION)
     )
+    await _start_publishing(booth_id, path, channel, ana, ANA_SESSION)  # the live session, recorded first
+    # A later cluster of offers that never replace the live one would, unbounded, evict it under the cap.
+    for _ in range(MAX_SESSIONS_PER_PATH):
+        secret = issue_ticket(booth_id, ana.participant_id, path)
+        assert await authorize_booth_publish(path, secret, str(uuid.uuid4()))
+    assert ANA_SESSION in _recorded_ids(path)  # the live session survives the prune
 
     await release_participant(_session(booth_id, channel, ana, "Ana"), immediate=True)
 
     assert ANA_SESSION in _kicked_ids(mediamtx)
+
+
+@pytest.mark.anyio
+async def test_revoking_one_owner_never_kicks_another_owners_unrecorded_live_session(mediamtx):
+    """Ben published here, but Ana is the live source with no record of her own. Revoking Ben must not
+    claim Ana's unrecorded live session as Ben's — she is still entitled (#1285, P1)."""
+    booth_id, path, channel = _booth("crossowner")
+    ben = await _join(booth_id, channel, "Ben", user_id=22)
+    await _start_publishing(booth_id, path, channel, ben, BEN_SESSION)  # Ben's recorded offer
+    # Ana is the live publisher on the path, with no record of her own (evicted, or predating a restart).
+    mediamtx.lookup.return_value = MediaPath(
+        name=path, available=True, source=MediaSource(type="webRTCSession", id=ANA_SESSION)
+    )
+
+    await end_publishers_for(user_id=22, booth_id=booth_id)
+
+    assert ANA_SESSION not in _kicked_ids(mediamtx)  # a different, still-entitled publisher is left alone
+    assert _kicked_ids(mediamtx) == [BEN_SESSION]
+
+
+@pytest.mark.anyio
+async def test_the_prune_keeps_every_record_when_the_live_lookup_fails(mediamtx):
+    """If MediaMTX cannot be read while pruning, evicting blind could drop the live session, so the
+    cap is left soft and every record is kept until the live publisher can be confirmed (#1285)."""
+    import uuid
+
+    from portal.booth_publish import MAX_SESSIONS_PER_PATH
+
+    booth_id, path, channel = _booth("lookupfail")
+    ana = await _join(booth_id, channel, "Ana", user_id=31)
+    await _start_publishing(booth_id, path, channel, ana, ANA_SESSION)
+    mediamtx.lookup.side_effect = httpx.ConnectError("mediamtx unreachable")
+    for _ in range(MAX_SESSIONS_PER_PATH):
+        secret = issue_ticket(booth_id, ana.participant_id, path)
+        assert await authorize_booth_publish(path, secret, str(uuid.uuid4()))
+
+    assert ANA_SESSION in _recorded_ids(path)  # nothing is evicted while the live publisher is unknown
+    assert len(_recorded_ids(path)) == MAX_SESSIONS_PER_PATH + 1
+
+
+@pytest.mark.anyio
+async def test_the_cap_still_evicts_an_old_non_live_offer_but_keeps_the_live_one(monkeypatch, mediamtx):
+    """The cap is not disabled: an offer that is old and is not the live source is still evicted, while
+    the live session and offers still inside their publish window are kept (#1285)."""
+    import uuid
+
+    import portal.booth_publish as bp
+    from portal.booth_publish import MAX_SESSIONS_PER_PATH
+
+    clock = {"t": 0.0}
+    monkeypatch.setattr(bp, "time", SimpleNamespace(monotonic=lambda: clock["t"]))
+
+    booth_id, path, channel = _booth("cap")
+    ana = await _join(booth_id, channel, "Ana", user_id=41)
+    # Fill the path to the cap with non-live offers recorded at t=0 (no overflow yet, so no prune).
+    dead = [str(uuid.uuid4()) for _ in range(MAX_SESSIONS_PER_PATH)]
+    await _start_publishing(booth_id, path, channel, ana, dead[0])
+    for sid in dead[1:]:
+        secret = issue_ticket(booth_id, ana.participant_id, path)
+        assert await authorize_booth_publish(path, secret, sid)
+    # Long after their publish window, a new live session overflows the cap; MediaMTX reports it live.
+    clock["t"] = bp.TICKET_TTL_SECS + 100.0
+    mediamtx.lookup.return_value = MediaPath(
+        name=path, available=True, source=MediaSource(type="webRTCSession", id=ANA_SESSION)
+    )
+    secret = issue_ticket(booth_id, ana.participant_id, path)
+    assert await authorize_booth_publish(path, secret, ANA_SESSION)
+
+    recorded = _recorded_ids(path)
+    assert ANA_SESSION in recorded  # the live session is kept
+    assert dead[0] not in recorded  # the oldest, non-live offer was evicted
+    assert len(recorded) == MAX_SESSIONS_PER_PATH  # back under the cap
 
 
 @pytest.mark.anyio
