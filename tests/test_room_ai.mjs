@@ -56,8 +56,11 @@ const roomDetailSource = readFileSync(new URL('../portal/static/js/room-detail.j
 // The room page shares one tab implementation with the booth page instead of keeping its own.
 assert.match(roomDetailSource, /import \{ initTabs \} from '\.\/tabs\.js';/);
 assert.doesNotMatch(roomDetailSource, /\bfunction\s+initTabs\b/);
-// vm scripts cannot import, so run the page code without its import line (tabs.js has its own tests).
-const roomDetail = roomDetailSource.replace(/^import .*$/m, '');
+// vm scripts cannot import, so run the page code with model-filter.js inlined and no import lines
+// (tabs.js and model-filter.js have their own tests).
+const modelFilter = readFileSync(new URL('../portal/static/js/model-filter.js', import.meta.url), 'utf8')
+  .replace(/^export /gm, '');
+const roomDetail = modelFilter + roomDetailSource.replace(/^import .*$/gm, '');
 for (const details of [null, { hidden: false }]) {
   const provider = { value: 'local', addEventListener() {} };
   const options = [{ dataset: { provider: 'local' } }, { dataset: { provider: 'openai' } }];

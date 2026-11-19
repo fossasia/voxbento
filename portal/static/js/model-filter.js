@@ -9,12 +9,17 @@ export function syncModelOptions(options, provider, providerKey) {
     opt.disabled = !show;
   });
   if (!visible.some((opt) => opt.selected) && visible.length) visible[0].selected = true;
+  return visible;
 }
 
-export function bindModelFilter(providerSelect, modelSelect, providerKey) {
+// onSync(visible) runs after every sync, for page-specific follow-ups.
+export function bindModelFilter(providerSelect, modelSelect, providerKey, onSync) {
   if (!providerSelect || !modelSelect) return;
   const options = [...modelSelect.options];
-  const sync = () => syncModelOptions(options, providerSelect.value, providerKey);
+  const sync = () => {
+    const visible = syncModelOptions(options, providerSelect.value, providerKey);
+    if (onSync) onSync(visible);
+  };
   providerSelect.addEventListener('change', sync);
   sync();
 }
