@@ -450,7 +450,8 @@ async def user_login_submit(request: Request):
             break
         except (OperationalError, DBAPIError) as exc:
             if attempt == 2 or not _is_retryable_sign_in_write_conflict(exc):
-                raise
+                logger.warning("Failed to record last_sign_in_at for user %s", user.id, exc_info=True)
+                break
             await asyncio.sleep(0)
     redirect_to = next_url if next_url else "/account"
     response = safe_redirect(url=redirect_to, status_code=status.HTTP_303_SEE_OTHER)
