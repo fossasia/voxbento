@@ -160,9 +160,10 @@ body:has(.login-page) .portal-footer {
 .login-subtitle { font-size: 0.875rem; color: var(--color-text-secondary); display: block; margin-top: 4px; }
 .login-card--centered { text-align: center; }
 .login-card--centered h2 { margin: 20px 0; }
-.login-card--centered .login-message { color: #aaa; margin-bottom: 20px; }
+.login-card--centered .login-message { color: #aaa; margin-bottom: 20px; overflow-wrap: anywhere; }
 .login-footer--spaced { margin-top: 30px; }
 .login-email-display {
+  overflow-wrap: anywhere;
   text-align: center;
   margin-bottom: 15px;
   color: #aaa;
@@ -315,7 +316,7 @@ body:has(.login-page) .portal-footer {
 .account-hosting-banner-content { display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 12px; }
 .account-hosting-banner-title { margin: 0; color: #1e40af; font-weight: 600; font-size: 0.95rem; }
 .account-hosting-banner-text { margin: 6px 0 0 0; color: #1e3a8a; font-size: 0.875rem; line-height: 1.5; }
-.login-prompt { margin-bottom: 20px; line-height: 1.5; }
+.login-prompt { margin-bottom: 20px; line-height: 1.5; overflow-wrap: anywhere; }
 .login-prompt p { margin: 0 0 8px 0; }
 .login-prompt p:last-child { margin-bottom: 0; }
 .login-footer--spaced { margin-top: 24px; }
