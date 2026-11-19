@@ -739,8 +739,9 @@ async def deleted_floor_workers() -> list[tuple[int, str, bool]]:
     """``(room id, booth id, reused)`` of each running floor worker whose room was deleted, or whose event was.
 
     The admin pages delete the rows outright, so a room with no row left counts as deleted too. SQLite can
-    give a deleted room's id to a new room in another event, so the whole booth id has to match, and two
-    workers can share a room id. ``reused`` says the room id now belongs to that new room.
+    give a deleted room's id to a new room, so the whole booth id has to match, two workers can share a
+    room id, and in the same event a new room that runs no floor captions does not own the old worker.
+    ``reused`` says the room id now belongs to that new room.
     """
     workers = []
     for booth_id in list(active_workers):
@@ -753,17 +754,22 @@ async def deleted_floor_workers() -> list[tuple[int, str, bool]]:
     if not workers:
         return []
     async with get_session() as session:
-        live = dict(
-            (
-                await session.execute(
-                    select(Room.id, Event.slug)
-                    .join(Event)
-                    .where(Room.id.in_({room_id for room_id, _ in workers}), Event.deleted_at.is_(None))
-                )
-            ).all()
-        )
+        rows = (
+            await session.execute(
+                select(Room.id, Event.slug, Room.floor_source, Room.meeting_agent_enabled)
+                .join(Event)
+                .where(Room.id.in_({room_id for room_id, _ in workers}), Event.deleted_at.is_(None))
+            )
+        ).all()
+    # Only the meeting agent and program ingest reconcilers start floor workers, and only for these rooms.
+    live = {
+        room_id: slug
+        for room_id, slug, floor_source, agent_enabled in rows
+        if floor_source == "program_ingest" or (floor_source == "jitsi_bot" and agent_enabled)
+    }
+    reused = {room_id for room_id, *_ in rows}
     return sorted(
-        (room_id, booth_id, room_id in live)
+        (room_id, booth_id, room_id in reused)
         for room_id, booth_id in workers
         if room_id not in live or booth_id != make_booth_id(live[room_id], room_id, "floor")
     )

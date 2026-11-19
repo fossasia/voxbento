@@ -802,7 +802,7 @@ async def test_worker_of_a_room_deleted_outright_is_stopped(env, monkeypatch, de
         other_event = Event(slug="still-here", display_name="Still here")
         session.add(other_event)
         await session.flush()
-        other_room = Room(event_id=other_event.id, display_name="Track B")
+        other_room = Room(event_id=other_event.id, display_name="Track B", floor_source="program_ingest")
         session.add(other_room)
         await session.flush()
         other_booth_id = make_booth_id("still-here", other_room.id, "floor")
@@ -847,6 +847,29 @@ async def test_worker_of_a_deleted_room_is_stopped_when_another_event_reuses_its
     env["clock"].now += meeting.IDLE_SWEEP_SECS
     await meeting.reconcile_once()
     assert env["booth_id"] in [call.args[0] for call in env["stop"].await_args_list]
+
+
+@pytest.mark.anyio
+async def test_worker_of_a_deleted_room_is_stopped_when_the_same_event_reuses_its_id(env, monkeypatch):
+    """In the same event a reused id gives the same booth id, but a new room without the agent has no worker."""
+    response = await env["client"].post(
+        env["url"], json={"action": "connect", "meeting_url": "https://meet.example.org/TrackA"}
+    )
+    assert response.status_code == 200, response.text
+    env["agents"].rooms[env["key"]]["stage"] = "in_meeting"
+    await meeting.reconcile_once()
+    publish(env, 100)
+    await meeting.reconcile_once()
+    monkeypatch.setitem(active_workers, env["booth_id"], object())  # the running worker
+    assert (
+        await env["client"].post(f"/admin/events/{env['event_id']}/rooms/{env['room_id']}/delete")
+    ).status_code == 303
+    async with get_session() as session:
+        session.add(Room(id=env["room_id"], event_id=env["event_id"], display_name="Replacement"))
+    env["stop"].reset_mock()
+    env["clock"].now += meeting.IDLE_SWEEP_SECS
+    await meeting.reconcile_once()
+    env["stop"].assert_awaited_once_with(env["booth_id"])
 
 
 @pytest.mark.anyio
