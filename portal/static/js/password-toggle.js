@@ -20,7 +20,6 @@ function setupPasswordToggle(passwordInput, toggleBtn) {
 }
 
 function setupAllPasswordToggles() {
-  if (typeof document === 'undefined') return;
   document.querySelectorAll('.password-toggle-btn').forEach((toggleBtn) => {
     const inputId = toggleBtn.getAttribute('aria-controls');
     setupPasswordToggle(inputId ? document.getElementById(inputId) : null, toggleBtn);
@@ -35,10 +34,6 @@ if (typeof document !== 'undefined') {
   }
 }
 
-if (typeof window !== 'undefined') {
-  window.setupPasswordToggle = setupPasswordToggle;
-  window.setupAllPasswordToggles = setupAllPasswordToggles;
-}
 if (typeof module !== 'undefined' && module.exports) {
   module.exports = { setupPasswordToggle, setupAllPasswordToggles };
 }

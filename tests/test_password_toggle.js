@@ -225,6 +225,29 @@ assert(completeElements.secondBtn.getAttribute('aria-label') === 'Hide password'
 assert(completeElements.firstBtn.getAttribute('aria-label') === 'Show password', 'Untouched first toggle keeps its label');
 delete global.document;
 
+// Test 6b: toggle button without aria-controls is skipped without throwing
+const noControlsBtn = createMockElement('button', {
+  type: 'button',
+  'aria-label': 'Show password',
+  title: 'Show password',
+});
+global.document = {
+  readyState: 'complete',
+  querySelectorAll: (sel) => (sel === '.password-toggle-btn' ? [noControlsBtn] : []),
+  getElementById: () => null,
+};
+delete require.cache[passwordToggleModulePath];
+const { setupAllPasswordToggles } = require(passwordToggleModulePath);
+let threwNoControls = false;
+try {
+  setupAllPasswordToggles();
+} catch {
+  threwNoControls = true;
+}
+assert(!threwNoControls, 'setupAllPasswordToggles handles a toggle button without aria-controls without throwing');
+assert(noControlsBtn.getAttribute('aria-label') === 'Show password', 'Toggle button without aria-controls keeps its "Show password" label');
+delete global.document;
+
 // Test 7: every password page reuses the login toggle markup and loads the shared module
 // accept_invite.html renders only one branch (elif), so #toggle-password appears in both
 // branches but never twice in one response; other pages must use each toggle id once.
@@ -251,7 +274,7 @@ const togglePages = [
 for (const page of togglePages) {
   const pageHtml = fs.readFileSync(path.join(__dirname, '../portal/templates', page.file), 'utf-8');
   assert(
-    pageHtml.includes("path='js/password-toggle.js'") && pageHtml.includes('type="module"'),
+    /<script type="module" src="[^"]*js\/password-toggle\.js/.test(pageHtml),
     `${page.file} loads the shared password-toggle.js module`
   );
   for (const [btnId, inputId] of page.pairs) {
