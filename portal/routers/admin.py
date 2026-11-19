@@ -1737,7 +1737,8 @@ class TranslationLanguageError(HTTPException):
 
 
 BOOTH_IN_USE_MESSAGE = (
-    "Someone is in this booth or it is on air. Change its language code once it is off air and everyone has left."
+    "Someone is in this booth, it is on air or its captions are running. "
+    "Change its language code once everyone has left, it is off air and captions are stopped."
 )
 
 
