@@ -74,26 +74,97 @@ jobs:
         shell: bash
         run: |
           python -c '
+          import json
           import pathlib
 
           sha_file = pathlib.Path("report/head_sha.txt")
           sha = sha_file.read_text(encoding="utf-8").strip() if sha_file.exists() else ""
           short_sha = sha[:7] if sha else "PR"
 
+          pr_num_file = pathlib.Path("report/pr_number.txt")
+          pr_number_str = pr_num_file.read_text(encoding="utf-8").strip() if pr_num_file.exists() else ""
+          pr_number = int(pr_number_str) if pr_number_str.isdigit() else None
+
           status_file = pathlib.Path("report/pr_status.txt")
-          status = status_file.read_text(encoding="utf-8").strip() if status_file.exists() else "0"
+          status_code_str = status_file.read_text(encoding="utf-8").strip() if status_file.exists() else None
+          exit_code = int(status_code_str) if (status_code_str is not None and status_code_str.lstrip("-").isdigit()) else None
+
+          def parse_markdown_table(table_path):
+              p = pathlib.Path(table_path)
+              if not p.exists():
+                  return [], ""
+              text = p.read_text(encoding="utf-8")
+              rows = []
+              summary_lines = []
+              for line in text.splitlines():
+                  s = line.strip()
+                  if not s:
+                      continue
+                  if s.startswith("|") and not s.startswith("|---") and "channel" not in s:
+                      parts = [cell.strip() for cell in s.strip("|").split("|")]
+                      if len(parts) == 11:
+                          try:
+                              row = {
+                                  "channel": parts[0],
+                                  "sent": int(parts[1]),
+                                  "translated": int(parts[2]),
+                                  "dropped": int(parts[3]),
+                                  "failed": int(parts[4]),
+                                  "missing": int(parts[5]),
+                                  "lag_p50": parts[6],
+                                  "lag_p95": parts[7],
+                                  "lag_max": parts[8],
+                                  "infer_p50": parts[9],
+                                  "infer_p95": parts[10],
+                              }
+                              rows.append(row)
+                          except ValueError:
+                              pass
+                  elif not s.startswith("|"):
+                      summary_lines.append(s)
+              return rows, " ".join(summary_lines)
+
+          pr_rows, pr_summary = parse_markdown_table("report/pr_table.md")
+          dev_rows, dev_summary = parse_markdown_table("report/dev_table.md")
+
+          # Require explicit successful harness result before rendering a pass
+          if exit_code == 0 and len(pr_rows) > 0:
+              status = "success"
+              status_banner = "> [!NOTE]\n> **All signals passed**: 0 dropped, 0 failed, 0 missing translations.\n"
+          elif exit_code is not None and exit_code != 0 and len(pr_rows) > 0:
+              status = "regression"
+              status_banner = f"> [!WARNING]\n> **Regression detected**: The load harness exited with status `{exit_code}` (dropped, failed, missing translations or unhandled error).\n"
+          else:
+              status = "incomplete"
+              status_banner = "> [!WARNING]\n> **Benchmark incomplete**: The load harness did not complete or produced no valid benchmark data.\n"
+
+          metrics = {
+              "version": 1,
+              "head_sha": sha,
+              "short_sha": short_sha,
+              "pr_number": pr_number,
+              "status": status,
+              "exit_code": exit_code,
+              "pr": {
+                  "status": status,
+                  "exit_code": exit_code,
+                  "summary": pr_summary,
+                  "rows": pr_rows,
+              },
+              "dev": {
+                  "available": len(dev_rows) > 0,
+                  "summary": dev_summary,
+                  "rows": dev_rows,
+              },
+          }
+
+          pathlib.Path("report/metrics.json").write_text(json.dumps(metrics, indent=2) + "\n", encoding="utf-8")
 
           pr_file = pathlib.Path("report/pr_table.md")
           pr_table = pr_file.read_text(encoding="utf-8").strip() if pr_file.exists() else "No data"
 
           dev_file = pathlib.Path("report/dev_table.md")
           dev_table = dev_file.read_text(encoding="utf-8").strip() if dev_file.exists() else "No baseline data"
-
-          status_banner = ""
-          if status != "0":
-              status_banner = f"> [!WARNING]\n> **Regression detected**: The load harness exited with status `{status}` (dropped, failed, missing translations or unhandled error).\n"
-          else:
-              status_banner = "> [!NOTE]\n> **All signals passed**: 0 dropped, 0 failed, 0 missing translations.\n"
 
           comment = f"""### 📊 Translation Load Benchmark Report
 
@@ -135,8 +206,22 @@ jobs:
       - name: Propagate harness exit status
         shell: bash
         run: |
-          STATUS=$(cat report/pr_status.txt 2>/dev/null || echo 0)
-          if [ "$STATUS" -ne 0 ]; then
-            echo "Failing job because load harness detected regressions (exit status $STATUS)."
-            exit "$STATUS"
-          fi
+          python -c '
+          import json
+          import pathlib
+          import sys
+
+          metrics_file = pathlib.Path("report/metrics.json")
+          if not metrics_file.exists():
+              print("Failing job: report/metrics.json not found (benchmark incomplete).")
+              sys.exit(1)
+
+          metrics = json.loads(metrics_file.read_text(encoding="utf-8"))
+          status = metrics.get("status")
+          exit_code = metrics.get("exit_code")
+
+          if status != "success":
+              code = exit_code if (isinstance(exit_code, int) and exit_code != 0) else 1
+              print(f"Failing job: benchmark status is \"{status}\" (exit code {code}).")
+              sys.exit(code)
+          '
