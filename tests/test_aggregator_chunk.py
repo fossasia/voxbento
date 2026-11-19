@@ -18,8 +18,9 @@ async def test_forced_finalization_at_50_words_in_handle_chunk():
 
     aggregator = CaptionAggregator(fake_callback)
 
-    # 60 words with no punctuation
-    long_text = "word " * 60
+    # 60 distinct words with no punctuation. One word repeated 60 times would be
+    # discarded as a recogniser loop, which the next test covers.
+    long_text = " ".join(f"word{i}" for i in range(60))
 
     await aggregator.handle_chunk("booth-1", long_text)
 
@@ -32,6 +33,24 @@ async def test_forced_finalization_at_50_words_in_handle_chunk():
     state = aggregator._get_state("booth-1")
     assert state.current_utterance == ""
     assert state.utterance_start_time == 0.0
+    assert state.current_word_count == 0
+
+
+@pytest.mark.anyio
+async def test_a_forced_finalization_of_one_repeated_word_is_discarded():
+    """The same 60-word run as above, but one word repeated: a recogniser loop, not speech."""
+    received = []
+
+    async def fake_callback(booth_id, message):
+        received.append(message)
+
+    aggregator = CaptionAggregator(fake_callback)
+
+    await aggregator.handle_chunk("booth-1", "word " * 60)
+
+    assert [m for m in received if m.get("status") == "final"] == []
+    state = aggregator._get_state("booth-1")
+    assert state.current_utterance == ""
     assert state.current_word_count == 0
 
 

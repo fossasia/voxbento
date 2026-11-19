@@ -97,7 +97,9 @@ class TestCaptionAggregator:
             await collect_broadcasts(booth_id, message, received)
 
         aggregator = CaptionAggregator(fake_callback)
-        text = " ".join(["word"] * 50)
+        # Varied words: 50 identical ones are discarded as a hallucination,
+        # which would test the filter rather than the word-count rule.
+        text = " ".join(f"word{i}" for i in range(50))
         await aggregator.handle_partial("b", text)
 
         finals = [msg for bid, msg in received if msg.get("status") == "final"]
