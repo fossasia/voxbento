@@ -178,7 +178,7 @@ services:
     restart: unless-stopped
 
   jitsi-jvb:
-    image: ghcr.io/jitsi/jvb:stable-11248
+    image: ghcr.io/jitsi/jvb:stable-11509
     read_only: true
     tmpfs:
       - /run:size=32M,uid=1000,gid=1000,mode=1750,exec
