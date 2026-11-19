@@ -29,11 +29,12 @@ PROVIDERS = {
 }
 
 active_workers_lock = asyncio.Lock()
-MAX_TOTAL_WORKERS = 10
+# Backward-compatibility alias; live capacity checks read settings.max_transcription_workers
+MAX_TOTAL_WORKERS = settings.max_transcription_workers
 
 
 class WorkerCapacityError(ValueError):
-    """Raised when starting a worker would exceed MAX_TOTAL_WORKERS."""
+    """Raised when starting a worker would exceed max_transcription_workers."""
 
 
 class State(Enum):
@@ -80,7 +81,7 @@ class TranscriptionWorkerSession:
         channel_path = make_mediamtx_path(self.event_slug, self.room_id, self.language_code)
         self.rtsp_url = f"{settings.mediamtx_rtsp_base}/{channel_path}"
         self.provider = PROVIDERS.get(self.provider_name, PROVIDERS["local"])
-        self.sample_rate = "24000" if self.provider_name == "openai" else "16000"
+        self.sample_rate = str(self.provider.sample_rate)
 
     def start(self):
         if self.task:
@@ -226,9 +227,10 @@ async def start_transcription_worker(
         async with active_workers_lock:
             existing_session = active_workers.get(booth_id)
             if not existing_session:
-                if len(active_workers) >= MAX_TOTAL_WORKERS:
+                limit = settings.max_transcription_workers
+                if len(active_workers) >= limit:
                     raise WorkerCapacityError(
-                        f"System at maximum capacity ({MAX_TOTAL_WORKERS} concurrent transcription booths)."
+                        f"System at maximum capacity ({limit} concurrent transcription booths)."
                     )
 
                 if provider == "local":

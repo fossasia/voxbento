@@ -72,8 +72,23 @@ class CaptionAggregator:
                         "sync_offset_ms": room.program_sync_offset_ms, "timestamp_basis": "stt_receive_wall_clock"}
         return {}
 
+    async def handle_interim(self, booth_id: str, text: str):
+        """Show words still being recognised after the ones already settled, without keeping them.
+
+        Used by streaming providers that settle audio in chunks (Deepgram): the next interim
+        result replaces this one, and only settled chunks reach ``handle_chunk``.
+        """
+        if not text.strip():
+            return
+        state = self._get_state(booth_id)
+        preview = f"{state.current_utterance} {text.strip()}".strip()
+        await self.broadcast_callback(
+            booth_id, {"type": "caption", "status": "partial", "text": preview,
+                       "segment_id": state.segment_id, **await self.partial_timing(booth_id)}
+        )
+
     async def handle_chunk(self, booth_id: str, text: str):
-        """Used by Local Whisper. Appends finalized chunks and splits on punctuation."""
+        """Used by Local Whisper and Deepgram. Appends finalized chunks and splits on punctuation."""
         if not text.strip():
             return
 
@@ -110,14 +125,16 @@ class CaptionAggregator:
                     has_finalized = True
 
                 state.current_utterance = remainder
+                state.utterance_start_time = time.time()
 
         state.current_word_count = len(state.current_utterance.split()) if state.current_utterance else 0
-        if state.current_utterance:
-            state.utterance_start_time = time.time()
-        else:
-            state.utterance_start_time = 0.0
 
         if state.current_utterance:
+            if state.current_word_count >= 50 or (time.time() - state.utterance_start_time) >= 15.0:
+                logger.info(f"[{booth_id}] Forced chunk finalization triggered (words: {state.current_word_count})")
+                await self.handle_final(booth_id, state.current_utterance)
+                return
+
             await self.broadcast_callback(
                 booth_id, {"type": "caption", "status": "partial", "text": state.current_utterance,
                            "segment_id": state.segment_id, **await self.partial_timing(booth_id)}
@@ -126,16 +143,12 @@ class CaptionAggregator:
             # Only send clear if we just finalized something and have nothing left,
             # ensuring the frontend's partial box is cleared out.
             await self.broadcast_callback(booth_id, {"type": "caption", "status": "clear", "text": ""})
-            if state.current_word_count >= 50 or (time.time() - state.utterance_start_time) >= 15.0:
-                logger.info(f"[{booth_id}] Forced chunk finalization triggered (words: {state.current_word_count})")
-                await self.handle_final(booth_id, state.current_utterance)
-                return
-
-            await self.broadcast_callback(
-                booth_id, {"type": "caption", "status": "partial", "text": state.current_utterance}
-            )
 
     async def handle_final(self, booth_id: str, text: str):
+        """
+        Finalizes an utterance, triggers database save, and initiates translation.
+        Called automatically on punctuation split, timeout, or explicit clear.
+        """
         state = self._get_state(booth_id)
         final_text = text.strip() or state.current_utterance
 

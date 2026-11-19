@@ -33,6 +33,7 @@ from portal.roles import EVENT_OWNER
 from portal.transcription.constants import ProviderEnum
 from portal.transcription.worker import active_workers, start_transcription_worker, stop_transcription_worker
 from portal.translations.constants import TranslationProviderEnum
+from portal.translations.model_languages import language_support_error
 from portal.websockets.revocation import revoke_booths_for_deleted_entity
 
 logger = logging.getLogger(__name__)
@@ -52,6 +53,7 @@ _API_KEY_FIELDS: list[tuple[str, str]] = [
     ("gemini_api_key",             "encrypted_gemini_api_key"),
     ("anthropic_api_key",          "encrypted_anthropic_api_key"),
     ("groq_api_key",               "encrypted_groq_api_key"),
+    ("atlascloud_api_key",         "encrypted_atlascloud_api_key"),
 ]
 
 
@@ -565,11 +567,11 @@ def _apply_floor_settings(room, payload_dict: dict):
         room.floor_translation_model = payload_dict["translation_model"]
 
 
-def _check_self_hosted_translation(payload_dict: dict, room: Room | None) -> None:
-    """Reject self-hosted translation this server can't run, before anything is written.
+def _check_server_translation(payload_dict: dict, room: Room | None) -> None:
+    """Reject self-hosted or built-in translation this server can't run, before anything is written.
 
-    An explicit model must be on the allow list; when the model is left out, the room keeps an
-    allowed model it already has or gets the default one. An update that turns translation off is
+    An explicit model must be on the server's allow list; when the model is left out, the room keeps
+    an allowed model it already has or gets the default one. An update that turns translation off is
     never rejected, so it still works after the server or a model is removed.
     """
     if not {"translation_provider", "translation_model", "enable_translation"} & payload_dict.keys():
@@ -577,18 +579,86 @@ def _check_self_hosted_translation(payload_dict: dict, room: Room | None) -> Non
     if payload_dict.get("enable_translation") is False:
         return
     current_provider = room.floor_translation_provider if room else None
-    if payload_dict.get("translation_provider", current_provider) != TranslationProviderEnum.SELF_HOSTED.value:
+    provider = payload_dict.get("translation_provider", current_provider)
+    if provider == TranslationProviderEnum.SELF_HOSTED.value:
+        if not settings.self_hosted_llm_enabled:
+            raise HTTPException(status_code=422, detail="Self-hosted translation is not configured on this server")
+        allows, model_or_default, name = (
+            settings.self_hosted_llm_allows,
+            settings.self_hosted_llm_model_or_default,
+            "self-hosted",
+        )
+    elif provider == TranslationProviderEnum.LOCAL.value:
+        if not settings.local_translation_model_list:
+            raise HTTPException(status_code=422, detail="Built-in translation is not offered on this server")
+        allows, model_or_default, name = (
+            settings.local_translation_allows,
+            settings.local_translation_model_or_default,
+            "built-in",
+        )
+    else:
         return
-    if not settings.self_hosted_llm_enabled:
-        raise HTTPException(status_code=422, detail="Self-hosted translation is not configured on this server")
     model = payload_dict.get("translation_model")
     if model is not None:
-        if not settings.self_hosted_llm_allows(model):
-            raise HTTPException(status_code=422, detail="translation_model is not allowed for self-hosted translation")
+        if not allows(model):
+            raise HTTPException(status_code=422, detail=f"translation_model is not allowed for {name} translation")
         return
-    payload_dict["translation_model"] = settings.self_hosted_llm_model_or_default(
-        room.floor_translation_model if room else None
+    payload_dict["translation_model"] = model_or_default(room.floor_translation_model if room else None)
+
+
+_TRANSLATION_SETUP_FIELDS = {
+    "translation_provider",
+    "translation_model",
+    "enable_translation",
+    "source_language",
+    "target_languages",
+}
+
+
+async def _check_translation_languages(db: AsyncSession, payload_dict: dict, room: Room | None) -> None:
+    """Reject a translation model that cannot handle the room's languages, before anything is written.
+
+    Looks at the room as it will be once the update is applied. Only an update that changes
+    the translation setup is checked, and never one that leaves translation off, so a sync
+    that re-sends a room saved before this rule keeps working until its setup changes.
+    """
+    if not _TRANSLATION_SETUP_FIELDS & payload_dict.keys():
+        return
+
+    saved_targets: list[str] = []
+    if room is not None:
+        rows = await db.scalars(
+            select(RoomTranslationLanguage.language_code).where(
+                RoomTranslationLanguage.room_id == room.id, RoomTranslationLanguage.enabled.is_(True)
+            )
+        )
+        saved_targets = list(rows)
+    before = (
+        bool(room and room.floor_translation_enabled),
+        room.floor_translation_provider if room else None,
+        room.floor_translation_model if room else None,
+        room.floor_language_code if room else None,
+        sorted(saved_targets),
     )
+
+    def after(field: str, current):
+        """The proposed value from payload_dict, or the current value when omitted or null."""
+        value = payload_dict.get(field)
+        return current if value is None else value
+
+    targets = payload_dict.get("target_languages")
+    proposed = (
+        after("enable_translation", before[0]),
+        payload_dict["translation_provider"] if "translation_provider" in payload_dict else before[1],
+        payload_dict["translation_model"] if "translation_model" in payload_dict else before[2],
+        payload_dict["source_language"] if "source_language" in payload_dict else before[3],
+        before[4] if targets is None else sorted(set(targets)),
+    )
+    if not proposed[0] or (room is not None and proposed == before):
+        return
+    error = language_support_error(proposed[1], proposed[2], (proposed[3], *proposed[4]))
+    if error:
+        raise HTTPException(status_code=422, detail=error)
 
 
 @router.put("/events/{event_slug}/rooms/{eventyay_room_id}")
@@ -599,6 +669,7 @@ async def upsert_room(
     db: AsyncSession = Depends(get_db_session),
     token: OAuthToken = Depends(require_oauth_scope("rooms:write")),
 ):
+    """Create or update a room after validating its resulting translation configuration."""
     from portal.booth_identity import make_mediamtx_path
     from portal.globals import booths
 
@@ -614,7 +685,8 @@ async def upsert_room(
     room = room_res.scalars().first()
 
     payload_dict = payload.model_dump(exclude_unset=True)
-    _check_self_hosted_translation(payload_dict, room)
+    _check_server_translation(payload_dict, room)
+    await _check_translation_languages(db, payload_dict, room)
 
     if room:
         _apply_floor_settings(room, payload_dict)
@@ -1131,6 +1203,7 @@ class EventAPIKeysUpdate(BaseModel):
     gemini_api_key: str | None = None
     anthropic_api_key: str | None = None
     groq_api_key: str | None = None
+    atlascloud_api_key: str | None = None
 
 
 @router.patch("/events/{event_slug}/api_keys", response_model=dict)

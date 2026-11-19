@@ -6,6 +6,8 @@
 // reaches listeners one way: an interpreter, an AI voice or AI captions. Captions are the
 // speaker's own words and stay on whenever a language uses AI.
 
+import { syncTranslationOptions } from './translation-fit.js';
+
 const root = document.getElementById('room-setup');
 const form = document.getElementById('room-setup-form');
 
@@ -23,6 +25,7 @@ if (root && form) {
   const boothCodes = readJson(root.dataset.boothCodes || '[]', []);
   const deliveryLabels = readJson(root.dataset.deliveryLabels || '{}', {});
   const voiceSupport = readJson(root.dataset.voiceSupport || '{}', {});
+  const translationSupport = readJson(root.dataset.translationSupport || '{}', {});
 
   const steps = [...form.querySelectorAll('[data-rs-step]')];
   const progress = root.querySelector('[data-rs-progress]');
@@ -179,6 +182,13 @@ if (root && form) {
 
   // ── Captions & AI services ─────────────────────────────────────────────
 
+  /** Filter services against the spoken and AI languages only while AI delivery is selected. */
+  function syncTranslationEngines(ai) {
+    const select = form.querySelector('#rs-translation');
+    if (!select || !ai.length) return;
+    syncTranslationOptions(select, translationSupport, [spokenSelect.value, ...ai.map((l) => l.code)].filter(Boolean));
+  }
+
   const shortName = (select) => select?.selectedOptions[0]?.dataset.short || selectedText(select);
 
   function syncAi() {
@@ -202,6 +212,7 @@ if (root && form) {
       captionsReason.textContent = `${listNames(ai.map((l) => l.name))} ${verb} AI. The AI translates from these captions, so they stay on while any language uses AI. Listeners can read them in ${spoken} too.`;
     }
 
+    syncTranslationEngines(ai);
     const shows = { speech: captionsBox.checked, translation: ai.length > 0, voice: voiceLanguages().length > 0 };
     Object.entries(shows).forEach(([kind, show]) => {
       enginesGroup.querySelector(`[data-rs-engine="${kind}"]`).hidden = !show;
