@@ -103,7 +103,7 @@ services:
   #   10000/udp → JVB media traffic
 
   jitsi-web:
-    image: ghcr.io/jitsi/web:stable-11248
+    image: ghcr.io/jitsi/web:stable-11509
     read_only: true
     tmpfs:
       - /run:size=16M,uid=1000,gid=1000,mode=1750,exec
@@ -133,7 +133,7 @@ services:
     restart: unless-stopped
 
   jitsi-prosody:
-    image: ghcr.io/jitsi/prosody:stable-11248
+    image: ghcr.io/jitsi/prosody:stable-11509
     read_only: true
     tmpfs:
       - /run:size=16M,uid=1000,gid=1000,mode=1750,exec
@@ -156,7 +156,7 @@ services:
     restart: unless-stopped
 
   jitsi-jicofo:
-    image: ghcr.io/jitsi/jicofo:stable-11248
+    image: ghcr.io/jitsi/jicofo:stable-11509
     read_only: true
     tmpfs:
       - /run:size=32M,uid=1000,gid=1000,mode=1750,exec
@@ -178,7 +178,7 @@ services:
     restart: unless-stopped
 
   jitsi-jvb:
-    image: ghcr.io/jitsi/jvb:stable-11248
+    image: ghcr.io/jitsi/jvb:stable-11509
     read_only: true
     tmpfs:
       - /run:size=32M,uid=1000,gid=1000,mode=1750,exec
