@@ -5,7 +5,16 @@
  */
 const fs = require('fs');
 const path = require('path');
-const { setupPasswordToggle, setupAllPasswordToggles } = require('../portal/static/js/password-toggle.js');
+const passwordToggleModulePath = require.resolve('../portal/static/js/password-toggle.js');
+
+global.document = {
+  readyState: 'complete',
+  querySelectorAll: () => [],
+  getElementById: () => null,
+};
+delete require.cache[passwordToggleModulePath];
+const { setupPasswordToggle } = require(passwordToggleModulePath);
+delete global.document;
 
 let passed = 0;
 let failed = 0;
@@ -140,45 +149,81 @@ try {
 }
 assert(!threw, 'setupPasswordToggle gracefully handles null/missing elements without throwing');
 
-// Test 6: setupAllPasswordToggles wires each toggle to its own field
-const autoFirstInput = createMockElement('input', { type: 'password', value: 'first-secret' });
-const autoSecondInput = createMockElement('input', { type: 'password', value: 'second-secret' });
-const autoFirstBtn = createMockElement('button', {
-  type: 'button',
-  'aria-label': 'Show password',
-  title: 'Show password',
-  'aria-controls': 'password',
-});
-autoFirstBtn._showIcon = createMockElement('svg', {
-  className: 'password-toggle-icon password-toggle-icon--show',
-});
-autoFirstBtn._hideIcon = createMockElement('svg', {
-  className: 'password-toggle-icon password-toggle-icon--hide hidden',
-});
-const autoSecondBtn = createMockElement('button', {
-  type: 'button',
-  'aria-label': 'Show password',
-  title: 'Show password',
-  'aria-controls': 'password_confirm',
-});
-autoSecondBtn._showIcon = createMockElement('svg', {
-  className: 'password-toggle-icon password-toggle-icon--show',
-});
-autoSecondBtn._hideIcon = createMockElement('svg', {
-  className: 'password-toggle-icon password-toggle-icon--hide hidden',
-});
-global.document = {
-  querySelectorAll: (sel) => (sel === '.password-toggle-btn' ? [autoFirstBtn, autoSecondBtn] : []),
-  getElementById: (id) => ({ password: autoFirstInput, password_confirm: autoSecondInput })[id] || null,
+// Test 6: module startup wiring handles loading and complete document states
+const createAutoToggleElements = () => {
+  const firstInput = createMockElement('input', { type: 'password', value: 'first-secret' });
+  const secondInput = createMockElement('input', { type: 'password', value: 'second-secret' });
+  const firstBtn = createMockElement('button', {
+    type: 'button',
+    'aria-label': 'Show password',
+    title: 'Show password',
+    'aria-controls': 'password',
+  });
+  firstBtn._showIcon = createMockElement('svg', {
+    className: 'password-toggle-icon password-toggle-icon--show',
+  });
+  firstBtn._hideIcon = createMockElement('svg', {
+    className: 'password-toggle-icon password-toggle-icon--hide hidden',
+  });
+  const secondBtn = createMockElement('button', {
+    type: 'button',
+    'aria-label': 'Show password',
+    title: 'Show password',
+    'aria-controls': 'password_confirm',
+  });
+  secondBtn._showIcon = createMockElement('svg', {
+    className: 'password-toggle-icon password-toggle-icon--show',
+  });
+  secondBtn._hideIcon = createMockElement('svg', {
+    className: 'password-toggle-icon password-toggle-icon--hide hidden',
+  });
+  return { firstInput, secondInput, firstBtn, secondBtn };
 };
-setupAllPasswordToggles();
+
+const loadingElements = createAutoToggleElements();
+const loadingListeners = {};
+global.document = {
+  readyState: 'loading',
+  querySelectorAll: (sel) =>
+    sel === '.password-toggle-btn'
+      ? [loadingElements.firstBtn, loadingElements.secondBtn]
+      : [],
+  getElementById: (id) =>
+    ({ password: loadingElements.firstInput, password_confirm: loadingElements.secondInput })[id] || null,
+  addEventListener: (event, handler) => {
+    loadingListeners[event] = handler;
+  },
+};
+delete require.cache[passwordToggleModulePath];
+require(passwordToggleModulePath);
+assert(typeof loadingListeners.DOMContentLoaded === 'function', 'Loading document waits for DOMContentLoaded');
+loadingListeners.DOMContentLoaded();
+loadingElements.firstBtn.click();
+assert(loadingElements.firstInput.type === 'text', 'DOMContentLoaded startup reveals the first field');
+assert(loadingElements.secondInput.type === 'password', 'DOMContentLoaded startup leaves the second field hidden');
+assert(loadingElements.firstBtn.getAttribute('aria-label') === 'Hide password', 'DOMContentLoaded startup updates the first label');
+assert(loadingElements.secondBtn.getAttribute('aria-label') === 'Show password', 'DOMContentLoaded startup preserves the second label');
 delete global.document;
 
-autoFirstBtn.click();
-assert(autoFirstInput.type === 'text', 'Auto-wired toggle reveals its own field');
-assert(autoSecondInput.type === 'password', 'Toggling one field leaves the other field hidden');
-assert(autoFirstBtn.getAttribute('aria-label') === 'Hide password', 'Auto-wired toggle updates its own label');
-assert(autoSecondBtn.getAttribute('aria-label') === 'Show password', 'Untouched toggle keeps its label');
+const completeElements = createAutoToggleElements();
+global.document = {
+  readyState: 'complete',
+  querySelectorAll: (sel) =>
+    sel === '.password-toggle-btn'
+      ? [completeElements.firstBtn, completeElements.secondBtn]
+      : [],
+  getElementById: (id) =>
+    ({ password: completeElements.firstInput, password_confirm: completeElements.secondInput })[id] || null,
+};
+delete require.cache[passwordToggleModulePath];
+require(passwordToggleModulePath);
+
+completeElements.secondBtn.click();
+assert(completeElements.secondInput.type === 'text', 'Complete document startup reveals only the second field');
+assert(completeElements.firstInput.type === 'password', 'Toggling the second field leaves the first field hidden');
+assert(completeElements.secondBtn.getAttribute('aria-label') === 'Hide password', 'Complete document startup updates only the second label');
+assert(completeElements.firstBtn.getAttribute('aria-label') === 'Show password', 'Untouched first toggle keeps its label');
+delete global.document;
 
 // Test 7: every password page reuses the login toggle markup and loads the shared module
 // accept_invite.html renders only one branch (elif), so #toggle-password appears in both

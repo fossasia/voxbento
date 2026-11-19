@@ -23,6 +23,7 @@ from portal.auth import (
     hash_password,
     verify_password,
 )
+from portal.database import create_auth_token, get_session, get_user_by_id
 
 # ---------------------------------------------------------------------------
 # Fixtures
@@ -847,8 +848,6 @@ class TestEmailVerification:
 class TestPasswordReset:
     @pytest.mark.anyio
     async def test_reset_password_page_renders_for_valid_token(self, setup_db):
-        from portal.database import create_auth_token, get_session
-
         user = await _create_test_user(email="reset-valid@example.com")
         async with get_session() as s:
             await create_auth_token(s, jti="valid-reset-token", user_id=user.id, token_type="password_reset")
@@ -861,8 +860,6 @@ class TestPasswordReset:
 
     @pytest.mark.anyio
     async def test_reset_password_page_renders_accessible_password_toggle(self, setup_db):
-        from portal.database import create_auth_token, get_session
-
         user = await _create_test_user(email="reset-toggle@example.com")
         async with get_session() as s:
             await create_auth_token(s, jti="toggle-reset-token", user_id=user.id, token_type="password_reset")
@@ -892,8 +889,6 @@ class TestPasswordReset:
 
     @pytest.mark.anyio
     async def test_reset_password_page_rejects_expired_token(self, setup_db):
-        from portal.database import create_auth_token, get_session
-
         user = await _create_test_user(email="reset-expired@example.com")
         async with get_session() as s:
             await create_auth_token(
@@ -910,8 +905,6 @@ class TestPasswordReset:
     async def test_reset_password_page_rejects_used_token(self, setup_db):
         from datetime import datetime, timezone
 
-        from portal.database import create_auth_token, get_session
-
         user = await _create_test_user(email="reset-used@example.com")
         async with get_session() as s:
             tok = await create_auth_token(s, jti="used-reset-token", user_id=user.id, token_type="password_reset")
@@ -926,8 +919,6 @@ class TestPasswordReset:
 
     @pytest.mark.anyio
     async def test_reset_password_page_rejects_wrong_token_type(self, setup_db):
-        from portal.database import create_auth_token, get_session
-
         user = await _create_test_user(email="reset-wrongtype@example.com")
         async with get_session() as s:
             await create_auth_token(s, jti="verification-token-not-reset", user_id=user.id, token_type="verification")
@@ -1029,8 +1020,6 @@ class TestPasswordReset:
 
     @pytest.mark.anyio
     async def test_reset_password_post_redemption_failure_shows_invalid_token(self, setup_db):
-        from portal.database import create_auth_token, get_session
-
         user = await _create_test_user(email="reset-expired-post@example.com")
         async with get_session() as s:
             await create_auth_token(
@@ -1246,8 +1235,6 @@ class TestLastSignIn:
 
     @pytest.mark.anyio
     async def test_inactive_password_reset_does_not_sign_in(self, setup_db):
-        from portal.database import create_auth_token, get_session, get_user_by_id
-
         user = await _create_test_user(email="inactive-reset@example.com")
         async with get_session() as session:
             stored = await get_user_by_id(session, user.id)
@@ -1312,8 +1299,6 @@ class TestLastSignIn:
 
     @pytest.mark.anyio
     async def test_successful_password_reset_records_timestamp(self, setup_db):
-        from portal.database import create_auth_token, get_session, get_user_by_id
-
         user = await _create_test_user(email="reset-sign-in@example.com")
         async with get_session() as session:
             await create_auth_token(session, jti="reset-sign-in-token", user_id=user.id, token_type="password_reset")
@@ -1683,8 +1668,6 @@ class TestMagicLinkAuthentication:
     @pytest.mark.anyio
     async def test_magic_link_redirect_places_auth_sync_in_query_before_fragment(self, setup_db):
         from urllib.parse import quote
-
-        from portal.database import create_auth_token, get_session
 
         user = await _create_test_user()
         test_cases = [
