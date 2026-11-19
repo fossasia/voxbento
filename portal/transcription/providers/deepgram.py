@@ -11,6 +11,7 @@ from websockets.exceptions import InvalidStatus
 
 from portal.database import get_session
 from portal.transcription.aggregator import CaptionAggregator
+from portal.transcription.errors import TranscriptionAuthError
 from portal.transcription.providers.base import BoothTranscriptionState, ProviderConfig, TranscriptionProvider
 from portal.translations.vocabulary import speech_keyterms
 
@@ -203,6 +204,13 @@ class DeepgramProvider(TranscriptionProvider):
                         task.cancel()
 
             except (OSError, asyncio.TimeoutError, websockets.exceptions.WebSocketException) as e:
+                status = getattr(getattr(e, "response", None), "status_code", None)
+                if status in (401, 403):
+                    raise TranscriptionAuthError(
+                        "deepgram",
+                        f"Deepgram API key was rejected ({status} during the websocket handshake).",
+                        status,
+                    ) from e
                 if keyterms and isinstance(e, InvalidStatus) and e.response.status_code == 400:
                     # Deepgram counts keyterm tokens with its own tokenizer, so a glossary inside the
                     # estimated budget can still be refused. Captions without the glossary beat none.

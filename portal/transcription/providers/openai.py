@@ -7,6 +7,7 @@ import logging
 from tenacity import AsyncRetrying, retry_if_exception, stop_after_attempt, wait_exponential
 
 from portal.globals import get_http_client
+from portal.transcription.errors import TranscriptionAuthError
 from portal.transcription.providers.base import (
     BoothTranscriptionState,
     ProviderConfig,
@@ -49,13 +50,37 @@ class OpenAIProvider(TranscriptionProvider):
                     resp = await client.post(
                         "https://api.openai.com/v1/audio/transcriptions", headers=headers, files=files, data=data
                     )
-                    # Surface every non-2xx (401/403/400/500…) instead of dropping the chunk silently.
+                    if resp.status_code in (401, 403):
+                        raise TranscriptionAuthError(
+                            "openai",
+                            "OpenAI API key was rejected.",
+                            resp.status_code,
+                        )
+                    # Surface every other non-2xx (400/500…) instead of dropping the chunk silently.
                     resp.raise_for_status()
                     return resp.json().get("text", "").strip()
+        except TranscriptionAuthError:
+            raise
         except Exception as e:
             logger.error(f"OpenAI request failed: {e}")
             raise e
         return ""
+
+    # Error codes and messages OpenAI uses when the realtime socket rejects a key.
+    _AUTH_ERROR_CODES = ("invalid_api_key", "authentication_error")
+    _AUTH_ERROR_TOKENS = ("api key", "api_key", "unauthorized", "authentication", "invalid_api_key")
+
+    @classmethod
+    def _auth_error_from_event(cls, data: dict) -> TranscriptionAuthError | None:
+        """Return an auth error if this realtime error event means a rejected key."""
+        error = data.get("error")
+        if not isinstance(error, dict):
+            return None
+        code = str(error.get("code") or "").lower()
+        detail = str(error.get("message") or error).strip()
+        if code in cls._AUTH_ERROR_CODES or any(t in detail.lower() for t in cls._AUTH_ERROR_TOKENS):
+            return TranscriptionAuthError("openai", "OpenAI API key was rejected.")
+        return None
 
     async def run_stream(
         self,
@@ -150,6 +175,13 @@ class OpenAIProvider(TranscriptionProvider):
                                     if current_transcription:
                                         await aggregator.handle_clear(booth_id)
                                     current_transcription = ""
+                                elif event_type == "error":
+                                    auth_error = self._auth_error_from_event(data)
+                                    if auth_error:
+                                        raise auth_error
+                                    logger.error(f"[{booth_id}] OpenAI Realtime error: {data.get('error')}")
+                        except TranscriptionAuthError:
+                            raise
                         except Exception as e:
                             logger.error(f"[{booth_id}] OpenAI WS receiver error: {e}")
                             return "ERROR"
@@ -170,10 +202,25 @@ class OpenAIProvider(TranscriptionProvider):
                         for task in pending:
                             task.cancel()
                         return
+                    for task in done:
+                        exc = task.exception() if not task.cancelled() else None
+                        if isinstance(exc, TranscriptionAuthError):
+                            for t in pending:
+                                t.cancel()
+                            raise exc
                     for task in pending:
                         task.cancel()
                     raise Exception("WebSocket disconnected.")
+            except TranscriptionAuthError:
+                raise
             except Exception as e:
+                status = getattr(getattr(e, "response", None), "status_code", None) or getattr(e, "status_code", None)
+                if status in (401, 403):
+                    raise TranscriptionAuthError(
+                        "openai",
+                        f"OpenAI API key was rejected ({status} during the websocket handshake).",
+                        status,
+                    ) from e
                 consecutive_errors += 1
                 logger.warning(f"[{booth_id}] OpenAI Realtime connection failed ({consecutive_errors}): {e}")
                 if consecutive_errors > 5:
