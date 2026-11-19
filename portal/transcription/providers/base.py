@@ -58,6 +58,10 @@ class ProviderConfig:
     # The event glossary's source terms, most important first, for providers that can bias recognition
     # (#1164). Filled once when the worker starts; empty means no biasing.
     terms: tuple[str, ...] = ()
+    #: Text local Whisper reads as preceding speech, e.g. glossary terms to spell as written.
+    prompt: str | None = None
+    #: Terms Deepgram listens for. Empty: the room's glossary is looked up as before.
+    keyterms: tuple[str, ...] = ()
 
     def get_key(self) -> str | None:
         return self.api_key
@@ -110,10 +114,8 @@ class TranscriptionProvider:
                 except asyncio.IncompleteReadError as e:
                     chunk = e.partial
                     if chunk:
-                        try:
-                            queue.put_nowait(chunk)
-                        except asyncio.QueueFull:
-                            pass
+                        # The last words before the stream ended: wait for room rather than drop them.
+                        await queue.put(chunk)
                     break
                 except Exception as e:
                     logger.error(f"[{booth_id}] Reader error: {e}")
@@ -194,7 +196,11 @@ class TranscriptionProvider:
         reader = asyncio.create_task(audio_reader_task())
         inference = asyncio.create_task(inference_task())
 
-        await asyncio.wait([reader, inference], return_when=asyncio.FIRST_COMPLETED)
+        done, _ = await asyncio.wait([reader, inference], return_when=asyncio.FIRST_COMPLETED)
+        if reader in done and not inference.done():
+            # The audio ended. The reader queued its end marker last, so let the chunks still
+            # waiting be transcribed instead of dropping the last few seconds of speech.
+            await inference
 
         reader.cancel()
         inference.cancel()

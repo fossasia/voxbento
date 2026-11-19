@@ -31,11 +31,12 @@ PROVIDERS = {
 }
 
 active_workers_lock = asyncio.Lock()
-MAX_TOTAL_WORKERS = 10
+# Backward-compatibility alias; live capacity checks read settings.max_transcription_workers
+MAX_TOTAL_WORKERS = settings.max_transcription_workers
 
 
 class WorkerCapacityError(ValueError):
-    """Raised when starting a worker would exceed MAX_TOTAL_WORKERS."""
+    """Raised when starting a worker would exceed max_transcription_workers."""
 
 
 class State(Enum):
@@ -235,9 +236,10 @@ async def start_transcription_worker(
         async with active_workers_lock:
             existing_session = active_workers.get(booth_id)
             if not existing_session:
-                if len(active_workers) >= MAX_TOTAL_WORKERS:
+                limit = settings.max_transcription_workers
+                if len(active_workers) >= limit:
                     raise WorkerCapacityError(
-                        f"System at maximum capacity ({MAX_TOTAL_WORKERS} concurrent transcription booths)."
+                        f"System at maximum capacity ({limit} concurrent transcription booths)."
                     )
 
                 if provider == "local":

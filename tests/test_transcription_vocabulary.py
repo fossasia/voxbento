@@ -293,6 +293,7 @@ def test_without_terms_whisper_is_called_exactly_as_before(monkeypatch):
         "no_speech_threshold": 0.6,
         "log_prob_threshold": -1.0,
         "condition_on_previous_text": False,
+        "initial_prompt": None,
     }
 
 
@@ -300,7 +301,7 @@ def test_without_terms_whisper_is_called_exactly_as_before(monkeypatch):
 async def test_process_chunk_hands_the_config_terms_to_whisper(monkeypatch):
     seen = {}
 
-    def fake_inference(self, audio, language, model, booth_state, terms=()):
+    def fake_inference(self, audio, language, model, booth_state, terms=(), prompt=None, overlap_seconds=1.0):
         seen["terms"] = terms
         return ""
 

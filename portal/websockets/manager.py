@@ -10,6 +10,7 @@ from collections.abc import AsyncIterator, Awaitable, Callable
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
+from uuid import uuid4
 
 from fastapi import WebSocket, WebSocketDisconnect
 from sqlalchemy.exc import SQLAlchemyError
@@ -18,8 +19,10 @@ import portal.webhooks.worker as _wh_worker
 from portal.auth import WSAuthError, can_perform_role
 from portal.booth_identity import booth_id_to_mediamtx_path, parse_booth_id
 from portal.booth_publish import TICKET_TTL_SECS, issue_ticket
+from portal.config import settings
 from portal.globals import booths
 from portal.roles import ALL_ROLES, INTERPRETER, can_set_active
+from portal.tasks import track_task
 
 
 def utc_now() -> datetime:
@@ -34,6 +37,10 @@ REASON_ACCOUNT_DEACTIVATED: str = "Account deactivated"
 REASON_AUTH_REVOKED: str = "Authorization revoked"
 REASON_SESSION_EXPIRED: str = "Session authorization expired"
 REASON_INVITE_REVOKED: str = "Invitation revoked"
+# The same session took this socket's place in the booth from another socket, e.g.
+# another tab. Final for the client, so the two tabs do not take turns reclaiming it.
+WS_CLOSE_SUPERSEDED: int = 4009
+REASON_SUPERSEDED: str = "Booth opened elsewhere"
 
 
 @dataclass
@@ -51,6 +58,8 @@ class Session:
     # Key of the session that opened the socket (see portal.auth.booth_session_key); recorded at join.
     session_key: str | None = None
     issued_at: datetime = field(default_factory=utc_now)
+    # Names this socket in the registry's participant record (Participant.connection_id).
+    connection_id: str = field(default_factory=lambda: uuid4().hex)
 
 
 class ConnectionManager:
@@ -140,12 +149,15 @@ class ConnectionManager:
         code: int = WS_CLOSE_REVOKED,
         reason: str = REASON_INVITE_REVOKED,
     ) -> None:
-        """Revoke authorization and concurrently disconnect all matching active sessions of an invite token."""
+        """Revoke authorization, disconnect all matching active sessions of an invite token, and
+        remove its participants whose socket had already dropped."""
         revoked_sockets = self.revoke_token_sessions(token_id, booth_id)
-        if not revoked_sockets:
-            return
-        tasks = [self.close_session(ws, code=code, reason=reason) for ws in revoked_sockets]
-        await asyncio.gather(*tasks, return_exceptions=True)
+        if revoked_sockets:
+            tasks = [self.close_session(ws, code=code, reason=reason) for ws in revoked_sockets]
+            await asyncio.gather(*tasks, return_exceptions=True)
+        await _remove_retained_participants(
+            booths.remove_disconnected(invite_public_id=str(token_id), booth_id=booth_id)
+        )
 
     def revocation_epoch(self, user_id: int, booth_id: str | None = None) -> tuple[int, int]:
         """Return (user_wide_epoch, booth_specific_epoch) for this user and booth."""
@@ -184,6 +196,21 @@ class ConnectionManager:
 
     def get_session(self, ws: WebSocket) -> Session | None:
         return self._sessions.get(id(ws))
+
+    def detach_participant(self, booth_id: str, participant_id: str, keep: WebSocket) -> list[WebSocket]:
+        """Take *participant_id* away from every socket in the booth but *keep*.
+
+        Called when a reconnect reclaims a participant that an older socket still
+        holds (a half-open connection, or another tab of the same session). The
+        old socket can no longer act as them, and leaves nobody behind when it closes.
+        """
+        detached = []
+        for ws in list(self._rooms.get(booth_id, ())):
+            session = self._sessions.get(id(ws))
+            if ws is not keep and session is not None and session.participant_id == participant_id:
+                session.participant_id = None
+                detached.append(ws)
+        return detached
 
     def revoke_session(self, ws: WebSocket) -> None:
         """Revoke authorization for a connected socket so it receives no further broadcasts."""
@@ -260,12 +287,13 @@ class ConnectionManager:
         code: int = WS_CLOSE_REVOKED,
         reason: str = REASON_AUTH_REVOKED,
     ) -> None:
-        """Revoke authorization and concurrently disconnect all matching active sessions of a user."""
+        """Revoke authorization, disconnect all matching active sessions of a user, and remove
+        their participants whose socket had already dropped."""
         revoked_sockets = self.revoke_user_sessions(user_id, booth_id)
-        if not revoked_sockets:
-            return
-        tasks = [self.close_session(ws, code=code, reason=reason) for ws in revoked_sockets]
-        await asyncio.gather(*tasks, return_exceptions=True)
+        if revoked_sockets:
+            tasks = [self.close_session(ws, code=code, reason=reason) for ws in revoked_sockets]
+            await asyncio.gather(*tasks, return_exceptions=True)
+        await _remove_retained_participants(booths.remove_disconnected(user_id=user_id, booth_id=booth_id))
 
     async def close_booth_sessions(
         self,
@@ -770,10 +798,13 @@ async def _handle_join(ws: WebSocket, session: Session, data: dict) -> None:
             joined_by=session.session_key,
             user_id=session.user_id,
             invite_public_id=str(session.invite_token_id) if session.invite_token_id is not None else None,
+            connection_id=session.connection_id,
         )
     except (ValueError, PermissionError) as exc:
         await ws.send_text(json.dumps({"type": "booth:error", "message": str(exc)}))
         return
+    for old_ws in manager.detach_participant(session.booth_id, participant.participant_id, keep=ws):
+        track_task(asyncio.create_task(manager.close_session(old_ws, code=WS_CLOSE_SUPERSEDED, reason=REASON_SUPERSEDED)))
     session.participant_id = participant.participant_id
     session.language = language
     session.channel_id = channel_id
@@ -803,9 +834,60 @@ async def _handle_leave(session: Session) -> None:
     if not session.participant_id:
         return
     state = await booths.leave_participant(
-        session.booth_id, session.participant_id, session.language, session.channel_id
+        session.booth_id,
+        session.participant_id,
+        session.language,
+        session.channel_id,
+        connection_id=session.connection_id,
     )
     session.participant_id = None
+    await broadcast_booth_state(session.booth_id, state)
+
+
+async def _remove_retained_participants(removal: Awaitable[list[tuple[str, dict]]]) -> None:
+    """Remove participants whose access was revoked while their socket was down, and tell their booths.
+
+    Without this they would keep their place, and an active slot with live audio, until the
+    reconnect or restart grace ran out, although they can no longer reconnect.
+    """
+    for booth_id, state in await removal:
+        await broadcast_booth_state(booth_id, state)
+
+
+def schedule_participant_expiry(booth_id: str, participant_id: str, connection_id: str | None, delay: float) -> None:
+    """Remove the participant after *delay* seconds unless they reconnect first."""
+
+    async def expire() -> None:
+        await asyncio.sleep(delay)
+        state = await booths.expire_participant(booth_id, participant_id, connection_id)
+        if state is not None:
+            await broadcast_booth_state(booth_id, state)
+
+    track_task(asyncio.create_task(expire(), name=f"booth-expire-{booth_id}"))
+
+
+async def release_participant(session: Session, *, immediate: bool) -> None:
+    """Handle the socket of a joined participant closing (TD-11).
+
+    A dropped connection keeps the participant, and the active slot they hold,
+    for ``booth_reconnect_grace_seconds`` so the same session can reclaim them;
+    their WHIP audio goes to MediaMTX directly and keeps playing meanwhile.
+    *immediate* (access revoked or changed) removes them at once.
+    """
+    participant_id = session.participant_id
+    if not participant_id:
+        return
+    session.participant_id = None
+    grace = settings.booth_reconnect_grace_seconds
+    if immediate or grace <= 0:
+        state = await booths.leave_participant(
+            session.booth_id, participant_id, session.language, session.channel_id, connection_id=session.connection_id
+        )
+    else:
+        state = await booths.disconnect_participant(session.booth_id, participant_id, session.connection_id)
+        if state is None:
+            return  # another socket holds them now
+        schedule_participant_expiry(session.booth_id, participant_id, session.connection_id, grace)
     await broadcast_booth_state(session.booth_id, state)
 
 
@@ -854,7 +936,6 @@ async def _handle_update_state(ws: WebSocket, session: Session, data: dict) -> N
             session.channel_id,
             mic_active=data.get("mic_active"),
             ingest_connected=data.get("ingest_connected"),
-            connected=data.get("connected"),
         )
     except (ValueError, PermissionError) as exc:
         await ws.send_text(json.dumps({"type": "booth:error", "message": str(exc)}))
