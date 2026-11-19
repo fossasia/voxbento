@@ -105,7 +105,7 @@ textarea.aa-input { min-height: 96px; resize: vertical; }
 }
 .aa-notice-icon { flex: none; width: 22px; height: 22px; margin-top: 2px; }
 .aa-notice-title { margin: 0; font-weight: 700; font-size: 0.9375rem; }
-.aa-notice-text { margin: 2px 0 0; font-size: 0.875rem; line-height: 1.45; }
+.aa-notice-text { margin: 2px 0 0; font-size: 0.875rem; line-height: 1.45; overflow-wrap: anywhere; }
 
 /* Hosting events section on the Account page */
 .aa-section { margin-bottom: 24px; }
