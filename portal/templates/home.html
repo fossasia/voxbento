@@ -16,6 +16,7 @@
     <link rel="stylesheet" href="{{ url_for('static', path='css/landing.css') }}?v={{ js_version }}" />
     <link rel="stylesheet" href="{{ url_for('static', path='css/home.css') }}?v={{ js_version }}" />
     <link rel="stylesheet" href="{{ url_for('static', path='css/demo-modal.css') }}?v={{ js_version }}" />
+    <link rel="stylesheet" href="{{ url_for('static', path='css/live-demo.css') }}?v={{ js_version }}" />
 
     <script>
         tailwind.config = {
@@ -399,17 +400,121 @@
         <!-- Interactive Demo Section -->
         <section id="interactive-demo" class="py-24 bg-white border-t-[3px] border-[#0d0f10]">
             <div class="max-w-4xl mx-auto px-6">
-                <div class="text-center mb-14">
+                <div class="text-center mb-10">
                     <h2 class="text-5xl font-extrabold text-brand-600 mb-6">VoxBento Demo</h2>
                     <p class="text-slate-600 max-w-3xl mx-auto text-lg leading-relaxed font-medium">
                         Real-time AI translation isn't something you can fully grasp from a product page — you have to
-                        hear it.
-                        Hit play, pick your language, and experience instant AI-powered translation in action.
+                        hear it. Press the mic and talk: your words are captioned, translated and spoken back in
+                        other languages by the models running on our own servers.
                     </p>
                 </div>
 
+                <!-- Demo mode switch; shown by live-demo.js when the live demo is available -->
+                <div id="demo-mode-tabs" class="live-demo-tabs" role="tablist" aria-label="Demo type" hidden>
+                    <button type="button" role="tab" id="demo-tab-voice" class="live-demo-tabs__tab"
+                        data-demo-mode="voice" aria-controls="live-demo-panel" aria-selected="false" tabindex="-1">
+                        <svg aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="2" width="6" height="12" rx="3"/><path d="M19 10v1a7 7 0 0 1-14 0v-1"/><path d="M12 18v4"/></svg>
+                        Your voice
+                    </button>
+                    <button type="button" role="tab" id="demo-tab-recording" class="live-demo-tabs__tab"
+                        data-demo-mode="recording" aria-controls="demo-player-root" aria-selected="false" tabindex="-1">
+                        <svg aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="5" width="20" height="14" rx="3"/><path d="m10 9 5 3-5 3V9Z"/></svg>
+                        A recording
+                    </button>
+                </div>
+
+                <!-- Live demo: microphone -> captions -> translations -> voice (live-demo.js) -->
+                <div id="live-demo-panel" role="tabpanel" aria-labelledby="demo-tab-voice" hidden
+                    data-worklet-url="{{ url_for('static', path='js/live-demo-capture.js') }}?v={{ js_version }}">
+                    <div class="live-demo" data-phase="idle">
+                        <div class="live-demo__top">
+                            <span class="live-demo__badge"><span class="live-demo__dot" aria-hidden="true"></span>Live demo</span>
+                            <span class="live-demo__meta" id="live-demo-meta">headphones recommended</span>
+                        </div>
+
+                        <div class="live-demo__controls">
+                            <button type="button" id="live-demo-mic" class="live-demo__mic" aria-pressed="false">
+                                <svg aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="2" width="6" height="12" rx="3"/><path d="M19 10v1a7 7 0 0 1-14 0v-1"/><path d="M12 18v4"/></svg>
+                                <span id="live-demo-mic-label">Start speaking</span>
+                            </button>
+                            <p class="live-demo__route">
+                                <span id="live-demo-from" class="live-demo__route-from">English</span>
+                                <span aria-hidden="true" class="live-demo__arrow">&rarr;</span>
+                                <span id="live-demo-to">Spanish · French</span>
+                            </p>
+                            <button type="button" id="live-demo-change" class="live-demo__change"
+                                aria-expanded="false" aria-controls="live-demo-settings">
+                                <span id="live-demo-change-label">Change</span>
+                                <svg aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="m6 9 6 6 6-6"/></svg>
+                            </button>
+                        </div>
+
+                        <div id="live-demo-settings" class="live-demo__settings" hidden>
+                            <div class="live-demo__inline">
+                                <label for="live-demo-source" class="live-demo__eyebrow">You speak</label>
+                                <select id="live-demo-source" class="live-demo__select live-demo__select--compact"></select>
+                            </div>
+                            <p class="live-demo__eyebrow" id="live-demo-targets-label">Translate into · up to 3</p>
+                            <div id="live-demo-targets" class="live-demo__chips" role="group" aria-labelledby="live-demo-targets-label"></div>
+                            <p class="live-demo__eyebrow live-demo__tip">Tip: click a language below to choose what you hear</p>
+                        </div>
+
+                        <div class="live-demo__fields">
+                            <div id="live-demo-script-row" class="live-demo__field">
+                                <label for="live-demo-script" class="live-demo__label">Suggested script</label>
+                                <select id="live-demo-script" class="live-demo__select"></select>
+                            </div>
+                            <div class="live-demo__field">
+                                <label for="live-demo-names" class="live-demo__label">Names you'll say</label>
+                                <div class="live-demo__field-body">
+                                    <input id="live-demo-names" type="text" maxlength="240" autocomplete="off"
+                                        class="live-demo__input" placeholder="Optional: your event, people, places"
+                                        aria-describedby="live-demo-names-hint">
+                                    <p id="live-demo-names-hint" class="live-demo__hint">Type names first so VoxBento listens for them and keeps them as they are.</p>
+                                </div>
+                            </div>
+                            <div class="live-demo__field">
+                                <span class="live-demo__label" id="live-demo-glossary-label">Glossary</span>
+                                <div class="live-demo__field-body">
+                                    <div class="live-demo__glossary-form" role="group" aria-labelledby="live-demo-glossary-label" aria-describedby="live-demo-glossary-hint">
+                                        <input id="live-demo-term" type="text" maxlength="80" autocomplete="off"
+                                            class="live-demo__input" placeholder="Term, e.g. keynote" aria-label="Term">
+                                        <select id="live-demo-term-lang" class="live-demo__select live-demo__select--compact" aria-label="Translate it in"></select>
+                                        <input id="live-demo-term-translation" type="text" maxlength="80" autocomplete="off"
+                                            class="live-demo__input" placeholder="Translation (blank keeps it)" aria-label="Translation">
+                                        <button type="button" id="live-demo-term-add" class="live-demo__add">Add</button>
+                                    </div>
+                                    <ul id="live-demo-glossary-list" class="live-demo__glossary-list" aria-label="Your glossary"></ul>
+                                    <p id="live-demo-glossary-hint" class="live-demo__hint">Set how a term is translated, e.g. keynote → French "séance plénière". Glossary terms are highlighted in the captions.</p>
+                                    <p id="live-demo-site-glossary" class="live-demo__hint" hidden></p>
+                                </div>
+                            </div>
+                        </div>
+
+                        <div id="live-demo-read" class="live-demo__read">
+                            <span class="live-demo__eyebrow">Read</span>
+                            <p id="live-demo-read-line" class="live-demo__read-line"></p>
+                            <button type="button" id="live-demo-next" class="live-demo__next">
+                                Next
+                                <svg aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="m9 6 6 6-6 6"/></svg>
+                            </button>
+                        </div>
+
+                        <div class="live-demo__rows">
+                            <div class="live-demo__row live-demo__row--source">
+                                <span class="live-demo__code" id="live-demo-source-code">EN</span>
+                                <p class="live-demo__text" id="live-demo-source-text" data-kind="placeholder">your words appear here</p>
+                            </div>
+                            <div id="live-demo-target-rows"></div>
+                        </div>
+
+                        <p id="live-demo-status" class="live-demo__status" role="status" aria-live="polite"></p>
+                    </div>
+                    <p class="live-demo__footnote">It's a live demo on VoxBento's own speech, translation and voice models — press the mic and just talk. Click a language to choose what you hear.</p>
+                </div>
+
                 <!-- Demo player — pre-rendered, JS attaches behaviour only -->
-                <div id="demo-player-root" class="w-full">
+                <div id="demo-player-root" class="w-full" role="tabpanel" aria-labelledby="demo-tab-recording">
 
                     <!-- ===== LOADING STATE ===== -->
                     <!-- Mobile phone loading -->
@@ -863,6 +968,7 @@
     </footer>
     <script type="module" src="{{ url_for('static', path='js/home.js') }}?v={{ js_version }}"></script>
     <script type="module" src="{{ url_for('static', path='js/demo-player.js') }}?v={{ js_version }}"></script>
+    <script type="module" src="{{ url_for('static', path='js/live-demo.js') }}?v={{ js_version }}"></script>
     <script type="module" src="{{ url_for('static', path='js/demo-modal.js') }}?v={{ js_version }}"></script>
 
     {% include "_demo_modal.html" %}

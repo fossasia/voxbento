@@ -1,0 +1,763 @@
+/* Home-page live demo ("Your voice"), in the landing page's brutalist style (home.css):
+   ink borders, hard offset shadows, white cards on the page grey, blue for what is
+   selected and amber for secondary actions. */
+
+#demo-mode-tabs[hidden],
+#live-demo-panel[hidden],
+#demo-player-root[hidden],
+.live-demo [hidden] {
+  display: none !important;
+}
+
+#live-demo-panel,
+#demo-mode-tabs {
+  --ld-ink: #0d0f10;
+  --ld-page: #eef2f6;
+  --ld-blue: #2563eb;
+  --ld-blue-light: #3b82f6;
+  --ld-amber: #fbbf24;
+  --ld-red: #dc2626;
+  --ld-muted: #475569;
+  --ld-faint: #64748b;
+}
+
+/* Read by screen readers only. */
+.live-demo__sr {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  margin: -1px;
+  padding: 0;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
+}
+
+/* ── Mode tabs ─────────────────────────────────────────────────────────────── */
+
+.live-demo-tabs {
+  display: flex;
+  width: max-content;
+  max-width: 100%;
+  margin: 0 auto 32px;
+  padding: 5px;
+  gap: 5px;
+  border: 3px solid var(--ld-ink);
+  border-radius: 8px;
+  background: #ffffff;
+  box-shadow: 4px 4px 0 var(--ld-ink);
+}
+
+.live-demo-tabs__tab {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 9px 18px;
+  border: 2px solid transparent;
+  border-radius: 5px;
+  background: transparent;
+  color: var(--ld-ink);
+  font-size: 0.8rem;
+  font-weight: 800;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  cursor: pointer;
+  transition: background-color 0.15s ease, color 0.15s ease;
+}
+
+.live-demo-tabs__tab svg {
+  width: 16px;
+  height: 16px;
+}
+
+.live-demo-tabs__tab:hover {
+  background: #f1f5f9;
+}
+
+.live-demo-tabs__tab[aria-selected='true'] {
+  background: var(--ld-blue);
+  border-color: var(--ld-ink);
+  color: #ffffff;
+}
+
+.live-demo-tabs__tab:focus-visible {
+  outline: 3px solid var(--ld-blue-light);
+  outline-offset: 2px;
+}
+
+/* ── Console card ─────────────────────────────────────────────────────────── */
+
+.live-demo {
+  position: relative;
+  padding: 24px 26px 20px;
+  border: 3px solid var(--ld-ink);
+  border-radius: 8px;
+  background: #ffffff;
+  box-shadow: 8px 8px 0 var(--ld-ink);
+  color: var(--ld-ink);
+  font-family: 'Inter', sans-serif;
+  text-align: left;
+}
+
+.live-demo__top {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 20px;
+}
+
+.live-demo__badge,
+.live-demo__eyebrow,
+.live-demo__meta {
+  font-size: 0.72rem;
+  font-weight: 800;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+}
+
+/* Like the hero's LIVE tag: blue with a pulsing dot while a try is running. */
+.live-demo__badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 5px 12px;
+  border: 2px solid var(--ld-ink);
+  border-radius: 6px;
+  background: #ffffff;
+  box-shadow: 3px 3px 0 var(--ld-ink);
+}
+
+.live-demo__dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: #94a3b8;
+}
+
+.live-demo[data-phase='live'] .live-demo__badge {
+  background: var(--ld-blue);
+  color: #ffffff;
+}
+
+.live-demo[data-phase='live'] .live-demo__dot {
+  background: #ffffff;
+  animation: liveDemoPulse 1.2s ease-in-out infinite;
+}
+
+.live-demo__meta {
+  color: var(--ld-faint);
+  letter-spacing: 0.08em;
+}
+
+/* ── Controls ─────────────────────────────────────────────────────────────── */
+
+.live-demo__controls {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 14px 20px;
+}
+
+/* A brutal-btn-primary; it turns red while recording and grows a ring with the mic level. */
+.live-demo__mic {
+  --live-level: 0;
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  padding: 13px 24px;
+  border: 3px solid var(--ld-ink);
+  border-radius: 8px;
+  /* The darker blue: white on it is 5.2:1, where the page's lighter button blue is 3.7:1. */
+  background: var(--ld-blue);
+  color: #ffffff;
+  font-size: 0.95rem;
+  font-weight: 800;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  cursor: pointer;
+  box-shadow: 4px 4px 0 var(--ld-ink);
+  outline: calc(var(--live-level) * 10px) solid rgba(220, 38, 38, 0.3);
+  outline-offset: 3px;
+  transition: transform 0.15s ease, box-shadow 0.15s ease, background-color 0.15s ease, outline-width 0.08s linear;
+}
+
+.live-demo__mic svg {
+  width: 20px;
+  height: 20px;
+}
+
+.live-demo__mic:hover:not(:disabled) {
+  transform: translate(-2px, -2px);
+  box-shadow: 6px 6px 0 var(--ld-ink);
+  background: #1d4ed8;
+}
+
+.live-demo__mic:active:not(:disabled) {
+  transform: translate(2px, 2px);
+  box-shadow: 0 0 0 var(--ld-ink);
+}
+
+.live-demo__mic:focus-visible {
+  outline: 3px solid var(--ld-amber);
+  outline-offset: 3px;
+}
+
+.live-demo__mic[aria-pressed='true'],
+.live-demo__mic[aria-pressed='true']:hover:not(:disabled) {
+  background: var(--ld-red);
+}
+
+.live-demo__mic:disabled {
+  cursor: progress;
+  opacity: 0.7;
+}
+
+.live-demo__route {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 8px;
+  margin: 0;
+  font-size: 1.05rem;
+  font-weight: 800;
+}
+
+.live-demo__route-from,
+.live-demo__arrow {
+  color: var(--ld-faint);
+}
+
+/* Small outline brutal buttons. */
+.live-demo__change,
+.live-demo__next {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 12px;
+  border: 2px solid var(--ld-ink);
+  border-radius: 6px;
+  background: #ffffff;
+  color: var(--ld-ink);
+  font-size: 0.72rem;
+  font-weight: 800;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  cursor: pointer;
+  box-shadow: 3px 3px 0 var(--ld-ink);
+  transition: transform 0.15s ease, box-shadow 0.15s ease, background-color 0.15s ease;
+}
+
+.live-demo__change svg,
+.live-demo__next svg {
+  width: 14px;
+  height: 14px;
+  transition: transform 0.2s ease;
+}
+
+.live-demo__change[aria-expanded='true'] {
+  background: var(--ld-amber);
+}
+
+.live-demo__change[aria-expanded='true'] svg {
+  transform: rotate(180deg);
+}
+
+.live-demo__change:hover,
+.live-demo__next:hover {
+  transform: translate(-1px, -1px);
+  box-shadow: 4px 4px 0 var(--ld-ink);
+}
+
+.live-demo__change:active,
+.live-demo__next:active {
+  transform: translate(2px, 2px);
+  box-shadow: 0 0 0 var(--ld-ink);
+}
+
+.live-demo__change:focus-visible,
+.live-demo__next:focus-visible,
+.live-demo__chip:focus-visible,
+.live-demo__add:focus-visible,
+.live-demo__glossary-remove:focus-visible,
+.live-demo__row--target:focus-visible {
+  outline: 3px solid var(--ld-blue-light);
+  outline-offset: 2px;
+}
+
+/* ── Settings drawer ──────────────────────────────────────────────────────── */
+
+.live-demo__settings {
+  margin-top: 18px;
+  padding: 16px 18px;
+  border: 3px solid var(--ld-ink);
+  border-radius: 8px;
+  background: var(--ld-page);
+}
+
+.live-demo__eyebrow {
+  display: block;
+  margin: 0 0 10px;
+  color: var(--ld-ink);
+}
+
+.live-demo__inline {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  margin-bottom: 16px;
+}
+
+.live-demo__inline .live-demo__eyebrow {
+  margin: 0;
+}
+
+.live-demo__chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-bottom: 14px;
+}
+
+/* Like the hero's language rows: white with an ink border, blue when chosen. */
+.live-demo__chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 12px;
+  border: 2px solid var(--ld-ink);
+  border-radius: 6px;
+  background: #ffffff;
+  color: var(--ld-ink);
+  font-size: 0.875rem;
+  font-weight: 700;
+  cursor: pointer;
+  transition: background-color 0.15s ease, color 0.15s ease, transform 0.15s ease, box-shadow 0.15s ease;
+}
+
+.live-demo__chip:hover:not(:disabled) {
+  transform: translate(-1px, -1px);
+  box-shadow: 3px 3px 0 var(--ld-ink);
+}
+
+.live-demo__chip[aria-pressed='true'] {
+  background: var(--ld-blue);
+  color: #ffffff;
+  box-shadow: 3px 3px 0 var(--ld-ink);
+}
+
+.live-demo__chip:disabled {
+  cursor: not-allowed;
+  opacity: 0.4;
+}
+
+.live-demo__chip[aria-pressed='true']:disabled {
+  opacity: 0.85;
+}
+
+.live-demo__chip-tag {
+  padding: 1px 5px;
+  border: 1px solid currentColor;
+  border-radius: 4px;
+  font-size: 0.6rem;
+  font-weight: 800;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  opacity: 0.75;
+}
+
+.live-demo__tip {
+  margin: 0;
+  color: var(--ld-muted);
+}
+
+/* ── Fields ───────────────────────────────────────────────────────────────── */
+
+.live-demo__fields {
+  display: grid;
+  gap: 14px;
+  margin-top: 20px;
+}
+
+.live-demo__field {
+  display: grid;
+  grid-template-columns: 9.5rem minmax(0, 1fr);
+  align-items: start;
+  gap: 12px;
+}
+
+.live-demo__label {
+  padding-top: 10px;
+  color: var(--ld-ink);
+  font-size: 0.9rem;
+  font-weight: 800;
+}
+
+.live-demo__select,
+.live-demo__input {
+  width: 100%;
+  max-width: 30rem;
+  padding: 9px 12px;
+  border: 2px solid var(--ld-ink);
+  border-radius: 6px;
+  background: #ffffff;
+  color: var(--ld-ink);
+  font-size: 0.92rem;
+  font-weight: 600;
+  font-family: inherit;
+  box-shadow: 3px 3px 0 var(--ld-ink);
+}
+
+.live-demo__select--compact {
+  width: auto;
+  padding: 5px 10px;
+}
+
+.live-demo__input::placeholder {
+  color: #94a3b8;
+  font-weight: 500;
+}
+
+.live-demo__select:focus-visible,
+.live-demo__input:focus-visible {
+  outline: 3px solid var(--ld-blue-light);
+  outline-offset: 1px;
+}
+
+.live-demo__select:disabled,
+.live-demo__input:disabled {
+  background: #f1f5f9;
+  opacity: 0.7;
+}
+
+.live-demo__hint {
+  margin: 8px 0 0;
+  color: var(--ld-muted);
+  font-size: 0.82rem;
+  font-weight: 600;
+}
+
+.live-demo__glossary-form {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr) auto;
+  gap: 8px;
+  max-width: 40rem;
+}
+
+.live-demo__glossary-form .live-demo__select--compact {
+  padding: 9px 10px;
+}
+
+/* A small amber brutal button, like the page's secondary actions. */
+.live-demo__add {
+  padding: 8px 16px;
+  border: 2px solid var(--ld-ink);
+  border-radius: 6px;
+  background: var(--ld-amber);
+  color: var(--ld-ink);
+  font-size: 0.78rem;
+  font-weight: 800;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  cursor: pointer;
+  box-shadow: 3px 3px 0 var(--ld-ink);
+  transition: transform 0.15s ease, box-shadow 0.15s ease;
+}
+
+.live-demo__add:hover:not(:disabled) {
+  transform: translate(-1px, -1px);
+  box-shadow: 4px 4px 0 var(--ld-ink);
+}
+
+.live-demo__add:active:not(:disabled) {
+  transform: translate(2px, 2px);
+  box-shadow: 0 0 0 var(--ld-ink);
+}
+
+.live-demo__add:disabled {
+  cursor: not-allowed;
+  opacity: 0.5;
+}
+
+.live-demo__glossary-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin: 12px 0 0;
+  padding: 0;
+  list-style: none;
+}
+
+.live-demo__glossary-list:empty {
+  display: none;
+}
+
+.live-demo__glossary-item {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 4px 4px 4px 6px;
+  border: 2px solid var(--ld-ink);
+  border-radius: 6px;
+  background: #ffffff;
+  font-size: 0.85rem;
+  font-weight: 700;
+}
+
+/* Same as the page's small "AI" badges. */
+.live-demo__glossary-lang {
+  padding: 1px 6px;
+  border: 1px solid var(--ld-ink);
+  border-radius: 4px;
+  background: var(--ld-blue);
+  color: #ffffff;
+  font-size: 0.65rem;
+  font-weight: 800;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.live-demo__glossary-remove {
+  width: 22px;
+  height: 22px;
+  border-radius: 4px;
+  background: transparent;
+  color: var(--ld-ink);
+  font-size: 1rem;
+  font-weight: 800;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.live-demo__glossary-remove:hover:not(:disabled) {
+  background: #fee2e2;
+  color: var(--ld-red);
+}
+
+/* ── Read-aloud line ─────────────────────────────────────────────────────── */
+
+.live-demo__read {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 14px;
+  margin-top: 22px;
+  padding: 14px 16px;
+  border: 3px solid var(--ld-ink);
+  border-radius: 8px;
+  background: #fef3c7;
+}
+
+.live-demo__read .live-demo__eyebrow {
+  margin: 0;
+  padding: 3px 8px;
+  border-radius: 4px;
+  background: var(--ld-ink);
+  color: #ffffff;
+}
+
+.live-demo__read-line {
+  margin: 0;
+  font-size: 1.1rem;
+  font-weight: 800;
+  line-height: 1.4;
+}
+
+/* ── Caption rows ─────────────────────────────────────────────────────────── */
+
+.live-demo__rows {
+  display: grid;
+  gap: 10px;
+  margin-top: 20px;
+}
+
+#live-demo-target-rows {
+  display: grid;
+  gap: 10px;
+}
+
+#live-demo-target-rows:empty {
+  display: none;
+}
+
+.live-demo__row {
+  display: grid;
+  grid-template-columns: 4.5rem minmax(0, 1fr);
+  align-items: center;
+  gap: 14px;
+  width: 100%;
+  min-height: 3.4rem;
+  padding: 10px 14px;
+  border: 2px solid var(--ld-ink);
+  border-radius: 6px;
+  background: #ffffff;
+  color: var(--ld-ink);
+  text-align: left;
+}
+
+.live-demo__row--source {
+  border-width: 3px;
+  background: var(--ld-page);
+}
+
+.live-demo__row--target {
+  cursor: pointer;
+  transition: background-color 0.15s ease, color 0.15s ease, transform 0.15s ease, box-shadow 0.15s ease;
+}
+
+.live-demo__row--target:hover:not(:disabled) {
+  transform: translate(-1px, -1px);
+  box-shadow: 4px 4px 0 var(--ld-ink);
+}
+
+.live-demo__row--target:disabled {
+  border-style: dashed;
+  cursor: default;
+}
+
+/* The language being heard, like the hero's selected channel. */
+.live-demo__row--target[aria-pressed='true'] {
+  background: var(--ld-blue);
+  color: #ffffff;
+  box-shadow: 4px 4px 0 var(--ld-ink);
+}
+
+.live-demo__code {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 0.8rem;
+  font-weight: 800;
+  letter-spacing: 0.08em;
+}
+
+.live-demo__code svg {
+  width: 16px;
+  height: 16px;
+  flex: none;
+}
+
+.live-demo__text {
+  margin: 0;
+  font-size: 0.98rem;
+  font-weight: 600;
+  line-height: 1.5;
+  overflow-wrap: anywhere;
+}
+
+.live-demo__text[data-kind='placeholder'] {
+  color: var(--ld-muted);
+}
+
+.live-demo__text[data-kind='partial'] {
+  color: var(--ld-muted);
+  font-style: italic;
+}
+
+.live-demo__text[data-kind='final'],
+.live-demo__text[data-kind='stale'] {
+  color: var(--ld-ink);
+  font-weight: 700;
+}
+
+/* The previous caption's translation, while the next one is on its way: italic and, outside
+   the selected row, grey. No fading, which would make white text on blue unreadable. */
+.live-demo__text[data-kind='stale'] {
+  font-style: italic;
+  color: var(--ld-muted);
+}
+
+.live-demo__row--target[aria-pressed='true'] .live-demo__text[data-kind='stale'] {
+  color: #ffffff;
+}
+
+.live-demo__row--target[aria-pressed='true'] .live-demo__text {
+  color: #ffffff;
+}
+
+.live-demo__row--target[aria-pressed='true'] .live-demo__text[data-kind='placeholder'] {
+  color: rgba(255, 255, 255, 0.8);
+}
+
+.live-demo__term {
+  padding: 0 3px;
+  border-radius: 3px;
+  background: var(--ld-amber);
+  color: var(--ld-ink);
+  font-weight: 800;
+  font-style: normal;
+}
+
+.live-demo__status {
+  min-height: 1.4em;
+  margin: 14px 0 0;
+  color: #b45309;
+  font-size: 0.88rem;
+  font-weight: 700;
+}
+
+.live-demo__footnote {
+  margin: 22px 4px 0;
+  color: var(--ld-muted);
+  font-size: 0.875rem;
+  font-weight: 600;
+  text-align: center;
+}
+
+@keyframes liveDemoPulse {
+  50% {
+    opacity: 0.35;
+  }
+}
+
+@media (max-width: 640px) {
+  .live-demo {
+    padding: 18px 14px 14px;
+    box-shadow: 5px 5px 0 var(--ld-ink);
+  }
+
+  .live-demo__mic {
+    width: 100%;
+    justify-content: center;
+  }
+
+  .live-demo__field {
+    grid-template-columns: minmax(0, 1fr);
+    gap: 6px;
+  }
+
+  .live-demo__label {
+    padding-top: 0;
+  }
+
+  .live-demo__glossary-form {
+    grid-template-columns: minmax(0, 1fr) auto;
+  }
+
+  .live-demo__read {
+    grid-template-columns: minmax(0, 1fr) auto;
+  }
+
+  .live-demo__read .live-demo__eyebrow {
+    grid-column: 1 / -1;
+    justify-self: start;
+  }
+
+  .live-demo__row {
+    grid-template-columns: 3.4rem minmax(0, 1fr);
+    gap: 10px;
+  }
+
+  .live-demo__meta {
+    font-size: 0.64rem;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .live-demo *,
+  .live-demo-tabs * {
+    animation: none !important;
+    transition: none !important;
+  }
+}
