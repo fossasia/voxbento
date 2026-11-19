@@ -2108,3 +2108,5 @@ th[aria-sort='descending'] .att-sort::after { content: '↓'; opacity: 1; }
 .live-demo-glossary textarea { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: .8125rem; line-height: 1.5; resize: vertical; }
 .live-demo-check { display: inline-flex; align-items: center; gap: 8px; font-weight: 600; font-size: .9375rem; }
 .live-demo-actions { display: flex; gap: 8px; margin: 0 0 20px; }
+.live-demo-choice { display: grid; gap: 10px; margin: 0; padding: 0; border: 0; min-width: 0; }
+.live-demo-indent { margin: 0 0 12px 26px !important; }
