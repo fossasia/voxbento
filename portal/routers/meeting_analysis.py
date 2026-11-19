@@ -44,7 +44,8 @@ class Channel:
     id: str
     label: str
     language_code: str
-    sessions: list[Session]  # newest first; never empty
+    sessions: list[Session]
+
     def __post_init__(self) -> None:
         if not self.sessions:
             raise ValueError(f"Channel {self.id!r} must have at least one session")
