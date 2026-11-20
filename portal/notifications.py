@@ -21,6 +21,7 @@ from markupsafe import Markup
 from sqlalchemy import or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from portal import redis_queue
 from portal.config import settings
 from portal.crypto import decrypt_val, encrypt_val
 from portal.database import get_session
@@ -341,6 +342,7 @@ async def queue_notification(
     )
     session.add(delivery)
     await session.flush()
+    redis_queue.enqueue_after_commit(session, redis_queue.EMAIL, delivery.id, delivery.scheduled_at)
     return delivery
 
 
@@ -464,7 +466,10 @@ async def _record_failure(delivery_id: int, error: str) -> None:
             return
         delivery.status = "pending"
         delay = min(300, 15 * (2 ** (delivery.attempt_count - 1)))
-        delivery.scheduled_at = utc_now() + timedelta(seconds=delay)
+        retry_at = utc_now() + timedelta(seconds=delay)
+        delivery.scheduled_at = retry_at
+    # Scheduled only after the session commits the new due time.
+    await redis_queue.enqueue(redis_queue.EMAIL, [delivery_id], retry_at)
 
 
 async def purge_old_content() -> int:
@@ -494,17 +499,24 @@ async def process_due_deliveries(limit: int = 20) -> int:
     return processed
 
 
+async def purge_if_due(last_purge: datetime | None) -> datetime:
+    """Erase old content at most hourly; returns the time of the latest attempt."""
+    if last_purge is not None and utc_now() - last_purge <= timedelta(hours=1):
+        return last_purge
+    attempted = utc_now()  # recorded first: a failing purge is retried hourly, not every loop
+    try:
+        await purge_old_content()
+    except Exception:  # noqa: BLE001 - erasing old content must never block sending
+        logger.exception("Email content purge failed")
+    return attempted
+
+
 async def notification_worker_loop() -> None:
     """Keep processing the outbox; message rows survive restarts and crashes."""
     last_purge = None
     while True:
         try:
-            if last_purge is None or utc_now() - last_purge > timedelta(hours=1):
-                last_purge = utc_now()  # set first: a failing purge is retried hourly, not every loop
-                try:
-                    await purge_old_content()
-                except Exception:  # noqa: BLE001 - erasing old content must never block sending
-                    logger.exception("Email content purge failed")
+            last_purge = await purge_if_due(last_purge)
             processed = await process_due_deliveries()
             await asyncio.sleep(1 if processed else 10)
         except asyncio.CancelledError:
@@ -512,3 +524,15 @@ async def notification_worker_loop() -> None:
         except Exception:  # noqa: BLE001 - the worker must keep running; rows are retried
             logger.exception("Email outbox worker error")
             await asyncio.sleep(10)
+
+
+async def redis_notification_worker_loop() -> None:
+    """Email worker woken by Redis instead of polling the database every 10 seconds."""
+    last_purge: datetime | None = None
+
+    async def process_due() -> int:
+        nonlocal last_purge
+        last_purge = await purge_if_due(last_purge)
+        return await process_due_deliveries()
+
+    await redis_queue.run_worker(redis_queue.EMAIL, process_due)
