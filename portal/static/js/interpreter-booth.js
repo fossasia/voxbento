@@ -1510,6 +1510,13 @@ function renderParticipants() {
     ingestPill.className = 'participant-pill'
     ingestPill.textContent = participant.ingest_connected ? 'ingest connected' : 'ingest idle'
     pillGroup.append(micPill, ingestPill)
+    // The server keeps a dropped participant's place while they reconnect.
+    if (participant.connected === false) {
+      const reconnectingPill = document.createElement('span')
+      reconnectingPill.className = 'participant-pill'
+      reconnectingPill.textContent = 'reconnecting…'
+      pillGroup.append(reconnectingPill)
+    }
     bottom.append(pillGroup)
 
     // Active/Passive status is shown via the role pill above.
