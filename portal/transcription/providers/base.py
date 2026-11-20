@@ -19,6 +19,14 @@ logger = logging.getLogger(__name__)
 TRANSIENT_STATUS_CODES = (429, 502, 503, 504)
 
 
+class FatalTranscriptionError(Exception):
+    """Non-retryable provider failure that must stop the transcription worker."""
+
+    def __init__(self, message: str = "", *, permanent: bool = True) -> None:
+        super().__init__(message)
+        self.permanent = permanent
+
+
 def is_retryable_transcription_error(exc: BaseException) -> bool:
     """Retry transient network/HTTP failures; let auth, quota and client errors propagate."""
     if isinstance(exc, (httpx.ReadTimeout, httpx.ConnectError)):
@@ -47,9 +55,16 @@ def get_api_key(event: Event, provider: ProviderEnum) -> str | None:
         ProviderEnum.NVIDIA: event.encrypted_nvidia_api_key,
         ProviderEnum.ELEVENLABS: event.encrypted_elevenlabs_api_key,
         ProviderEnum.ATLASCLOUD: event.encrypted_atlascloud_api_key,
+        ProviderEnum.SARVAM: event.encrypted_sarvam_api_key,
     }
     encrypted = key_map.get(provider)
-    return decrypt_val(encrypted) if encrypted else None
+    if not encrypted:
+        return None
+    decrypted = decrypt_val(encrypted)
+    if not decrypted:
+        return None
+    trimmed = decrypted.strip()
+    return trimmed or None
 
 
 @dataclass

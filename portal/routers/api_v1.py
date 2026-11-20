@@ -31,7 +31,13 @@ from portal.models import (
 from portal.rate_limit import auth_rate_limiter
 from portal.roles import EVENT_OWNER
 from portal.transcription.constants import ProviderEnum
-from portal.transcription.worker import active_workers, start_transcription_worker, stop_transcription_worker
+from portal.transcription.providers.sarvam import is_supported_sarvam_language
+from portal.transcription.worker import (
+    active_workers,
+    is_worker_running,
+    start_transcription_worker,
+    stop_transcription_worker,
+)
 from portal.translations.constants import TranslationProviderEnum
 from portal.translations.model_languages import language_support_error
 from portal.websockets.revocation import revoke_booths_for_deleted_entity
@@ -44,16 +50,17 @@ router = APIRouter(prefix="/api/v1")
 # attribute on the Event model.  Adding a new provider only requires one
 # new entry here.
 _API_KEY_FIELDS: list[tuple[str, str]] = [
-    ("openai_api_key",             "encrypted_openai_api_key"),
-    ("deepgram_api_key",           "encrypted_deepgram_api_key"),
-    ("nvidia_api_key",             "encrypted_nvidia_api_key"),
-    ("elevenlabs_api_key",         "encrypted_elevenlabs_api_key"),
+    ("openai_api_key", "encrypted_openai_api_key"),
+    ("deepgram_api_key", "encrypted_deepgram_api_key"),
+    ("nvidia_api_key", "encrypted_nvidia_api_key"),
+    ("elevenlabs_api_key", "encrypted_elevenlabs_api_key"),
+    ("sarvam_api_key", "encrypted_sarvam_api_key"),
     ("translation_openai_api_key", "encrypted_translation_openai_api_key"),
-    ("openrouter_api_key",         "encrypted_openrouter_api_key"),
-    ("gemini_api_key",             "encrypted_gemini_api_key"),
-    ("anthropic_api_key",          "encrypted_anthropic_api_key"),
-    ("groq_api_key",               "encrypted_groq_api_key"),
-    ("atlascloud_api_key",         "encrypted_atlascloud_api_key"),
+    ("openrouter_api_key", "encrypted_openrouter_api_key"),
+    ("gemini_api_key", "encrypted_gemini_api_key"),
+    ("anthropic_api_key", "encrypted_anthropic_api_key"),
+    ("groq_api_key", "encrypted_groq_api_key"),
+    ("atlascloud_api_key", "encrypted_atlascloud_api_key"),
 ]
 
 
@@ -606,6 +613,23 @@ def _check_server_translation(payload_dict: dict, room: Room | None) -> None:
     payload_dict["translation_model"] = model_or_default(room.floor_translation_model if room else None)
 
 
+def _check_sarvam_transcription(payload_dict: dict, room: Room | None) -> None:
+    """Reject enabling or keeping Sarvam floor transcription with an unsupported language."""
+    enabled = payload_dict.get("enable_transcription")
+    if enabled is None:
+        enabled = room.floor_transcription_enabled if room else False
+    provider = payload_dict.get("transcription_provider", room.floor_transcription_provider if room else "local")
+    provider_val = getattr(provider, "value", provider)
+    if not enabled or provider_val != ProviderEnum.SARVAM.value:
+        return
+    source_lang = payload_dict.get("source_language", room.floor_language_code if room else None)
+    if not is_supported_sarvam_language(source_lang):
+        raise HTTPException(
+            status_code=422,
+            detail=f"Sarvam AI does not support transcription language '{source_lang}'.",
+        )
+
+
 _TRANSLATION_SETUP_FIELDS = {
     "translation_provider",
     "translation_model",
@@ -686,6 +710,7 @@ async def upsert_room(
 
     payload_dict = payload.model_dump(exclude_unset=True)
     _check_server_translation(payload_dict, room)
+    _check_sarvam_transcription(payload_dict, room)
     await _check_translation_languages(db, payload_dict, room)
 
     if room:
@@ -877,9 +902,7 @@ async def patch_room_settings(
     if not event:
         raise HTTPException(status_code=404, detail="Event not found")
 
-    await _verify_token_rbac(
-        db, token, event, room_id, manage=True, lock_event=True, write_lock=True
-    )
+    await _verify_token_rbac(db, token, event, room_id, manage=True, lock_event=True, write_lock=True)
     return {"status": "success"}
 
 
@@ -929,7 +952,11 @@ async def get_booth(
     target_room_id = _extract_room_id(room, room_id)
     language_code = _validate_lang(language_code)
 
-    result = await db.execute(select(DBBooth).where(DBBooth.room_id == target_room_id, DBBooth.language_code == language_code, DBBooth.event_id == event.id))
+    result = await db.execute(
+        select(DBBooth).where(
+            DBBooth.room_id == target_room_id, DBBooth.language_code == language_code, DBBooth.event_id == event.id
+        )
+    )
     booth = result.scalars().first()
     if not booth:
         raise HTTPException(status_code=404, detail="Booth not found")
@@ -954,9 +981,7 @@ async def create_booth(
     if not event:
         raise HTTPException(status_code=404, detail="Event not found")
 
-    room = await _verify_token_rbac(
-        db, token, event, room_id, manage=True, lock_event=True, write_lock=True
-    )
+    room = await _verify_token_rbac(db, token, event, room_id, manage=True, lock_event=True, write_lock=True)
     target_room_id = _extract_room_id(room, room_id)
     language_code = _validate_lang(language_code)
     if language_code == "floor":
@@ -965,7 +990,9 @@ async def create_booth(
             detail="'floor' is not a valid booth language for a room.",
         )
 
-    result = await db.execute(select(DBBooth).where(DBBooth.room_id == target_room_id, DBBooth.language_code == language_code))
+    result = await db.execute(
+        select(DBBooth).where(DBBooth.room_id == target_room_id, DBBooth.language_code == language_code)
+    )
     if result.scalars().first():
         raise HTTPException(status_code=409, detail="Booth already exists")
 
@@ -991,13 +1018,15 @@ async def delete_booth_endpoint(
     if not event:
         raise HTTPException(status_code=404, detail="Event not found")
 
-    room = await _verify_token_rbac(
-        db, token, event, room_id, manage=True, lock_event=True, write_lock=True
-    )
+    room = await _verify_token_rbac(db, token, event, room_id, manage=True, lock_event=True, write_lock=True)
     target_room_id = _extract_room_id(room, room_id)
     language_code = _validate_lang(language_code)
 
-    result = await db.execute(select(DBBooth).where(DBBooth.room_id == target_room_id, DBBooth.language_code == language_code, DBBooth.event_id == event.id))
+    result = await db.execute(
+        select(DBBooth).where(
+            DBBooth.room_id == target_room_id, DBBooth.language_code == language_code, DBBooth.event_id == event.id
+        )
+    )
     booth = result.scalars().first()
     if not booth:
         raise HTTPException(status_code=404, detail="Booth not found")
@@ -1084,7 +1113,7 @@ async def get_transcription_status(
             "is_active": booths.get_booth_sync(bid) is not None,
             # Running transcription is tracked by the worker registry, not on the
             # in-memory Booth, which has no transcription_task attribute.
-            "transcription_running": bid in active_workers,
+            "transcription_running": is_worker_running(active_workers.get(bid)),
         }
 
     return {"room_id": target_room_id, "statuses": statuses}
@@ -1198,6 +1227,7 @@ class EventAPIKeysUpdate(BaseModel):
     deepgram_api_key: str | None = None
     nvidia_api_key: str | None = None
     elevenlabs_api_key: str | None = None
+    sarvam_api_key: str | None = None
     translation_openai_api_key: str | None = None
     openrouter_api_key: str | None = None
     gemini_api_key: str | None = None
@@ -1227,7 +1257,8 @@ async def update_event_api_keys(
     for payload_field, event_attr in _API_KEY_FIELDS:
         value = payload_data[payload_field]
         if value is not None:
-            setattr(event, event_attr, encrypt_val(value) if value else None)
+            trimmed = value.strip()
+            setattr(event, event_attr, encrypt_val(trimmed) if trimmed else None)
 
     await db.commit()
     return {"status": "ok"}

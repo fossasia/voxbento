@@ -88,6 +88,7 @@ Jitsi Meet Floor Conference
 | `portal/transcription/providers/deepgram.py` | `DeepgramProvider` — nova-3/nova-2 WebSocket streaming; glossary source terms (`speech_keyterms` in `portal/translations/vocabulary.py`, read once per stream, honours `floor_ai_vocabulary_enabled`) sent as nova-3 `keyterm`s or nova-2 `keywords=term:2`; settled chunks collected until `speech_final`/`UtteranceEnd` |
 | `portal/transcription/providers/nvidia.py` | `NVIDIAProvider` — Parakeet-RNNT/CTC via Riva gRPC |
 | `portal/transcription/providers/elevenlabs.py` | `ElevenLabsProvider` — scribe_v2 |
+| `portal/transcription/providers/sarvam.py` | `SarvamProvider` — Saaras v3 WebSocket streaming for 23 Indian languages (`+ auto`) |
 | `portal/translations/worker.py` | `TranslationWorker`: per-language translation dispatch, timeouts and delivery; `ENGINES` maps each provider to its `TranslationEngine` |
 | `portal/translations/engine.py` | `TranslationEngine` interface (`translate_batch`, `translate_text`), `Language`, `TranslationContext`, `EngineKind`; the worker calls engines only through it |
 | `portal/translations/providers/` | Backends: `LocalProvider` (NLLB, an engine itself) and the prompt-based cloud providers, wrapped by `ProviderEngine` in `base.py` |
@@ -111,6 +112,7 @@ Jitsi Meet Floor Conference
 | `deepgram` | `DeepgramProvider` | `nova-3`, `nova-2` | `deepgram_api_key` | WebSocket streaming (with `numerals=true` for interpretation) |
 | `nvidia` | `NVIDIAProvider` | `parakeet-rnnt`, `parakeet-ctc` | `nvidia_api_key` | Riva gRPC |
 | `elevenlabs` | `ElevenLabsProvider` | `scribe_v2` | `elevenlabs_api_key` | — |
+| `sarvam` | `SarvamProvider` | `saaras:v3` | `sarvam_api_key` | WebSocket streaming (`wss://api.sarvam.ai/speech-to-text/ws`) |
 
 API keys are stored encrypted on the `events` table (`encrypted_*_api_key` columns).
 `get_api_key(event, ProviderEnum.X)` decrypts via `portal.crypto.decrypt_val`.
@@ -162,6 +164,7 @@ Cancels the asyncio Task and awaits it; removes from state dicts.
 | `handle_partial(booth_id, text)` | streaming partial | Broadcasts `{type:"caption", status:"partial", text}`. Force-finalizes if ≥50 words or ≥15 seconds in same utterance |
 | `handle_final(booth_id, text)` | completed utterance | Broadcasts `{type:"caption", status:"final", text}`; resets state |
 | `handle_chunk(booth_id, text)` | Whisper text chunk | Appends to buffer; splits on sentence boundary (`[.?!]+`); broadcasts `final` for each sentence, `partial` for remainder |
+| `clear_partial(booth_id)` | reconnect cleanup | Discards unfinalized partial state without finalizing it and broadcasts `{type:"caption", status:"clear"}` |
 | `handle_clear(booth_id)` | silence/endpoint | Broadcasts `{type:"caption", status:"clear"}` |
 
 Final captions on a room's canonical floor feed allocate `seq` atomically from

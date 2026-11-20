@@ -10,12 +10,13 @@ import portal.webhooks.worker as _wh_worker
 from portal.config import settings
 from portal.transcription.process import FfmpegProcess
 from portal.transcription.providers.atlascloud import AtlasCloudProvider
-from portal.transcription.providers.base import ProviderConfig
+from portal.transcription.providers.base import FatalTranscriptionError, ProviderConfig
 from portal.transcription.providers.deepgram import DeepgramProvider
 from portal.transcription.providers.elevenlabs import ElevenLabsProvider
 from portal.transcription.providers.local import LocalProvider
 from portal.transcription.providers.nvidia import NVIDIAProvider
 from portal.transcription.providers.openai import OpenAIProvider
+from portal.transcription.providers.sarvam import SarvamProvider
 
 logger = logging.getLogger(__name__)
 
@@ -26,6 +27,7 @@ PROVIDERS = {
     "deepgram": DeepgramProvider(),
     "nvidia": NVIDIAProvider(),
     "elevenlabs": ElevenLabsProvider(),
+    "sarvam": SarvamProvider(),
 }
 
 active_workers_lock = asyncio.Lock()
@@ -173,6 +175,14 @@ class TranscriptionWorkerSession:
                     except asyncio.CancelledError:
                         logger.info(f"[{self.booth_id}][{self.session_id}] Transcription worker cancelled.")
                         raise
+                    except FatalTranscriptionError as e:
+                        logger.error(
+                            "[%s][%s] Fatal transcription failure; stopping worker: %s",
+                            self.booth_id,
+                            self.session_id,
+                            e,
+                        )
+                        break
                     except Exception as e:
                         logger.error(f"[{self.booth_id}][{self.session_id}] Transcription error: {e}. Retrying...")
 
@@ -207,6 +217,16 @@ class TranscriptionWorkerSession:
 
 
 active_workers: Dict[str, TranscriptionWorkerSession] = {}
+
+
+def is_worker_running(session: object | None) -> bool:
+    """Return True when a worker registry entry is actively starting or running."""
+    if session is None:
+        return False
+    state = getattr(session, "state", None)
+    if isinstance(state, State):
+        return state in (State.STARTING, State.RUNNING)
+    return True
 
 
 async def start_transcription_worker(
