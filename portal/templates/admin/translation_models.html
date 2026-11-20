@@ -9,6 +9,8 @@
 </nav>
 {% endblock %}
 
+{% macro seconds(value) %}{{ '%.1f s' % value if value is not none else '—' }}{% endmacro %}
+
 {% block content %}
 <div class="page-header">
   <div>
@@ -56,5 +58,75 @@
       </tbody>
     </table>
   </div>
+</section>
+
+<section class="card email-card" id="translation-health">
+  <div class="card-header">
+    <h2>Translation health</h2>
+    <p>How every translation engine is doing across all events, over the last {{ window_minutes }} minutes. Start lag is how long a segment waited for the engine{% if lag_budget %}; a segment that waits more than {{ '%g' % lag_budget }} s is dropped as stale{% endif %}. <a href="/admin/translation-models/#translation-health">Refresh</a></p>
+  </div>
+
+  <h3 class="tm-health-title">Engines now</h3>
+  {% if engines %}
+  <div class="tm-table-wrap">
+    <table class="tm-table">
+      <thead>
+        <tr><th scope="col">Service</th><th scope="col">Running</th><th scope="col">Waiting</th></tr>
+      </thead>
+      <tbody>
+        {% for engine in engines %}
+        <tr>
+          <td><code>{{ engine.provider }}</code></td>
+          <td>{{ engine.running }} of {{ engine.capacity }}</td>
+          <td>{{ engine.waiting }}</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  {% else %}
+  <p class="tm-health-empty">No translations since the server started.</p>
+  {% endif %}
+
+  <h3 class="tm-health-title">By model</h3>
+  {% if model_stats %}
+  <div class="tm-table-wrap">
+    <table class="tm-table">
+      <thead>
+        <tr>
+          <th scope="col">Service</th><th scope="col">Model</th><th scope="col">Translated</th><th scope="col">Failed</th><th scope="col">Dropped as stale</th>
+          <th scope="col">Start lag p50 / p95</th><th scope="col">Inference p50 / p95</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for row in model_stats %}
+        <tr>
+          <td><code>{{ row.provider }}</code></td>
+          <td><code>{{ row.model }}</code></td>
+          <td>{{ row.translated }}</td>
+          <td>{{ row.failed }}</td>
+          <td>{{ row.stale }}</td>
+          <td>{{ seconds(row.start_lag_p50) }} / {{ seconds(row.start_lag_p95) }}</td>
+          <td>{{ seconds(row.latency_p50) }} / {{ seconds(row.latency_p95) }}</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  {% else %}
+  <p class="tm-health-empty">No translations in the last {{ window_minutes }} minutes.</p>
+  {% endif %}
+
+  <h3 class="tm-health-title">Built-in models in memory</h3>
+  {% if loaded_models %}
+  <ul class="tm-loaded">
+    {% for row in loaded_models %}
+    <li><code>{{ row.id }}</code> {{ '~%d MB' % row.approx_ram_mb if row.approx_ram_mb else 'size unknown' }}</li>
+    {% endfor %}
+  </ul>
+  <p class="tm-health-empty">About {{ loaded_ram_mb }} MB in total. A model nobody uses for an hour is unloaded.</p>
+  {% else %}
+  <p class="tm-health-empty">None. A model loads when a room first translates with it.</p>
+  {% endif %}
 </section>
 {% endblock %}

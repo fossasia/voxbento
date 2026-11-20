@@ -13,6 +13,7 @@ from portal.transcription.timing import segment_timing, timing_metadata
 from portal.translations.constants import OPENAI_COMPATIBLE_ENDPOINTS, TranslationProviderEnum
 from portal.translations.engine import EngineKind, Language, TranslationContext, TranslationEngine
 from portal.translations.keys import get_translation_api_key
+from portal.translations.metrics import FAILED, STALE, TRANSLATED, translation_metrics
 from portal.translations.providers import local as local_provider
 from portal.translations.providers.anthropic import AnthropicProvider
 from portal.translations.providers.base import ProviderEngine
@@ -476,11 +477,13 @@ class TranslationWorker:
 
         if job is None:
             logger.warning(f"[{booth_id_str}] Queue full for {lang_code}. Dropping segment {seq}.")
+            translation_metrics.record(provider, model, room.id, FAILED)
             await tts_manager.broadcast_bundle(
                 room.id, lang_code, booth_id_str, b"", uuid_segment_id, seq, text, "", "pipeline_failed"
             )
             return
 
+        recorded = False
         try:
             # Resolved before waiting for an engine slot: the glossary is optional context, and a
             # slow lookup must not hold a slot while other rooms wait.
@@ -512,6 +515,7 @@ class TranslationWorker:
 
             # The slot covers the engine call only; saving and broadcasting happen after it is free.
             async with job:
+                start_lag = job.waited
                 # Checked again: the download may have started while this segment waited.
                 timeout_val = _inference_timeout(provider, model)
                 if timeout_val is None:
@@ -527,6 +531,7 @@ class TranslationWorker:
                         )
                         return
                     synthesize_audio = audience == LISTENERS
+                started = time.monotonic()
                 call = asyncio.ensure_future(
                     self._call_llm(
                         provider,
@@ -548,12 +553,22 @@ class TranslationWorker:
                     logger.error(f"[{booth_id_str}] Translation LLM timed out after {timeout_val}s for {lang_code}.")
                     translated_text = None
                 finally:
+                    latency = time.monotonic() - started
                     if not call.done():
                         # Stop the call, but keep its slot until it has ended: a local model runs in a
                         # thread that cannot be stopped, and the next call must not start beside it.
                         call.cancel()
                         job.keep_slot_until(call)
 
+            translation_metrics.record(
+                provider,
+                model,
+                room.id,
+                FAILED if translated_text is None else TRANSLATED,
+                start_lag=start_lag,
+                latency=latency,
+            )
+            recorded = True
             if translated_text is None:
                 await tts_manager.broadcast_bundle(
                     room.id, lang_code, booth_id_str, b"", uuid_segment_id, seq, text, "", "pipeline_failed"
@@ -638,11 +653,14 @@ class TranslationWorker:
             )
 
         except StaleTranslationJob as stale:
+            translation_metrics.record(provider, model, room.id, STALE, start_lag=stale.waited)
             await self._drop_stale(room.id, lang_code, booth_id_str, uuid_segment_id, seq, text, stale.waited)
         except Exception as e:
             logger.error(
                 f"[{booth_id_str}] Translation failed for {lang_code}: {e} (api_key is None? {api_key is None})"
             )
+            if not recorded:
+                translation_metrics.record(provider, model, room.id, FAILED)
             await tts_manager.broadcast_bundle(
                 room.id, lang_code, booth_id_str, b"", uuid_segment_id, seq, text, "", "pipeline_failed"
             )

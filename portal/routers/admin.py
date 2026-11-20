@@ -189,6 +189,7 @@ from portal.transcription.worker import (
     wait_for_worker_start,
 )
 from portal.translations.constants import TRANSLATION_MODELS, TranslationProviderEnum
+from portal.translations.metrics import translation_metrics
 from portal.translations.model_languages import language_support_error
 from portal.translations.vocabulary import (
     VocabularyOverlapIndex,
@@ -715,12 +716,14 @@ async def mission_control_grid(request: Request, event_slug: str, user=Depends(r
             event_booths.append(state)
         # One section per room the person may control, even before it has booths, with what
         # the floor-caption control needs. Program ingest starts captions on its own.
+        translating_rooms = {db_b.room_id for db_b in db_booths if db_b.translation_enabled}
         mc_rooms = [
             {
                 "id": room.id,
                 "name": room.display_name,
                 "floor_captions": room.has_floor_captions,
                 "floor_source": room.floor_source or "jitsi_bot",
+                "translation": room.floor_translation_enabled or room.id in translating_rooms,
             }
             for room in await list_rooms_for_event(session, event.id)
             if allowed_room_ids is None or room.id in allowed_room_ids
@@ -2364,6 +2367,18 @@ async def api_floor_transcription_status(room_id: int):
     # the managed lifecycle is reported separately in "state".
     body["bot_reachable"], body["stage"], body["running"] = await meeting_source.bot_stage(event.slug, room.id)
     return body
+
+
+@router.get("/api/rooms/{room_id}/translation-health", dependencies=[Depends(require_room_event_access)])
+async def api_room_translation_health(room_id: int):
+    health = translation_metrics.room(room_id, settings.translation_max_lag_seconds or None)
+    return {
+        "state": health.state,
+        "translated": health.translated,
+        "failed": health.failed,
+        "stale": health.stale,
+        "window_seconds": int(translation_metrics.window),
+    }
 
 
 @router.post(

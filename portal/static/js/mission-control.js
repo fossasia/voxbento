@@ -60,6 +60,7 @@ function init() {
     title.id = `mc-room-title-${room.id}`;
     head.appendChild(title);
     head.appendChild(renderFloorCaptions(room));
+    if (room.translation) head.appendChild(renderTranslationHealth(room));
     section.appendChild(head);
 
     const grid = el('div', 'mc-grid');
@@ -165,6 +166,52 @@ function renderFloorCaptions(room) {
 
   start.addEventListener('click', () => send('start'));
   stop.addEventListener('click', () => send('stop'));
+  refresh();
+  setInterval(refresh, 15000);
+  return box;
+}
+
+const TRANSLATION_STATES = {
+  idle: ['Idle', 'is-off'],
+  healthy: ['Healthy', 'is-on'],
+  lagging: ['Lagging', 'is-busy'],
+  failing: ['Failing', 'is-problem'],
+};
+
+function translationSummary(data) {
+  const minutes = Math.round((data.window_seconds || 300) / 60);
+  if (data.state === 'idle') return `Nothing translated in the last ${minutes} minutes.`;
+  const parts = [`${data.translated} translated`];
+  if (data.stale) parts.push(`${data.stale} dropped because the engine was busy`);
+  if (data.failed) parts.push(`${data.failed} failed`);
+  return `${parts.join(', ')} in the last ${minutes} minutes.`;
+}
+
+function renderTranslationHealth(room) {
+  const box = el('div', 'mc-captions');
+  const label = el('span', 'mc-captions-label', 'Translation');
+  const status = el('span', 'mc-pill', 'Checking…');
+  status.id = `mc-translation-${room.id}`;
+  const reason = el('span', 'mc-captions-reason');
+  box.append(label, status, reason);
+
+  async function refresh() {
+    try {
+      const res = await fetch(`/api/rooms/${room.id}/translation-health`);
+      if (!res.ok) throw new Error(String(res.status));
+      const data = await res.json();
+      const [text, tone] = TRANSLATION_STATES[data.state] || ['Unknown', 'is-busy'];
+      status.textContent = text;
+      status.className = `mc-pill ${tone}`;
+      reason.textContent = translationSummary(data);
+    } catch (err) {
+      status.textContent = 'Unavailable';
+      status.className = 'mc-pill is-problem';
+      reason.textContent = '';
+      console.debug('Translation health failed', err);
+    }
+  }
+
   refresh();
   setInterval(refresh, 15000);
   return box;
