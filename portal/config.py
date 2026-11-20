@@ -221,7 +221,7 @@ class Settings(BaseSettings):
     self_hosted_llm_api_key: str = Field(default="", repr=False)
     self_hosted_llm_models: str = ""
     # Translation requests in flight at once: to the self-hosted server across all rooms, and
-    # with each event's API key to a hosted provider (OpenAI, Gemini, ...). Further requests
+    # from each event to a hosted provider (OpenAI, Gemini, ...). Further requests
     # wait, with rooms taking turns. Each local model's limit comes from its CPU threads instead.
     self_hosted_llm_concurrency: int = Field(default=4, ge=1)
     translation_api_concurrency: int = Field(default=32, ge=1)

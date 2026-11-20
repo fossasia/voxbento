@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import asyncio
-import hashlib
 import logging
 from dataclasses import dataclass
 
@@ -68,32 +67,32 @@ KEYLESS_PROVIDERS = {TranslationProviderEnum.LOCAL.value, TranslationProviderEnu
 SCHEDULERS: dict[tuple[str, str], TranslationScheduler] = {}
 
 
-def _scheduler_key(provider: str, model: str, api_key: str | None) -> tuple[str, str]:
+def _scheduler_key(provider: str, model: str, event_id: int | None) -> tuple[str, str]:
     """What one scheduler covers: whatever runs out first when it is overloaded.
 
     - Local: one model. Each loaded model has its own CTranslate2 threads, so rooms on
       different models never wait for each other, and loading one model blocks only its rooms.
     - Self-hosted: the operator's one server, shared by every room.
-    - Hosted: one event's API key. Each key has its own quota, so an event whose key is slow,
-      rate-limited or failing only holds up its own rooms.
+    - Hosted: one event. A hosted provider's key always comes from the event, and each key has
+      its own quota, so an event whose key is slow, rate-limited or failing only holds up its
+      own rooms. Keyed by the event rather than the key, so no secret is handled here.
     """
     if provider == TranslationProviderEnum.LOCAL.value:
         return provider, model
-    if provider in KEYLESS_PROVIDERS or not api_key:
+    if provider in KEYLESS_PROVIDERS or event_id is None:
         return provider, ""
-    # A digest, so the schedulers keep no copy of an event's key.
-    return provider, hashlib.sha256(api_key.encode()).hexdigest()[:16]
+    return provider, f"event-{event_id}"
 
 
-def scheduler_for(provider: str, model: str = "", api_key: str | None = None) -> TranslationScheduler:
-    """The scheduler shared by every room translating with ``provider`` (and its model or key).
+def scheduler_for(provider: str, model: str = "", event_id: int | None = None) -> TranslationScheduler:
+    """The scheduler shared by every room translating with ``provider`` (and its model or event).
 
     When the engine's limit changes (its setting did), the same scheduler takes the new limit,
     so calls already running still count against it.
     """
     engine = ENGINES.get(provider)
     capacity = engine.max_concurrency if engine is not None else TranslationEngine.max_concurrency
-    key = _scheduler_key(provider, model, api_key)
+    key = _scheduler_key(provider, model, event_id)
     scheduler = SCHEDULERS.get(key)
     if scheduler is None:
         # Drop the ones with nothing in them, so keys and models no longer used do not pile up.
@@ -463,7 +462,7 @@ class TranslationWorker:
 
         queue_key = f"{booth_id_str}:{lang_code}"
         # Rooms take turns for the engine, and so do the languages within a room.
-        job = scheduler_for(provider, model, api_key).admit(room.id, queue_key)
+        job = scheduler_for(provider, model, event.id).admit(room.id, queue_key)
 
         if job is None:
             logger.warning(f"[{booth_id_str}] Queue full for {lang_code}. Dropping segment {seq}.")

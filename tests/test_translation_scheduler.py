@@ -304,25 +304,23 @@ def test_each_local_model_is_scheduled_one_call_per_ct2_thread():
     assert worker_module.scheduler_for("local", "nllb-200-distilled-600M").capacity == CT2_INTER_THREADS
 
 
-def test_each_hosted_api_key_has_its_own_scheduler():
-    """Each event's key has its own quota, so a failing key only holds up its own event."""
+def test_each_event_has_its_own_hosted_scheduler():
+    """Each event brings its own key and quota, so a failing key only holds up its own event."""
     key = worker_module._scheduler_key
-    first = key("openai", "gpt-4o-mini", "sk-first-event")
-    assert first != key("openai", "gpt-4o-mini", "sk-second-event")
-    assert first == key("openai", "gpt-4o", "sk-first-event")  # the key decides, not the model
-    # The schedulers keep no copy of a key.
-    assert "sk-first-event" not in first[1]
-    # The self-hosted server is one server, whichever key reaches it.
-    assert key("self_hosted", "llama3.2", "a") == key("self_hosted", "llama3.2", "b")
+    first = key("openai", "gpt-4o-mini", 1)
+    assert first != key("openai", "gpt-4o-mini", 2)
+    assert first == key("openai", "gpt-4o", 1)  # the event decides, not the model
+    # The self-hosted server is one server, whichever event uses it.
+    assert key("self_hosted", "llama3.2", 1) == key("self_hosted", "llama3.2", 2)
 
 
 def test_idle_schedulers_are_dropped_when_a_new_one_is_made(monkeypatch):
     monkeypatch.setattr(worker_module, "SCHEDULERS", {})
-    busy = worker_module.scheduler_for("openai", "m", "busy-key")
+    busy = worker_module.scheduler_for("openai", "m", 1)
     job = busy.admit("room", "room:fr")
-    worker_module.scheduler_for("openai", "m", "idle-key")
+    worker_module.scheduler_for("openai", "m", 2)
 
-    worker_module.scheduler_for("openai", "m", "third-key")
+    worker_module.scheduler_for("openai", "m", 3)
 
     assert busy in worker_module.SCHEDULERS.values()
     assert len(worker_module.SCHEDULERS) == 2  # the idle one is gone
@@ -410,7 +408,7 @@ async def test_the_worker_shares_one_engine_fairly_across_rooms(monkeypatch):
     assert len(engine.calls) == len(tasks)
     # The small room waits for one call of the busy room, not for all of them.
     assert engine.calls.index("th") <= 2
-    assert worker_module.scheduler_for("slow").running == 0
+    assert worker_module.scheduler_for("slow", "m", 1).running == 0
 
 
 class StuckEngine(SlowEngine):
@@ -452,7 +450,7 @@ async def test_a_timed_out_call_keeps_its_slot_until_the_engine_is_done(monkeypa
     # The first call times out: listeners hear of it, but the engine is still busy with it.
     await translate(1, "fr")
     assert bundle.await_args.args[8] == "pipeline_failed"
-    assert worker_module.scheduler_for("stuck").running == 1
+    assert worker_module.scheduler_for("stuck", "m", 1).running == 1
 
     second = asyncio.create_task(translate(2, "de"))
     await settle()
@@ -463,7 +461,7 @@ async def test_a_timed_out_call_keeps_its_slot_until_the_engine_is_done(monkeypa
     await second
     assert engine.calls == ["fr", "de"]
     assert engine.peak == 1
-    assert worker_module.scheduler_for("stuck").running == 0
+    assert worker_module.scheduler_for("stuck", "m", 1).running == 0
 
 
 async def test_a_segment_for_a_downloading_model_is_dropped_after_its_slot_is_free(monkeypatch):
@@ -473,14 +471,14 @@ async def test_a_segment_for_a_downloading_model_is_dropped_after_its_slot_is_fr
     checks = []
 
     def downloading(provider, model):
-        checks.append(worker_module.scheduler_for("slow").running)
+        checks.append(worker_module.scheduler_for("slow", "m", 1).running)
         return None
 
     monkeypatch.setattr(worker_module, "_inference_timeout", downloading)
     running_when_told = []
 
     async def bundle(*args, **kwargs):
-        running_when_told.append(worker_module.scheduler_for("slow").running)
+        running_when_told.append(worker_module.scheduler_for("slow", "m", 1).running)
 
     monkeypatch.setattr("portal.websockets.manager.tts_manager.broadcast_bundle", bundle)
     told = AsyncMock(side_effect=bundle)
@@ -495,7 +493,7 @@ async def test_a_segment_for_a_downloading_model_is_dropped_after_its_slot_is_fr
     assert checks == [1]  # one check, made while holding the slot
     assert told.await_args.args[8] == "model_downloading"
     assert running_when_told == [0]
-    assert worker_module.scheduler_for("slow").admitted(1, "event-1-floor:fr") == 0
+    assert worker_module.scheduler_for("slow", "m", 1).admitted(1, "event-1-floor:fr") == 0
 
 
 def test_a_loaded_local_model_skips_the_download_lookup(monkeypatch):
@@ -543,7 +541,7 @@ async def test_a_segment_leaves_its_language_queue_before_its_speech_is_made(mon
     )
     await asyncio.wait_for(speaking.wait(), timeout=5)
 
-    scheduler = worker_module.scheduler_for("answering")
+    scheduler = worker_module.scheduler_for("answering", "m", 1)
     assert scheduler.admitted(1, "event-1-floor:fr") == 0
     assert scheduler.running == 0
 
@@ -589,7 +587,7 @@ async def test_a_segment_counts_in_its_language_queue_until_its_text_is_delivere
     )
     await asyncio.wait_for(saving.wait(), timeout=5)
 
-    scheduler = worker_module.scheduler_for("answering")
+    scheduler = worker_module.scheduler_for("answering", "m", 1)
     assert scheduler.running == 0
     assert scheduler.admitted(1, "event-1-floor:fr") == 1
 
