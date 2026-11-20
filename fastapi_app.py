@@ -81,6 +81,7 @@ async def lifespan(app: FastAPI):
     from portal.tts.demo_gen import ensure_demo_generated
 
     settings.validate_production_secrets()
+    settings.validate_redis_url()
 
     pg.shared_http_client = httpx.AsyncClient(timeout=10.0)
 

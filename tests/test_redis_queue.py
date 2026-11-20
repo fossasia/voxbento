@@ -169,3 +169,28 @@ async def test_worker_survives_processing_errors(redis: FakeAsyncRedis) -> None:
     task.cancel()
     await asyncio.gather(task, return_exceptions=True)
     assert calls >= 2
+
+
+@pytest.mark.anyio
+async def test_unusable_url_keeps_the_worker_on_database_scans(monkeypatch: pytest.MonkeyPatch) -> None:
+    # Bypasses settings validation, which rejects this URL at startup.
+    monkeypatch.setattr(settings, "redis_url", "redis://redis:abc/0")
+    monkeypatch.setattr(redis_queue, "_client", None)
+    monkeypatch.setattr(redis_queue, "_client_error_logged", False)
+    assert redis_queue.get_client() is None
+    await redis_queue.enqueue(redis_queue.EMAIL, [1])  # a no-op, not an error
+    calls = 0
+
+    async def process_due() -> int:
+        nonlocal calls
+        calls += 1
+        return 0
+
+    task = asyncio.create_task(
+        redis_queue.run_worker(redis_queue.EMAIL, process_due, reconcile_secs=60, outage_scan_secs=0.05, wait_secs=0.02)
+    )
+    await asyncio.sleep(0.3)
+    task.cancel()
+    await asyncio.gather(task, return_exceptions=True)
+    assert task.cancelled()
+    assert calls >= 3

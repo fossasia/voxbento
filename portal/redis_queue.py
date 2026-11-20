@@ -49,16 +49,27 @@ _KEY_PREFIX = "vb:queue"
 _PENDING_INFO_KEY = "vb_redis_queue_pending"
 
 _client: Redis | None = None
+_client_error_logged = False
 _outage = OutageLog(logger, "redis_queue unavailable")
 
 
 def get_client() -> Redis | None:
-    """Return the shared client, or None when Redis dispatch is not configured."""
-    global _client
+    """Return the shared client, or None when Redis is not configured or its URL is unusable.
+
+    Settings validation rejects malformed URLs at startup; this guard keeps the workers on
+    database scans rather than stopping them if a client still cannot be built.
+    """
+    global _client, _client_error_logged
     if not settings.redis_enabled:
         return None
     if _client is None:
-        _client = Redis.from_url(settings.redis_url, socket_timeout=5, socket_connect_timeout=5)
+        try:
+            _client = Redis.from_url(settings.redis_url.strip(), socket_timeout=5, socket_connect_timeout=5)
+        except ValueError:
+            if not _client_error_logged:
+                _client_error_logged = True
+                logger.error("redis_queue REDIS_URL is unusable; delivering from database scans only")
+            return None
     return _client
 
 
@@ -196,21 +207,23 @@ async def run_worker(
     it handled; it is called again while it keeps finding rows.
     """
     client = get_client()
-    if client is None:
-        raise RuntimeError("redis_queue.run_worker requires REDIS_URL")
     last_scan = float("-inf")
-    healthy = True
+    healthy = client is not None
     while True:
         woke = False
-        try:
-            await move_due(client, name)
-            woke = bool(await wait_for_ids(client, name, wait_secs))
-            healthy = True
-            _outage.recovered()
-        except (RedisError, OSError):
-            healthy = False
-            _outage.failed()
+        if client is None:
+            # No usable client (malformed REDIS_URL): keep delivering from database scans.
             await asyncio.sleep(wait_secs)
+        else:
+            try:
+                await move_due(client, name)
+                woke = bool(await wait_for_ids(client, name, wait_secs))
+                healthy = True
+                _outage.recovered()
+            except (RedisError, OSError):
+                healthy = False
+                _outage.failed()
+                await asyncio.sleep(wait_secs)
 
         interval = reconcile_secs if healthy else outage_scan_secs
         if not woke and time.monotonic() - last_scan < interval:

@@ -6,6 +6,7 @@ from urllib.parse import urlparse
 
 from pydantic import Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
+from redis.connection import parse_url as parse_redis_url
 
 
 def _is_ip(host: str) -> bool:
@@ -269,15 +270,6 @@ class Settings(BaseSettings):
     # Caption WebSocket Settings
     max_anonymous_caption_listeners_per_booth: int = 500
 
-    @field_validator("redis_url")
-    @classmethod
-    def validate_redis_url(cls, value: str) -> str:
-        """Accept only Redis URL schemes so a typo fails at startup, not on the first enqueue."""
-        value = value.strip()
-        if value and urlparse(value).scheme not in {"redis", "rediss", "unix"}:
-            raise ValueError("REDIS_URL must start with redis://, rediss:// or unix://")
-        return value
-
     @field_validator("public_base_url")
     @classmethod
     def validate_public_base_url(cls, value: str) -> str:
@@ -330,6 +322,22 @@ class Settings(BaseSettings):
     def redis_enabled(self) -> bool:
         """Redis dispatch is used only when a URL is configured; otherwise workers poll the database."""
         return bool(self.redis_url.strip())
+
+    def validate_redis_url(self) -> None:
+        """Fail at startup on a REDIS_URL the Redis client cannot use.
+
+        Not a field validator: pydantic echoes the raw input in its errors, and the URL may
+        carry a password. These messages never include the URL.
+        """
+        url = self.redis_url.strip()
+        if not url:
+            return
+        if urlparse(url).scheme not in {"redis", "rediss", "unix"}:
+            raise RuntimeError("REDIS_URL must start with redis://, rediss:// or unix://")
+        try:
+            parse_redis_url(url)
+        except ValueError:
+            raise RuntimeError("REDIS_URL is not a valid Redis URL; check the host, port and database number") from None
 
     def self_hosted_llm_allows(self, model: str | None) -> bool:
         """Whether rooms and booths may use ``model`` on the self-hosted server right now."""
