@@ -93,7 +93,7 @@ Rooms and booths can only pick a listed model: the room forms fall back to the f
 
 ### Translation Health
 
-The **Translation health** section at the bottom of the same page shows how translation is doing across all events over the last 5 minutes. Refresh the page to update it.
+The **Translation health** section at the bottom of the same page shows how translation is doing across all events over the last 5 minutes. Reload the page to update it.
 
 - **Engines now**: for each translation service in use, how many calls are running out of how many it may run at once, and how many segments are waiting for it.
 - **By model**: segments translated, failed and dropped as stale, with the median (p50) and slow (p95) start lag and inference time. Start lag is how long a segment waited for the engine; a segment that waits longer than `TRANSLATION_MAX_LAG_SECONDS` is dropped as stale so the language catches up with the speaker.
