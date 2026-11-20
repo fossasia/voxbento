@@ -335,3 +335,34 @@ async def test_srt_aac_audio_track_recognized_for_transcription(srt_env):
     assert data["metrics"]["ingest_continuity"] is True
     assert data["metrics"]["audio_present"] is True
     assert health_entry.processing_state in ("starting", "processing")
+
+
+@pytest.mark.anyio
+async def test_destination_relay_failed_state_triggers_operator_alert(srt_env, monkeypatch):
+    import portal.program_relay as program_relay
+
+    event = srt_env["event"]
+    room = srt_env["rooms"][0]
+    client = srt_env["client"]
+
+    async with get_session() as session:
+        stored = await session.get(Room, room.id)
+        assert stored is not None
+        stored.program_ingest_mode = program_relay.RELAY_MODE
+        stored.program_relay_server = "rtmps://a.rtmps.youtube.com/live2"
+        await session.commit()
+
+    monkeypatch.setattr(settings, "program_relay_enabled", True)
+    program_relay.relay_health[room.id] = program_relay.RelayHealth(
+        "failed", "YouTube rejected the stream key; check credentials."
+    )
+
+    resp = await client.get(f"/admin/events/{event.id}/rooms/{room.id}/program-ingest")
+    assert resp.status_code == 200
+    data = resp.json()
+    alerts = data.get("alerts", [])
+    youtube_alerts = [a for a in alerts if a.get("target") == "youtube"]
+    assert len(youtube_alerts) == 1
+    assert youtube_alerts[0]["level"] == "error"
+    assert "YouTube rejected the stream key" in youtube_alerts[0]["message"]
+    assert "Verify YouTube stream key" in youtube_alerts[0]["action"]

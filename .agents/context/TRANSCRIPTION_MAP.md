@@ -228,7 +228,7 @@ reconciles exactly one existing floor worker per room from one bulk path snapsho
 per tick. Per-room locks isolate ownership work; the cross-room capacity lock
 covers only its reservation transaction. Migration 025 selects
 `jitsi_bot`/`program_ingest`; bot start is rejected for program-owned floors.
-Migration 046 adds SRT contribution ingest on MediaMTX UDP 8890 with AES-128/256
+Migration 048 adds SRT contribution ingest on MediaMTX UDP 8890 with AES-128/256
 passphrase encryption and redundant backup contribution (`floor_backup`).
 
 Audio formats: WHIP Opus or SRT/RTMPS AAC/MPEG-4 Audio → canonical `{event}/{room}/floor`

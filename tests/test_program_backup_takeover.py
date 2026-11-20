@@ -750,3 +750,148 @@ async def test_independent_backup_credential_validity(backup_env):
     # publish_permitted evaluates backup credential independently
     assert ingest.publish_permitted(stored, "srt", "", is_backup=True) is True
     assert ingest.publish_permitted(stored, "srt", "", is_backup=False) is False
+
+
+@pytest.mark.anyio
+async def test_primary_counter_reset_on_reconnect_does_not_trigger_false_stall(backup_env):
+    """When primary reconnects and its byte counter resets to a lower value, baseline is reset."""
+    event = backup_env["event"]
+    room = backup_env["room"]
+    media = backup_env["media"]
+
+    async with get_session() as session:
+        stored = await session.get(Room, room.id)
+        stored.program_connected_at = ingest.utc_now()
+        stored.program_session_id = "primary-sess-2"
+        stored.program_backup_enabled = True
+        stored.program_active_feed = "primary"
+        await session.commit()
+
+    primary_path = f"{event.slug}/{room.id}/floor"
+    media[primary_path] = {
+        "name": primary_path,
+        "ready": True,
+        "source": {"id": "primary-sess-2", "type": "srtConn"},
+        "tracks": ["H264", "AAC"],
+        "bytesReceived": 1000,  # Lower than previous 500,000 bytes
+    }
+
+    now = time.monotonic()
+    entry = ingest.IngestHealth()
+    entry.primary_session_id = "primary-sess-1"  # Old session
+    entry.primary_last_bytes = 500000
+    entry.primary_last_progress = now - 4.0
+    ingest.health[room.id] = entry
+
+    await ingest.reconcile_once()
+
+    current = ingest.health[room.id]
+    # Session change / counter decrease must reset primary_last_bytes to 1000 and refresh progress
+    assert current.primary_last_bytes == 1000
+    assert current.primary_session_id == "primary-sess-2"
+    assert current.primary_last_progress >= now
+
+
+@pytest.mark.anyio
+async def test_primary_first_connect_with_older_backup_does_not_fail_startup(backup_env):
+    """Primary connecting for the first time while backup is older than 5.0s is not failed."""
+    event = backup_env["event"]
+    room = backup_env["room"]
+    media = backup_env["media"]
+
+    async with get_session() as session:
+        stored = await session.get(Room, room.id)
+        stored.program_connected_at = None  # First time connect
+        stored.program_session_id = "primary-sess-1"
+        stored.program_backup_enabled = True
+        # Backup connected 10 seconds ago
+        stored.program_backup_connected_at = ingest.utc_now() - timedelta(seconds=10)
+        stored.program_active_feed = "primary"
+        await session.commit()
+
+    primary_path = f"{event.slug}/{room.id}/floor"
+    backup_path = f"{event.slug}/{room.id}/floor_backup"
+    media[primary_path] = {
+        "name": primary_path,
+        "ready": True,
+        "source": {"id": "primary-sess-1", "type": "srtConn"},
+        "tracks": ["H264", "AAC"],
+        "bytesReceived": 5000,
+    }
+    media[backup_path] = {
+        "name": backup_path,
+        "ready": True,
+        "source": {"id": "backup-sess-1", "type": "srtConn"},
+        "tracks": ["H264", "AAC"],
+        "bytesReceived": 15000,
+    }
+
+    await ingest.reconcile_once()
+
+    async with get_session() as session:
+        refreshed = await session.get(Room, room.id)
+        # Primary is connected, so no takeover should happen despite backup age >= 5s
+        assert refreshed.program_active_feed == "primary"
+
+
+@pytest.mark.anyio
+async def test_bitrate_sampling_reset_on_feed_takeover_prevents_false_limits_kick(backup_env):
+    """When switching feeds, bitrate tracking is reset so large delta_bytes does not trigger a limits kick."""
+    event = backup_env["event"]
+    room = backup_env["room"]
+    media = backup_env["media"]
+
+    async with get_session() as session:
+        stored = await session.get(Room, room.id)
+        stored.program_connected_at = ingest.utc_now()
+        stored.program_backup_enabled = True
+        await ingest.generate_backup_srt_passphrase(stored, session)
+        ingest._configured_srt_paths.add(f"{event.slug}/{room.id}/floor_backup")
+        stored.program_backup_connected_at = ingest.utc_now()
+        stored.program_active_feed = "primary"
+        await session.commit()
+
+    primary_path = f"{event.slug}/{room.id}/floor"
+    backup_path = f"{event.slug}/{room.id}/floor_backup"
+
+    # Primary is stalled, backup is receiving with 200,000 bytes
+    media[primary_path] = {
+        "name": primary_path,
+        "ready": True,
+        "source": {"id": "primary-sess-1", "type": "srtConn"},
+        "tracks": ["H264", "AAC"],
+        "bytesReceived": 1000,
+    }
+    media[backup_path] = {
+        "name": backup_path,
+        "ready": True,
+        "source": {"id": "backup-sess-1", "type": "srtConn"},
+        "tracks": ["H264", "AAC"],
+        "bytesReceived": 200000,
+    }
+
+    now = time.monotonic()
+    entry = ingest.IngestHealth()
+    entry.primary_last_bytes = 1000
+    entry.primary_last_progress = now - 10.0  # Stalled
+    entry.backup_session_id = "backup-sess-1"
+    entry.backup_connected = True
+    entry.last_active_path = primary_path
+    # Simulate primary having high bitrate samples
+    entry.high_bitrate_cycles = 4
+    entry.last_cycle_bytes = 1000
+    entry.last_cycle_time = now - 1.0
+    ingest.health[room.id] = entry
+
+    await ingest.reconcile_once()
+
+    current = ingest.health[room.id]
+    # Backup takeover occurred
+    async with get_session() as session:
+        refreshed = await session.get(Room, room.id)
+        assert refreshed.program_active_feed == "backup"
+
+    # Crucially, backup must NOT be kicked for limits
+    assert current.state != "rejected_limits"
+    assert current.high_bitrate_cycles == 0
+    assert current.last_cycle_bytes == 200000

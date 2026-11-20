@@ -111,6 +111,8 @@ class IngestHealth:
     last_progress: float = field(default_factory=time.monotonic)
     primary_last_bytes: int = -1
     primary_last_progress: float = 0.0
+    primary_session_id: str | None = None
+    last_active_path: str | None = None
     missing_since: float | None = None
     reservation_started_at: float | None = None
     backup_session_id: str | None = None
@@ -903,6 +905,15 @@ async def reconcile_room(room: Room, event: Event, path: MediaPath | None) -> tu
             relay_request(room, event, None)
             return None
 
+    current_source_id = path.source.id if path.source else None
+    source_changed = bool(current.last_session_id is not None and current_source_id != current.last_session_id)
+    path_changed = bool(current.last_active_path is not None and current.last_active_path != path_name)
+    if source_changed or path_changed:
+        current.high_bitrate_cycles = 0
+        current.last_cycle_bytes = -1
+        current.last_cycle_time = 0.0
+    current.last_active_path = path_name
+
     # Gateway limits enforcement: Bitrate enforcement (> 12,000 kbps for 5 consecutive cycles)
     if current.last_cycle_bytes >= 0 and current.last_cycle_time > 0:
         dt = now - current.last_cycle_time
@@ -1203,31 +1214,49 @@ async def reconcile_once() -> None:
 
                     primary_connected = bool(primary_snapshot and primary_snapshot.ready and primary_snapshot.source)
                     if primary_connected:
-                        if current.primary_last_bytes == -1 or current.primary_last_progress == 0.0:
+                        primary_sess_id = primary_snapshot.source.id if primary_snapshot.source else None
+                        session_changed = bool(
+                            current.primary_session_id and primary_sess_id != current.primary_session_id
+                        )
+                        counter_decreased = bool(
+                            current.primary_last_bytes >= 0
+                            and primary_snapshot.bytesReceived < current.primary_last_bytes
+                        )
+                        if (
+                            current.primary_last_bytes == -1
+                            or current.primary_last_progress == 0.0
+                            or session_changed
+                            or counter_decreased
+                        ):
                             current.primary_last_bytes = primary_snapshot.bytesReceived
                             current.primary_last_progress = now
                         elif primary_snapshot.bytesReceived > current.primary_last_bytes:
                             current.primary_last_bytes = primary_snapshot.bytesReceived
                             current.primary_last_progress = now
+                        current.primary_session_id = primary_sess_id
                     else:
                         current.primary_last_bytes = -1
                         current.primary_last_progress = 0.0
+                        current.primary_session_id = None
 
                     primary_stalled = bool(
                         primary_connected
                         and current.primary_last_progress > 0
                         and (now - current.primary_last_progress >= TAKEOVER_STALL_SECS)
                     )
-                    if room.program_connected_at is None:
-                        # Primary has not connected yet: give primary a startup grace period before failover
-                        backup_age = (
-                            (utc_now() - aware(room.program_backup_connected_at)).total_seconds()
-                            if room.program_backup_connected_at
-                            else 0.0
-                        )
-                        primary_failed = backup_age >= TAKEOVER_STALL_SECS
+                    if not primary_connected:
+                        if room.program_connected_at is None:
+                            # Primary has not connected yet: give primary a startup grace period before failover
+                            backup_age = (
+                                (utc_now() - aware(room.program_backup_connected_at)).total_seconds()
+                                if room.program_backup_connected_at
+                                else 0.0
+                            )
+                            primary_failed = backup_age >= TAKEOVER_STALL_SECS
+                        else:
+                            primary_failed = True
                     else:
-                        primary_failed = (not primary_connected) or primary_stalled
+                        primary_failed = primary_stalled
 
                     backup_connected = bool(backup_snapshot and backup_snapshot.ready and backup_snapshot.source)
                     current.backup_connected = backup_connected
@@ -1247,6 +1276,9 @@ async def reconcile_once() -> None:
                         ):
                             room.program_active_feed = "primary"
                             current.worker_config = None
+                            current.high_bitrate_cycles = 0
+                            current.last_cycle_bytes = -1
+                            current.last_cycle_time = 0.0
 
                     # Deterministic Backup Takeover
                     if (
@@ -1266,6 +1298,9 @@ async def reconcile_once() -> None:
                             await stop_room_worker(current, booth_id, room_id)
                             room.program_active_feed = "backup"
                             current.worker_config = None
+                            current.high_bitrate_cycles = 0
+                            current.last_cycle_bytes = -1
+                            current.last_cycle_time = 0.0
                             logger.info("program_ingest backup_promoted room_id=%s", room_id)
 
                     active_snapshot = (

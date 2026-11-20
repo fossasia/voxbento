@@ -50,7 +50,7 @@ VoxBento accepts program contribution via **SRT Caller** (recommended for low-la
 * **Audio Profile:** AAC `48 kHz` stereo, `128 - 192 kbps`.
 
 ### Haivision Makito X4 / AJA HELO Plus (Hardware Encoders with SRT)
-*Note: The original AJA HELO supports RTMPS only; SRT requires HELO Plus (firmware v1.1 or later).*
+*Note: The original AJA HELO supports RTMPS only; SRT requires HELO Plus (firmware v2.1 or later with SRT Caller Stream ID support).*
 * **Protocol / Encapsulation:** TS over SRT (MPEG-TS container carrying H.264 video and AAC-LC audio)
 * **SRT Mode / Role:** Caller
 * **Destination Address / Host:** `<host>`
@@ -73,7 +73,7 @@ All profiles must be tested against a staging or production deployment prior to 
 | OBS Studio | Pending Validation | — | — | Pending Validation | SRT Caller, streamid publish, 5000kbps CBR, 2s GOP |
 | vMix | Pending Validation | — | — | Pending Validation | SRT Caller, port 8890, AES passphrase, 500ms latency |
 | Wirecast | Pending Validation | — | — | Pending Validation | SRT Caller, 500ms latency, AAC 48kHz |
-| Haivision Makito X4 / AJA HELO Plus (v1.1+) | Pending Validation | — | — | Pending Validation | TS over SRT, packet size 1316, 60 frames GOP at 30fps |
+| Haivision Makito X4 / AJA HELO Plus (v2.1+) | Pending Validation | — | — | Pending Validation | TS over SRT, packet size 1316, 60 frames GOP at 30fps |
 | AJA HELO (Legacy RTMPS) | Pending Validation | — | — | Pending Validation | RTMPS port 1936, TLS, H.264 Main + AAC (original HELO does not support SRT) |
 |---|---|---|---|---|---|
 
@@ -87,21 +87,31 @@ All profiles must be tested against a staging or production deployment prior to 
 3. A test room in VoxBento with floor transcription and at least one translation/TTS target enabled.
 4. Primary encoder and (if testing redundant contribution) secondary backup encoder ready.
 
-### Execution Steps
+### Execution Steps: Track A — SRT Contribution Ingest & Backup Takeover
 
 | # | Step | Action | Expected Result |
 |---|------|--------|-----------------|
-| 1 | Configure Destination | (RTMPS Relay only) Room page → *From streaming software* → paste YouTube stream key → **Save stream key** | Saved for `rtmps://a.rtmps.youtube.com/live2`; key write-only |
-| 2 | Generate Credentials | Select SRT Contribution → **Create credentials** | SRT URL `srt://<host>:8890`, Stream ID `#!::r=...`, and Passphrase displayed |
-| 3 | Start Primary Feed | Start primary encoder using the profile in Section 1 | Room page shows *Encoder → VoxBento* **Connected** (H264, MPEG-4 Audio / AAC) |
-| 4 | Verify Ingest & Health | Wait 15–30 seconds; monitor room page health indicators | For SRT Ingest: Ingest health shows **Connected** with continuity active and live captions generated. (For RTMPS Relay: *VoxBento → YouTube* shows **Live**; YouTube Studio shows *Good/Excellent* health and video preview) |
-| 5 | Audio & AI Pipeline | Speak into floor feed for 5 minutes | Transcription, translation, and TTS work concurrently without degradation |
-| 6 | Secondary Feed (Backup) | If backup enabled: start secondary encoder pointing to `floor_backup` | Room page shows backup feed connected and in standby |
-| 7 | Takeover Test | Disconnect primary encoder (or simulate stall) | Active feed switches to `backup` after the 5.0s stall threshold (`TAKEOVER_STALL_SECS`); record observed failover latency |
-| 8 | Anti-Flapping Check | Reconnect primary encoder | Primary connects in standby; active feed stays on backup (no automatic flip-back) |
-| 9 | Manual Restore | Operator triggers `promote_primary_feed` | Active feed cleanly restores to primary |
-| 10 | Encoder Revocation | Click **Revoke credentials** | Encoder kicked immediately; subsequent reconnects rejected with auth failure |
-| 11 | Audit Logs | Inspect container logs (`mediamtx`, `portal`, `program-relay`) | No stream keys, tokens, or passphrases exposed in plain text |
+| 1 | Generate SRT Credentials | Room page → *Secure Reliable Transport (SRT)* → **Create credentials** | SRT URL `srt://<host>:8890`, Stream ID `#!::r=...`, and AES Passphrase displayed |
+| 2 | Start Primary SRT Feed | Start primary encoder using the profile in Section 1 | Room page shows *Encoder → VoxBento* **Connected** (H264, MPEG-4 Audio / AAC) |
+| 3 | Verify Ingest & Continuity | Wait 15–30 seconds; monitor room page health indicators | Ingest health shows **Connected** with continuity active and live captions generated |
+| 4 | Audio & AI Pipeline | Speak into floor feed for 5 minutes | Transcription, translation, and TTS work concurrently without degradation |
+| 5 | Secondary Feed (Backup) | If backup enabled: start secondary encoder pointing to `floor_backup` | Room page shows backup feed connected and in standby |
+| 6 | Takeover Test | Disconnect primary encoder (or simulate stall) | Active feed switches to `backup` after 5.0s stall threshold (`TAKEOVER_STALL_SECS`); record observed failover latency |
+| 7 | Anti-Flapping Check | Reconnect primary encoder | Primary connects in standby; active feed stays on backup (no automatic flip-back) |
+| 8 | Manual Restore | Operator triggers `promote_primary_feed` | Active feed cleanly restores to primary |
+| 9 | Encoder Revocation | Click **Revoke credentials** | Encoder kicked immediately; subsequent reconnects rejected with auth failure |
+| 10 | Audit Logs | Inspect container logs (`mediamtx`, `portal`) | No passphrases exposed in plain text |
+
+### Execution Steps: Track B — RTMPS Contribution & YouTube Live Relay
+
+| # | Step | Action | Expected Result |
+|---|------|--------|-----------------|
+| 1 | Configure Destination | Room page → *From streaming software (RTMPS)* → paste YouTube stream key → **Save stream key** | Saved for `rtmps://a.rtmps.youtube.com/live2`; key write-only |
+| 2 | Generate Credentials | Select RTMPS Relay → **Create credentials** | RTMPS URL `rtmps://<host>:1936/live` and Stream Key `floor?key=...` displayed |
+| 3 | Start Ingest Feed | Start RTMPS encoder pushing to URL with stream key | *Encoder → VoxBento* shows **Connected** |
+| 4 | Verify Relay & Studio | Wait 15–30 seconds; monitor room page and YouTube Studio | *VoxBento → YouTube* shows **Live**; YouTube Studio shows *Good/Excellent* health and video preview |
+| 5 | Audio & Captions | Speak into floor feed | Real-time floor captions generate concurrently with live YouTube relay |
+| 6 | Destination Revocation | Click **Clear destination** | Relay terminates cleanly; YouTube transitions to disconnected |
 
 ### Recording Rehearsal Outcomes
 After completing the rehearsal steps:

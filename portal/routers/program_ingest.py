@@ -185,7 +185,7 @@ async def ingest_status(event_id: int, room_id: int) -> JSONResponse:
                         "action": "Check encoder network connection and restart stream.",
                     }
                 )
-        if relay_mode and relay and relay.state in ("unconfigured", "degraded"):
+        if relay_mode and relay and relay.state in ("unconfigured", "degraded", "failed"):
             alerts.append(
                 {
                     "target": "youtube",
