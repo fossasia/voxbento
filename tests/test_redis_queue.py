@@ -106,6 +106,58 @@ async def test_enqueue_after_commit_drops_ids_on_rollback(redis: FakeAsyncRedis)
     await engine.dispose()
 
 
+async def _ready_ids(redis: FakeAsyncRedis) -> list[bytes]:
+    await asyncio.sleep(0.05)  # the post-commit push runs as a background task
+    return await redis.lrange(redis_queue.ready_key(redis_queue.EMAIL), 0, -1)
+
+
+@pytest.mark.anyio
+async def test_savepoint_commit_waits_for_the_outer_commit(redis: FakeAsyncRedis) -> None:
+    session, engine = await _session()
+    async with session:
+        await session.begin()
+        savepoint = await session.begin_nested()
+        redis_queue.enqueue_after_commit(session, redis_queue.EMAIL, 9)
+        await savepoint.commit()
+        assert await _ready_ids(redis) == []  # the outer transaction is still open
+        await session.commit()
+    assert await _ready_ids(redis) == [b"9"]
+    await engine.dispose()
+
+
+@pytest.mark.anyio
+async def test_savepoint_rollback_drops_only_its_own_rows(redis: FakeAsyncRedis) -> None:
+    session, engine = await _session()
+    async with session:
+        await session.begin()
+        redis_queue.enqueue_after_commit(session, redis_queue.EMAIL, 1)
+        savepoint = await session.begin_nested()
+        redis_queue.enqueue_after_commit(session, redis_queue.EMAIL, 2)
+        inner = await session.begin_nested()
+        redis_queue.enqueue_after_commit(session, redis_queue.EMAIL, 3)
+        await inner.commit()
+        await savepoint.rollback()  # discards rows 2 and 3, including 3's committed savepoint
+        redis_queue.enqueue_after_commit(session, redis_queue.EMAIL, 4)
+        await session.commit()
+    assert await _ready_ids(redis) == [b"1", b"4"]
+    await engine.dispose()
+
+
+@pytest.mark.anyio
+async def test_outer_rollback_drops_rows_from_committed_savepoints(redis: FakeAsyncRedis) -> None:
+    session, engine = await _session()
+    async with session:
+        await session.begin()
+        savepoint = await session.begin_nested()
+        redis_queue.enqueue_after_commit(session, redis_queue.EMAIL, 5)
+        await savepoint.commit()
+        await session.rollback()
+        await session.begin()
+        await session.commit()
+    assert await _ready_ids(redis) == []
+    await engine.dispose()
+
+
 @pytest.mark.anyio
 async def test_worker_scans_on_start_on_wake_and_keeps_draining(redis: FakeAsyncRedis) -> None:
     calls: list[str] = []

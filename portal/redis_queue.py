@@ -17,13 +17,14 @@ import asyncio
 import logging
 import time
 from collections.abc import Awaitable, Callable, Iterable
+from dataclasses import dataclass
 from datetime import datetime, timezone
 
 from redis.asyncio import Redis
 from redis.exceptions import RedisError
 from sqlalchemy import event
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, SessionTransaction
 
 from portal.config import settings
 from portal.outage_log import OutageLog
@@ -125,24 +126,38 @@ async def enqueue(name: str, ids: Iterable[int], due: datetime | None = None) ->
     _outage.recovered()
 
 
+@dataclass(frozen=True)
+class PendingEnqueue:
+    name: str
+    item_id: int
+    due: datetime | None
+    # The innermost transaction open when the row was written; a rollback of it, or of
+    # any transaction enclosing it, means the row was never committed.
+    transaction: SessionTransaction | None
+
+
 def enqueue_after_commit(session: AsyncSession, name: str, item_id: int, due: datetime | None = None) -> None:
-    """Enqueue once the caller's transaction commits; a rollback enqueues nothing.
+    """Enqueue once the caller's outermost transaction commits; a rollback enqueues nothing.
 
     Lets a row be written in its trigger's transaction (the outbox pattern) without the
-    worker being woken for a row that may never exist.
+    worker being woken for a row that may never exist. A savepoint commit is not enough:
+    the row only becomes visible to the worker when the outer transaction commits.
     """
     if not settings.redis_enabled:
         return
     sync_session = session.sync_session
-    pending: list[tuple[str, int, datetime | None]] = sync_session.info.setdefault(_PENDING_INFO_KEY, [])
-    pending.append((name, item_id, due))
+    transaction = sync_session.get_nested_transaction() or sync_session.get_transaction()
+    pending: list[PendingEnqueue] = sync_session.info.setdefault(_PENDING_INFO_KEY, [])
+    pending.append(PendingEnqueue(name, item_id, due, transaction))
     if not event.contains(sync_session, "after_commit", _enqueue_pending):
         event.listen(sync_session, "after_commit", _enqueue_pending)
-        event.listen(sync_session, "after_rollback", _drop_pending)
+        event.listen(sync_session, "after_soft_rollback", _drop_rolled_back)
 
 
 def _enqueue_pending(sync_session: Session) -> None:
-    pending = sync_session.info.pop(_PENDING_INFO_KEY, None)
+    if sync_session.get_nested_transaction() is not None:
+        return  # a savepoint committed; wait for the outer transaction
+    pending: list[PendingEnqueue] | None = sync_session.info.pop(_PENDING_INFO_KEY, None)
     if not pending:
         return
     try:
@@ -153,13 +168,29 @@ def _enqueue_pending(sync_session: Session) -> None:
     track_task(loop.create_task(_enqueue_all(pending), name="redis-queue-enqueue"))
 
 
-def _drop_pending(sync_session: Session) -> None:
-    sync_session.info.pop(_PENDING_INFO_KEY, None)
+def _within(transaction: SessionTransaction | None, rolled_back: SessionTransaction) -> bool:
+    while transaction is not None:
+        if transaction is rolled_back:
+            return True
+        transaction = transaction.parent
+    return False
 
 
-async def _enqueue_all(pending: list[tuple[str, int, datetime | None]]) -> None:
-    for name, item_id, due in pending:
-        await enqueue(name, [item_id], due)
+def _drop_rolled_back(sync_session: Session, previous_transaction: SessionTransaction) -> None:
+    """Drop rows written in the rolled-back transaction or its savepoints; keep the rest."""
+    pending: list[PendingEnqueue] | None = sync_session.info.get(_PENDING_INFO_KEY)
+    if not pending:
+        return
+    kept = [item for item in pending if not _within(item.transaction, previous_transaction)]
+    if previous_transaction.parent is None or not kept:
+        sync_session.info.pop(_PENDING_INFO_KEY, None)
+    else:
+        sync_session.info[_PENDING_INFO_KEY] = kept
+
+
+async def _enqueue_all(pending: list[PendingEnqueue]) -> None:
+    for item in pending:
+        await enqueue(item.name, [item.item_id], item.due)
 
 
 async def move_due(client: Redis, name: str) -> int:
