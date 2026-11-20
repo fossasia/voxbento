@@ -665,6 +665,52 @@ async def test_local_whisper_drops_only_the_overlap_it_actually_heard_again():
         assert await provider.process_chunk(b"\0" * 64000, "en", "tiny", config) == "early late"
 
 
+@pytest.mark.anyio
+async def test_local_whisper_takes_its_prompt_from_the_config():
+    from portal.transcription.providers.local import LocalProvider
+
+    prompts: list[str | None] = []
+
+    class FakeModel:
+        def transcribe(self, audio, **kwargs):
+            prompts.append(kwargs.get("initial_prompt"))
+            return [], None
+
+    with patch("portal.transcription.providers.local.get_model", return_value=FakeModel()):
+        await LocalProvider().process_chunk(b"\0" * 3200, "en", "tiny", ProviderConfig(None, prompt="Glossary: X."))
+        await LocalProvider().process_chunk(b"\0" * 3200, "en", "tiny", ProviderConfig(None))
+    assert prompts == ["Glossary: X.", None]
+
+
+@pytest.mark.anyio
+async def test_chunks_still_queued_when_the_audio_ends_are_transcribed():
+    """The last seconds before the stream ends reach the captions instead of being dropped."""
+    from portal.transcription.providers.base import BoothTranscriptionState
+
+    class SlowProvider(TranscriptionProvider):
+        async def process_chunk(self, chunk, language_code, model_variant, config, booth_state=None):
+            await asyncio.sleep(0.05)  # slower than the reader, so chunks wait in the queue
+            return f"words {len(chunk)}."
+
+    class EndedProcess:
+        def __init__(self, data: bytes) -> None:
+            self.stdout = asyncio.StreamReader()
+            self.stdout.feed_data(data)
+            self.stdout.feed_eof()
+            self.returncode = None
+
+    captions = []
+
+    async def broadcast(booth_id, message):
+        if isinstance(message, dict) and message.get("status") in ("partial", "final"):
+            captions.append(message["text"])
+
+    three_seconds = 16000 * 2 * 3
+    process = EndedProcess(b"\0" * (three_seconds * 2 + 1000))
+    await SlowProvider().run_stream(process, "en", "m", ProviderConfig(None), broadcast, "b")
+    assert any("words 1000." in text for text in captions), captions
+
+
 class _FakeStdout:
     def __init__(self, items: list[bytes | float]):
         # Bytes items are returned directly; float items sleep before returning b"" or next chunk.

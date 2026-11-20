@@ -678,6 +678,76 @@ async def connect_whip(client, event, room, media):
 
 
 @pytest.mark.anyio
+@pytest.mark.parametrize("delete_room_only", [True, False])
+async def test_worker_of_a_room_deleted_outright_is_stopped(environment, monkeypatch, delete_room_only):
+    """The admin pages delete the rows, so there is no deleted_at to find the room by (#1311)."""
+    client, event, rooms, media, _, start, stop, *_ = environment
+    room, other = rooms
+    await connect_whip(client, event, room, media)
+    await connect_whip(client, event, other, media)
+    await ingest.reconcile_once()
+    assert start.await_count == 2
+    booth_id, other_booth_id = f"program-test-{room.id}-floor", f"program-test-{other.id}-floor"
+    monkeypatch.setitem(active_workers, booth_id, object())  # the running worker
+    monkeypatch.setitem(active_workers, other_booth_id, object())  # another room's worker
+
+    delete_url = (
+        f"/admin/events/{event.id}/rooms/{room.id}/delete" if delete_room_only else f"/admin/events/{event.id}/delete"
+    )
+    assert (await client.post(delete_url)).status_code == 303
+    stop.reset_mock()
+    await ingest.reconcile_once()
+    stopped = [call.args[0] for call in stop.await_args_list]
+    assert stopped == ([booth_id] if delete_room_only else sorted([booth_id, other_booth_id]))
+
+
+@pytest.mark.anyio
+async def test_worker_of_a_deleted_room_is_stopped_when_another_event_reuses_its_id(environment, monkeypatch):
+    """SQLite can hand a deleted room's id to the next room created, here in another event."""
+    client, event, rooms, media, _, start, stop, *_ = environment
+    room = rooms[0]
+    await connect_whip(client, event, room, media)
+    await ingest.reconcile_once()
+    booth_id = f"program-test-{room.id}-floor"
+    monkeypatch.setitem(active_workers, booth_id, object())  # the running worker
+    assert (await client.post(f"/admin/events/{event.id}/rooms/{room.id}/delete")).status_code == 303
+    async with get_session() as session:
+        other = Event(slug="other-event", display_name="Other")
+        session.add(other)
+        await session.flush()
+        session.add(Room(id=room.id, event_id=other.id, display_name="Reused", floor_source="program_ingest"))
+    # The new room's own worker shares the room id and must keep running.
+    monkeypatch.setitem(active_workers, f"other-event-{room.id}-floor", object())
+    # Its settings live in the shared health record, which stopping the old worker must not clear.
+    replacement_config = ("local", "tiny", "en")
+    ingest.health.setdefault(room.id, ingest.IngestHealth()).worker_config = replacement_config
+    stop.reset_mock()
+    await ingest.stop_deleted_event_workers()
+    assert [call.args[0] for call in stop.await_args_list] == [booth_id]
+    assert ingest.health[room.id].worker_config == replacement_config
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize(("floor_source", "stopped"), [("jitsi_bot", True), ("program_ingest", False)])
+async def test_worker_of_a_deleted_room_when_the_same_event_reuses_its_id(
+    environment, monkeypatch, floor_source, stopped
+):
+    """In the same event a reused id gives the same booth id, so the new room's settings decide."""
+    client, event, rooms, media, _, start, stop, *_ = environment
+    room = rooms[0]
+    await connect_whip(client, event, room, media)
+    await ingest.reconcile_once()
+    booth_id = f"program-test-{room.id}-floor"
+    monkeypatch.setitem(active_workers, booth_id, object())  # the running worker
+    assert (await client.post(f"/admin/events/{event.id}/rooms/{room.id}/delete")).status_code == 303
+    async with get_session() as session:
+        session.add(Room(id=room.id, event_id=event.id, display_name="Replacement", floor_source=floor_source))
+    stop.reset_mock()
+    await ingest.stop_deleted_event_workers()
+    assert [call.args[0] for call in stop.await_args_list] == ([booth_id] if stopped else [])
+
+
+@pytest.mark.anyio
 async def test_deleted_event_publisher_is_kicked_and_reservation_released(environment):
     client, event, rooms, media, calls, *_ = environment
     room = rooms[0]
