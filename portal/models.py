@@ -162,22 +162,14 @@ class Room(Base):
     # Fernet-encrypted: MediaMTX needs plaintext passphrase via Control API publishPass.
     # Never hashed — must be recoverable. Use encrypt_val()/decrypt_val() from portal/crypto.py.
     program_srt_passphrase_enc: Mapped[str | None] = mapped_column(Text, nullable=True)
-    program_srt_passphrase_expires_at: Mapped[datetime | None] = mapped_column(
-        DateTime(timezone=True), nullable=True
-    )
+    program_srt_passphrase_expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
     # ── Backup Contribution Feed ──────────────────────────────────────────────
     program_backup_enabled: Mapped[bool] = mapped_column(Boolean, default=False, server_default=sa.false())
     program_backup_key_enc: Mapped[str | None] = mapped_column(Text, nullable=True)
-    program_backup_key_expires_at: Mapped[datetime | None] = mapped_column(
-        DateTime(timezone=True), nullable=True
-    )
-    program_active_feed: Mapped[str] = mapped_column(
-        String(10), default="primary", server_default="primary"
-    )
-    program_backup_connected_at: Mapped[datetime | None] = mapped_column(
-        DateTime(timezone=True), nullable=True
-    )
+    program_backup_key_expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    program_active_feed: Mapped[str] = mapped_column(String(10), default="primary", server_default="primary")
+    program_backup_connected_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     floor_caption_seq: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
 
     # Translation Settings
@@ -376,9 +368,7 @@ class AIVocabularyEntry(Base):
 
     id: Mapped[int] = mapped_column(primary_key=True)
     event_id: Mapped[int] = mapped_column(ForeignKey("events.id", ondelete="CASCADE"))
-    room_id: Mapped[int | None] = mapped_column(
-        ForeignKey("rooms.id", ondelete="CASCADE"), nullable=True, default=None
-    )
+    room_id: Mapped[int | None] = mapped_column(ForeignKey("rooms.id", ondelete="CASCADE"), nullable=True, default=None)
     booth_id: Mapped[int | None] = mapped_column(
         ForeignKey("booths.id", ondelete="CASCADE"), nullable=True, default=None
     )
@@ -421,7 +411,9 @@ class InviteToken(Base):
     __tablename__ = "invite_tokens"
 
     token: Mapped[str] = mapped_column(String(TOKEN_LENGTH), primary_key=True, default=generate_token)
-    public_id: Mapped[str] = mapped_column(String(32), unique=True, index=True, nullable=False, default=generate_public_id)
+    public_id: Mapped[str] = mapped_column(
+        String(32), unique=True, index=True, nullable=False, default=generate_public_id
+    )
     booth_id: Mapped[int] = mapped_column(ForeignKey("booths.id", ondelete="CASCADE"))
     role: Mapped[str] = mapped_column(String(20))
     label: Mapped[str] = mapped_column(String(200), default="")
@@ -1086,6 +1078,20 @@ class LiveDemoSettings(Base):
     max_targets: Mapped[int] = mapped_column(Integer, default=3, server_default="3")
     # One entry per line: "term", "term = translation" or "term = fr: translation".
     glossary: Mapped[str] = mapped_column(Text, default="", server_default="")
+    ai_source: Mapped[str] = mapped_column(String(20), default="built_in", server_default="built_in")
+    speech_choice: Mapped[str] = mapped_column(Text, default="local|base", server_default="local|base")
+    translation_choice: Mapped[str] = mapped_column(
+        Text, default="local|nllb-200-distilled-600M", server_default="local|nllb-200-distilled-600M"
+    )
+    voice_provider: Mapped[str] = mapped_column(Text, default="supertonic", server_default="supertonic")
+    voice: Mapped[str] = mapped_column(Text, default="", server_default="")
+    persona: Mapped[str] = mapped_column(Text, default="", server_default="")
+    style: Mapped[str] = mapped_column(Text, default="", server_default="")
+    encrypted_speech_key: Mapped[str | None] = mapped_column(Text, nullable=True)
+    encrypted_translation_key: Mapped[str | None] = mapped_column(Text, nullable=True)
+    encrypted_voice_key: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # Visitor audio the demo accepts per UTC day, in minutes; caps hosted-service spend.
+    daily_minutes: Mapped[int] = mapped_column(Integer, default=120, server_default="120")
     updated_by_id: Mapped[int | None] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now, onupdate=utc_now)
 
@@ -1119,7 +1125,6 @@ class EmailDelivery(Base):
     last_error: Mapped[str | None] = mapped_column(String(1000), nullable=True)
     idempotency_key: Mapped[str | None] = mapped_column(String(255), unique=True, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
-
 
 
 class MeetingReport(Base):

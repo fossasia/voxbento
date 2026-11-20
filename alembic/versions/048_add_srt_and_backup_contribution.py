@@ -1,7 +1,7 @@
 """add_srt_and_backup_contribution
 
-Revision ID: 046
-Revises: 045
+Revision ID: 048
+Revises: 047
 Create Date: 2026-11-15 23:19:22.290952
 
 """
@@ -15,15 +15,15 @@ import sqlalchemy as sa
 from alembic import op
 
 # revision identifiers, used by Alembic.
-revision: str = "046"
-down_revision: Union[str, Sequence[str], None] = "045"
+revision: str = "048"
+down_revision: Union[str, Sequence[str], None] = "047"
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
 
 
 def upgrade() -> None:
     """Upgrade schema."""
-    with op.batch_alter_table("rooms", recreate="never") as batch_op:
+    with op.batch_alter_table("rooms") as batch_op:
         batch_op.add_column(sa.Column("program_srt_passphrase_enc", sa.Text(), nullable=True))
         batch_op.add_column(sa.Column("program_srt_passphrase_expires_at", sa.DateTime(timezone=True), nullable=True))
         batch_op.add_column(
@@ -39,7 +39,7 @@ def upgrade() -> None:
 
 def downgrade() -> None:
     """Downgrade schema."""
-    with op.batch_alter_table("rooms", recreate="never") as batch_op:
+    with op.batch_alter_table("rooms") as batch_op:
         batch_op.drop_column("program_backup_connected_at")
         batch_op.drop_column("program_active_feed")
         batch_op.drop_column("program_backup_key_expires_at")

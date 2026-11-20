@@ -109,6 +109,8 @@ class IngestHealth:
     codecs: list[str] = field(default_factory=list)
     last_bytes: int = -1
     last_progress: float = field(default_factory=time.monotonic)
+    primary_last_bytes: int = -1
+    primary_last_progress: float = 0.0
     missing_since: float | None = None
     reservation_started_at: float | None = None
     backup_session_id: str | None = None
@@ -1174,13 +1176,21 @@ async def reconcile_once() -> None:
                     now = time.monotonic()
 
                     primary_connected = bool(primary_snapshot and primary_snapshot.ready and primary_snapshot.source)
-                    if primary_snapshot and primary_snapshot.bytesReceived > current.last_bytes:
-                        current.last_bytes = primary_snapshot.bytesReceived
-                        current.last_progress = now
+                    if primary_connected:
+                        if current.primary_last_bytes == -1 or current.primary_last_progress == 0.0:
+                            current.primary_last_bytes = primary_snapshot.bytesReceived
+                            current.primary_last_progress = now
+                        elif primary_snapshot.bytesReceived > current.primary_last_bytes:
+                            current.primary_last_bytes = primary_snapshot.bytesReceived
+                            current.primary_last_progress = now
+                    else:
+                        current.primary_last_bytes = -1
+                        current.primary_last_progress = 0.0
+
                     primary_stalled = bool(
                         primary_connected
-                        and current.last_progress > 0
-                        and (now - current.last_progress >= TAKEOVER_STALL_SECS)
+                        and current.primary_last_progress > 0
+                        and (now - current.primary_last_progress >= TAKEOVER_STALL_SECS)
                     )
                     if room.program_connected_at is None:
                         # Primary has not connected yet: give primary a startup grace period before failover

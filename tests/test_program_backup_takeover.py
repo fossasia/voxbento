@@ -529,6 +529,8 @@ async def test_primary_stall_triggers_backup_takeover(backup_env):
     # Simulate primary health entry where last progress was 10s ago (stalled > TAKEOVER_STALL_SECS)
     now = time.monotonic()
     primary_health = ingest.IngestHealth()
+    primary_health.primary_last_bytes = 50000
+    primary_health.primary_last_progress = now - 10.0
     primary_health.last_bytes = 50000
     primary_health.last_progress = now - 10.0
     primary_health.backup_session_id = "backup-sess"
@@ -540,6 +542,63 @@ async def test_primary_stall_triggers_backup_takeover(backup_env):
     async with get_session() as session:
         stored = await session.get(Room, room.id)
         assert stored.program_active_feed == "backup"
+
+
+@pytest.mark.anyio
+async def test_active_feed_stall_detected_after_takeover_when_counters_unchanged(backup_env):
+    import time
+
+    event = backup_env["event"]
+    room = backup_env["room"]
+    media = backup_env["media"]
+
+    async with get_session() as session:
+        stored = await session.get(Room, room.id)
+        stored.program_connected_at = ingest.utc_now()
+        stored.program_session_id = "primary-sess"
+        stored.program_backup_enabled = True
+        await ingest.generate_backup_srt_passphrase(stored, session)
+        ingest._configured_srt_paths.add(f"{event.slug}/{room.id}/floor_backup")
+        stored.program_backup_connected_at = ingest.utc_now()
+        stored.program_active_feed = "backup"
+        await session.commit()
+
+    primary_path = f"{event.slug}/{room.id}/floor"
+    backup_path = f"{event.slug}/{room.id}/floor_backup"
+
+    # Both feeds are present in media, but neither is advancing bytes
+    media[primary_path] = {
+        "name": primary_path,
+        "ready": True,
+        "source": {"id": "primary-sess", "type": "srtConn"},
+        "tracks": ["H264", "AAC"],
+        "bytesReceived": 50000,
+    }
+    media[backup_path] = {
+        "name": backup_path,
+        "ready": True,
+        "source": {"id": "backup-sess", "type": "srtConn"},
+        "tracks": ["H264", "AAC"],
+        "bytesReceived": 10000,
+    }
+
+    now = time.monotonic()
+    entry = ingest.IngestHealth()
+    entry.primary_last_bytes = 50000
+    entry.primary_last_progress = now - 20.0
+    entry.backup_session_id = "backup-sess"
+    entry.backup_connected = True
+    # Active feed (backup) progress stopped longer than stall threshold
+    entry.last_bytes = 10000
+    entry.last_progress = now - (settings.program_ingest_stall_secs + 2.0)
+    ingest.health[room.id] = entry
+
+    await ingest.reconcile_once()
+
+    current = ingest.health[room.id]
+    assert current.state == "degraded"
+    assert current.ingest_state == "degraded"
+    assert "media has stalled" in current.reason.lower()
 
 
 @pytest.mark.anyio
