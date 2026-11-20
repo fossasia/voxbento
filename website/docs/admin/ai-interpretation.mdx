@@ -99,11 +99,13 @@ The **Translation health** section at the bottom of the same page shows how tran
 - **By model**: segments translated, failed and dropped as stale, with the median (p50) and slow (p95) start lag and inference time. Start lag is the time from when a segment arrived until the engine started on it; a segment that cannot start within `TRANSLATION_MAX_LAG_SECONDS` of arriving is dropped as stale so the language catches up with the speaker.
 - **Built-in models in memory**: which built-in models are loaded now and roughly how much memory they take. A model nobody uses for an hour is unloaded.
 
+The section keeps at most the latest 100,000 segments. On a server busy enough to pass that within 5 minutes, it says so and counts only those.
+
 Mission Control shows a **Translation** status for each room that translates, with the counts beside it. Over the last 5 minutes, checked in this order:
 
 - **Idle**: no segment was translated, failed or dropped.
 - **Failing**: at least 2 segments failed, and failures are at least half of all segments.
-- **Lagging**: at least one segment was dropped as stale, or the slow (p95) start lag is at least half of `TRANSLATION_MAX_LAG_SECONDS`.
+- **Lagging**: at least one segment was dropped as stale, or, when `TRANSLATION_MAX_LAG_SECONDS` is set, the slow (p95) start lag is at least half of it.
 - **Healthy**: anything else, including a single failure.
 
 ## Self-hosted Translation Server

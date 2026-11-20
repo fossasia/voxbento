@@ -2382,6 +2382,7 @@ async def api_room_translation_health(room_id: int):
         "failed": health.failed,
         "stale": health.stale,
         "window_seconds": int(translation_metrics.window),
+        "complete": translation_metrics.complete,
     }
 
 

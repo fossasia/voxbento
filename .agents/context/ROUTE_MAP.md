@@ -284,11 +284,12 @@ with `?error=invalid_role&role=…` and the page explains why.
   meaning: `stage` is the raw floor-bot stage (`launching`, `in_meeting`, `dead`, …;
   `unknown` when the service is unreachable); the managed lifecycle is in `state`.
 - `GET /api/rooms/{room_id}/translation-health` (room coordinators and owners, #1194)
-  returns `{state, translated, failed, stale, window_seconds}` for the room's
+  returns `{state, translated, failed, stale, window_seconds, complete}` for the room's
   translations over the last 5 minutes. `state` is `idle`, `healthy`, `lagging` (a
   segment was dropped as stale, or p95 start lag is at least half of
   `TRANSLATION_MAX_LAG_SECONDS`) or `failing` (at least 2 failures, and at least half
-  of all outcomes). Mission Control polls it for rooms that translate.
+  of all outcomes). Mission Control polls it for rooms that translate. `complete` is false while the
+  latest 100,000 outcomes no longer cover the whole window.
 
 `POST /oauth/token` accepts an optional `event` slug for the authorization-code
 grant. A mismatch is rejected before code consumption or membership grants.

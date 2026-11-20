@@ -7,6 +7,7 @@ from collections.abc import Callable, Iterable
 from dataclasses import dataclass
 
 WINDOW_SECONDS = 300.0
+MAX_OUTCOMES = 100_000
 FAILING_MIN_FAILURES = 2
 
 TRANSLATED = "translated"
@@ -76,11 +77,14 @@ class TranslationMetrics:
         self,
         *,
         window: float = WINDOW_SECONDS,
+        max_outcomes: int = MAX_OUTCOMES,
         clock: Callable[[], float] = time.monotonic,
     ) -> None:
         self.window = window
+        self.max_outcomes = max_outcomes
         self._clock = clock
         self._outcomes: deque[Outcome] = deque()
+        self._trimmed_at: float | None = None
 
     def record(
         self,
@@ -92,8 +96,15 @@ class TranslationMetrics:
         start_lag: float | None = None,
         latency: float | None = None,
     ) -> None:
-        self._outcomes.append(Outcome(self._clock(), provider, model, room_id, kind, start_lag, latency))
         self._forget_old()
+        if len(self._outcomes) >= self.max_outcomes:
+            self._outcomes.popleft()
+            self._trimmed_at = self._clock()
+        self._outcomes.append(Outcome(self._clock(), provider, model, room_id, kind, start_lag, latency))
+
+    @property
+    def complete(self) -> bool:
+        return self._trimmed_at is None or self._trimmed_at < self._clock() - self.window
 
     def recent(self) -> list[Outcome]:
         self._forget_old()
@@ -118,6 +129,7 @@ class TranslationMetrics:
 
     def clear(self) -> None:
         self._outcomes.clear()
+        self._trimmed_at = None
 
 
 def _counts(outcomes: list[Outcome]) -> tuple[int, int, int]:

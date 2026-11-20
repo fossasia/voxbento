@@ -99,6 +99,8 @@ async def translation_models_page(request: Request):
             "loaded_models": loaded,
             "loaded_ram_mb": sum(row.approx_ram_mb or 0 for row in loaded),
             "window_minutes": round(translation_metrics.window / 60),
+            "metrics_complete": translation_metrics.complete,
+            "max_outcomes": translation_metrics.max_outcomes,
             "lag_budget": settings.translation_max_lag_seconds or None,
         },
         headers={"Cache-Control": "no-store"},

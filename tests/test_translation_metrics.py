@@ -126,6 +126,23 @@ def test_every_outcome_in_the_window_is_kept_and_older_ones_are_let_go_while_rec
     assert len(metrics._outcomes) == 1
 
 
+def test_a_full_window_keeps_the_latest_outcomes_and_says_it_is_incomplete():
+    clock = Clock()
+    metrics = TranslationMetrics(window=60, max_outcomes=3, clock=clock)
+    for kind in (FAILED, FAILED, TRANSLATED):
+        metrics.record("local", "nllb", 1, kind)
+    assert metrics.complete
+
+    metrics.record("local", "nllb", 1, TRANSLATED)
+    metrics.record("local", "nllb", 1, TRANSLATED)
+
+    assert len(metrics.recent()) == 3
+    assert metrics.room(1, None).failed == 0
+    assert not metrics.complete
+    clock.now += 61
+    assert metrics.complete
+
+
 # ── Through the worker ──
 
 
@@ -328,7 +345,14 @@ async def test_mission_control_reads_a_rooms_translation_health(monkeypatch, wor
         idle = await c.get(f"/api/rooms/{world['quiet']}/translation-health")
 
     assert lagging.status_code == 200
-    assert lagging.json() == {"state": LAGGING, "translated": 3, "failed": 0, "stale": 1, "window_seconds": 300}
+    assert lagging.json() == {
+        "state": LAGGING,
+        "translated": 3,
+        "failed": 0,
+        "stale": 1,
+        "window_seconds": 300,
+        "complete": True,
+    }
     assert idle.json()["state"] == IDLE
 
 
@@ -374,6 +398,20 @@ async def test_admins_see_translation_health_on_the_models_page(monkeypatch, wor
     assert "4.5 s" in row
     assert "1.5 s / 1.5 s" in row
     assert "About 600 MB in total" in health
+    assert "Very busy" not in health
+
+
+@pytest.mark.anyio
+async def test_the_models_page_says_when_the_cap_cuts_into_the_window(monkeypatch, world):
+    metrics = TranslationMetrics(max_outcomes=2)
+    for _ in range(3):
+        metrics.record("local", "nllb", world["room"], TRANSLATED, start_lag=0.1, latency=0.2)
+    monkeypatch.setattr(models_router, "translation_metrics", metrics)
+
+    async with client(world["admin"]) as c:
+        res = await c.get("/admin/translation-models/")
+
+    assert "only the latest 2 segments of the last 5 minutes are counted" in res.text
 
 
 @pytest.mark.anyio
