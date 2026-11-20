@@ -187,3 +187,21 @@ def test_max_transcription_workers_env_override(monkeypatch: pytest.MonkeyPatch)
 def test_max_transcription_workers_bounds(invalid_val: int) -> None:
     with pytest.raises(ValidationError):
         Settings(_env_file=None, max_transcription_workers=invalid_val)
+
+
+def test_redis_disabled_by_default(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("REDIS_URL", raising=False)
+    assert Settings(_env_file=None).redis_enabled is False
+
+
+@pytest.mark.parametrize("url", ["redis://redis:6379/0", "rediss://cache.example:6380/1", "unix:///run/redis.sock"])
+def test_redis_url_accepts_redis_schemes(url: str) -> None:
+    settings = Settings(_env_file=None, redis_url=f"  {url} ")
+    assert settings.redis_url == url
+    assert settings.redis_enabled is True
+
+
+@pytest.mark.parametrize("url", ["http://redis:6379", "localhost:6379", "postgresql://db/x"])
+def test_redis_url_rejects_other_schemes(url: str) -> None:
+    with pytest.raises(ValidationError):
+        Settings(_env_file=None, redis_url=url)
