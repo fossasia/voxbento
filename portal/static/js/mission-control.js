@@ -13,6 +13,8 @@
  * The page passes its data in data-config on #mission-control (no inline script).
  */
 
+import { TRANSLATION_STATES, translationSummary } from './translation-health.js';
+
 const root = document.getElementById('mission-control');
 const config = JSON.parse(root?.dataset.config || '{}');
 const roomsContainer = document.getElementById('rooms-container');
@@ -169,22 +171,6 @@ function renderFloorCaptions(room) {
   refresh();
   setInterval(refresh, 15000);
   return box;
-}
-
-const TRANSLATION_STATES = {
-  idle: ['Idle', 'is-off'],
-  healthy: ['Healthy', 'is-on'],
-  lagging: ['Lagging', 'is-busy'],
-  failing: ['Failing', 'is-problem'],
-};
-
-function translationSummary(data) {
-  const minutes = Math.round((data.window_seconds || 300) / 60);
-  if (data.state === 'idle') return `Nothing translated in the last ${minutes} minutes.`;
-  const parts = [`${data.translated} translated`];
-  if (data.stale) parts.push(`${data.stale} dropped because the engine was busy`);
-  if (data.failed) parts.push(`${data.failed} failed`);
-  return `${parts.join(', ')} in the last ${minutes} minutes.`;
 }
 
 function renderTranslationHealth(room) {
