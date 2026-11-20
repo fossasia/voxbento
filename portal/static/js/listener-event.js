@@ -9,6 +9,8 @@ var captionsFocusBtn = document.getElementById("captions-focus-btn");
 var captionsFocusReturnTarget = null;
 var captionsWasMinimized = false;
 var captionsFocusInertElements = [];
+var captionsFocusScrollPosition = null;
+var captionsFocusPointerScrollPosition = null;
 toggleCaptionsBtn.addEventListener("click", function () {
   var hidden = captionsContainer.classList.toggle("minimized");
   toggleCaptionsBtn.textContent = hidden ? "Show" : "Hide";
@@ -55,9 +57,13 @@ function syncCaptionsFocusMode(active) {
     toggleCaptionsBtn.textContent = captionsWasMinimized ? "Show" : "Hide";
     toggleCaptionsBtn.setAttribute("aria-expanded", String(!captionsWasMinimized));
     if (captionsFocusReturnTarget && typeof captionsFocusReturnTarget.focus === "function") {
-      captionsFocusReturnTarget.focus();
+      captionsFocusReturnTarget.focus({ preventScroll: true });
+    }
+    if (captionsFocusScrollPosition) {
+      window.scrollTo(captionsFocusScrollPosition.x, captionsFocusScrollPosition.y);
     }
     captionsFocusReturnTarget = null;
+    captionsFocusScrollPosition = null;
   }
 }
 
@@ -100,10 +106,26 @@ function exitCaptionsFocusMode() {
 }
 
 if (captionsFocusBtn) {
+  captionsFocusBtn.addEventListener("pointerdown", function () {
+    if (!captionsContainer.classList.contains("focus-mode")) {
+      captionsFocusPointerScrollPosition = { x: window.scrollX, y: window.scrollY };
+    }
+  });
+
+  captionsFocusBtn.addEventListener("pointercancel", function () {
+    captionsFocusPointerScrollPosition = null;
+  });
+
   captionsFocusBtn.addEventListener("click", function () {
     if (captionsContainer.classList.contains("focus-mode")) {
+      captionsFocusPointerScrollPosition = null;
       exitCaptionsFocusMode();
     } else {
+      captionsFocusScrollPosition = captionsFocusPointerScrollPosition || {
+        x: window.scrollX,
+        y: window.scrollY,
+      };
+      captionsFocusPointerScrollPosition = null;
       enterCaptionsFocusMode();
     }
   });

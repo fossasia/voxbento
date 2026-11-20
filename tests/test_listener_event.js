@@ -396,6 +396,12 @@ Object.assign(globalThis, {
   fetch,
   window: {
     location: { protocol: 'http:', host: 'portal.test', href: 'http://portal.test/listener/demo', search: '' },
+    scrollX: 0,
+    scrollY: 0,
+    scrollTo(x, y) {
+      this.scrollX = x;
+      this.scrollY = y;
+    },
     history: {
       replaceState(_state, _title, url) {
         globalThis.window.location.href = String(url);
@@ -485,11 +491,16 @@ async function run() {
   await import(pathToFileURL(path.join(__dirname, '..', 'portal', 'static', 'js', 'listener-event.js')).href);
 
   console.log('\n── Captions focus mode ──');
+  window.scrollX = 24;
+  window.scrollY = 552;
   document.activeElement = captionsFocusBtn;
+  captionsFocusBtn.dispatchEvent(new Event('pointerdown'));
+  window.scrollY = 478;
   captionsFocusBtn.dispatchEvent(new Event('click'));
   assert(captionsContainer.classList.contains('focus-mode'), 'the full-screen control enables the CSS focus layout');
   assert(captionsFocusBtn.getAttribute('aria-pressed') === 'true', 'the full-screen control exposes its active state');
   assert(listenerHeader.inert && audioControls.inert && pageFooter.inert, 'page content outside captions is inert while focused');
+  window.scrollY = 130;
 
   document.activeElement = document.getElementById('translation-lang-select');
   const dismissDropdown = new Event('keydown', { cancelable: true });
@@ -503,6 +514,7 @@ async function run() {
   document.dispatchEvent(exitFromSelector);
   assert(!captionsContainer.classList.contains('focus-mode'), 'Escape exits focus mode after a selector is closed');
   assert(!listenerHeader.inert && !audioControls.inert && !pageFooter.inert, 'page content is restored on exit');
+  assert(window.scrollX === 24 && window.scrollY === 552, 'exit restores the page scroll position');
 
   let finishFullscreenRequest;
   captionsContainer.requestFullscreen = () => new Promise((resolve) => {
