@@ -6,6 +6,8 @@ import logging
 import secrets
 import uuid
 from datetime import datetime, timedelta, timezone
+from typing import NoReturn
+from urllib.parse import urlparse
 
 import bcrypt
 import jwt
@@ -874,51 +876,78 @@ def _ws_scope_error(booth_id: str, payload: dict, credential: str) -> str | None
     return None
 
 
-async def resolve_ws_auth(websocket: WebSocket, booth_id: str) -> dict:
-    """Resolves authentication for a WebSocket connection"""
+async def _ws_reject(websocket: WebSocket, code: int, message: str) -> NoReturn:
+    """Close *websocket* with *code* and refuse the connection with *message*."""
+    await websocket.close(code=code)
+    raise WSAuthError(message)
 
+
+async def _ws_token_payload(websocket: WebSocket, booth_id: str) -> dict | None:
+    """Payload of a valid query token that settles the connection, else None.
+
+    None means there is no token, or it carries no scope at all (the legacy access
+    token), so the session cookies decide, as they always have.
+    """
     token = websocket.query_params.get("token", "")
-    if token:
-        try:
-            payload = decode_token(token)
-        except jwt.InvalidTokenError:
-            await websocket.close(code=4001)
-            raise WSAuthError("Invalid WebSocket token.")
+    if not token:
+        return None
+    try:
+        payload = decode_token(token)
+    except jwt.InvalidTokenError:
+        await _ws_reject(websocket, 4001, "Invalid WebSocket token.")
 
-        # Check Token Scope
-        if payload.get("is_admin") or payload.get("admin"):
-            return payload
+    if payload.get("is_admin") or payload.get("admin"):
+        return payload
 
-        scope_error = _ws_scope_error(booth_id, payload, "token")
-        if scope_error:
-            await websocket.close(code=4003)
-            raise WSAuthError(scope_error)
+    scope_error = _ws_scope_error(booth_id, payload, "token")
+    if scope_error:
+        await _ws_reject(websocket, 4003, scope_error)
 
-        # A token with no scope at all (the legacy access token) falls through to
-        # the session cookies below, as it always has.
-        if is_listener_token(payload) or payload.get("role") or (
-            payload.get("event_slug") and payload.get("language_code")
-        ):
-            return payload
+    if (
+        is_listener_token(payload)
+        or payload.get("role")
+        or (payload.get("event_slug") and payload.get("language_code"))
+    ):
+        return payload
+    return None
 
+
+async def _ws_cookie_payload(websocket: WebSocket, booth_id: str) -> dict:
+    """The session cookie that speaks for the connection: an Admin, else the higher role."""
     sessions = get_booth_sessions(websocket)
     user_sess = sessions.get("user_token")
     invite_sess = sessions.get("session_token")
     if user_sess and invite_sess and user_sess.get("user") and await resolve_session_user(user_sess) is None:
         user_sess = None
     if user_sess and (user_sess.get("is_admin") or user_sess.get("admin")):
-        payload = user_sess
-    elif user_sess and invite_sess:
+        return user_sess
+    if user_sess and invite_sess:
         user_role = await resolve_booth_role(user_sess, booth_id)
         invite_role = await resolve_booth_role(invite_sess, booth_id)
         if ROLE_RANK.get(user_role or "", 0) >= ROLE_RANK.get(invite_role or "", 0):
-            payload = user_sess
-        else:
-            payload = invite_sess
-    elif invite_sess:
-        payload = invite_sess
-    else:
-        payload = user_sess or {}
+            return user_sess
+        return invite_sess
+    return invite_sess or user_sess or {}
+
+
+def _ws_origin_allowed(websocket: WebSocket) -> bool:
+    """Whether the handshake's Origin, when it sends one, is this deployment's own host."""
+    origin = websocket.headers.get("origin")
+    if not origin:
+        return True
+    expected_host = urlparse(settings.public_base_url).netloc
+    actual_host = urlparse(origin).netloc or origin
+    return actual_host in {expected_host, websocket.url.netloc}
+
+
+async def resolve_ws_auth(websocket: WebSocket, booth_id: str) -> dict:
+    """Resolves authentication for a WebSocket connection"""
+
+    payload = await _ws_token_payload(websocket, booth_id)
+    if payload is not None:
+        return payload
+
+    payload = await _ws_cookie_payload(websocket, booth_id)
 
     if not settings.booth_access_token:
         # Participant cookies for another booth stay connected without a role (#810). A
@@ -927,27 +956,16 @@ async def resolve_ws_auth(websocket: WebSocket, booth_id: str) -> dict:
         if is_listener_token(payload):
             scope_error = _ws_scope_error(booth_id, payload, "cookie")
             if scope_error:
-                await websocket.close(code=4003)
-                raise WSAuthError(scope_error)
+                await _ws_reject(websocket, 4003, scope_error)
         return payload
 
     # Origin Check for Cookie fallback
-    origin = websocket.headers.get("origin")
-    if origin:
-        from urllib.parse import urlparse
-
-        expected_host = urlparse(settings.public_base_url).netloc
-        actual_host = urlparse(origin).netloc or origin
-        allowed_hosts = {expected_host, websocket.url.netloc}
-
-        if actual_host not in allowed_hosts:
-            await websocket.close(code=4003)
-            raise WSAuthError("Origin mismatch.")
+    if not _ws_origin_allowed(websocket):
+        await _ws_reject(websocket, 4003, "Origin mismatch.")
 
     # Cookie Fallback
     if not payload:
-        await websocket.close(code=4001)
-        raise WSAuthError("Missing WebSocket token and session cookie.")
+        await _ws_reject(websocket, 4001, "Missing WebSocket token and session cookie.")
 
     # Check Cookie Scope
     if payload.get("is_admin") or payload.get("admin"):
@@ -955,16 +973,13 @@ async def resolve_ws_auth(websocket: WebSocket, booth_id: str) -> dict:
 
     scope_error = _ws_scope_error(booth_id, payload, "cookie")
     if scope_error:
-        await websocket.close(code=4003)
-        raise WSAuthError(scope_error)
+        await _ws_reject(websocket, 4003, scope_error)
     if is_listener_token(payload):
         return payload
 
     token_id = payload.get("token_id")
-    if token_id is not None:
-        if await is_invite_token_revoked(str(token_id)):
-            await websocket.close(code=4003)
-            raise WSAuthError("Invitation revoked.")
+    if token_id is not None and await is_invite_token_revoked(str(token_id)):
+        await _ws_reject(websocket, 4003, "Invitation revoked.")
 
     return payload
 
