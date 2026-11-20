@@ -58,6 +58,7 @@ Attendees receive sub-second audio via WHEP. All coordination flows through Fast
 | `portal/program_ingest.py` | Program Stream Ingest floor authorization and reconciliation |
 | `portal/program_relay.py` | YouTube RTMPS destination management and relay convergence |
 | `portal/outage_log.py` | `OutageLog` — reconcile-loop failures logged once per outage, with reminders and recovery |
+| `portal/redis_queue.py` | Optional Redis wake-up for the webhook and email outbox workers (`REDIS_URL`, compose profile `redis`) |
 | `portal/user_admin.py` | Administrative access rules and user access switches |
 | `portal/static/js/interpreter-booth.js` | Interpreter UI — WebRTC/WHIP, WebSocket, Jitsi, mic controls |
 | `portal/static/js/whep-listener.js` | Listener WHEP client — RTCPeerConnection, auto-reconnect |

@@ -90,6 +90,7 @@ These variables configure how Voxbento talks to MediaMTX and other local Docker 
 | `MEETING_AGENT_MAX_RESTARTS` | `5` | Automatic meeting-agent restarts per incident before the room reports **Needs attention**. |
 | `MEETING_AGENT_NO_AUDIO_SECS` | `45` | Seconds a joined agent may go without delivering audio to MediaMTX before it is restarted. |
 | `JITSI_INTERNAL_BASE` | `https://jitsi-web:8443` in Compose | Internal HTTPS URL used by the floor bot. Jitsi `stable-11146` and newer listen on the unprivileged container port `8443`. |
+| `REDIS_URL` | _(empty)_ | Optional. When set (`redis://`, `rediss://` or `unix://`), webhook and email delivery start as soon as a message is queued instead of waiting for the next database poll. The database still keeps every message, so a Redis outage only delays delivery. With Docker Compose, use `redis://redis:6379/0` and start the stack with `--profile redis`. |
 
 ## Program Stream Ingest & Relay Variables
 
