@@ -15,29 +15,35 @@ import sqlalchemy as sa
 from alembic import op
 
 # revision identifiers, used by Alembic.
-revision: str = '046'
-down_revision: Union[str, Sequence[str], None] = '045'
+revision: str = "046"
+down_revision: Union[str, Sequence[str], None] = "045"
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
 
 
 def upgrade() -> None:
     """Upgrade schema."""
-    op.add_column('rooms', sa.Column('program_srt_passphrase_enc', sa.Text(), nullable=True))
-    op.add_column('rooms', sa.Column('program_srt_passphrase_expires_at', sa.DateTime(timezone=True), nullable=True))
-    op.add_column('rooms', sa.Column('program_backup_enabled', sa.Boolean(), server_default=sa.false(), nullable=False))
-    op.add_column('rooms', sa.Column('program_backup_key_enc', sa.Text(), nullable=True))
-    op.add_column('rooms', sa.Column('program_backup_key_expires_at', sa.DateTime(timezone=True), nullable=True))
-    op.add_column('rooms', sa.Column('program_active_feed', sa.String(length=10), server_default='primary', nullable=False))
-    op.add_column('rooms', sa.Column('program_backup_connected_at', sa.DateTime(timezone=True), nullable=True))
+    with op.batch_alter_table("rooms", recreate="never") as batch_op:
+        batch_op.add_column(sa.Column("program_srt_passphrase_enc", sa.Text(), nullable=True))
+        batch_op.add_column(sa.Column("program_srt_passphrase_expires_at", sa.DateTime(timezone=True), nullable=True))
+        batch_op.add_column(
+            sa.Column("program_backup_enabled", sa.Boolean(), server_default=sa.false(), nullable=False)
+        )
+        batch_op.add_column(sa.Column("program_backup_key_enc", sa.Text(), nullable=True))
+        batch_op.add_column(sa.Column("program_backup_key_expires_at", sa.DateTime(timezone=True), nullable=True))
+        batch_op.add_column(
+            sa.Column("program_active_feed", sa.String(length=10), server_default="primary", nullable=False)
+        )
+        batch_op.add_column(sa.Column("program_backup_connected_at", sa.DateTime(timezone=True), nullable=True))
 
 
 def downgrade() -> None:
     """Downgrade schema."""
-    op.drop_column('rooms', 'program_backup_connected_at')
-    op.drop_column('rooms', 'program_active_feed')
-    op.drop_column('rooms', 'program_backup_key_expires_at')
-    op.drop_column('rooms', 'program_backup_key_enc')
-    op.drop_column('rooms', 'program_backup_enabled')
-    op.drop_column('rooms', 'program_srt_passphrase_expires_at')
-    op.drop_column('rooms', 'program_srt_passphrase_enc')
+    with op.batch_alter_table("rooms", recreate="never") as batch_op:
+        batch_op.drop_column("program_backup_connected_at")
+        batch_op.drop_column("program_active_feed")
+        batch_op.drop_column("program_backup_key_expires_at")
+        batch_op.drop_column("program_backup_key_enc")
+        batch_op.drop_column("program_backup_enabled")
+        batch_op.drop_column("program_srt_passphrase_expires_at")
+        batch_op.drop_column("program_srt_passphrase_enc")

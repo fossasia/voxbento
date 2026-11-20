@@ -154,19 +154,29 @@ and [registration protection](docs/registration-protection.md) for signup contro
 docker compose up -d --build
 ```
 
-To enable SRT contribution ingest on port `8890/udp`, add `docker-compose.srt.yml` to `COMPOSE_FILE` in your `.env` (recommended), or include all active overlays:
+To enable SRT contribution ingest on port `8890/udp`, add `docker-compose.srt.yml` to `COMPOSE_FILE` in your `.env` (recommended), or run with active compose files:
 ```bash
-docker compose -f docker-compose.yml [-f docker-compose.relay.yml] -f docker-compose.srt.yml up -d --build
+# Standard SRT deployment:
+docker compose -f docker-compose.yml -f docker-compose.srt.yml up -d --build
+
+# Or when combined with YouTube relaying:
+docker compose -f docker-compose.yml -f docker-compose.relay.yml -f docker-compose.srt.yml up -d --build
 ```
 
 > **Deployment, Upgrades, and Rollback Procedures:**
 > * **Zero-Downtime Application Updates (Stream Preservation):** Updating the portal application container (`docker compose up -d --no-deps portal`) preserves live contribution streams and relays. MediaMTX runs in an isolated process; existing UDP/TCP streams remain uninterrupted while the portal restarts and reconnects.
 > * **MediaMTX Upgrade & Deliberate Termination:** When upgrading or restarting MediaMTX (`docker compose restart mediamtx`), active SRT and RTMPS connections terminate immediately as kernel UDP/TCP socket state cannot be preserved across process restarts. Configure all encoders with automatic reconnect enabled (e.g. 2-second retry delay). The operator dashboard will briefly show `disconnected` and transition back to `receiving` as encoders reconnect and the portal reconciler repopulates per-path SRT credentials.
-> * **Rollback Procedure:** If a newly deployed image or configuration causes errors, roll back via:
->   ```bash
->   docker compose -f docker-compose.yml [-f overlays...] up -d --build --remove-orphans
->   ```
->   If schema migrations were executed, roll back the affected revision with `uv run alembic downgrade -1`. Verify operational recovery in the admin room ingest health panel.
+> * **Rollback Procedure:** If a newly deployed application change or configuration causes errors:
+>   1. Check out the previous known-good commit or tag (e.g. `git checkout <previous-tag-or-commit>`) and restore its environment settings.
+>   2. If database schema migrations were executed, roll back the affected revision:
+>      ```bash
+>      uv run alembic downgrade -1
+>      ```
+>   3. Re-deploy the known-good version using your active compose configuration:
+>      ```bash
+>      docker compose -f docker-compose.yml -f docker-compose.srt.yml up -d --build --remove-orphans
+>      ```
+>      (Append `-f docker-compose.relay.yml` if YouTube relaying was enabled). Verify operational recovery in the admin room ingest health panel.
 
 **Option B: Native Development (Faster backend iteration)**
 ```bash

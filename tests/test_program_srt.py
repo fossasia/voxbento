@@ -93,6 +93,7 @@ async def srt_env(monkeypatch):
             await session.flush()
             for r in rooms:
                 await ingest.generate_srt_passphrase(r, session)
+                ingest._configured_srt_paths.add(f"{event.slug}/{r.id}/floor")
             await session.commit()
 
         token = create_user_token(user_id=admin.id, email=admin.email, is_admin=True)
@@ -110,6 +111,7 @@ async def srt_env(monkeypatch):
                 "start": start,
             }
 
+    ingest._configured_srt_paths.clear()
     ingest.health.clear()
     ingest.failures.clear()
     ingest.room_locks.clear()
@@ -155,6 +157,7 @@ async def test_srt_auth_hook_rejects_when_srt_disabled(srt_env, monkeypatch):
 @pytest.mark.anyio
 async def test_srt_passphrase_stored_encrypted_never_logged(srt_env, caplog):
     import logging
+
     room = srt_env["rooms"][0]
     caplog.set_level(logging.DEBUG)
 
@@ -294,6 +297,7 @@ async def test_srt_codec_validation_requires_both_h264_and_aac(srt_env):
 @pytest.mark.anyio
 async def test_srt_aac_audio_track_recognized_for_transcription(srt_env):
     import time
+
     event = srt_env["event"]
     room = srt_env["rooms"][0]
 
@@ -312,6 +316,7 @@ async def test_srt_aac_audio_track_recognized_for_transcription(srt_env):
         bytesReceived=1024,
     )
     health_entry = ingest.IngestHealth()
+    health_entry.codecs = ["H264", "AAC"]
     booth_id = f"{event.slug}-{room.id}-floor"
     now = time.monotonic()
 
@@ -319,5 +324,14 @@ async def test_srt_aac_audio_track_recognized_for_transcription(srt_env):
     await ingest.reconcile_processing(stored, event, path, health_entry, booth_id, now)
     assert health_entry.processing_state != "degraded"
     assert health_entry.state in ("receiving", "processing")
-    assert health_entry.processing_state in ("starting", "processing")
+    assert health_entry.ingest_state == "connected"
 
+    # Verify status API returns ingest_continuity=True for healthy connected feed
+    ingest.health[room.id] = health_entry
+    client = srt_env["client"]
+    resp = await client.get(f"/admin/events/{event.id}/rooms/{room.id}/program-ingest")
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["metrics"]["ingest_continuity"] is True
+    assert data["metrics"]["audio_present"] is True
+    assert health_entry.processing_state in ("starting", "processing")

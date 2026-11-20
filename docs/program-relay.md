@@ -62,8 +62,10 @@ MediaMTX (SRT Listener :8890 / RTMPS Listener :1936)
 | Audio | AAC-LC, 44.1 or 48 kHz, stereo or mono |
 | Bitrate | Maximum 12,000 kbps (enforced by reconciler; sessions exceeding this for 5 cycles are kicked). VoxBento does not transcode. |
 
-Feeds without H.264 + AAC are accepted for captions when they carry decodable audio,
+For RTMPS and WHIP modes, feeds without H.264 + AAC are accepted for captions when they carry decodable audio,
 but are **not relayed**; relay health shows *Needs attention* with the reason.
+For **SRT contribution ingest**, strict gateway admission requires both H.264 video and AAC audio tracks;
+SRT feeds missing either track are rejected immediately with `rejected_codec`.
 
 ## Redundant Contribution & Deterministic Backup Takeover (#750)
 
@@ -82,9 +84,9 @@ VoxBento guarantees that downstream consumers (`program-relay` forwarding to You
 
 ### 3. Deterministic Takeover Mechanics
 The portal reconciler continuously monitors feed health:
-* **Trigger Conditions:** If the primary feed stalls (0 byte progress for $\ge 5.0$ seconds via `TAKEOVER_STALL_SECS`) or completely disconnects, and `program_backup_enabled` is active with a live connected backup feed, takeover triggers immediately.
+* **Trigger Conditions:** If the primary feed stalls (0 byte progress for >= 5.0 seconds via `TAKEOVER_STALL_SECS`) or completely disconnects, and `program_backup_enabled` is active with a live connected backup feed, takeover triggers immediately.
 * **Promotion Action:** The reconciler sets `room.program_active_feed = "backup"`, rebinds `program-relay` to the RTSP path of `floor_backup`, and rebinds the STT worker.
-* **Failover Latency:** Takeover completes within 5–7 seconds (combining the 5.0s stall threshold and the 2.0s reconciler polling cycle), preventing broadcast disruption while preserving caption continuity.
+* **Failover Latency:** Takeover completes within 5–8 seconds (combining the 5.0s stall threshold and the 2.0s reconciler polling cycle plus pass execution time), preventing broadcast disruption while preserving caption continuity.
 
 ### 4. Anti-Flapping Protection
 If the primary encoder recovers or reconnects while the backup feed is actively carrying the broadcast, VoxBento **does not automatically revert** to the primary feed. Automatic failback during a live event creates dangerous stream flapping and multiple YouTube buffering interruptions.
@@ -227,8 +229,10 @@ The badge at the top reads **Live on YouTube**. Check the preview in YouTube Stu
   (`program_srt_passphrase_enc` and `program_backup_key_enc`), write-only via API, never logged,
   and never exposed in plaintext. Passphrases are pushed to MediaMTX dynamically via local
   Control API (`publishPass` directive) without configuring a static global passphrase.
-- **Dual-feed credential isolation.** Primary and backup SRT feeds have separate, independently
-  rotatable credentials. Revoking or updating one does not compromise the other.
+- **Dual-feed credential isolation.** Primary and backup SRT feeds have separate cryptographic passphrases
+  stored in distinct encrypted columns (`program_srt_passphrase_enc` and `program_backup_key_enc`).
+  When credentials are regenerated or rotated on a room, both passphrases are regenerated simultaneously
+  and active sessions on both paths are kicked to ensure complete room credential hygiene.
 - **Gateway boundary protection.** Non-conforming video/audio codecs (requiring H.264 + AAC)
   are kicked immediately (`rejected_codec`); streams exceeding 12,000 kbps for 5 consecutive
   cycles are kicked (`rejected_limits`); and total concurrent room ingest is strictly bounded
@@ -418,6 +422,32 @@ forwards bytes.
 **One process per room.** Replacing a destination or stopping a relay returns only after
 the previous supervisor has reaped its FFmpeg run, including a run that was still being
 spawned. No old process outlives a successful stop or replacement.
+
+## SRT Contribution Troubleshooting & Failure Modes (#750)
+
+- **Connection Refused / Handshake Timeout on `:8890/udp`:**
+  - Verify `docker-compose.srt.yml` is active in `COMPOSE_FILE` and MediaMTX exposes port 8890/udp.
+  - Verify that upstream cloud security groups and firewalls permit incoming UDP traffic on port 8890.
+  - Verify that the encoder connects in **SRT Caller** mode.
+
+- **Authentication / Admission Failure (Connection Rejected / 401 / 403):**
+  - Verify the stream ID parameter exactly matches: `#!::r=<event_slug>/<room_id>/floor,m=publish` (or `floor_backup`).
+  - Verify the passphrase is correct and has not expired (30-day default TTL) or rotated.
+  - MediaMTX enforces `publishPass` dynamically via its Control API. Admission fails closed until MediaMTX confirms the per-path passphrase is active (`_configured_srt_paths`). If MediaMTX was restarted, allow 2 seconds for the reconciler loop to reapply path credentials.
+
+- **Non-Conforming Tracks / Rejected Codec (`rejected_codec`):**
+  - SRT contribution ingest requires **both H.264 video and AAC audio**. Encoders sending only AAC audio, or non-supported codecs (Opus, MP3, HEVC/H.265), are immediately kicked and marked `rejected_codec`.
+
+- **Excessive Bitrate (`rejected_limits`):**
+  - Streams exceeding 12,000 kbps for 5 consecutive reconciler polling cycles are kicked to protect gateway stability. Configure encoder CBR at <= 10,000 kbps (recommended: 5,000 kbps).
+
+- **Feed Stalls and Failover:**
+  - If the primary feed stalls for >= 5.0 s (`TAKEOVER_STALL_SECS`), the reconciler promotes `floor_backup`.
+  - When primary recovers, anti-flapping logic keeps the active feed on backup until an operator manually clicks **Promote Primary** (`promote_primary`).
+
+- **Gateway Capacity (429 / 503):**
+  - HTTP 429: Active contribution rooms reached `PROGRAM_CONTRIBUTION_MAX` limit (default 4).
+  - HTTP 503: Total concurrent contribution rooms reached `PROGRAM_INGEST_MAX_ROOMS`. Redundant backup feeds for an already-admitted room do not count against this ceiling.
 
 ## Rollback
 

@@ -494,7 +494,19 @@ if (backupToggle) {
           mode: selectedMode()
         }),
       });
-      await readError(response);
+      const data = await readError(response);
+      const backupSecretInput = document.getElementById('program-backup-secret');
+      const backupSecretRow = document.getElementById('program-backup-secret-row');
+      if (data?.backup_passphrase) {
+        if (backupSecretInput && backupSecretRow) {
+          backupSecretInput.value = data.backup_passphrase;
+          backupSecretRow.hidden = false;
+          document.getElementById('program-secret-panel').hidden = false;
+        }
+      } else if (!backupToggle.checked) {
+        if (backupSecretRow) backupSecretRow.hidden = true;
+        if (backupSecretInput) backupSecretInput.value = '';
+      }
     } catch (error) {
       console.error('Failed to toggle backup feed', error);
       status.textContent = error.message;

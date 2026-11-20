@@ -4,7 +4,8 @@ from __future__ import annotations
 
 import asyncio
 import json
-from datetime import datetime, timezone
+import time
+from datetime import datetime, timedelta, timezone
 from unittest.mock import AsyncMock
 from uuid import uuid4
 
@@ -91,6 +92,7 @@ async def backup_env(monkeypatch):
             session.add(room)
             await session.flush()
             await ingest.generate_srt_passphrase(room, session)
+            ingest._configured_srt_paths.add(f"{event.slug}/{room.id}/floor")
             await session.commit()
 
         token = create_user_token(user_id=admin.id, email=admin.email, is_admin=True)
@@ -111,6 +113,7 @@ async def backup_env(monkeypatch):
     ingest.failures.clear()
     ingest.room_locks.clear()
     ingest.audio_progress.clear()
+    ingest._configured_srt_paths.clear()
     relay.relay_health.clear()
     await dispose()
 
@@ -149,6 +152,7 @@ async def test_backup_path_accepted_when_enabled(backup_env):
         assert stored is not None
         stored.program_backup_enabled = True
         await ingest.generate_backup_srt_passphrase(stored, session)
+        ingest._configured_srt_paths.add(f"{event.slug}/{room.id}/floor_backup")
         await session.commit()
 
     payload = backup_publish(event, room)
@@ -214,6 +218,7 @@ async def test_backup_single_publisher_and_capacity_limits(backup_env, monkeypat
         stored = await session.get(Room, room.id)
         stored.program_backup_enabled = True
         await ingest.generate_backup_srt_passphrase(stored, session)
+        ingest._configured_srt_paths.add(f"{event.slug}/{room.id}/floor_backup")
         await session.commit()
 
     # 1. First backup publisher succeeds
@@ -243,6 +248,7 @@ async def test_backup_single_publisher_and_capacity_limits(backup_env, monkeypat
         await session.flush()
         await ingest.generate_srt_passphrase(room2, session)
         await ingest.generate_backup_srt_passphrase(room2, session)
+        ingest._configured_srt_paths.add(f"{event.slug}/{room2.id}/floor_backup")
         await session.commit()
 
     p3 = backup_publish(event, room2)
@@ -262,6 +268,7 @@ async def test_backup_credentials_revocation_kicks_backup(backup_env):
         stored = await session.get(Room, room.id)
         stored.program_backup_enabled = True
         await ingest.generate_backup_srt_passphrase(stored, session)
+        ingest._configured_srt_paths.add(f"{event.slug}/{room.id}/floor_backup")
         await session.commit()
 
     # Publish backup
@@ -347,6 +354,7 @@ async def test_backup_ui_api_actions_toggle_and_promote(backup_env):
 @pytest.mark.anyio
 async def test_backup_captions_after_takeover_does_not_crash_language_validator(backup_env):
     import time
+
     event = backup_env["event"]
     room = backup_env["room"]
 
@@ -428,8 +436,11 @@ async def test_stale_backup_active_feed_reset_on_source_change_or_disable(backup
         assert stored.program_active_feed == "primary"
 
     # 3. Rotating or re-enabling source also resets active feed
-    stored.program_active_feed = "backup"
-    await session.commit()
+    async with get_session() as session:
+        stored = await session.get(Room, room.id)
+        assert stored is not None
+        stored.program_active_feed = "backup"
+        await session.commit()
 
     await client.post(
         f"/admin/events/{event.id}/rooms/{room.id}/program-ingest",
@@ -482,6 +493,7 @@ async def test_backup_first_startup_grace_period(backup_env):
 @pytest.mark.anyio
 async def test_primary_stall_triggers_backup_takeover(backup_env):
     import time
+
     event = backup_env["event"]
     room = backup_env["room"]
     media = backup_env["media"]
@@ -541,6 +553,7 @@ async def test_takeover_preserves_single_consumer_guarantee(backup_env, monkeypa
         stored.program_ingest_mode = relay.RELAY_MODE
         stored.program_relay_server = "rtmps://a.rtmps.youtube.com/live2"
         from portal.crypto import encrypt_val
+
         stored.program_relay_key_enc = encrypt_val("test-key")
         stored.program_backup_enabled = True
         stored.program_active_feed = "primary"
@@ -578,6 +591,7 @@ async def test_invalid_srt_passphrase_rejected(backup_env):
         stored = await session.get(Room, room.id)
         stored.program_backup_enabled = True
         await ingest.generate_backup_srt_passphrase(stored, session)
+        ingest._configured_srt_paths.add(f"{event.slug}/{room.id}/floor_backup")
         await session.commit()
 
     # Attempt to publish with wrong password
@@ -587,5 +601,93 @@ async def test_invalid_srt_passphrase_rejected(backup_env):
     assert response.status_code in (401, 403)
 
 
+@pytest.mark.anyio
+async def test_unconfigured_srt_path_rejected_at_media_auth(backup_env):
+    """Fail closed: if MediaMTX has not confirmed passphrase application, reject publish."""
+    client = backup_env["client"]
+    event = backup_env["event"]
+    room = backup_env["room"]
+
+    async with get_session() as session:
+        stored = await session.get(Room, room.id)
+        stored.program_backup_enabled = True
+        await ingest.generate_backup_srt_passphrase(stored, session)
+        await session.commit()
+
+    backup_path = f"{event.slug}/{room.id}/floor_backup"
+    ingest._configured_srt_paths.discard(backup_path)
+
+    payload = backup_publish(event, room)
+    response = await client.post("/internal/media-auth", json=payload)
+    assert response.status_code in (401, 403)
 
 
+@pytest.mark.anyio
+async def test_backup_feed_allowed_when_max_rooms_limit_reached(backup_env, monkeypatch):
+    """A redundant backup feed for an already-admitted room does not count as a new room."""
+    client = backup_env["client"]
+    event = backup_env["event"]
+    room = backup_env["room"]
+
+    monkeypatch.setattr(settings, "program_ingest_max_rooms", 1)
+
+    async with get_session() as session:
+        stored = await session.get(Room, room.id)
+        stored.program_session_id = "primary-sess-uuid"
+        stored.program_backup_enabled = True
+        await ingest.generate_backup_srt_passphrase(stored, session)
+        ingest._configured_srt_paths.add(f"{event.slug}/{room.id}/floor_backup")
+        await session.commit()
+
+    payload = backup_publish(event, room)
+    response = await client.post("/internal/media-auth", json=payload)
+    assert response.status_code == 204
+
+
+@pytest.mark.anyio
+async def test_backup_negotiation_grace_period_prevents_premature_disconnect(backup_env):
+    """Pending backup reservation is preserved for bounded negotiation period."""
+    room = backup_env["room"]
+
+    async with get_session() as session:
+        stored = await session.get(Room, room.id)
+        stored.program_backup_enabled = True
+        stored.program_backup_connected_at = ingest.utc_now()
+        await session.commit()
+
+    current = ingest.health.setdefault(room.id, ingest.IngestHealth())
+    current.backup_session_id = "backup-sess-uuid"
+    current.backup_reservation_started_at = time.monotonic()  # just reserved
+
+    # Run reconcile_once when MediaMTX snapshot does not yet report backup ready
+    await ingest.reconcile_once()
+
+    async with get_session() as session:
+        refreshed = await session.get(Room, room.id)
+        # Must still be connected because negotiation grace period is active
+        assert refreshed.program_backup_connected_at is not None
+        assert current.backup_session_id == "backup-sess-uuid"
+
+
+@pytest.mark.anyio
+async def test_independent_backup_credential_validity(backup_env):
+    """Expired primary credential does not invalidate or kick active backup feed."""
+    room = backup_env["room"]
+
+    async with get_session() as session:
+        stored = await session.get(Room, room.id)
+        stored.program_backup_enabled = True
+        await ingest.generate_backup_srt_passphrase(stored, session)
+        # Primary expired yesterday
+        stored.program_srt_passphrase_expires_at = ingest.utc_now() - timedelta(days=1)
+        # Backup valid for 30 days
+        stored.program_backup_key_expires_at = ingest.utc_now() + timedelta(days=30)
+        stored.program_backup_connected_at = ingest.utc_now()
+        await session.commit()
+
+    assert ingest.has_valid_credential(stored) is False
+    assert ingest.has_valid_backup_credential(stored) is True
+
+    # publish_permitted evaluates backup credential independently
+    assert ingest.publish_permitted(stored, "srt", "", is_backup=True) is True
+    assert ingest.publish_permitted(stored, "srt", "", is_backup=False) is False

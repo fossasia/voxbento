@@ -542,7 +542,7 @@ High-profile conference stages can stream dual redundant contribution feeds:
 - **Primary feed:** `{event_slug}/{room_id}/floor`
 - **Backup feed:** `{event_slug}/{room_id}/floor_backup`
 
-Both feeds stream concurrently with independent Fernet-encrypted credentials. Downstream consumers (`program-relay` for YouTube egress and the speech-to-text floor transcription worker) observe a strict **single-consumer guarantee**, consuming exclusively the active feed (`room.program_active_feed`). If the primary feed stalls (zero byte progress for $\ge 5.0\text{ s}$) or drops completely, the reconciler automatically executes a deterministic takeover to `floor_backup` in under 7 seconds without stream flapping. Anti-flapping logic preserves the backup feed if the primary recovers, allowing the operator to manually promote the primary back to active when physical link stability is confirmed.
+Both feeds stream concurrently with independent Fernet-encrypted credentials. Downstream consumers (`program-relay` for YouTube egress and the speech-to-text floor transcription worker) observe a strict **single-consumer guarantee**, consuming exclusively the active feed (`room.program_active_feed`). If the primary feed stalls (zero byte progress for at least 5.0 s, `TAKEOVER_STALL_SECS`) or drops completely, the reconciler automatically executes a deterministic takeover to `floor_backup` (typically within 5 to 8 seconds, bounded by the 5.0 s stall threshold plus the 2-second reconcile polling interval and pass execution time) without stream flapping. Anti-flapping logic preserves the backup feed if the primary recovers, allowing the operator to manually promote the primary back to active when physical link stability is confirmed.
 
 ## Production deployment
 

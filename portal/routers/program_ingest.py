@@ -149,55 +149,66 @@ async def ingest_status(event_id: int, room_id: int) -> JSONResponse:
         # Operator alerts attributing issues to encoder, gateway, youtube, or language_provider (#750)
         alerts: list[dict[str, str]] = []
         if not settings.program_ingest_enabled:
-            alerts.append({
-                "target": "gateway",
-                "level": "error",
-                "message": "Program contribution ingest is disabled on the gateway server.",
-                "action": "Enable PROGRAM_INGEST_ENABLED in the server environment.",
-            })
+            alerts.append(
+                {
+                    "target": "gateway",
+                    "level": "error",
+                    "message": "Program contribution ingest is disabled on the gateway server.",
+                    "action": "Enable PROGRAM_INGEST_ENABLED in the server environment.",
+                }
+            )
         if relay_mode and settings.program_relay_enabled and program_relay.list_outage.failures > 0:
-            alerts.append({
-                "target": "gateway",
-                "level": "error",
-                "message": "YouTube relay service on the gateway is unreachable.",
-                "action": "Check the program-relay container.",
-            })
+            alerts.append(
+                {
+                    "target": "gateway",
+                    "level": "error",
+                    "message": "YouTube relay service on the gateway is unreachable.",
+                    "action": "Check the program-relay container.",
+                }
+            )
         if enabled and current:
             if current.state in ("rejected_codec", "rejected_limits"):
-                alerts.append({
-                    "target": "encoder",
-                    "level": "error",
-                    "message": current.reason,
-                    "action": "Adjust encoder output settings (H.264/AAC, <=12 Mbps).",
-                })
+                alerts.append(
+                    {
+                        "target": "encoder",
+                        "level": "error",
+                        "message": current.reason,
+                        "action": "Adjust encoder output settings (H.264/AAC, <=12 Mbps).",
+                    }
+                )
             elif current.state == "disconnected":
-                alerts.append({
-                    "target": "encoder",
-                    "level": "warning",
-                    "message": "Contribution encoder disconnected unexpectedly.",
-                    "action": "Check encoder network connection and restart stream.",
-                })
+                alerts.append(
+                    {
+                        "target": "encoder",
+                        "level": "warning",
+                        "message": "Contribution encoder disconnected unexpectedly.",
+                        "action": "Check encoder network connection and restart stream.",
+                    }
+                )
         if relay_mode and relay and relay.state in ("unconfigured", "degraded"):
-            alerts.append({
-                "target": "youtube",
-                "level": "warning" if relay.state == "unconfigured" else "error",
-                "message": relay.reason,
-                "action": "Verify YouTube stream key in room settings or YouTube Studio.",
-            })
+            alerts.append(
+                {
+                    "target": "youtube",
+                    "level": "warning" if relay.state == "unconfigured" else "error",
+                    "message": relay.reason,
+                    "action": "Verify YouTube stream key in room settings or YouTube Studio.",
+                }
+            )
         if enabled and current and current.processing_state == "degraded":
-            alerts.append({
-                "target": "language_provider",
-                "level": "error",
-                "message": current.processing_reason,
-                "action": "Check AI transcription provider API credentials and quota.",
-            })
+            alerts.append(
+                {
+                    "target": "language_provider",
+                    "level": "error",
+                    "message": current.processing_reason,
+                    "action": "Check AI transcription provider API credentials and quota.",
+                }
+            )
 
         # Operational metrics without exposing secrets (#750)
         audio_present = bool(
-            current and current.codecs and any(
-                c.upper() in {"AAC", "OPUS", "MPEG-4 AUDIO"} or "AAC" in c.upper()
-                for c in current.codecs
-            )
+            current
+            and current.codecs
+            and any(c.upper() in {"AAC", "OPUS", "MPEG-4 AUDIO"} or "AAC" in c.upper() for c in current.codecs)
         )
         bytes_val = current.last_bytes if current and current.last_bytes >= 0 else 0
         metrics = {
@@ -205,7 +216,7 @@ async def ingest_status(event_id: int, room_id: int) -> JSONResponse:
             "packets_received": bytes_val // 1316 if bytes_val > 0 else 0,
             "audio_present": audio_present,
             "reconnect_count": current.reconnect_count if current else 0,
-            "ingest_continuity": bool(current and current.ingest_state in ("receiving", "processing")),
+            "ingest_continuity": bool(current and current.ingest_state in ("connected", "receiving", "processing")),
             "egress_continuity": bool(relay and relay.state in ("relaying", "healthy")),
             "processing_progress": current.processing_state if current else "idle",
         }
@@ -235,8 +246,12 @@ async def ingest_status(event_id: int, room_id: int) -> JSONResponse:
                 "relay_available": settings.program_ingest_enabled and settings.program_relay_enabled,
                 "rtmps_available": settings.rtmps_ingest_enabled,
                 "srt_available": settings.srt_ingest_enabled,
-                "srt_server": f"srt://{_srt_host()}:{settings.program_srt_public_port}?streamid=#!::r={make_mediamtx_path(event.slug, room_id, 'floor')},m=publish" if settings.srt_ingest_enabled else "",
-                "srt_backup_server": f"srt://{_srt_host()}:{settings.program_srt_public_port}?streamid=#!::r={make_backup_floor_path(event.slug, room_id)},m=publish" if settings.srt_ingest_enabled else "",
+                "srt_server": f"srt://{_srt_host()}:{settings.program_srt_public_port}?streamid=#!::r={make_mediamtx_path(event.slug, room_id, 'floor')},m=publish"
+                if settings.srt_ingest_enabled
+                else "",
+                "srt_backup_server": f"srt://{_srt_host()}:{settings.program_srt_public_port}?streamid=#!::r={make_backup_floor_path(event.slug, room_id)},m=publish"
+                if settings.srt_ingest_enabled
+                else "",
                 "backup_enabled": room.program_backup_enabled,
                 "backup_connected": bool(current.backup_connected if current else room.program_backup_connected_at),
                 "active_feed": room.program_active_feed,

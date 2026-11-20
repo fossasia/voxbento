@@ -73,7 +73,8 @@ All profiles must be tested against a staging or production deployment prior to 
 | vMix | Pending Validation | — | — | Pending Validation | SRT Caller, port 8890, AES passphrase, 500ms latency |
 | Wirecast | Pending Validation | — | — | Pending Validation | SRT Caller, 500ms latency, AAC 48kHz |
 | Haivision Makito X4 / AJA HELO Plus | Pending Validation | — | — | Pending Validation | TS over SRT, packet size 1316, 60 frames GOP at 30fps |
-| AJA HELO | Pending Validation | — | — | Pending Validation | Hardware TS/SRT, 1316 byte payload, AES passphrase |
+| AJA HELO (RTMPS) | Pending Validation | — | — | Pending Validation | RTMPS port 1936, TLS, H.264 Main + AAC (legacy HELO without SRT) |
+|---|---|---|---|---|---|
 
 ---
 
@@ -92,10 +93,10 @@ All profiles must be tested against a staging or production deployment prior to 
 | 1 | Configure Destination | (RTMPS Relay only) Room page → *From streaming software* → paste YouTube stream key → **Save stream key** | Saved for `rtmps://a.rtmps.youtube.com/live2`; key write-only |
 | 2 | Generate Credentials | Select SRT Contribution → **Create credentials** | SRT URL `srt://<host>:8890`, Stream ID `#!::r=...`, and Passphrase displayed |
 | 3 | Start Primary Feed | Start primary encoder using the profile in Section 1 | Room page shows *Encoder → VoxBento* **Connected** (H264, MPEG-4 Audio / AAC) |
-| 4 | Verify Ingest & Health | Wait 15–30 seconds; monitor room page health indicators | Ingest health shows **Receiving** / **Processing** (or *VoxBento → YouTube* **Live** if testing RTMPS Relay) |
+| 4 | Verify Ingest & Health | Wait 15–30 seconds; monitor room page health indicators | For SRT Ingest: Ingest health shows **Receiving** / **Processing** with live captions generated. (For RTMPS Relay: *VoxBento → YouTube* shows **Live**; YouTube Studio shows *Good/Excellent* health and video preview) |
 | 5 | Audio & AI Pipeline | Speak into floor feed for 5 minutes | Transcription, translation, and TTS work concurrently without degradation |
 | 6 | Secondary Feed (Backup) | If backup enabled: start secondary encoder pointing to `floor_backup` | Room page shows backup feed connected and in standby |
-| 7 | Takeover Test | Disconnect primary encoder (or simulate stall) | After 5.0s stall threshold (`TAKEOVER_STALL_SECS`), failover completes within 5–7s total latency; active feed becomes `backup` |
+| 7 | Takeover Test | Disconnect primary encoder (or simulate stall) | After 5.0s stall threshold (`TAKEOVER_STALL_SECS`), failover completes within 5–8s total latency; active feed becomes `backup` |
 | 8 | Anti-Flapping Check | Reconnect primary encoder | Primary connects in standby; active feed stays on backup (no automatic flip-back) |
 | 9 | Manual Restore | Operator triggers `promote_primary_feed` | Active feed cleanly restores to primary |
 | 10 | Encoder Revocation | Click **Revoke credentials** | Encoder kicked immediately; subsequent reconnects rejected with auth failure |
@@ -125,7 +126,7 @@ Network / ISP:
 [ ] 10-Minute Sustained Stability (Zero dropped frames/restarts)
 [ ] Simultaneous Captions/TTS Verification (Active & Synchronized)
 [ ] Backup Feed Connected & Standby Verified
-[ ] Automatic Takeover on Primary Drop (5–7s total latency, 5.0s stall threshold)
+[ ] Automatic Takeover on Primary Drop (5–8s total latency, 5.0s stall threshold)
 [ ] Anti-Flapping Verified (Primary reconnect did not flap active feed)
 [ ] Operator Manual Switchback Verified
 [ ] Credential Revocation Verified
