@@ -143,6 +143,19 @@ def test_a_full_window_keeps_the_latest_outcomes_and_says_it_is_incomplete():
     assert metrics.complete
 
 
+def test_coverage_is_complete_again_once_the_dropped_outcome_would_have_expired():
+    clock = Clock()
+    metrics = TranslationMetrics(window=60, max_outcomes=3, clock=clock)
+    for _ in range(3):
+        metrics.record("local", "nllb", 1, TRANSLATED)
+    clock.now += 59
+    metrics.record("local", "nllb", 1, TRANSLATED)
+    assert not metrics.complete
+
+    clock.now += 2
+    assert metrics.complete
+
+
 # ── Through the worker ──
 
 

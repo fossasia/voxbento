@@ -98,8 +98,7 @@ class TranslationMetrics:
     ) -> None:
         self._forget_old()
         if len(self._outcomes) >= self.max_outcomes:
-            self._outcomes.popleft()
-            self._trimmed_at = self._clock()
+            self._trimmed_at = self._outcomes.popleft().at
         self._outcomes.append(Outcome(self._clock(), provider, model, room_id, kind, start_lag, latency))
 
     @property
