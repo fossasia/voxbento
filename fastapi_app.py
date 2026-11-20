@@ -17,7 +17,7 @@ from starlette.exceptions import HTTPException as StarletteHTTPException
 from starlette.middleware.base import BaseHTTPMiddleware
 from unilimit.integrations.fastapi import RateLimitExceeded, setup
 
-from portal import meeting_source, program_ingest
+from portal import meeting_source, program_ingest, redis_queue
 from portal.auth import (
     ADMIN_CSRF_COOKIE,
     generate_admin_csrf_token,
@@ -107,8 +107,13 @@ async def lifespan(app: FastAPI):
     manager.set_token_checker(_reaper_mod.check_booth_tokens)
     reaper_task = asyncio.create_task(_reaper_mod.session_reaper_loop())
 
-    webhook_task = asyncio.create_task(_webhook_worker_mod.webhook_worker_loop())
-    notification_task = asyncio.create_task(_notifications_mod.notification_worker_loop())
+    # With REDIS_URL the outbox workers wake on Redis instead of polling the database.
+    if settings.redis_enabled:
+        webhook_task = asyncio.create_task(_webhook_worker_mod.redis_webhook_worker_loop())
+        notification_task = asyncio.create_task(_notifications_mod.redis_notification_worker_loop())
+    else:
+        webhook_task = asyncio.create_task(_webhook_worker_mod.webhook_worker_loop())
+        notification_task = asyncio.create_task(_notifications_mod.notification_worker_loop())
     rate_limit_cleanup_task = asyncio.create_task(_rate_limit_cleanup_loop())
     ingest_task = asyncio.create_task(program_ingest.reconcile_loop()) if settings.program_ingest_enabled else None
     meeting_task = asyncio.create_task(meeting_source.reconcile_loop())
@@ -139,6 +144,7 @@ async def lifespan(app: FastAPI):
     for task in tasks_to_cancel:
         task.cancel()
     await asyncio.gather(*tasks_to_cancel, return_exceptions=True)
+    await redis_queue.close()
 
     if pg.shared_http_client:
         await pg.shared_http_client.aclose()
