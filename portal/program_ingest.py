@@ -118,6 +118,10 @@ class IngestHealth:
     backup_session_id: str | None = None
     backup_reservation_started_at: float | None = None
     backup_connected: bool = False
+    backup_conforming: bool = True
+    backup_last_cycle_bytes: int = -1
+    backup_last_cycle_time: float = 0.0
+    backup_high_bitrate_cycles: int = 0
     worker_config: tuple | None = None
     worker_started_at: float | None = None
     # Contribution ingest and language processing are reported separately from the overall state.
@@ -188,6 +192,32 @@ def session_digest_valid(room: Room, digest: str) -> bool:
 def credential_digest_valid(room: Room, digest: str) -> bool:
     """A floor publisher may present either the encoder key or a browser-sender secret."""
     return key_digest_valid(room, digest) or session_digest_valid(room, digest)
+
+
+def is_conforming_srt_codec(tracks: list[str] | None) -> bool:
+    """Return True if tracks contain H.264 video, AAC audio, and no unsupported codecs."""
+    if not tracks:
+        return False
+    norm_tracks = [t.strip() for t in tracks]
+    has_h264 = any(t in {"H264", "H.264"} or t.upper() in {"H264", "H.264"} for t in norm_tracks)
+    has_aac = any(t in {"AAC", "MPEG-4 Audio"} or t.upper() in {"AAC", "MPEG-4 AUDIO"} for t in norm_tracks)
+    allowed_codecs = {"H264", "H.264", "AAC", "MPEG-4 Audio"}
+    all_allowed = all(t in allowed_codecs or t.upper() in {"H264", "H.264", "AAC", "MPEG-4 AUDIO"} for t in norm_tracks)
+    return has_h264 and has_aac and all_allowed
+
+
+def is_conforming_srt_codec(tracks: list[str] | None) -> bool:
+    """Return True if tracks contain H.264 video, AAC audio, and no unsupported codecs."""
+    if not tracks:
+        return False
+    norm_tracks = [t.strip() for t in tracks]
+    has_h264 = any(t in {"H264", "H.264"} or t.upper() in {"H264", "H.264"} for t in norm_tracks)
+    has_aac = any(t in {"AAC", "MPEG-4 Audio"} or t.upper() in {"AAC", "MPEG-4 AUDIO"} for t in norm_tracks)
+    allowed_codecs = {"H264", "H.264", "AAC", "MPEG-4 Audio"}
+    all_allowed = all(
+        t in allowed_codecs or t.upper() in {"H264", "H.264", "AAC", "MPEG-4 AUDIO"} for t in norm_tracks
+    )
+    return has_h264 and has_aac and all_allowed
 
 
 def has_valid_credential(room: Room) -> bool:
@@ -425,7 +455,9 @@ async def authorize_publish(data: MediaAuth) -> None:
             count = await session.scalar(
                 select(func.count())
                 .select_from(Room)
+                .join(Event)
                 .where(
+                    Event.deleted_at.is_(None),
                     (Room.program_session_id.is_not(None) | Room.program_backup_connected_at.is_not(None)),
                     Room.floor_source == "program_ingest",
                 )
@@ -898,23 +930,14 @@ async def reconcile_room(room: Room, event: Event, path: MediaPath | None) -> tu
         return None
 
     # Gateway limits enforcement: Codec inspection
-    if room.program_ingest_mode in program_relay.SRT_MODES:
-        tracks = [t.strip() for t in path.tracks] if path.tracks else []
-        has_h264 = any(t in {"H264", "H.264"} or t.upper() in {"H264", "H.264"} for t in tracks)
-        has_aac = any(t in {"AAC", "MPEG-4 Audio"} or t.upper() in {"AAC", "MPEG-4 AUDIO"} for t in tracks)
-        allowed_codecs = {"H264", "H.264", "AAC", "MPEG-4 Audio"}
-        all_allowed = bool(tracks) and all(
-            t in allowed_codecs or t.upper() in {"H264", "H.264", "AAC", "MPEG-4 AUDIO"} for t in tracks
-        )
-        conforming = has_h264 and has_aac and all_allowed
-        if not conforming:
-            await kick(path_name, path.source)
-            current.state = "rejected_codec"
-            current.ingest_state = "rejected_codec"
-            current.reason = "Non-conforming codec detected. Expected H.264 video and AAC audio."
-            current.ingest_reason = current.reason
-            relay_request(room, event, None)
-            return None
+    if room.program_ingest_mode in program_relay.SRT_MODES and not is_conforming_srt_codec(path.tracks):
+        await kick(path_name, path.source)
+        current.state = "rejected_codec"
+        current.ingest_state = "rejected_codec"
+        current.reason = "Non-conforming codec detected. Expected H.264 video and AAC audio."
+        current.ingest_reason = current.reason
+        relay_request(room, event, None)
+        return None
 
     current_source_id = path.source.id if path.source else None
     source_changed = bool(current.last_session_id is not None and current_source_id != current.last_session_id)
@@ -1107,7 +1130,7 @@ async def release_deleted_event_sessions() -> None:
                 .join(Event)
                 .where(
                     Room.floor_source == "program_ingest",
-                    Room.program_session_id.is_not(None),
+                    (Room.program_session_id.is_not(None) | Room.program_backup_connected_at.is_not(None)),
                     Event.deleted_at.is_not(None),
                 )
             )
@@ -1116,10 +1139,26 @@ async def release_deleted_event_sessions() -> None:
         try:
             async with room_lock(room_id), get_session() as session:
                 room = await session.get(Room, room_id)
-                if room and room.program_session_id:
-                    await kick(make_mediamtx_path(slug, room_id, "floor"), reserved_source(room))
-                    room.program_session_id = None
-                    room.program_disconnected_at = utc_now()
+                if room:
+                    if room.program_session_id:
+                        await kick(make_mediamtx_path(slug, room_id, "floor"), reserved_source(room))
+                        room.program_session_id = None
+                        room.program_disconnected_at = utc_now()
+                    if room.program_backup_connected_at:
+                        backup_path = make_backup_floor_path(slug, room_id)
+                        current_backup = await media_path(backup_path)
+                        await kick(backup_path, current_backup.source if current_backup else None)
+                        room.program_backup_connected_at = None
+                    current = health.get(room_id)
+                    if current:
+                        current.backup_session_id = None
+                        current.backup_reservation_started_at = None
+                        current.backup_connected = False
+                        current.backup_conforming = True
+                        current.backup_high_bitrate_cycles = 0
+                        current.backup_last_cycle_bytes = -1
+                        current.backup_last_cycle_time = 0.0
+                    await session.commit()
         except (httpx.HTTPError, ValueError, HTTPException, SQLAlchemyError):
             logger.warning("program_ingest deleted_event_release_failed room_id=%s", room_id)
 
@@ -1276,9 +1315,61 @@ async def reconcile_once() -> None:
                     )
                     if backup_connected:
                         current.backup_reservation_started_at = None
+                        # Validate standby backup feed before any takeover decision
+                        if getattr(room, "program_active_feed", "primary") == "primary":
+                            if room.program_ingest_mode in program_relay.SRT_MODES and not is_conforming_srt_codec(
+                                backup_snapshot.tracks
+                            ):
+                                await kick(backup_path_name, backup_snapshot.source)
+                                backup_connected = False
+                                current.backup_connected = False
+                                current.backup_conforming = False
+                                room.program_backup_connected_at = None
+                                current.backup_session_id = None
+                                logger.warning(
+                                    "program_ingest standby_backup_rejected_codec room_id=%s tracks=%s",
+                                    room_id,
+                                    backup_snapshot.tracks,
+                                )
+                            else:
+                                current.backup_conforming = True
+                                backup_sess_id = backup_snapshot.source.id if backup_snapshot.source else None
+                                if current.backup_session_id and backup_sess_id != current.backup_session_id:
+                                    current.backup_high_bitrate_cycles = 0
+                                    current.backup_last_cycle_bytes = -1
+                                    current.backup_last_cycle_time = 0.0
+
+                                if current.backup_last_cycle_bytes >= 0 and current.backup_last_cycle_time > 0:
+                                    dt = now - current.backup_last_cycle_time
+                                    delta_bytes = backup_snapshot.bytesReceived - current.backup_last_cycle_bytes
+                                    if delta_bytes >= 0:
+                                        effective_dt = dt if dt > 0 else 2.0
+                                        bitrate_kbps = (delta_bytes * 8) / (effective_dt * 1000)
+                                        if bitrate_kbps > 12000:
+                                            current.backup_high_bitrate_cycles += 1
+                                        else:
+                                            current.backup_high_bitrate_cycles = 0
+                                else:
+                                    current.backup_high_bitrate_cycles = 0
+
+                                current.backup_last_cycle_bytes = backup_snapshot.bytesReceived
+                                current.backup_last_cycle_time = now
+
+                                if current.backup_high_bitrate_cycles >= 5:
+                                    await kick(backup_path_name, backup_snapshot.source)
+                                    backup_connected = False
+                                    current.backup_connected = False
+                                    current.backup_conforming = False
+                                    room.program_backup_connected_at = None
+                                    current.backup_session_id = None
+                                    logger.warning("program_ingest standby_backup_rejected_limits room_id=%s", room_id)
                     elif not backup_negotiating and room.program_backup_connected_at:
                         room.program_backup_connected_at = None
                         current.backup_session_id = None
+                        current.backup_conforming = True
+                        current.backup_high_bitrate_cycles = 0
+                        current.backup_last_cycle_bytes = -1
+                        current.backup_last_cycle_time = 0.0
 
                     # Reset program_active_feed if backup is not enabled or stale
                     if getattr(room, "program_active_feed", "primary") == "backup":
@@ -1298,6 +1389,7 @@ async def reconcile_once() -> None:
                         primary_failed
                         and room.program_backup_enabled
                         and backup_connected
+                        and current.backup_conforming
                         and getattr(room, "program_active_feed", "primary") == "primary"
                     ):
                         # Re-verify primary path state under room_lock to eliminate TOCTOU race

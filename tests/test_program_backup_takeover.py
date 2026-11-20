@@ -1109,3 +1109,173 @@ async def test_api_transcription_start_passes_backup_path_when_backup_active(bac
     )
     assert resp.status_code == 200
     assert passed_kwargs.get("stream_path") == f"{event.slug}/{room.id}/floor_backup"
+
+
+@pytest.mark.anyio
+async def test_backup_only_publisher_released_on_event_deletion(backup_env):
+    event = backup_env["event"]
+    room = backup_env["room"]
+    media = backup_env["media"]
+    calls = backup_env["calls"]
+
+    backup_path = f"{event.slug}/{room.id}/floor_backup"
+    media[backup_path] = {
+        "name": backup_path,
+        "ready": True,
+        "source": {"id": "backup-sess-del", "type": "srtConn"},
+    }
+
+    # Setup room as backup-only (program_session_id is None, program_backup_connected_at is set)
+    async with get_session() as session:
+        stored_room = await session.get(Room, room.id)
+        assert stored_room is not None
+        stored_room.program_session_id = None
+        stored_room.program_backup_enabled = True
+        stored_room.program_backup_connected_at = ingest.utc_now()
+        stored_event = await session.get(Event, event.id)
+        assert stored_event is not None
+        stored_event.deleted_at = ingest.utc_now()
+        await session.commit()
+
+    entry = ingest.IngestHealth()
+    entry.backup_connected = True
+    entry.backup_session_id = "backup-sess-del"
+    entry.backup_reservation_started_at = time.monotonic()
+    ingest.health[room.id] = entry
+
+    calls.clear()
+    await ingest.release_deleted_event_sessions()
+
+    # Verify backup publisher was kicked and DB/memory state cleaned up
+    async with get_session() as session:
+        refreshed_room = await session.get(Room, room.id)
+        assert refreshed_room is not None
+        assert refreshed_room.program_backup_connected_at is None
+
+    assert entry.backup_session_id is None
+    assert entry.backup_connected is False
+    assert entry.backup_reservation_started_at is None
+
+    # Verify kick API was called for the backup path
+    assert any(backup_path in url for method, url in calls)
+
+
+@pytest.mark.anyio
+async def test_standby_backup_non_conforming_codecs_rejected_and_not_promoted(backup_env):
+    event = backup_env["event"]
+    room = backup_env["room"]
+    media = backup_env["media"]
+    calls = backup_env["calls"]
+
+    async with get_session() as session:
+        stored = await session.get(Room, room.id)
+        assert stored is not None
+        stored.program_ingest_mode = "srt"
+        stored.program_backup_enabled = True
+        stored.program_backup_connected_at = ingest.utc_now()
+        stored.program_active_feed = "primary"
+        await session.commit()
+
+    primary_path = f"{event.slug}/{room.id}/floor"
+    backup_path = f"{event.slug}/{room.id}/floor_backup"
+
+    # Primary is stalled (counter unchanged, old progress)
+    media[primary_path] = {
+        "name": primary_path,
+        "ready": True,
+        "source": {"id": "prim-1", "type": "srtConn"},
+        "tracks": ["H264", "AAC"],
+        "bytesReceived": 50000,
+    }
+    # Standby backup has non-conforming codecs: VP8 video and Opus audio (or H264 without AAC)
+    media[backup_path] = {
+        "name": backup_path,
+        "ready": True,
+        "source": {"id": "bad-backup-1", "type": "srtConn"},
+        "tracks": ["VP8", "opus"],
+        "bytesReceived": 10000,
+    }
+
+    now = time.monotonic()
+    entry = ingest.IngestHealth()
+    entry.primary_last_bytes = 50000
+    entry.primary_last_progress = now - 10.0  # primary stalled > TAKEOVER_STALL_SECS
+    entry.backup_session_id = "bad-backup-1"
+    entry.backup_connected = True
+    ingest.health[room.id] = entry
+
+    calls.clear()
+    await ingest.reconcile_once()
+
+    current = ingest.health[room.id]
+    # Standby backup must be marked non-conforming and disconnected
+    assert current.backup_conforming is False
+    assert current.backup_connected is False
+
+    # Room must NOT promote the non-conforming backup to active feed
+    async with get_session() as session:
+        refreshed = await session.get(Room, room.id)
+        assert refreshed.program_active_feed == "primary"
+        assert refreshed.program_backup_connected_at is None
+
+    # Standby backup must have been kicked by session ID
+    assert any("kick/bad-backup-1" in url for method, url in calls)
+
+
+@pytest.mark.anyio
+async def test_standby_backup_excessive_bitrate_rejected_and_not_promoted(backup_env):
+    event = backup_env["event"]
+    room = backup_env["room"]
+    media = backup_env["media"]
+
+    async with get_session() as session:
+        stored = await session.get(Room, room.id)
+        assert stored is not None
+        stored.program_ingest_mode = "srt"
+        stored.program_backup_enabled = True
+        stored.program_backup_connected_at = ingest.utc_now()
+        stored.program_active_feed = "primary"
+        await session.commit()
+
+    primary_path = f"{event.slug}/{room.id}/floor"
+    backup_path = f"{event.slug}/{room.id}/floor_backup"
+
+    media[primary_path] = {
+        "name": primary_path,
+        "ready": True,
+        "source": {"id": "prim-1", "type": "srtConn"},
+        "tracks": ["H264", "AAC"],
+        "bytesReceived": 50000,
+    }
+    media[backup_path] = {
+        "name": backup_path,
+        "ready": True,
+        "source": {"id": "high-bitrate-backup", "type": "srtConn"},
+        "tracks": ["H264", "AAC"],
+        "bytesReceived": 20_000_000,
+    }
+
+    now = time.monotonic()
+    entry = ingest.IngestHealth()
+    entry.primary_last_bytes = 50000
+    entry.primary_last_progress = now - 10.0  # primary stalled
+    entry.backup_session_id = "high-bitrate-backup"
+    entry.backup_connected = True
+    # Simulate standby having 4 high bitrate cycles already
+    entry.backup_high_bitrate_cycles = 4
+    entry.backup_last_cycle_bytes = 10_000_000
+    entry.backup_last_cycle_time = now - 1.0  # 10MB in 1s = 80 Mbps > 12 Mbps
+    ingest.health[room.id] = entry
+
+    await ingest.reconcile_once()
+
+    current = ingest.health[room.id]
+    # At 5th cycle, standby backup must be kicked and marked non-conforming
+    assert current.backup_conforming is False
+    assert current.backup_connected is False
+
+    # Must NOT have taken over
+    async with get_session() as session:
+        refreshed = await session.get(Room, room.id)
+        assert refreshed.program_active_feed == "primary"
+        assert refreshed.program_backup_connected_at is None

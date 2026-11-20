@@ -316,7 +316,23 @@ SRT provides superior transmission resilience over unstable public networks comp
 4. **Rolling Deployments and Rollback Procedure:**
    * **Application Rolling Update (Stream Preservation):** Updating the `portal` container preserves live SRT and RTMPS streams. MediaMTX retains UDP/TCP sockets and stream state across portal restarts without dropping live audience or relay connections.
    * **Deliberate Media Plane Restart:** Upgrading `mediamtx` terminates UDP sockets. Encoders configured with auto-reconnect restore feeds within seconds. The operator dashboard shows `disconnected` and returns to `receiving`.
-   * **Rollback:** In case of failure, revert compose overlays and run `docker compose up -d --remove-orphans`. Database schema can be rolled back via `uv run alembic downgrade -1`.
+   * **Rollback Procedure:** If a newly deployed application change or configuration causes errors:
+     1. If database schema migrations were executed for the current release, determine the target revision of the rollback commit (e.g. `047` or `<target-revision>`) and roll back the database to that target revision **before** checking out the previous commit (ensuring Alembic still has the downgrade scripts present in the working tree):
+        ```bash
+        uv run alembic downgrade <target-revision>
+        ```
+     2. Check out the previous known-good commit or tag (e.g. `git checkout <previous-tag-or-commit>`) and restore its environment settings.
+     3. Re-deploy the known-good version matching the active features and Compose files present in that target revision:
+        ```bash
+        # Base deployment:
+        docker compose -f docker-compose.yml up -d --build --remove-orphans
+
+        # When YouTube relaying is enabled:
+        docker compose -f docker-compose.yml -f docker-compose.relay.yml up -d --build --remove-orphans
+
+        # When both YouTube relaying and SRT contribution ingest are enabled:
+        docker compose -f docker-compose.yml -f docker-compose.relay.yml -f docker-compose.srt.yml up -d --build --remove-orphans
+        ```
 
 ### Websites behind Cloudflare
 
