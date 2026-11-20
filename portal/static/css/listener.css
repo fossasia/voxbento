@@ -409,8 +409,7 @@
 body.listener-captions-focus {
     overflow: hidden;
 }
-.captions-container.focus-mode,
-.captions-container:fullscreen {
+.captions-container.focus-mode {
     position: fixed;
     inset: 0;
     z-index: 1000;
@@ -428,53 +427,42 @@ body.listener-captions-focus {
     box-shadow: none;
     background: var(--vb-color-surface);
 }
-.captions-container.focus-mode .captions-toolbar,
-.captions-container:fullscreen .captions-toolbar {
+.captions-container.focus-mode .captions-toolbar {
     flex: none;
     padding: 0.5rem 0.75rem;
     border-bottom: 1px solid var(--vb-color-border);
 }
-.captions-container.focus-mode .captions-toolbar__top,
-.captions-container:fullscreen .captions-toolbar__top {
+.captions-container.focus-mode .captions-toolbar__top {
     margin-bottom: 0.5rem;
 }
 .captions-container.focus-mode .captions-title,
-.captions-container:fullscreen .captions-title,
 .captions-container.focus-mode #toggle-captions-btn,
-.captions-container:fullscreen #toggle-captions-btn,
-.captions-container.focus-mode .captions-settings__full,
-.captions-container:fullscreen .captions-settings__full {
+.captions-container.focus-mode .captions-settings__full {
     display: none;
 }
-.captions-container.focus-mode .captions-toolbar__actions,
-.captions-container:fullscreen .captions-toolbar__actions {
+.captions-container.focus-mode .captions-toolbar__actions {
     margin-left: auto;
 }
-.captions-container.focus-mode .captions-settings,
-.captions-container:fullscreen .captions-settings {
+.captions-container.focus-mode .captions-settings {
     display: flex;
     flex-wrap: wrap;
     align-items: end;
     gap: 0.5rem 0.75rem;
 }
-.captions-container.focus-mode .captions-settings > div,
-.captions-container:fullscreen .captions-settings > div {
+.captions-container.focus-mode .captions-settings > div {
     flex: 1 1 10rem;
 }
-.captions-container.focus-mode .custom-options,
-.captions-container:fullscreen .custom-options {
+.captions-container.focus-mode .custom-options {
     max-height: min(300px, calc(100dvh - 10rem));
     overflow-y: auto;
 }
-.captions-container.focus-mode .captions-body,
-.captions-container:fullscreen .captions-body {
+.captions-container.focus-mode .captions-body {
     display: flex;
     flex: 1;
     min-height: 0;
     overflow: hidden;
 }
-.captions-container.focus-mode .live-captions,
-.captions-container:fullscreen .live-captions {
+.captions-container.focus-mode .live-captions {
     width: 100%;
     height: auto;
     min-height: 0;
@@ -483,16 +471,12 @@ body.listener-captions-focus {
     padding: clamp(1rem, 4vw, 3rem);
     font-size: clamp(1.3125rem, calc(var(--caption-font-size) * 1.5), 3rem);
 }
-.captions-container.focus-mode .jump-to-latest,
-.captions-container:fullscreen .jump-to-latest {
+.captions-container.focus-mode .jump-to-latest {
     bottom: max(0.875rem, env(safe-area-inset-bottom));
 }
 .captions-container.focus-mode.minimized .captions-body,
-.captions-container:fullscreen.minimized .captions-body,
 .captions-container.focus-mode.minimized .captions-settings,
-.captions-container:fullscreen.minimized .captions-settings,
-.captions-container.focus-mode.minimized .caption-size-control,
-.captions-container:fullscreen.minimized .caption-size-control {
+.captions-container.focus-mode.minimized .caption-size-control {
     display: flex;
 }
 
