@@ -190,10 +190,9 @@ async def test_revocation_removes_participants_whose_socket_had_dropped(monkeypa
     monkeypatch.setattr(manager_module, "booths", registry)
     broadcasts = []
 
-    async def record(booth_id, state):
-        broadcasts.append((booth_id, state))
+    async def record(event):
+        broadcasts.append((event.booth_id, event.state))
 
-    monkeypatch.setattr(manager_module, "broadcast_booth_state", record)
     ana, _ = await registry.join_participant(
         BOOTH, "Ana", "interpreter", LANG, CHANNEL, user_id=7, connection_id="Ana-socket"
     )
@@ -207,6 +206,7 @@ async def test_revocation_removes_participants_whose_socket_had_dropped(monkeypa
     for participant, socket in ((ana, "Ana-socket"), (ben, "Ben-socket")):
         await registry.disconnect_participant(BOOTH, participant.participant_id, socket)
 
+    registry.subscribe(record)
     connections = manager_module.ConnectionManager()
     await connections.close_user_sessions(7)
     await connections.close_token_sessions("inv-ben", booth_id=BOOTH)
@@ -523,7 +523,8 @@ def test_revoked_participant_is_removed_without_waiting(ws_client):
     import anyio
 
     from portal.globals import booths
-    from portal.websockets.manager import Session, release_participant
+    from portal.websockets.booth_protocol import release_participant
+    from portal.websockets.manager import Session
 
     async def scenario():
         participant, _ = await booths.join_participant(

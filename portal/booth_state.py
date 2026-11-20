@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import asyncio
+import logging
+from collections.abc import Awaitable, Callable
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
 from uuid import uuid4
@@ -17,6 +19,8 @@ from portal.booth_identity import (
 )
 from portal.roles import Role, can_go_live, can_set_active, role_label
 from portal.tasks import track_task
+
+logger = logging.getLogger(__name__)
 
 # Booth roles come from portal.roles, the one place roles are defined (#757).
 ParticipantRole = Role
@@ -183,15 +187,49 @@ def _pick_next_interpreter(booth: Booth) -> str | None:
     return None
 
 
+@dataclass(frozen=True)
+class BoothEvent:
+    """A committed booth state change, published to the registry's subscribers.
+
+    ``chat_message`` is set when the change is a new chat message.
+    """
+
+    booth_id: str
+    state: dict
+    chat_message: dict | None = None
+
+
+BoothEventSink = Callable[[BoothEvent], Awaitable[None]]
+
+
 class BoothRegistry:
     def __init__(self, attendance: AttendanceTracker | None = None) -> None:
         self._booths: dict[str, Booth] = {}
         self._lock = asyncio.Lock()
+        # Told about every committed change, after the lock is released.
+        self._sinks: list[BoothEventSink] = []
         # Told about every participant change, under the lock (#1215).
         self.attendance = attendance or AttendanceTracker()
         # Booths whose live record may have changed since portal.booth_recovery last saved it.
         self._dirty: set[str] = set()
         self._dirty_event = asyncio.Event()
+
+    def subscribe(self, sink: BoothEventSink) -> None:
+        """Deliver every committed booth change to *sink*. Subscribing twice has no effect."""
+        if sink not in self._sinks:
+            self._sinks.append(sink)
+
+    async def _publish(self, booth_id: str, state: dict, chat_message: dict | None = None) -> None:
+        """Tell the subscribers about a committed change. Call after releasing the lock.
+
+        A failing subscriber is logged and never undoes the change or stops the others.
+        """
+        event = BoothEvent(booth_id=booth_id, state=state, chat_message=chat_message)
+        for sink in list(self._sinks):
+            try:
+                await sink(event)
+            except Exception:
+                logger.exception("Booth event subscriber failed for %s", booth_id)
 
     def _changed(self, booth: Booth) -> None:
         """Record a change to *booth*'s participants or live state. Caller holds the lock."""
@@ -371,6 +409,7 @@ class BoothRegistry:
         user_id: int | None = None,
         invite_public_id: str | None = None,
         connection_id: str | None = None,
+        before_publish: Callable[[Participant, dict], Awaitable[None]] | None = None,
     ) -> tuple[Participant, dict]:
         """Add a participant, auto-assigning the active slot if it is free.
 
@@ -381,6 +420,8 @@ class BoothRegistry:
         taking over that record, e.g. the active interpreter's.
         ``joined_by`` records the session that joined, for checks made outside the
         socket; ``connection_id`` names the socket that now holds the record.
+        ``before_publish`` runs after the change is committed and before it is published, so the
+        joining socket can be told first; the change is published even if it raises.
         """
         fields = [
             ("display_name", display_name, DISPLAY_NAME_MAX_LENGTH),
@@ -397,36 +438,41 @@ class BoothRegistry:
         async with self._lock:
             booth = self._get_or_create_booth(booth_id, language, channel_id, room_id=room_id)
             existing = booth.participants.get(participant_id) if participant_id else None
+            participant: Participant | None = None
             if existing is not None:
                 same_session = joined_by is not None and existing.joined_by == joined_by
                 if reclaim or same_session:
                     self._reclaim(booth, existing, display_name, role, language, channel_id, connection_id,
                                   user_id=user_id, invite_public_id=invite_public_id)
-                    self._changed(booth)
-                    return existing, booth.as_public_dict()
-                participant_id = None
-            participant = Participant(
-                participant_id=participant_id or uuid4().hex,
-                display_name=display_name.strip() or "Interpreter",
-                role=role,
-                language=language.strip() or booth.language,
-                channel_id=channel_id.strip() or booth.channel_id,
-                joined_by=joined_by,
-                user_id=user_id,
-                invite_public_id=invite_public_id,
-                connection_id=connection_id,
-            )
-            booth.participants[participant.participant_id] = participant
-            # Auto-assign active slot to any role that can go live.
-            # Mission control now uses silent-observer mode (no booth:join),
-            # so only real interpreter-booth participants appear here.
-            if (
-                can_go_live(participant.role)
-                and booth.active_interpreter_id is None
-            ):
-                booth.active_interpreter_id = participant.participant_id
+                    participant = existing
+                else:
+                    participant_id = None
+            if participant is None:
+                participant = Participant(
+                    participant_id=participant_id or uuid4().hex,
+                    display_name=display_name.strip() or "Interpreter",
+                    role=role,
+                    language=language.strip() or booth.language,
+                    channel_id=channel_id.strip() or booth.channel_id,
+                    joined_by=joined_by,
+                    user_id=user_id,
+                    invite_public_id=invite_public_id,
+                    connection_id=connection_id,
+                )
+                booth.participants[participant.participant_id] = participant
+                # Auto-assign active slot to any role that can go live.
+                # Mission control now uses silent-observer mode (no booth:join),
+                # so only real interpreter-booth participants appear here.
+                if can_go_live(participant.role) and booth.active_interpreter_id is None:
+                    booth.active_interpreter_id = participant.participant_id
             self._changed(booth)
-            return participant, booth.as_public_dict()
+            state = booth.as_public_dict()
+        try:
+            if before_publish is not None:
+                await before_publish(participant, state)
+        finally:
+            await self._publish(booth_id, state)
+        return participant, state
 
     @staticmethod
     def _reclaim(
@@ -482,7 +528,9 @@ class BoothRegistry:
             participant = booth.participants.get(participant_id)
             if participant is not None and (connection_id is None or participant.connection_id == connection_id):
                 self._remove_participant(booth, participant_id)
-            return booth.as_public_dict()
+            state = booth.as_public_dict()
+        await self._publish(booth_id, state)
+        return state
 
     async def disconnect_participant(self, booth_id: str, participant_id: str, connection_id: str) -> dict | None:
         """Mark a participant whose socket dropped as reconnecting, keeping their place.
@@ -501,7 +549,9 @@ class BoothRegistry:
                 booth.handoff_state = "idle"
                 booth.handoff_initiator_id = None
             self._changed(booth)
-            return booth.as_public_dict()
+            state = booth.as_public_dict()
+        await self._publish(booth_id, state)
+        return state
 
     async def expire_participant(self, booth_id: str, participant_id: str, connection_id: str | None) -> dict | None:
         """Remove a participant who did not reconnect in time.
@@ -514,7 +564,9 @@ class BoothRegistry:
             if participant is None or participant.connected or participant.connection_id != connection_id:
                 return None
             self._remove_participant(booth, participant_id)
-            return booth.as_public_dict()
+            state = booth.as_public_dict()
+        await self._publish(booth_id, state)
+        return state
 
     async def remove_disconnected(
         self,
@@ -526,7 +578,7 @@ class BoothRegistry:
         """Remove participants kept after their socket dropped, for a user or invite whose access ended.
 
         Covers records held for the reconnect grace and placeholders restored after a restart,
-        which have no socket for revocation to close. Returns ``(booth_id, state)`` per changed booth.
+        which have no socket for revocation to close. Publishes each changed booth. Returns ``(booth_id, state)`` per changed booth.
         """
         if user_id is None and invite_public_id is None:
             return []
@@ -548,6 +600,8 @@ class BoothRegistry:
                     self._remove_participant(booth, participant_id)
                 if matches:
                     changed.append((key, booth.as_public_dict()))
+        for key, state in changed:
+            await self._publish(key, state)
         return changed
 
     def _remove_participant(self, booth: Booth, participant_id: str) -> None:
@@ -603,7 +657,9 @@ class BoothRegistry:
                 )
             )
 
-            return booth.as_public_dict()
+            state = booth.as_public_dict()
+        await self._publish(booth_id, state)
+        return state
 
     async def set_active_interpreter(
         self,
@@ -648,7 +704,9 @@ class BoothRegistry:
                 p.updated_at = utc_now_iso()
             booth.refresh_ingest_status()
             self._changed(booth)
-            return booth.as_public_dict()
+            state = booth.as_public_dict()
+        await self._publish(booth_id, state)
+        return state
 
     async def initiate_handoff(
         self,
@@ -686,7 +744,9 @@ class BoothRegistry:
             is_active = booth.active_interpreter_id == requester_id
             booth.handoff_state = "offered" if is_active else "requested"
             booth.handoff_initiator_id = requester_id
-            return booth.as_public_dict()
+            state = booth.as_public_dict()
+        await self._publish(booth_id, state)
+        return state
 
     async def accept_handoff(
         self,
@@ -747,7 +807,9 @@ class BoothRegistry:
                 p.updated_at = utc_now_iso()
             booth.refresh_ingest_status()
             self._changed(booth)
-            return booth.as_public_dict()
+            state = booth.as_public_dict()
+        await self._publish(booth_id, state)
+        return state
 
     async def cancel_handoff(
         self,
@@ -759,13 +821,14 @@ class BoothRegistry:
         """Cancel an in-progress handoff (only the initiator can cancel)."""
         async with self._lock:
             booth = self._get_or_create_booth(booth_id, language, channel_id)
-            if booth.handoff_state == "idle":
-                return booth.as_public_dict()
-            if booth.handoff_initiator_id != requester_id:
-                raise PermissionError("Only the handoff initiator can cancel.")
-            booth.handoff_state = "idle"
-            booth.handoff_initiator_id = None
-            return booth.as_public_dict()
+            if booth.handoff_state != "idle":
+                if booth.handoff_initiator_id != requester_id:
+                    raise PermissionError("Only the handoff initiator can cancel.")
+                booth.handoff_state = "idle"
+                booth.handoff_initiator_id = None
+            state = booth.as_public_dict()
+        await self._publish(booth_id, state)
+        return state
 
     async def add_chat_message(
         self,
@@ -795,7 +858,10 @@ class BoothRegistry:
             booth.chat_messages.append(message)
             if len(booth.chat_messages) > 500:
                 booth.chat_messages = booth.chat_messages[-500:]
-            return asdict(message), booth.as_public_dict()
+            chat_message = asdict(message)
+            state = booth.as_public_dict()
+        await self._publish(booth_id, state, chat_message)
+        return chat_message, state
 
     async def update_participant_state(
         self,
@@ -833,7 +899,20 @@ class BoothRegistry:
             participant.updated_at = utc_now_iso()
             booth.refresh_ingest_status()
             self._changed(booth)
-            return booth.as_public_dict()
+            state = booth.as_public_dict()
+        await self._publish(booth_id, state)
+        return state
+
+    async def mark_ingest_overloaded(self, booth_id: str) -> dict | None:
+        """Mark the booth's ingest as overloaded. Returns the new state, or None for an unknown booth."""
+        async with self._lock:
+            booth = self._booths.get(booth_id)
+            if booth is None:
+                return None
+            booth.ingest_status = "overloaded"
+            state = booth.as_public_dict()
+        await self._publish(booth_id, state)
+        return state
 
     async def check_publish_permission(
         self,

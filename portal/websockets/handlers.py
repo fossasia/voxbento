@@ -23,6 +23,7 @@ from portal.auth import (
     user_session_is_valid,
 )
 from portal.database import get_booth_language_name, get_session, get_user_by_id
+from portal.websockets.booth_protocol import BOOTH_HANDLERS, release_participant
 from portal.websockets.manager import (
     REASON_ACCOUNT_DEACTIVATED,
     REASON_AUTH_REVOKED,
@@ -30,19 +31,8 @@ from portal.websockets.manager import (
     REASON_SESSION_EXPIRED,
     WS_CLOSE_REVOKED,
     Session,
-    _handle_accept_handoff,
-    _handle_cancel_handoff,
-    _handle_chat,
-    _handle_initiate_handoff,
-    _handle_join,
-    _handle_leave,
-    _handle_request_publish_ticket,
-    _handle_set_active,
-    _handle_set_broadcast_unlocked,
-    _handle_update_state,
     listener_manager,
     manager,
-    release_participant,
     tts_manager,
     utc_now,
 )
@@ -190,30 +180,13 @@ async def ws_booth(websocket: WebSocket, booth_id: str) -> None:
                 continue
 
             msg_type = data.get("type", "")
-            if msg_type == "booth:join":
-                await _handle_join(websocket, session, data)
-            elif msg_type == "booth:leave":
-                await _handle_leave(session)
-            elif msg_type == "booth:chat":
-                await _handle_chat(websocket, session, data)
-            elif msg_type == "booth:set-active":
-                await _handle_set_active(websocket, session, data)
-            elif msg_type == "booth:update-state":
-                await _handle_update_state(websocket, session, data)
-            elif msg_type == "booth:request-publish-ticket":
-                await _handle_request_publish_ticket(websocket, session, data)
-            elif msg_type == "booth:set-broadcast-unlocked":
-                await _handle_set_broadcast_unlocked(websocket, session, data)
-            elif msg_type == "booth:initiate-handoff":
-                await _handle_initiate_handoff(websocket, session, data)
-            elif msg_type == "booth:accept-handoff":
-                await _handle_accept_handoff(websocket, session, data)
-            elif msg_type == "booth:cancel-handoff":
-                await _handle_cancel_handoff(websocket, session, data)
-            else:
+            handler = BOOTH_HANDLERS.get(msg_type)
+            if handler is None:
                 await websocket.send_text(
                     json.dumps({"type": "booth:error", "message": f"Unknown message type: {msg_type}"})
                 )
+                continue
+            await handler(websocket, session, data)
     except WebSocketDisconnect:
         pass
     finally:

@@ -13,7 +13,8 @@ from portal import booth_publish
 from portal import program_ingest as ingest
 from portal.config import settings
 from portal.globals import booths
-from portal.websockets.manager import Session, _handle_join, _handle_request_publish_ticket
+from portal.websockets.booth_protocol import handle_join, handle_request_publish_ticket
+from portal.websockets.manager import Session
 
 EVENT = "ticket-test"
 ROOM = 7
@@ -65,7 +66,7 @@ async def request_ticket(participant_id: str | None, **session_overrides) -> dic
     session = session_for(participant_id)
     for key, value in session_overrides.items():
         setattr(session, key, value)
-    await _handle_request_publish_ticket(ws, session, {})
+    await handle_request_publish_ticket(ws, session, {})
     [reply] = ws.sent
     assert reply["type"] == "booth:publish-ticket"
     return reply
@@ -200,7 +201,7 @@ async def test_join_cannot_take_over_another_participants_id(booth):
     intruder = Session(
         booth_id=BOOTH_ID, participant_id=None, language="English", channel_id=PATH, granted_role="interpreter"
     )
-    await _handle_join(ws, intruder, {"role": "interpreter", "display_name": "Intruder", "participant_id": active})
+    await handle_join(ws, intruder, {"role": "interpreter", "display_name": "Intruder", "participant_id": active})
     joined = next(m for m in ws.sent if m["type"] == "booth:joined")
     assert joined["participant_id"] != active
     assert intruder.participant_id == joined["participant_id"]
@@ -216,7 +217,7 @@ async def test_socket_can_rejoin_with_its_own_id(booth):
     own = Session(
         booth_id=BOOTH_ID, participant_id=active, language="English", channel_id=PATH, granted_role="interpreter"
     )
-    await _handle_join(ws, own, {"role": "interpreter", "display_name": "Active", "participant_id": active})
+    await handle_join(ws, own, {"role": "interpreter", "display_name": "Active", "participant_id": active})
     assert next(m for m in ws.sent if m["type"] == "booth:joined")["participant_id"] == active
 
 
@@ -231,7 +232,7 @@ async def test_reconnected_socket_rejoins_with_its_previous_id(booth):
     reconnected = Session(
         booth_id=BOOTH_ID, participant_id=None, language="English", channel_id=PATH, granted_role="interpreter"
     )
-    await _handle_join(ws, reconnected, {"role": "interpreter", "display_name": "Active", "participant_id": active})
+    await handle_join(ws, reconnected, {"role": "interpreter", "display_name": "Active", "participant_id": active})
     joined = next(m for m in ws.sent if m["type"] == "booth:joined")
     assert joined["participant_id"] == active
     # The backup took over while the socket was down; rejoining does not take the booth back.

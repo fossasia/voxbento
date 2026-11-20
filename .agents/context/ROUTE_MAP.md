@@ -199,8 +199,9 @@ with `?error=invalid_role&role=…` and the page explains why.
 | `portal/routers/meeting_analysis.py` | Room meeting reports page, report generation, Markdown download and status API |
 | `portal/room_setup.py` | Room plan parsing, available AI services, booth/translation-language reconciliation, and room summaries; uses existing tables |
 | `portal/workspace_routing.py` | `/workspace` handler mapping, legacy organizer redirects, and template URL context |
-| `portal/websockets/manager.py` | `ws_booth` and `ws_captions` endpoints |
-| `portal/websockets/handlers.py` | Specific `_handle_*` logic for WS messages |
+| `portal/websockets/handlers.py` | `ws_booth` and `ws_captions` endpoints; authenticates, decodes frames, dispatches via `BOOTH_HANDLERS` |
+| `portal/websockets/booth_protocol.py` | `handle_*` logic for each booth WS message |
+| `portal/websockets/manager.py` | Connection pools; delivers `BoothRegistry` events to booth sockets and listeners |
 | `fastapi_app.py` | Application lifespan, router include aggregation |
 
 ## Program ingest routes (#690)

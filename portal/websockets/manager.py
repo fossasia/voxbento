@@ -15,14 +15,10 @@ from uuid import uuid4
 from fastapi import WebSocket, WebSocketDisconnect
 from sqlalchemy.exc import SQLAlchemyError
 
-import portal.webhooks.worker as _wh_worker
-from portal.auth import WSAuthError, can_perform_role
-from portal.booth_identity import booth_id_to_mediamtx_path, parse_booth_id
-from portal.booth_publish import TICKET_TTL_SECS, issue_ticket
-from portal.config import settings
+from portal.auth import WSAuthError
+from portal.booth_state import BoothEvent
 from portal.globals import booths
-from portal.roles import ALL_ROLES, INTERPRETER, can_set_active
-from portal.tasks import track_task
+from portal.roles import ALL_ROLES
 
 
 def utc_now() -> datetime:
@@ -155,9 +151,7 @@ class ConnectionManager:
         if revoked_sockets:
             tasks = [self.close_session(ws, code=code, reason=reason) for ws in revoked_sockets]
             await asyncio.gather(*tasks, return_exceptions=True)
-        await _remove_retained_participants(
-            booths.remove_disconnected(invite_public_id=str(token_id), booth_id=booth_id)
-        )
+        await booths.remove_disconnected(invite_public_id=str(token_id), booth_id=booth_id)
 
     def revocation_epoch(self, user_id: int, booth_id: str | None = None) -> tuple[int, int]:
         """Return (user_wide_epoch, booth_specific_epoch) for this user and booth."""
@@ -293,7 +287,7 @@ class ConnectionManager:
         if revoked_sockets:
             tasks = [self.close_session(ws, code=code, reason=reason) for ws in revoked_sockets]
             await asyncio.gather(*tasks, return_exceptions=True)
-        await _remove_retained_participants(booths.remove_disconnected(user_id=user_id, booth_id=booth_id))
+        await booths.remove_disconnected(user_id=user_id, booth_id=booth_id)
 
     async def close_booth_sessions(
         self,
@@ -707,347 +701,26 @@ async def broadcast_booth_state(booth_id: str, state: dict) -> None:
     await listener_manager.broadcast_booth_state(booth_id, state)
 
 
+async def broadcast_booth_event(event: BoothEvent) -> None:
+    """Deliver a committed booth change: a new chat message to the booth, then the state."""
+    if event.chat_message is not None:
+        await manager.broadcast(event.booth_id, {"type": "booth:chat", "message": event.chat_message})
+    await broadcast_booth_state(event.booth_id, event.state)
+
+
+booths.subscribe(broadcast_booth_event)
+
+
 async def broadcast_transcription(booth_id: str, payload: str | dict):
     if isinstance(payload, str):
         # Legacy support and error handling
         text = payload
         if text.startswith("[Server overloaded") or text.startswith("[Transcription provider failed"):
             await manager.broadcast(booth_id, {"type": "booth:error", "message": text})
-            booth = booths.get_booth_sync(booth_id)
-            if booth:
-                booth.ingest_status = "overloaded"
-                await broadcast_booth_state(booth_id, booth.as_public_dict())
+            await booths.mark_ingest_overloaded(booth_id)
         else:
             msg = {"type": "caption", "status": "final", "text": text}
             await listener_manager.broadcast(booth_id, msg)
     else:
         # Aggregator payload
         await listener_manager.broadcast(booth_id, payload)
-
-
-async def _handle_join(ws: WebSocket, session: Session, data: dict) -> None:
-    """Handle a client joining a booth session.
-
-    Validates client role and language parameters, initializes participant state,
-    and broadcasts state updates to listeners.
-    """
-    display_name = data.get("display_name", "Interpreter")
-    role = data.get("role", INTERPRETER)
-    # Check these before they are used: a non-string role breaks the role lookup, and a falsy
-    # non-string language (null, 0, false) would be replaced by the booth's language below.
-    for name in ("role", "language"):
-        if name in data and not isinstance(data[name], str):
-            await ws.send_text(json.dumps({"type": "booth:error", "message": f"{name} must be a string."}))
-            return
-    language = data.get("language") or session.language
-    if not language:
-        await ws.send_text(
-            json.dumps({"type": "booth:error", "message": "Language must be specified or configured for this booth."})
-        )
-        return
-    channel_id = data.get("channel_id", f"{session.booth_id}-audio")
-    participant_id = data.get("participant_id")
-    if session.granted_role is None:
-        await ws.send_text(json.dumps({"type": "booth:error", "message": "No role assigned for this session."}))
-        return
-    if not can_perform_role(session.granted_role, role):
-        await ws.send_text(
-            json.dumps(
-                {
-                    "type": "booth:error",
-                    "message": f"Your assigned role ({session.granted_role}) does not permit joining as {role}.",
-                }
-            )
-        )
-        return
-    client_event = data.get("event_slug")
-    if client_event is not None:
-        try:
-            await booths.validate_booth_event(session.booth_id, client_event)
-        except PermissionError as exc:
-            await ws.send_text(json.dumps({"type": "booth:error", "message": str(exc)}))
-            return
-    # The booth ID names the room. A malformed one would create a booth with no
-    # identity or MediaMTX path, so it is rejected whether or not room_id is sent.
-    try:
-        _, booth_room_id, _ = parse_booth_id(session.booth_id)
-    except ValueError:
-        await ws.send_text(json.dumps({"type": "booth:error", "message": "Invalid booth_id format."}))
-        return
-    room_id = data.get("room_id")
-    # int() would turn 1.5, true or "1" into 1 (and fail on Infinity), so require a JSON integer.
-    if room_id is not None and (isinstance(room_id, bool) or not isinstance(room_id, int)):
-        await ws.send_text(json.dumps({"type": "booth:error", "message": "room_id must be an integer."}))
-        return
-    # A different room would give the booth another room's stream path if this
-    # join is the one that creates it (#975).
-    if room_id is not None and room_id != booth_room_id:
-        await ws.send_text(json.dumps({"type": "booth:error", "message": "room_id does not match this booth."}))
-        return
-    try:
-        participant, state = await booths.join_participant(
-            booth_id=session.booth_id,
-            display_name=display_name,
-            role=role,
-            language=language,
-            channel_id=channel_id,
-            participant_id=participant_id,
-            room_id=room_id,
-            # Only this socket's own record may be re-claimed by ID.
-            reclaim=participant_id is not None and participant_id == session.participant_id,
-            joined_by=session.session_key,
-            user_id=session.user_id,
-            invite_public_id=str(session.invite_token_id) if session.invite_token_id is not None else None,
-            connection_id=session.connection_id,
-        )
-    except (ValueError, PermissionError) as exc:
-        await ws.send_text(json.dumps({"type": "booth:error", "message": str(exc)}))
-        return
-    for old_ws in manager.detach_participant(session.booth_id, participant.participant_id, keep=ws):
-        track_task(asyncio.create_task(manager.close_session(old_ws, code=WS_CLOSE_SUPERSEDED, reason=REASON_SUPERSEDED)))
-    session.participant_id = participant.participant_id
-    session.language = language
-    session.channel_id = channel_id
-    # Broadcast on/off is a live, in-memory state owned exclusively by Mission
-    # Control (the Go Live / Stop toggle). Joining or reloading the booth must
-    # never change it, so we deliberately do NOT re-apply any persisted value
-    # here — doing so would flip an interpreter live (or Mission Control to
-    # "Stop") simply because they reconnected.
-    await ws.send_text(
-        json.dumps({"type": "booth:joined", "participant_id": participant.participant_id, "state": state})
-    )
-    await broadcast_booth_state(session.booth_id, state)
-
-    if role == INTERPRETER:
-        await _wh_worker.enqueue_webhook(
-            "booth.interpreter.joined",
-            {
-                "booth_id": session.booth_id,
-                "participant_id": participant.participant_id,
-                "display_name": display_name,
-                "language": language,
-            },
-        )
-
-
-async def _handle_leave(session: Session) -> None:
-    if not session.participant_id:
-        return
-    state = await booths.leave_participant(
-        session.booth_id,
-        session.participant_id,
-        session.language,
-        session.channel_id,
-        connection_id=session.connection_id,
-    )
-    session.participant_id = None
-    await broadcast_booth_state(session.booth_id, state)
-
-
-async def _remove_retained_participants(removal: Awaitable[list[tuple[str, dict]]]) -> None:
-    """Remove participants whose access was revoked while their socket was down, and tell their booths.
-
-    Without this they would keep their place, and an active slot with live audio, until the
-    reconnect or restart grace ran out, although they can no longer reconnect.
-    """
-    for booth_id, state in await removal:
-        await broadcast_booth_state(booth_id, state)
-
-
-def schedule_participant_expiry(booth_id: str, participant_id: str, connection_id: str | None, delay: float) -> None:
-    """Remove the participant after *delay* seconds unless they reconnect first."""
-
-    async def expire() -> None:
-        await asyncio.sleep(delay)
-        state = await booths.expire_participant(booth_id, participant_id, connection_id)
-        if state is not None:
-            await broadcast_booth_state(booth_id, state)
-
-    track_task(asyncio.create_task(expire(), name=f"booth-expire-{booth_id}"))
-
-
-async def release_participant(session: Session, *, immediate: bool) -> None:
-    """Handle the socket of a joined participant closing (TD-11).
-
-    A dropped connection keeps the participant, and the active slot they hold,
-    for ``booth_reconnect_grace_seconds`` so the same session can reclaim them;
-    their WHIP audio goes to MediaMTX directly and keeps playing meanwhile.
-    *immediate* (access revoked or changed) removes them at once.
-    """
-    participant_id = session.participant_id
-    if not participant_id:
-        return
-    session.participant_id = None
-    grace = settings.booth_reconnect_grace_seconds
-    if immediate or grace <= 0:
-        state = await booths.leave_participant(
-            session.booth_id, participant_id, session.language, session.channel_id, connection_id=session.connection_id
-        )
-    else:
-        state = await booths.disconnect_participant(session.booth_id, participant_id, session.connection_id)
-        if state is None:
-            return  # another socket holds them now
-        schedule_participant_expiry(session.booth_id, participant_id, session.connection_id, grace)
-    await broadcast_booth_state(session.booth_id, state)
-
-
-async def _handle_chat(ws: WebSocket, session: Session, data: dict) -> None:
-    if not session.participant_id:
-        await ws.send_text(json.dumps({"type": "booth:error", "message": "Join the booth before sending messages."}))
-        return
-    body = data.get("body", "")
-    try:
-        message, state = await booths.add_chat_message(
-            session.booth_id, session.participant_id, body, session.language, session.channel_id
-        )
-    except ValueError as exc:
-        await ws.send_text(json.dumps({"type": "booth:error", "message": str(exc)}))
-        return
-    await manager.broadcast(session.booth_id, {"type": "booth:chat", "message": message})
-    await broadcast_booth_state(session.booth_id, state)
-
-
-async def _handle_set_active(ws: WebSocket, session: Session, data: dict) -> None:
-    if not session.participant_id:
-        await ws.send_text(json.dumps({"type": "booth:error", "message": "Join the booth first."}))
-        return
-    target_id = data.get("target_id")
-    if not target_id:
-        await ws.send_text(json.dumps({"type": "booth:error", "message": "Missing target_id."}))
-        return
-    try:
-        state = await booths.set_active_interpreter(
-            session.booth_id, session.participant_id, target_id, session.language, session.channel_id
-        )
-    except (ValueError, PermissionError) as exc:
-        await ws.send_text(json.dumps({"type": "booth:error", "message": str(exc)}))
-        return
-    await broadcast_booth_state(session.booth_id, state)
-
-
-async def _handle_update_state(ws: WebSocket, session: Session, data: dict) -> None:
-    if not session.participant_id:
-        return
-    try:
-        state = await booths.update_participant_state(
-            session.booth_id,
-            session.participant_id,
-            session.language,
-            session.channel_id,
-            mic_active=data.get("mic_active"),
-            ingest_connected=data.get("ingest_connected"),
-        )
-    except (ValueError, PermissionError) as exc:
-        await ws.send_text(json.dumps({"type": "booth:error", "message": str(exc)}))
-        return
-    await broadcast_booth_state(session.booth_id, state)
-
-
-async def _handle_request_publish_ticket(ws: WebSocket, session: Session, data: dict) -> None:
-    """Issue a single-use WHIP ticket to the active interpreter (#783).
-
-    Always answers with ``booth:publish-ticket`` so the client can match the reply
-    to its pending request; a refusal carries ``error`` instead of ``ticket``.
-    """
-    reply: dict = {"type": "booth:publish-ticket"}
-    if not session.participant_id:
-        reply["error"] = "Join the booth before going live."
-    else:
-        try:
-            await booths.check_publish_permission(
-                session.booth_id, session.participant_id, session.language, session.channel_id
-            )
-            booth = booths.get_booth_sync(session.booth_id)
-            if booth is None or not booth.broadcast_unlocked:
-                raise PermissionError("Broadcast is stopped by Mission Control.")
-            # Bound to the server's booth, never to the client-supplied channel_id.
-            path = booth_id_to_mediamtx_path(session.booth_id)
-        except (ValueError, PermissionError) as exc:
-            reply["error"] = str(exc)
-        else:
-            reply["ticket"] = issue_ticket(session.booth_id, session.participant_id, path)
-            reply["expires_in"] = int(TICKET_TTL_SECS)
-    await ws.send_text(json.dumps(reply))
-
-
-async def _handle_set_broadcast_unlocked(ws: WebSocket, session: Session, data: dict) -> None:
-    """Handle setting broadcast lock state for a booth session.
-
-    Requires room coordinator or administrator privileges and a configured
-    session language.
-    """
-    if not can_set_active(session.granted_role):
-        await ws.send_text(
-            json.dumps({"type": "booth:error", "message": "Only Room Coordinators can manage broadcast lock."})
-        )
-        return
-    if not session.language:
-        await ws.send_text(
-            json.dumps({"type": "booth:error", "message": "Language must be specified or configured for this booth."})
-        )
-        return
-    unlocked = data.get("unlocked")
-    # bool() would turn "false" into True and a missing field into False, so a
-    # malformed message could put the booth live or stop it by accident.
-    if not isinstance(unlocked, bool):
-        await ws.send_text(json.dumps({"type": "booth:error", "message": "unlocked must be a boolean."}))
-        return
-    try:
-        state = await booths.set_broadcast_unlocked(session.booth_id, unlocked, session.language, session.channel_id)
-        # Locking the booth must immediately stop everything tied to it: the
-        # transcription worker (which pulls audio independently of any browser)
-        # is torn down here so captions stop even if the interpreter's client is
-        # unresponsive. Publisher mic/ingest state is already reset inside
-        # set_broadcast_unlocked.
-        if not unlocked:
-            try:
-                from portal.transcription.worker import stop_transcription_worker
-
-                await stop_transcription_worker(session.booth_id)
-            except Exception as e:
-                logging.getLogger(__name__).warning(f"Failed to stop transcription on lock: {e}")
-        await broadcast_booth_state(session.booth_id, state)
-    except Exception as exc:
-        await ws.send_text(json.dumps({"type": "booth:error", "message": str(exc)}))
-
-
-async def _handle_initiate_handoff(ws: WebSocket, session: Session, _data: dict) -> None:
-    if not session.participant_id:
-        await ws.send_text(json.dumps({"type": "booth:error", "message": "Join the booth first."}))
-        return
-    try:
-        state = await booths.initiate_handoff(
-            session.booth_id, session.participant_id, session.language, session.channel_id
-        )
-    except (ValueError, PermissionError) as exc:
-        await ws.send_text(json.dumps({"type": "booth:error", "message": str(exc)}))
-        return
-    await broadcast_booth_state(session.booth_id, state)
-
-
-async def _handle_accept_handoff(ws: WebSocket, session: Session, _data: dict) -> None:
-    if not session.participant_id:
-        await ws.send_text(json.dumps({"type": "booth:error", "message": "Join the booth first."}))
-        return
-    try:
-        state = await booths.accept_handoff(
-            session.booth_id, session.participant_id, session.language, session.channel_id
-        )
-    except (ValueError, PermissionError) as exc:
-        await ws.send_text(json.dumps({"type": "booth:error", "message": str(exc)}))
-        return
-    await broadcast_booth_state(session.booth_id, state)
-
-
-async def _handle_cancel_handoff(ws: WebSocket, session: Session, _data: dict) -> None:
-    if not session.participant_id:
-        await ws.send_text(json.dumps({"type": "booth:error", "message": "Join the booth first."}))
-        return
-    try:
-        state = await booths.cancel_handoff(
-            session.booth_id, session.participant_id, session.language, session.channel_id
-        )
-    except (ValueError, PermissionError) as exc:
-        await ws.send_text(json.dumps({"type": "booth:error", "message": str(exc)}))
-        return
-    await broadcast_booth_state(session.booth_id, state)

@@ -50,7 +50,7 @@ uv run alembic upgrade head   # if DB changes
 ### Step 1 — Reproduce
 - Read the failing test in `tests/` if one exists.
 - If HTTP bug: check `portal/routers/` route + relevant template.
-- If WebSocket bug: check `portal/websockets/handlers.py` WS handler + `portal/booth_state.py` + `portal/static/js/interpreter-booth.js`.
+- If WebSocket bug: check `portal/websockets/handlers.py` + `booth_protocol.py` WS handlers + `portal/booth_state.py` + `portal/static/js/interpreter-booth.js`.
 - If DB bug: check `portal/models.py` + `portal/database.py`.
 - If auth bug: check `portal/auth.py` + cookie handling in `portal/routers/`.
 

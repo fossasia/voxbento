@@ -935,3 +935,102 @@ def test_booth_session_key_tells_users_and_invite_visits_apart():
     assert booth_session_key(decode_token(create_token())) is None
     assert booth_session_key({"sub": "x", "kind": "listener"}) is None
     assert booth_session_key(None) is None
+
+
+async def _recorded_events(registry):
+    events = []
+
+    async def record(event):
+        events.append(event)
+
+    registry.subscribe(record)
+    return events
+
+
+@pytest.mark.anyio
+async def test_mutators_publish_one_event_each_and_failures_publish_nothing():
+    registry = BoothRegistry()
+    events = await _recorded_events(registry)
+    active = await join(registry, "Active")
+    backup = await join(registry, "Backup")
+    assert len(events) == 2
+
+    await registry.set_active_interpreter("hall-1-fr", active.participant_id, backup.participant_id, "French", "c")
+    assert len(events) == 3
+    assert events[-1].state["active_interpreter_id"] == backup.participant_id
+
+    with pytest.raises(PermissionError):
+        await registry.set_active_interpreter("hall-1-fr", active.participant_id, active.participant_id, "French", "c")
+    with pytest.raises(ValueError):
+        await registry.add_chat_message("hall-1-fr", active.participant_id, "  ", "French", "c")
+    assert len(events) == 3
+
+    message, _ = await registry.add_chat_message("hall-1-fr", active.participant_id, "hi", "French", "c")
+    assert events[-1].chat_message == message
+
+
+@pytest.mark.anyio
+async def test_failing_subscriber_does_not_undo_the_change_or_block_others():
+    registry = BoothRegistry()
+
+    async def broken(_event):
+        raise RuntimeError("socket gone")
+
+    events = await _recorded_events(registry)
+    registry.subscribe(broken)
+    registry.subscribe(broken)  # subscribing twice is harmless
+    participant = await join(registry, "Ana")
+
+    assert len(events) == 1
+    state = await registry.get_booth("hall-1-fr")
+    assert state["active_interpreter_id"] == participant.participant_id
+
+
+@pytest.mark.anyio
+async def test_join_callback_runs_before_publish_and_publish_survives_its_failure():
+    registry = BoothRegistry()
+    order = []
+
+    async def record(_event):
+        order.append("published")
+
+    async def announce(_participant, _state):
+        order.append("announced")
+        raise RuntimeError("socket closed")
+
+    registry.subscribe(record)
+    with pytest.raises(RuntimeError):
+        await registry.join_participant(
+            "hall-1-fr", "Ana", "interpreter", "French", "c", before_publish=announce
+        )
+
+    assert order == ["announced", "published"]
+
+
+@pytest.mark.anyio
+async def test_mark_ingest_overloaded_publishes_and_ignores_unknown_booths():
+    registry = BoothRegistry()
+    events = await _recorded_events(registry)
+    assert await registry.mark_ingest_overloaded("hall-1-fr") is None
+    await join(registry, "Ana")
+    state = await registry.mark_ingest_overloaded("hall-1-fr")
+
+    assert state["ingest_status"] == "overloaded"
+    assert events[-1].state["ingest_status"] == "overloaded"
+
+
+def test_every_booth_client_message_has_a_handler():
+    from portal.websockets.booth_protocol import BOOTH_HANDLERS
+
+    assert set(BOOTH_HANDLERS) == {
+        "booth:join",
+        "booth:leave",
+        "booth:chat",
+        "booth:set-active",
+        "booth:update-state",
+        "booth:request-publish-ticket",
+        "booth:set-broadcast-unlocked",
+        "booth:initiate-handoff",
+        "booth:accept-handoff",
+        "booth:cancel-handoff",
+    }

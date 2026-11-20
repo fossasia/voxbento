@@ -41,7 +41,7 @@ Attendees receive sub-second audio via WHEP. All coordination flows through Fast
 | `fastapi_app.py` | Application lifespan, router aggregation |
 | `portal/routers/` | All HTTP routes (pages, admin, REST API, API v1, OAuth, webhooks) |
 | `portal/workspace_routing.py` | `/workspace` handler mapping, legacy organizer redirects, template URL context |
-| `portal/websockets/` | WebSocket connection manager and handlers (`manager.py`, `handlers.py`) |
+| `portal/websockets/` | WebSocket transport (`handlers.py`), booth message handlers (`booth_protocol.py`), connection pools and event delivery (`manager.py`) |
 | `portal/config.py` | `Settings` (pydantic-settings); reads `.env` or env vars |
 | `portal/models.py` | SQLAlchemy declarative models (events, rooms, booths, tokens, users, memberships, hosting requests, AI vocabulary) |
 | `portal/database.py` | Async engine, session factory, all CRUD helpers |
@@ -114,7 +114,7 @@ listener/embed tokens carry `kind: "listener"`. Booth participants are sent to
 browsers with `can_go_live` / `can_set_active`, so client code never compares role names.
 
 Defined in: `portal/roles.py` (`Permission` enum, `ROLE_PERMISSIONS` dict)
-Enforced at: `portal/websockets/handlers.py` (WS `_handle_join`), `portal/routers/api.py` (WHIP endpoint) + `portal/booth_state.py`
+Enforced at: `portal/websockets/booth_protocol.py` (WS `handle_join`), `portal/routers/api.py` (WHIP endpoint) + `portal/booth_state.py`
 
 ---
 
@@ -136,15 +136,15 @@ Client → Server messages:
 
 | `type` | Handler | Effect |
 |---|---|---|
-| `booth:join` | `_handle_join` | Adds participant; first interpreter auto-assigned active |
-| `booth:leave` | `_handle_leave` | Removes participant; triggers handoff if active leaves |
-| `booth:chat` | `_handle_chat` | Appends message; broadcasts `booth:chat` + `booth:state` |
-| `booth:set-active` | `_handle_set_active` | Changes active interpreter (room_coordinator/current-active only) |
-| `booth:update-state` | `_handle_update_state` | Updates mic_active / ingest_connected flags |
-| `booth:request-publish-ticket` | `_handle_request_publish_ticket` | Replies `booth:publish-ticket` with a single-use WHIP ticket (active interpreter, broadcast unlocked) |
-| `booth:initiate-handoff` | `_handle_initiate_handoff` | Initiates interpreter handoff |
-| `booth:accept-handoff` | `_handle_accept_handoff` | Accepts interpreter handoff |
-| `booth:cancel-handoff` | `_handle_cancel_handoff` | Cancels interpreter handoff |
+| `booth:join` | `handle_join` | Adds participant; first interpreter auto-assigned active |
+| `booth:leave` | `handle_leave` | Removes participant; triggers handoff if active leaves |
+| `booth:chat` | `handle_chat` | Appends message; broadcasts `booth:chat` + `booth:state` |
+| `booth:set-active` | `handle_set_active` | Changes active interpreter (room_coordinator/current-active only) |
+| `booth:update-state` | `handle_update_state` | Updates mic_active / ingest_connected flags |
+| `booth:request-publish-ticket` | `handle_request_publish_ticket` | Replies `booth:publish-ticket` with a single-use WHIP ticket (active interpreter, broadcast unlocked) |
+| `booth:initiate-handoff` | `handle_initiate_handoff` | Initiates interpreter handoff |
+| `booth:accept-handoff` | `handle_accept_handoff` | Accepts interpreter handoff |
+| `booth:cancel-handoff` | `handle_cancel_handoff` | Cancels interpreter handoff |
 
 Server → Client broadcasts: `booth:joined`, `booth:state`, `booth:chat`, `booth:error`; direct reply: `booth:publish-ticket`
 

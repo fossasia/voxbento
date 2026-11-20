@@ -68,8 +68,8 @@ VoxBento is a production-grade **browser-first interpretation booth console** fo
 | `portal/routers/` | All HTTP routes (pages, admin, REST API), Jinja2 template rendering |
 | `portal/room_setup.py` | Room plan parsing, available AI services, booth/translation-language reconciliation, and room summaries |
 | `portal/workspace_routing.py` | `/workspace` handler mapping, legacy organizer redirects, management URL/template namespace helpers |
-| `portal/websockets/` | WebSocket connection manager, message handlers (`_handle_join`, etc.) |
-| `portal/booth_state.py` | In-memory `BoothRegistry`, `Booth`, `Participant`, handoff policy, chat history |
+| `portal/websockets/` | `handlers.py` authenticates and decodes WS frames; `booth_protocol.py` owns one handler per booth message type (`handle_join`, etc.); `manager.py` owns connection pools and delivers the registry's booth events |
+| `portal/booth_state.py` | In-memory `BoothRegistry`, `Booth`, `Participant`, handoff policy, chat history; every mutator publishes a `BoothEvent` to its subscribers after releasing the lock, so callers never broadcast state |
 | `portal/auth.py` | JWT create/decode, bcrypt password, `require_admin`, `require_user`, `resolve_booth_role`, `can_perform_role` |
 | `portal/config.py` | `Settings` — pydantic-settings; all env vars / `.env` |
 | `portal/models.py` | SQLAlchemy declarative models: `Event`, `Room`, `DBBooth`, `InviteToken`, `User`, `EventMembership`, `RoomMembership`, `BoothMembership`, `HostingRequest`, `AIVocabularyEntry`, etc. |
@@ -146,7 +146,7 @@ listener/embed tokens carry `kind: "listener"`. Booth participants are sent to
 browsers with `can_go_live` / `can_set_active`, so client code never compares role names.
 
 Defined in: `portal/roles.py`
-Enforced in: `portal/websockets/handlers.py` (`_handle_join`), `portal/routers/api.py` (WHIP URL endpoints), `portal/booth_state.py` (`set_active_interpreter`)
+Enforced in: `portal/websockets/booth_protocol.py` (`handle_join`), `portal/routers/api.py` (WHIP URL endpoints), `portal/booth_state.py` (`set_active_interpreter`)
 
 ---
 
@@ -181,12 +181,12 @@ Validation: `portal/booth_identity.py` — slug: `^[a-z0-9]+(?:-[a-z0-9]+)*$`; l
 
 | Client → Server | Handler | Trusted fields |
 |---|---|---|
-| `booth:join` | `_handle_join` | role overridden from `session.granted_role` |
-| `booth:leave` | `_handle_leave` | — |
-| `booth:chat` | `_handle_chat` | `body` only |
-| `booth:set-active` | `_handle_set_active` | `target_id` |
-| `booth:update-state` | `_handle_update_state` | `mic_active`, `ingest_connected` |
-| `booth:request-publish-ticket` | `_handle_request_publish_ticket` | — (participant from the WS session) |
+| `booth:join` | `handle_join` | role overridden from `session.granted_role` |
+| `booth:leave` | `handle_leave` | — |
+| `booth:chat` | `handle_chat` | `body` only |
+| `booth:set-active` | `handle_set_active` | `target_id` |
+| `booth:update-state` | `handle_update_state` | `mic_active`, `ingest_connected` |
+| `booth:request-publish-ticket` | `handle_request_publish_ticket` | — (participant from the WS session) |
 
 Server → Client: `booth:joined`, `booth:state`, `booth:chat`, `booth:error`, `booth:publish-ticket`
 
