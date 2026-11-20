@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 from datetime import datetime, timedelta, timezone
+from unittest.mock import AsyncMock
 
 import pytest
 from fakeredis import FakeAsyncRedis
@@ -68,11 +69,18 @@ async def test_wait_drains_burst_and_skips_invalid_ids(redis: FakeAsyncRedis) ->
 
 @pytest.mark.anyio
 async def test_enqueue_survives_redis_outage(monkeypatch: pytest.MonkeyPatch, redis: FakeAsyncRedis) -> None:
-    async def down(*args: object, **kwargs: object) -> None:
-        raise RedisConnectionError("down")
+    rpush = AsyncMock(side_effect=RedisConnectionError("down"))
+    monkeypatch.setattr(redis, "rpush", rpush)
+    await redis_queue.enqueue(redis_queue.EMAIL, [1])  # must not raise
+    rpush.assert_awaited_once_with(redis_queue.ready_key(redis_queue.EMAIL), 1)
 
-    monkeypatch.setattr(redis, "rpush", down)
-    await redis_queue.enqueue(redis_queue.EMAIL, [1])
+
+@pytest.mark.anyio
+async def test_delayed_enqueue_survives_redis_outage(monkeypatch: pytest.MonkeyPatch, redis: FakeAsyncRedis) -> None:
+    zadd = AsyncMock(side_effect=RedisConnectionError("down"))
+    monkeypatch.setattr(redis, "zadd", zadd)
+    await redis_queue.enqueue(redis_queue.EMAIL, [1], datetime.now(timezone.utc) + timedelta(minutes=5))
+    zadd.assert_awaited_once()
 
 
 async def _session() -> tuple[AsyncSession, object]:
