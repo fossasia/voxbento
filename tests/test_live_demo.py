@@ -15,13 +15,15 @@ from fastapi.testclient import TestClient
 from httpx import ASGITransport, AsyncClient
 from starlette.websockets import WebSocketDisconnect
 
-from portal import live_demo, rate_limit
+from portal import live_demo, live_demo_ai, rate_limit
 from portal.auth import create_user_token, hash_password
 from portal.config import settings
-from portal.database import configure, create_user, dispose, get_session, init_db
-from portal.models import LiveDemoSettings
+from portal.crypto import decrypt_val, encrypt_val
+from portal.database import configure, create_event, create_room, create_user, dispose, get_session, init_db
+from portal.models import AIVocabularyEntry, LiveDemoSettings
 from portal.routers.demo import router as demo_router
 from portal.translations.vocabulary import VocabularyEntryInput
+from portal.tts.constants import SUPERTONIC_SUPPORTED_LANGS
 
 FRAME_SECONDS = 0.1
 FRAME_SAMPLES = int(live_demo.SAMPLE_RATE * FRAME_SECONDS)
@@ -50,7 +52,7 @@ def silence_frame() -> bytes:
 
 
 def lang(code: str) -> live_demo.DemoLanguage:
-    return next(item for item in live_demo.demo_languages(voice=True) if item.code == code)
+    return next(item for item in live_demo.demo_languages(SUPERTONIC_SUPPORTED_LANGS) if item.code == code)
 
 
 def keep(term: str, language: str = "all") -> VocabularyEntryInput:
@@ -65,18 +67,20 @@ def demo_state(monkeypatch):
     monkeypatch.setattr(live_demo, "_active_sessions", 0)
     monkeypatch.setattr(live_demo, "_cached_settings", None)
     monkeypatch.setattr(rate_limit, "_rates", {})
+    monkeypatch.setattr(live_demo, "_usage_day", None)
+    monkeypatch.setattr(live_demo, "_usage_seconds", 0.0)
 
 
 # ── Request validation ────────────────────────────────────────────────────────
 
 
 def test_languages_are_limited_to_the_local_translator_and_voice_follows_supertonic():
-    languages = {item.code: item for item in live_demo.demo_languages(voice=True)}
+    languages = {item.code: item for item in live_demo.demo_languages(SUPERTONIC_SUPPORTED_LANGS)}
     assert {"en", "es", "ja", "ko", "th"} <= set(languages)
     assert languages["es"].voice is True
     # Thai is translated by NLLB but Supertonic has no Thai voice.
     assert languages["th"].voice is False
-    assert not any(item.voice for item in live_demo.demo_languages(voice=False))
+    assert not any(item.voice for item in live_demo.demo_languages())
 
 
 def test_public_config_exposes_languages_limits_and_site_glossary_only():
@@ -819,6 +823,7 @@ FORM = {
     "sessions_per_ip_per_hour": "20",
     "max_targets": "2",
     "glossary": "VoxBento\nkeynote = fr: séance plénière",
+    "daily_minutes": "120",
 }
 
 
@@ -905,3 +910,373 @@ async def test_admin_can_load_the_models_ahead_of_visitors(admin_http, monkeypat
     response = await http.post("/admin/live-demo/warm-up")
     assert response.status_code == 303
     await asyncio.wait_for(warmed.wait(), 1)
+
+
+def room(**changes) -> live_demo_ai.DemoAI:
+    base = live_demo_ai.DemoAI(
+        speech_provider="deepgram",
+        speech_model="nova-3",
+        translation_provider="openai",
+        translation_model="gpt-4o-mini",
+        voice_provider="elevenlabs",
+        voice="Rachel",
+        persona="Calm",
+        style="Formal",
+        speech_key="dg-key",
+        translation_key="oa-key",
+        voice_key="el-key",
+    )
+    return dataclasses.replace(base, **changes)
+
+
+@pytest.mark.anyio
+async def test_room_translation_uses_its_engine_model_key_persona_and_glossary(monkeypatch):
+    calls = []
+
+    class FakeEngine:
+        async def translate_batch(self, source, targets, texts, context, *, model, api_key=None):
+            calls.append((source.code, [t.code for t in targets], texts, context, model, api_key))
+            return [[f"{texts[0]} ({t.code})" for t in targets]]
+
+    monkeypatch.setitem(live_demo.TRANSLATION_ENGINES, "openai", FakeEngine())
+    engines = live_demo.configured_engines(room())
+    request = live_demo.DemoRequest(
+        source=lang("en"),
+        targets=(lang("fr"),),
+        listen=None,
+        glossary=(VocabularyEntryInput("keynote", "fr", "plénière"),),
+    )
+    assert await engines.translate("The keynote.", request, request.targets) == {"fr": "The keynote. (fr)"}
+    source, targets, texts, context, model, api_key = calls[0]
+    assert (source, targets, model, api_key) == ("en", ["fr"], "gpt-4o-mini", "oa-key")
+    assert (context.persona, context.style) == ("Calm", "Formal")
+    assert [e.target_term for e in context.vocabulary["fr"]] == ["plénière"]
+
+
+@pytest.mark.anyio
+async def test_room_voice_uses_its_provider_voice_and_key(monkeypatch):
+    built = []
+
+    class FakeVoice:
+        async def synthesize_stream(self, *, text_chunks, language_code, voice, on_audio):
+            async for text in text_chunks:
+                built.append((language_code, voice, text))
+                await on_audio(b"\x01\x00")
+
+    def fake_get_tts_provider(name, *, deepgram_api_key=None, elevenlabs_api_key=None, elevenlabs_voice_id=""):
+        assert elevenlabs_voice_id == "Rachel"
+        built.append((name, elevenlabs_api_key))
+        return FakeVoice()
+
+    monkeypatch.setattr(live_demo, "get_tts_provider", fake_get_tts_provider)
+    engines = live_demo.configured_engines(room())
+    assert await engines.synthesize("Bonjour", "fr") == b"\x01\x00"
+    assert built == [("elevenlabs", "el-key"), ("fr", "Rachel", "Bonjour")]
+    assert live_demo.configured_engines(room(voice_provider=None)).synthesize is None
+
+
+class FakeStreamingService:
+    """Reads the pipe as a room worker's provider reads ffmpeg, and broadcasts like one."""
+
+    sample_rate = 24000
+
+    def __init__(self, messages=(), fail: bool = False):
+        self.messages = list(messages)
+        self.fail = fail
+        self.calls = []
+        self.audio = b""
+
+    async def run_stream(
+        self, process, language_code, model_variant, config, broadcast_callback, booth_id, room_id=None
+    ):
+        self.calls.append((language_code, model_variant, config, booth_id, room_id))
+        while process.returncode is None:
+            data = await process.stdout.read(4096)
+            if not data:
+                break
+            self.audio += data
+            while self.messages:
+                await broadcast_callback(booth_id, self.messages.pop(0))
+        if self.fail:
+            raise OSError("service went away")
+
+
+@pytest.mark.anyio
+async def test_room_speech_runs_the_service_as_its_worker_does_and_finishes_the_last_words(monkeypatch):
+    service = FakeStreamingService(
+        [
+            {"type": "caption", "status": "partial", "text": "Welcome to"},
+            {"type": "caption", "status": "final", "text": "Welcome to the Summit."},
+            "[Audio gap: 1.0s skipped to catch up]",
+            {"type": "caption", "status": "final", "text": "You"},
+            {"type": "caption", "status": "partial", "text": "Our first speaker"},
+        ]
+    )
+    monkeypatch.setitem(live_demo.SPEECH_PROVIDERS, "deepgram", service)
+    fake = FakeEngines()
+    engines = dataclasses.replace(live_demo.configured_engines(room()), translate=fake.translate, synthesize=None)
+    sent, send_json, send_bytes = collector()
+    request = live_demo.parse_start({"source": "en", "targets": ["es"], "names": "Summit"}, DEMO)
+    session = live_demo.LiveDemoSession(request, send_json, send_bytes, engines=engines, audio_lead_seconds=FAST)
+    session.start()
+    for f in frames(10):
+        session.push_audio(f)
+    await asyncio.wait_for(session.finish(), 2)
+
+    language, model, config, booth_id, room_id = service.calls[0]
+    assert (language, model, config.api_key, room_id) == ("en", "nova-3", "dg-key", None)
+    assert config.keyterms == ("Summit",) and config.prompt == "Glossary: Summit."
+    # One second of 16 kHz audio reaches the service at its own 24 kHz.
+    assert len(service.audio) == 10 * 2400 * 2
+    finals = [m["text"] for m in sent if isinstance(m, dict) and m["type"] == "final"]
+    # The words still being worked on when the audio ended are captioned too.
+    assert finals == ["Welcome to the Summit.", "Our first speaker"]
+    assert {"type": "notice", "message": "Audio gap: 1.0s skipped to catch up"} in sent
+    # Both captions were waiting at once, so translation went straight to the newest.
+    assert [m["text"] for m in sent if isinstance(m, dict) and m["type"] == "translation"] == ["Our first speaker [es]"]
+
+
+@pytest.mark.anyio
+async def test_a_failing_room_service_ends_the_try_with_a_message(monkeypatch):
+    monkeypatch.setitem(live_demo.SPEECH_PROVIDERS, "deepgram", FakeStreamingService(fail=True))
+    sent, send_json, send_bytes = collector()
+    request = live_demo.DemoRequest(source=lang("en"), targets=(lang("es"),), listen=None)
+    session = live_demo.LiveDemoSession(
+        request, send_json, send_bytes, engines=live_demo.configured_engines(room()), audio_lead_seconds=FAST
+    )
+    session.start()
+    session.push_audio(speech_frame())
+    await asyncio.wait_for(session.finish(), 2)
+    assert any(isinstance(m, dict) and m["type"] == "notice" and "speech service stopped" in m["message"] for m in sent)
+
+
+@pytest.mark.anyio
+async def test_cancelling_a_room_try_ends_the_service_s_reader():
+    pipe = live_demo.AudioPipe()
+    pipe.write(b"\0\0")
+    assert pipe.returncode is None
+    pipe.close()
+    # The service reads what was sent before it "exits".
+    assert pipe.returncode is None
+    assert await pipe.stdout.read(10) == b"\0\0"
+    assert pipe.returncode == 0
+    pipe.write(b"late")  # ignored after the end
+    assert await pipe.stdout.read(10) == b""
+
+
+def test_resampling_keeps_duration():
+    second = speech_frame() * 10
+    assert len(live_demo.resample_pcm(second, 16000, 24000)) == 24000 * 2
+    assert live_demo.resample_pcm(second, 16000, 16000) is second
+
+
+def test_a_room_s_built_in_voice_needs_supertonic_installed(monkeypatch):
+    in_room = dataclasses.replace(DEMO, ai_source=live_demo.AI_CUSTOM, ai=room(voice_provider="supertonic"))
+    assert in_room.voice
+    monkeypatch.setattr(live_demo, "voice_installed", lambda: False)
+    assert not in_room.voice
+    # A hosted voice does not need the package.
+    assert dataclasses.replace(in_room, ai=room()).voice
+
+
+def test_engines_follow_the_ai_choice():
+    assert live_demo.engines_for(DEMO) is live_demo.LOCAL_ENGINES
+    in_room = dataclasses.replace(DEMO, ai_source=live_demo.AI_CUSTOM, ai=room())
+    assert live_demo.engines_for(in_room).stream is not None
+
+
+def test_only_built_in_models_need_loading():
+    in_room = dataclasses.replace(DEMO, ai_source=live_demo.AI_CUSTOM, ai=room())
+    assert live_demo._local_models(in_room) == (None, None, False)
+    local_room = dataclasses.replace(
+        in_room,
+        ai=room(
+            speech_provider="local",
+            speech_model="small",
+            translation_provider="local",
+            translation_model="nllb-200-distilled-600M",
+            voice_provider="supertonic",
+        ),
+    )
+    assert live_demo._local_models(local_room) == ("small", "nllb-200-distilled-600M", True)
+
+
+# ── Daily cap ─────────────────────────────────────────────────────────────────
+
+
+def test_daily_minutes_are_counted_and_reset_each_day(monkeypatch):
+    live_demo.record_usage(90)
+    assert live_demo.minutes_used_today() == pytest.approx(1.5)
+    assert not live_demo.daily_limit_reached(dataclasses.replace(DEMO, daily_minutes=2))
+    assert live_demo.daily_limit_reached(dataclasses.replace(DEMO, daily_minutes=1))
+    monkeypatch.setattr(live_demo, "_usage_day", live_demo._usage_day.replace(year=2000))
+    assert live_demo.minutes_used_today() == 0
+
+
+def test_socket_refuses_once_today_s_minutes_are_used(client, demo_config):
+    demo_config["demo"] = dataclasses.replace(DEMO, daily_minutes=1)
+    live_demo.record_usage(61)
+    with client.websocket_connect("/ws/demo/live", headers=ORIGIN) as ws:
+        assert ws.receive_json()["code"] == "daily_limit"
+    assert live_demo.active_sessions() == 0
+
+
+def test_a_running_try_ends_when_today_s_minutes_run_out(client, demo_config):
+    demo_config["demo"] = dataclasses.replace(DEMO, daily_minutes=1)
+    live_demo.record_usage(59.95)
+    with client.websocket_connect("/ws/demo/live", headers=ORIGIN) as ws:
+        ws.send_json(START)
+        ws.receive_json()
+        assert ws.receive_json()["type"] == "ready"
+        ws.send_bytes(speech_frame())
+        ws.send_bytes(speech_frame())
+        messages = []
+        while True:
+            message = ws.receive()
+            if message["type"] == "websocket.close":
+                break
+            if message.get("text"):
+                messages.append(message["text"])
+    assert '"reason":"daily_limit"' in messages[-1].replace(" ", "")
+
+
+CUSTOM_FORM = {
+    **FORM,
+    "ai_source": "custom",
+    "speech_choice": "deepgram|nova-3",
+    "translation_choice": "openai|gpt-4o-mini",
+    "voice_provider": "elevenlabs",
+    "voice": "Rachel",
+    "persona": "Calm",
+    "style": "Formal",
+}
+
+
+@pytest.mark.anyio
+async def test_independent_settings_keys_and_validation(admin_http):
+    http, tokens = admin_http
+    http.cookies.set("user_token", tokens["admin"])
+    secrets = {"speech_key": "private-speech", "translation_key": "private-translation", "voice_key": "private-voice"}
+    response = await http.post("/admin/live-demo/", data={**CUSTOM_FORM, **secrets})
+    assert response.status_code == 303
+    demo = await live_demo.current_settings()
+    assert demo.live and demo.ai.speech_key == secrets["speech_key"]
+    assert demo.ai.persona == "Calm" and demo.ai.style == "Formal"
+    async with get_session() as session:
+        row = await session.get(LiveDemoSettings, 1)
+        assert row.encrypted_speech_key != secrets["speech_key"]
+        assert decrypt_val(row.encrypted_speech_key) == secrets["speech_key"]
+    page = await http.get("/admin/live-demo/")
+    assert "Key saved" in page.text and "room_id" not in page.text
+    for secret in secrets.values():
+        assert (
+            secret not in page.text and secret not in str(live_demo.public_config(demo)) and secret not in repr(demo.ai)
+        )
+    # Blank keys preserve saved credentials; invalid choices change nothing and never echo keys.
+    assert (await http.post("/admin/live-demo/", data=CUSTOM_FORM)).status_code == 303
+    assert (await live_demo.current_settings()).ai.speech_key == secrets["speech_key"]
+    bad = await http.post("/admin/live-demo/", data={**CUSTOM_FORM, **secrets, "speech_choice": "deepgram|invalid"})
+    assert bad.status_code == 400 and secrets["speech_key"] not in bad.text
+    assert (await live_demo.current_settings()).ai.speech_model == "nova-3"
+    assert (await http.post("/admin/live-demo/", data={**CUSTOM_FORM, "speech_key": "replacement"})).status_code == 303
+    assert (await live_demo.current_settings()).ai.speech_key == "replacement"
+    assert (await http.post("/admin/live-demo/", data={**CUSTOM_FORM, "clear_speech_key": "on"})).status_code == 303
+    assert not (await live_demo.current_settings()).live
+    assert (await http.post("/admin/live-demo/", data={**CUSTOM_FORM, **secrets})).status_code == 303
+    assert (
+        await http.post("/admin/live-demo/", data={**CUSTOM_FORM, "speech_choice": "openai|whisper-1"})
+    ).status_code == 303
+    demo = await live_demo.current_settings()
+    assert demo.ai.speech_key is None and not demo.live
+
+
+@pytest.mark.anyio
+async def test_disabled_voice_needs_no_voice_key_and_hosted_languages_are_available(admin_http):
+    http, tokens = admin_http
+    http.cookies.set("user_token", tokens["admin"])
+    response = await http.post(
+        "/admin/live-demo/",
+        data={
+            **CUSTOM_FORM,
+            "voice_enabled": "",
+            "speech_key": "speech-secret",
+            "translation_key": "translation-secret",
+        },
+    )
+    assert response.status_code == 303
+    demo = await live_demo.current_settings()
+    assert demo.live and not demo.voice
+    assert len(live_demo.languages_for(demo)) == len(live_demo.DEMO_LANGUAGES)
+    assert not any(language.voice for language in live_demo.languages_for(demo))
+    response = await http.post("/admin/live-demo/", data={**CUSTOM_FORM, "voice_key": "voice-secret"})
+    assert response.status_code == 303
+    demo = await live_demo.current_settings()
+    assert {language.code: language for language in live_demo.languages_for(demo)}["th"].voice
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("function_id, installed", [("", False), ("function", False), ("", True), ("function", True)])
+async def test_nvidia_demo_requires_server_prerequisites(admin_http, monkeypatch, function_id, installed):
+    http, tokens = admin_http
+    http.cookies.set("user_token", tokens["admin"])
+    monkeypatch.setattr(settings, "nvidia_function_id", function_id)
+    monkeypatch.setattr(live_demo_ai, "find_spec", lambda _: object() if installed else None)
+    response = await http.post(
+        "/admin/live-demo/",
+        data={
+            **CUSTOM_FORM,
+            "speech_choice": "nvidia|parakeet-ctc",
+            "speech_key": "key",
+            "translation_choice": "local|nllb-200-distilled-600M",
+            "voice_enabled": "",
+        },
+    )
+    assert response.status_code == 303
+    demo = await live_demo.current_settings()
+    assert demo.live == bool(function_id and installed)
+    assert ("NVIDIA_FUNCTION_ID" in (demo.problem or "")) == (not function_id)
+    assert ("nvidia-riva-client" in (demo.problem or "")) == (not installed)
+
+
+@pytest.mark.anyio
+async def test_shared_daily_allowance_is_reserved_before_forwarding():
+    live_demo.record_usage(59.95)
+    sent, send_json, send_bytes = collector()
+    request = live_demo.DemoRequest(source=lang("en"), targets=(lang("es"),), listen=None)
+    a = live_demo.LiveDemoSession(
+        request,
+        send_json,
+        send_bytes,
+        engines=live_demo.configured_engines(room()),
+        daily_minutes=1,
+        audio_lead_seconds=FAST,
+    )
+    b = live_demo.LiveDemoSession(
+        request,
+        send_json,
+        send_bytes,
+        engines=live_demo.configured_engines(room()),
+        daily_minutes=1,
+        audio_lead_seconds=FAST,
+    )
+    a.push_audio(speech_frame())
+    b.push_audio(speech_frame())
+    assert a._received == 1600  # Only the remaining 50 ms, on a whole-sample boundary.
+    assert b._received == 0
+    assert live_demo.minutes_used_today() == pytest.approx(1)
+    assert live_demo.daily_limit_reached(dataclasses.replace(DEMO, daily_minutes=1))
+
+
+@pytest.mark.anyio
+async def test_stream_programming_errors_propagate_from_finish():
+    async def broken(*_):
+        raise TypeError("adapter bug")
+
+    sent, send_json, send_bytes = collector()
+    request = live_demo.DemoRequest(source=lang("en"), targets=(lang("es"),), listen=None)
+    engines = dataclasses.replace(live_demo.configured_engines(room()), stream=broken)
+    session = live_demo.LiveDemoSession(request, send_json, send_bytes, engines=engines)
+    session.start()
+    with pytest.raises(TypeError, match="adapter bug"):
+        await session.finish()
+    assert not any(m.get("type") == "notice" for m in sent)

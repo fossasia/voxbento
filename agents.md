@@ -90,6 +90,7 @@ VoxBento is a production-grade **browser-first interpretation booth console** fo
 | `portal/logging_config.py` | `configure_logging()`, redaction policy, JSON/text formatters, correlation-id context |
 | `portal/request_logging.py` | `RequestLoggingMiddleware` — per-request correlation id, `X-Request-ID`, request outcome logs |
 | `portal/live_demo.py` | Home-page live demo (`/ws/demo/live`): local Whisper → NLLB → Supertonic pipeline, site + visitor glossary, admission limits, and the admin-edited `live_demo_settings` row (`/admin/live-demo/`) |
+| `portal/live_demo_ai.py` | Independent live demo speech, translation and voice settings and encrypted keys; no event or room dependency |
 | `portal/user_admin.py` | Administrative access rules, user flags (`can_host`, `is_admin`, `is_active`, `email_verified`) |
 | `portal/templates/` | Jinja2 HTML — `base.html`, `interpreter_booth.html`, `listener-event.html`, `admin/` |
 | `portal/static/css/tokens.css` | Shared design tokens (`--vb-*` colours, radii, shadows, fonts), linked first on every page; new CSS uses these instead of new hex values |
