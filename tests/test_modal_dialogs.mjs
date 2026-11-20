@@ -374,6 +374,107 @@ test('copyToClipboard: works on a button without a tooltip', async () => {
   }
 });
 
+test('copyToClipboard: a rapid second click cancels the first reset timer so it cannot clear the second Copied! banner early', async () => {
+  resetDom();
+  mock.timers.enable({ apis: ['setTimeout'] });
+  try {
+    setClipboard(async () => {});
+    const button = new FakeElement('copy-rapid');
+    button.dataset.copyText = 'secret';
+    const tooltip = new FakeElement('tooltip');
+    tooltip.textContent = 'Copy to clipboard';
+    button.children['.copy-tooltip'] = tooltip;
+
+    // First click – succeeds and schedules a reset at t = 2000 ms.
+    await copyToClipboard(button);
+    assert.ok(button.classes.has('copied'), 'first click marks copied');
+
+    // Advance 1300 ms (t = 1300 ms).
+    mock.timers.tick(1300);
+
+    // Second click at t = 1300 ms – cancels the first timer and schedules a new reset for t = 3300 ms.
+    await copyToClipboard(button);
+    assert.ok(button.classes.has('copied'), 'button is still copied after second click');
+    assert.equal(tooltip.textContent, 'Copied!', 'tooltip still says Copied!');
+
+    // Advance 700 ms to reach t = 2000 ms (the first timer's original deadline).
+    mock.timers.tick(700);
+
+    // The first timer must not have reset the banner.
+    assert.ok(button.classes.has('copied'), 'first timer deadline does not clear copied state');
+    assert.equal(tooltip.textContent, 'Copied!', 'tooltip remains Copied! at first timer deadline');
+
+    // Advance 1300 ms to reach t = 3300 ms (the second timer's deadline).
+    mock.timers.tick(1300);
+
+    // The second timer fires and clears the banner.
+    assert.equal(button.classes.has('copied'), false, 'second timer deadline removes copied');
+    assert.equal(tooltip.textContent, 'Copy to clipboard', 'tooltip resets to default at second timer deadline');
+  } finally {
+    mock.timers.reset();
+  }
+});
+
+test('copyToClipboard: a slow first copy that resolves after a second click does not overwrite the second result', async () => {
+  resetDom();
+  mock.timers.enable({ apis: ['setTimeout'] });
+  try {
+    let releaseFirst;
+    let calls = 0;
+    setClipboard(() => (++calls === 1 ? new Promise((resolve) => { releaseFirst = resolve; }) : Promise.reject(new Error('denied'))));
+    const logged = mock.method(console, 'error', () => {});
+    const button = new FakeElement('copy-late');
+    button.dataset.copyText = 'secret';
+    const tooltip = new FakeElement('tooltip-late');
+    button.children['.copy-tooltip'] = tooltip;
+
+    const first = copyToClipboard(button);
+    await copyToClipboard(button);
+    assert.ok(button.classes.has('copy-failed'));
+    releaseFirst();
+    await first;
+    assert.equal(button.classes.has('copied'), false, 'the stale first attempt must not add copied');
+    assert.equal(tooltip.textContent, 'Copy failed');
+    logged.mock.restore();
+  } finally {
+    mock.timers.reset();
+  }
+});
+
+test('copyToClipboard: a successful copy after a failed one clears copy-failed before setting copied', async () => {
+  // This test verifies that classList.remove clears existing feedback classes before
+  // the new outcome class is added, so a fail→succeed sequence never leaves the
+  // button with both classes simultaneously.
+  resetDom();
+  mock.timers.enable({ apis: ['setTimeout'] });
+  try {
+    noClipboard();
+    let callCount = 0;
+    // First execCommand call returns false (failed copy), second returns true.
+    document.execCommand = () => ++callCount > 1;
+    const logged = mock.method(console, 'error', () => {});
+    const button = new FakeElement('copy-recover');
+    button.dataset.copyText = 'secret2';
+    const tooltip = new FakeElement('tooltip-2');
+    tooltip.textContent = 'Copy to clipboard';
+    button.children['.copy-tooltip'] = tooltip;
+
+    // First click – copy fails; button should only have copy-failed.
+    await copyToClipboard(button);
+    assert.ok(button.classes.has('copy-failed'), 'first click marks copy-failed');
+    assert.equal(button.classes.has('copied'), false, 'copied is absent after failure');
+    logged.mock.restore();
+
+    // Second click – copy succeeds; copy-failed must be gone, copied must be set.
+    await copyToClipboard(button);
+    assert.ok(button.classes.has('copied'), 'second click marks copied');
+    assert.equal(button.classes.has('copy-failed'), false, 'copy-failed is cleared before copied is set');
+    assert.equal(tooltip.textContent, 'Copied!');
+  } finally {
+    mock.timers.reset();
+  }
+});
+
 function copyButton() {
   const button = new FakeElement('copy');
   button.dataset.copyText = 'copied-value';
@@ -748,3 +849,4 @@ test('api keys: a failed revoke alerts and leaves the dialog open', async () => 
   assert.equal(page.revokeConfirm.disabled, false);
   assert.equal(page.revokeCancel.disabled, false);
 });
+

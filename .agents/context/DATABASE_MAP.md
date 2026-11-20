@@ -307,6 +307,8 @@ Tracks which languages the translation worker should generate for a given room o
 | 041 | `041_add_interpreter_attendance.py` | `interpreter_attendance` table (#1215) |
 | 042 | `042_add_booth_live_state.py` | `booth_live_state` table (TD-03) |
 | 043 | `043_add_live_demo_settings.py` | `live_demo_settings` singleton for the home-page live demo |
+| 046 | `046_live_demo_room_ai.py` | Transitional room-linked demo settings and daily limit |
+| 047 | `047_live_demo_independent_ai.py` | Independent demo providers, models, encrypted keys, persona/style; removes room link |
 | 044 | `044_youtube_connections.py` | `youtube_connections` table (one per event), `rooms.youtube_broadcast_id`, `rooms.youtube_stream_id` (#1087) |
 
 Run migrations: `uv run alembic upgrade head`
@@ -439,6 +441,12 @@ session end when the session was too long), `segment_count`,
 validated with the AI glossary rules). No row means the `LIVE_DEMO_*` environment
 defaults with the demo off (an Admin switches it on), and `LIVE_DEMO_ENABLED=false` keeps the demo off whatever the row says.
 `portal/live_demo.py` reads it through a ~10 s cache that saving replaces.
+
+Migration 046 adds `ai_source` and `daily_minutes` (default 120). Migration 047 removes
+its transitional `room_id`, disabling previously room-linked demos without copying customer
+keys. `ai_source` is now `built_in` or `custom`. Independent `speech_choice`,
+`translation_choice`, `voice_provider`, `voice`, `persona`, `style` and three encrypted
+service key fields belong to this singleton. `portal/live_demo_ai.py` resolves these settings.
 
 ## Migrations 036–038 — live booth session revocation
 
