@@ -145,6 +145,7 @@ def test_without_keys_only_self_hosted_engines_are_offered():
         "Google Gemini",
         "Groq",
         "OpenRouter",
+        "Google Cloud Translation",
     )
 
 

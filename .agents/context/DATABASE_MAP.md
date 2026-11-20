@@ -45,6 +45,7 @@ users (1)
 | `gemini_api_key` | Text nullable | Fernet-encrypted |
 | `anthropic_api_key` | Text nullable | Fernet-encrypted |
 | `groq_api_key` | Text nullable | Fernet-encrypted |
+| `google_translate_api_key` | Text nullable | Fernet-encrypted |
 | `created_at` | DateTime(tz) | UTC |
 
 Cascade: deletes rooms + booths when event is deleted.
