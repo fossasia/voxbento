@@ -366,3 +366,64 @@ async def test_destination_relay_failed_state_triggers_operator_alert(srt_env, m
     assert youtube_alerts[0]["level"] == "error"
     assert "YouTube rejected the stream key" in youtube_alerts[0]["message"]
     assert "Verify YouTube stream key" in youtube_alerts[0]["action"]
+
+
+@pytest.mark.anyio
+async def test_srt_urls_bracket_ipv6_addresses(srt_env, monkeypatch):
+    event = srt_env["event"]
+    room = srt_env["rooms"][0]
+    client = srt_env["client"]
+
+    # Test 1: IPv6 in public_base_url
+    monkeypatch.setattr(settings, "program_srt_public_host", "")
+    monkeypatch.setattr(settings, "public_base_url", "https://[2001:db8::1]:8000")
+    resp = await client.get(f"/admin/events/{event.id}/rooms/{room.id}/program-ingest")
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["srt_server"].startswith(f"srt://[2001:db8::1]:{settings.program_srt_public_port}?streamid=")
+    assert data["srt_backup_server"].startswith(f"srt://[2001:db8::1]:{settings.program_srt_public_port}?streamid=")
+
+    # Test 2: Unbracketed IPv6 in program_srt_public_host
+    monkeypatch.setattr(settings, "program_srt_public_host", "2001:db8::2")
+    resp = await client.get(f"/admin/events/{event.id}/rooms/{room.id}/program-ingest")
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["srt_server"].startswith(f"srt://[2001:db8::2]:{settings.program_srt_public_port}?streamid=")
+    assert data["srt_backup_server"].startswith(f"srt://[2001:db8::2]:{settings.program_srt_public_port}?streamid=")
+
+    # Test 3: Standard hostname remains unbracketed
+    monkeypatch.setattr(settings, "program_srt_public_host", "ingest.example.com")
+    resp = await client.get(f"/admin/events/{event.id}/rooms/{room.id}/program-ingest")
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["srt_server"].startswith(f"srt://ingest.example.com:{settings.program_srt_public_port}?streamid=")
+
+
+@pytest.mark.anyio
+async def test_egress_continuity_only_reported_when_relay_state_is_live(srt_env, monkeypatch):
+    import portal.program_relay as program_relay
+
+    event = srt_env["event"]
+    room = srt_env["rooms"][0]
+    client = srt_env["client"]
+
+    async with get_session() as session:
+        stored = await session.get(Room, room.id)
+        assert stored is not None
+        stored.program_ingest_mode = program_relay.RELAY_MODE
+        await session.commit()
+
+    monkeypatch.setattr(settings, "program_relay_enabled", True)
+
+    # When relay state is "live", egress_continuity must report True
+    program_relay.relay_health[room.id] = program_relay.RelayHealth("live", "Relaying program feed.")
+    resp = await client.get(f"/admin/events/{event.id}/rooms/{room.id}/program-ingest")
+    assert resp.status_code == 200
+    assert resp.json()["metrics"]["egress_continuity"] is True
+
+    # When relay state is "retrying", "failed", or "stopped", egress_continuity must report False
+    for non_live_state in ("retrying", "failed", "stalled", "stopped", "idle"):
+        program_relay.relay_health[room.id] = program_relay.RelayHealth(non_live_state, "Not live.")
+        resp = await client.get(f"/admin/events/{event.id}/rooms/{room.id}/program-ingest")
+        assert resp.status_code == 200
+        assert resp.json()["metrics"]["egress_continuity"] is False

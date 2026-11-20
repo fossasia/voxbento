@@ -232,9 +232,7 @@ async def start_transcription_worker(
             if not existing_session:
                 limit = settings.max_transcription_workers
                 if len(active_workers) >= limit:
-                    raise WorkerCapacityError(
-                        f"System at maximum capacity ({limit} concurrent transcription booths)."
-                    )
+                    raise WorkerCapacityError(f"System at maximum capacity ({limit} concurrent transcription booths).")
 
                 if provider == "local":
                     from portal.transcription.providers.local import increment_model_ref, start_eviction_loop
@@ -268,9 +266,8 @@ async def start_transcription_worker(
                 # Session is tearing down in the background. We must strictly serialize.
                 # Drop lock, actively await the old session's death, then loop around and re-check registry.
                 pass
-            elif (
-                (restart_on_key_change and existing_session.config.get_key() != config.get_key())
-                or (getattr(existing_session, "stream_path", None) != stream_path)
+            elif (restart_on_key_change and existing_session.config.get_key() != config.get_key()) or (
+                stream_path is not None and getattr(existing_session, "stream_path", None) != stream_path
             ):
                 existing_session.stop()
             else:

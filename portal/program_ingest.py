@@ -649,6 +649,7 @@ async def open_sender_session(room: Room, event: Event, offset_ms: int, ttl_secs
     explicit takeover on the owner's click. Never touches the encoder credential.
     """
     path = make_mediamtx_path(event.slug, room.id, "floor")
+    backup_path = make_backup_floor_path(event.slug, room.id)
     if room.floor_source == "program_ingest" and room.program_ingest_mode == program_relay.RELAY_MODE:
         raise HTTPException(
             409, "YouTube relay mode owns the floor; switch the room to independent outputs (WHIP) first."
@@ -657,6 +658,8 @@ async def open_sender_session(room: Room, event: Event, offset_ms: int, ttl_secs
         raise HTTPException(
             409, "An RTMPS encoder owns the floor; switch the room to independent outputs (WHIP) first."
         )
+    if room.floor_source == "program_ingest" and room.program_ingest_mode in program_relay.SRT_MODES:
+        raise HTTPException(409, "An SRT encoder owns the floor; switch the room to independent outputs (WHIP) first.")
     if room.floor_source == "program_ingest":
         # Floor already owned by program ingest; never displace a connected or
         # still-negotiating publisher (external encoder or another sender).
@@ -667,7 +670,9 @@ async def open_sender_session(room: Room, event: Event, offset_ms: int, ttl_secs
             and reservation.reservation_started_at
             and time.monotonic() - reservation.reservation_started_at < SENDER_PENDING_SECS
         )
-        if (current_path and current_path.source is not None) or reservation_recent:
+        current_backup = await media_path(backup_path) if room.program_backup_enabled else None
+        backup_publishing = bool(current_backup and current_backup.source is not None)
+        if (current_path and current_path.source is not None) or reservation_recent or backup_publishing:
             raise HTTPException(
                 409, "Another source is publishing to the floor; stop it before starting the browser sender."
             )
@@ -687,6 +692,12 @@ async def open_sender_session(room: Room, event: Event, offset_ms: int, ttl_secs
     await ensure_floor_path(path)
     # Clear a lingering bot source on takeover, or a stale program-ingest reservation.
     await kick(path, current_path.source if current_path else None)
+    if room.program_backup_enabled:
+        current_backup = await media_path(backup_path)
+        await kick(backup_path, current_backup.source if current_backup else None)
+        room.program_backup_enabled = False
+        room.program_backup_connected_at = None
+    room.program_active_feed = "primary"
     if room.program_session_id:
         await kick(path, MediaSource(type="webRTCSession", id=room.program_session_id))
         room.program_session_id = None
@@ -1274,6 +1285,8 @@ async def reconcile_once() -> None:
                         if not room.program_backup_enabled or (
                             not backup_connected and primary_connected and not primary_stalled
                         ):
+                            booth_id = make_booth_id(event.slug, room_id, "floor")
+                            await stop_room_worker(current, booth_id, room_id)
                             room.program_active_feed = "primary"
                             current.worker_config = None
                             current.high_bitrate_cycles = 0

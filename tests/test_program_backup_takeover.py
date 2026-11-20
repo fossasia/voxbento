@@ -895,3 +895,217 @@ async def test_bitrate_sampling_reset_on_feed_takeover_prevents_false_limits_kic
     assert current.state != "rejected_limits"
     assert current.high_bitrate_cycles == 0
     assert current.last_cycle_bytes == 200000
+
+
+@pytest.mark.anyio
+async def test_open_sender_session_rejects_srt_mode_and_active_backup(backup_env):
+    event = backup_env["event"]
+    room = backup_env["room"]
+    client = backup_env["client"]
+    media = backup_env["media"]
+
+    # 1. SRT mode rejected with 409
+    async with get_session() as session:
+        stored = await session.get(Room, room.id)
+        assert stored is not None
+        stored.floor_source = "program_ingest"
+        stored.program_ingest_mode = "srt"
+        await session.commit()
+
+    resp = await client.post(
+        f"/admin/events/{event.id}/rooms/{room.id}/program-sender",
+        json={"sync_offset_ms": 0},
+    )
+    assert resp.status_code == 409
+    assert "An SRT encoder owns the floor" in resp.json()["detail"]
+
+    # 2. WHIP mode with active backup publishing: rejected with 409 even if primary is absent
+    async with get_session() as session:
+        stored = await session.get(Room, room.id)
+        assert stored is not None
+        stored.program_ingest_mode = "whip"
+        stored.program_backup_enabled = True
+        await session.commit()
+
+    backup_path = f"{event.slug}/{room.id}/floor_backup"
+    media[backup_path] = {
+        "name": backup_path,
+        "ready": True,
+        "source": {"id": "backup-sess-1", "type": "srtConn"},
+    }
+    resp = await client.post(
+        f"/admin/events/{event.id}/rooms/{room.id}/program-sender",
+        json={"sync_offset_ms": 0},
+    )
+    assert resp.status_code == 409
+    assert "Another source is publishing to the floor" in resp.json()["detail"]
+
+
+@pytest.mark.anyio
+async def test_open_sender_session_takeover_cleans_backup_state(backup_env):
+    event = backup_env["event"]
+    room = backup_env["room"]
+    client = backup_env["client"]
+    media = backup_env["media"]
+
+    # Jitsi room with backup enabled and active feed set to backup
+    async with get_session() as session:
+        stored = await session.get(Room, room.id)
+        assert stored is not None
+        stored.floor_source = "jitsi"
+        stored.program_backup_enabled = True
+        stored.program_backup_connected_at = ingest.utc_now()
+        stored.program_active_feed = "backup"
+        await session.commit()
+
+    backup_path = f"{event.slug}/{room.id}/floor_backup"
+    media[backup_path] = {
+        "name": backup_path,
+        "ready": False,
+        "source": None,
+    }
+
+    resp = await client.post(
+        f"/admin/events/{event.id}/rooms/{room.id}/program-sender",
+        json={"sync_offset_ms": 0},
+    )
+    assert resp.status_code == 200
+
+    async with get_session() as session:
+        refreshed = await session.get(Room, room.id)
+        assert refreshed.floor_source == "program_ingest"
+        assert refreshed.program_ingest_mode == "whip"
+        assert refreshed.program_backup_enabled is False
+        assert refreshed.program_backup_connected_at is None
+        assert refreshed.program_active_feed == "primary"
+
+
+@pytest.mark.anyio
+async def test_worker_omitted_stream_path_does_not_replace_running_backup_worker(monkeypatch):
+    from unittest.mock import AsyncMock
+
+    from portal.transcription.worker import (
+        ProviderConfig,
+        State,
+        TranscriptionWorkerSession,
+        active_workers,
+        start_transcription_worker,
+        stop_transcription_worker,
+    )
+
+    async def mock_run_loop(self):
+        self.loop_entered = True
+        try:
+            await self.stop_event.wait()
+        finally:
+            self.state = State.STOPPED
+
+    monkeypatch.setattr(TranscriptionWorkerSession, "_run_loop", mock_run_loop)
+
+    monkeypatch.setattr(TranscriptionWorkerSession, "_run_loop", mock_run_loop)
+
+    booth_id = "test-event-1-floor"
+    await stop_transcription_worker(booth_id)
+
+    # 1. Start worker on backup stream path
+    backup_path = "test-event/1/floor_backup"
+    started = await start_transcription_worker(
+        event_slug="test-event",
+        language_code="floor",
+        booth_id=booth_id,
+        broadcast_callback=AsyncMock(),
+        provider="local",
+        model_size="tiny",
+        config=ProviderConfig(api_key=None),
+        room_id=1,
+        stream_path=backup_path,
+    )
+    assert started is True
+    session = active_workers.get(booth_id)
+    assert session is not None
+    assert session.stream_path == backup_path
+    first_session_id = session.session_id
+
+    # 2. Call start_transcription_worker with omitted stream_path (None)
+    # MUST NOT replace or stop the running backup worker session
+    started_again = await start_transcription_worker(
+        event_slug="test-event",
+        language_code="floor",
+        booth_id=booth_id,
+        broadcast_callback=AsyncMock(),
+        provider="local",
+        model_size="tiny",
+        config=ProviderConfig(api_key=None),
+        room_id=1,
+        stream_path=None,
+    )
+    assert started_again is False
+    current_session = active_workers.get(booth_id)
+    assert current_session is not None
+    assert current_session.session_id == first_session_id
+    assert current_session.stream_path == backup_path
+
+    # 3. Call start_transcription_worker with an explicitly different stream_path
+    # MUST stop old worker and start new one
+    primary_path = "test-event/1/floor"
+    started_new = await start_transcription_worker(
+        event_slug="test-event",
+        language_code="floor",
+        booth_id=booth_id,
+        broadcast_callback=AsyncMock(),
+        provider="local",
+        model_size="tiny",
+        config=ProviderConfig(api_key=None),
+        room_id=1,
+        stream_path=primary_path,
+    )
+    assert started_new is True
+    new_session = active_workers.get(booth_id)
+    assert new_session is not None
+    assert new_session.session_id != first_session_id
+    assert new_session.stream_path == primary_path
+
+    await stop_transcription_worker(booth_id)
+
+
+@pytest.mark.anyio
+async def test_api_transcription_start_passes_backup_path_when_backup_active(backup_env, monkeypatch):
+    from portal.models import DBBooth
+    from portal.routers import api as api_router_mod
+
+    event = backup_env["event"]
+    room = backup_env["room"]
+    client = backup_env["client"]
+
+    # Configure room with active backup
+    async with get_session() as session:
+        stored = await session.get(Room, room.id)
+        assert stored is not None
+        stored.program_backup_enabled = True
+        stored.program_active_feed = "backup"
+        booth = DBBooth(
+            event_id=event.id,
+            room_id=room.id,
+            language_code="floor",
+            language_name="Floor",
+            transcription_enabled=True,
+            transcription_provider="local",
+            transcription_model="tiny",
+        )
+        session.add(booth)
+        await session.commit()
+
+    passed_kwargs = {}
+
+    async def mock_start_worker(*args, **kwargs):
+        passed_kwargs.update(kwargs)
+        return True
+
+    monkeypatch.setattr(api_router_mod, "start_transcription_worker", mock_start_worker)
+
+    resp = await client.post(
+        f"/api/events/{event.slug}/rooms/{room.id}/booths/floor/transcription/start",
+        headers={"Origin": "http://test"},
+    )
+    assert resp.status_code == 200
+    assert passed_kwargs.get("stream_path") == f"{event.slug}/{room.id}/floor_backup"

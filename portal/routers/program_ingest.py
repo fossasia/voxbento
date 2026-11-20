@@ -65,13 +65,20 @@ def _rtmps_server(event_slug: str, room_id: int) -> str:
     return f"{base}/{event_slug}/{room_id}" if base else ""
 
 
+def _format_srt_host(host: str) -> str:
+    """Bracket IPv6 literals for RFC 3986 URI authority compliance."""
+    if ":" in host and not (host.startswith("[") and host.endswith("]")):
+        return f"[{host}]"
+    return host
+
+
 def _srt_host() -> str:
     if settings.program_srt_public_host:
-        return settings.program_srt_public_host
+        return _format_srt_host(settings.program_srt_public_host)
     hostname = urlsplit(settings.public_base_url).hostname
     if hostname:
-        return hostname
-    return settings.jitsi_domain
+        return _format_srt_host(hostname)
+    return _format_srt_host(settings.jitsi_domain)
 
 
 def _check_origin(request: Request) -> None:
@@ -217,7 +224,7 @@ async def ingest_status(event_id: int, room_id: int) -> JSONResponse:
             "audio_present": audio_present,
             "reconnect_count": current.reconnect_count if current else 0,
             "ingest_continuity": bool(current and current.ingest_state in ("connected", "receiving", "processing")),
-            "egress_continuity": bool(relay and relay.state in ("relaying", "healthy")),
+            "egress_continuity": bool(relay and relay.state == "live"),
             "processing_progress": current.processing_state if current else "idle",
         }
 

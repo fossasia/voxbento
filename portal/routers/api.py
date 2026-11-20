@@ -24,7 +24,13 @@ from portal.auth import (
     security,
     user_session_is_valid,
 )
-from portal.booth_identity import make_booth_id, make_mediamtx_path, validate_event_slug, validate_language_code
+from portal.booth_identity import (
+    make_backup_floor_path,
+    make_booth_id,
+    make_mediamtx_path,
+    validate_event_slug,
+    validate_language_code,
+)
 from portal.config import settings
 from portal.database import (
     create_invite_token,
@@ -305,9 +311,7 @@ async def _verify_resource_access(
     elif credentials is not None and payload is None:
         # A bearer API key is not a JWT. Resolve it through the event-scoped
         # authorization path instead of falling through to the generic gate.
-        await _verify_event_access(
-            session, request, event.id, room_id=room_id, credentials=credentials, token=token
-        )
+        await _verify_event_access(session, request, event.id, room_id=room_id, credentials=credentials, token=token)
     else:
         _require_access(request, credentials, token, session_payload=payload)
     if payload and not payload.get("user") and payload.get("token_id") is not None:
@@ -627,9 +631,10 @@ async def list_event_booths(
         b["label"] = f"{b.get('language_name', b.get('language_code', ''))} (Human)"
 
     async with get_session() as session:
-
-        stmt = select(Event).where(Event.slug == event_slug, Event.deleted_at.is_(None)).options(
-            selectinload(Event.rooms).selectinload(Room.translation_languages)
+        stmt = (
+            select(Event)
+            .where(Event.slug == event_slug, Event.deleted_at.is_(None))
+            .options(selectinload(Event.rooms).selectinload(Room.translation_languages))
         )
         event = await session.scalar(stmt)
         if event:
@@ -863,10 +868,27 @@ async def api_transcription_start(
             )
         if provider_enum != ProviderEnum.LOCAL and (not api_key):
             raise HTTPException(status_code=400, detail=f"{provider} API key missing. Cannot start transcription.")
+        db_room = await session.get(Room, room_id)
+        stream_path = None
+        if (
+            language_code == "floor"
+            and db_room
+            and db_room.program_backup_enabled
+            and getattr(db_room, "program_active_feed", "primary") == "backup"
+        ):
+            stream_path = make_backup_floor_path(event_slug, room_id)
         config = ProviderConfig(api_key=api_key)
     try:
         await start_transcription_worker(
-            event_slug, language_code, booth_id, broadcast_transcription, provider, model_size, config, room_id=room_id
+            event_slug,
+            language_code,
+            booth_id,
+            broadcast_transcription,
+            provider,
+            model_size,
+            config,
+            room_id=room_id,
+            stream_path=stream_path,
         )
     except ValueError as e:
         raise HTTPException(status_code=429, detail=str(e))
