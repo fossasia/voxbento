@@ -41,8 +41,6 @@ RECONCILE_SECS = 30.0
 OUTAGE_SCAN_SECS = 5.0
 # How long one blocking pop waits before due retries are moved again.
 WAIT_SECS = 1.0
-# Upper bound on back-to-back scans after a wake-up, so a large backlog cannot starve the loop.
-MAX_SCANS_PER_WAKE = 50
 # IDs drained per wake-up; one database scan serves the whole burst.
 DRAIN_BATCH = 100
 
@@ -234,8 +232,8 @@ async def run_worker(
 ) -> None:
     """Call ``process_due`` when IDs arrive, and on a slow timer as a safety net.
 
-    ``process_due`` claims and processes due rows from the database and returns how many
-    it handled; it is called again while it keeps finding rows.
+    ``process_due`` claims and processes one bounded batch of due rows from the database
+    and returns how many it handled; it is called again until a batch finds none.
     """
     client = get_client()
     last_scan = float("-inf")
@@ -261,9 +259,10 @@ async def run_worker(
             continue
         last_scan = time.monotonic()
         try:
-            for _ in range(MAX_SCANS_PER_WAKE):
-                if not await process_due():
-                    break
+            # Drain the whole backlog, for example rows whose IDs a Redis restart lost, one
+            # bounded batch at a time, yielding between batches so other tasks keep running.
+            while await process_due():
+                await asyncio.sleep(0)
         except asyncio.CancelledError:
             raise
         except Exception:  # noqa: BLE001 - the worker must keep running; rows stay in the database

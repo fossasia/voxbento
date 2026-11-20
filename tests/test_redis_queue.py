@@ -246,3 +246,25 @@ async def test_unusable_url_keeps_the_worker_on_database_scans(monkeypatch: pyte
     await asyncio.gather(task, return_exceptions=True)
     assert task.cancelled()
     assert calls >= 3
+
+
+@pytest.mark.anyio
+async def test_worker_drains_a_large_backlog_in_one_scan(redis: FakeAsyncRedis) -> None:
+    backlog = 1_000  # far more batches than one wake-up used to allow
+    calls = 0
+
+    async def process_due() -> int:
+        nonlocal backlog, calls
+        calls += 1
+        batch = min(backlog, 10)
+        backlog -= batch
+        return batch
+
+    task = asyncio.create_task(
+        redis_queue.run_worker(redis_queue.WEBHOOKS, process_due, reconcile_secs=60, wait_secs=0.05)
+    )
+    await asyncio.sleep(0.3)
+    task.cancel()
+    await asyncio.gather(task, return_exceptions=True)
+    assert backlog == 0
+    assert calls == 101  # 100 full batches, then one that finds nothing
