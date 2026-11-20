@@ -395,7 +395,9 @@ class BoothRegistry:
                 room_id=room_id,
             )
             self._booths[booth_id] = booth
-            return booth.as_public_dict()
+            state = booth.as_public_dict()
+        await self._publish(booth_id, state)
+        return state
 
     async def snapshot(
         self,

@@ -1077,3 +1077,16 @@ async def test_disconnect_and_lock_callbacks_run_before_delivery():
     assert await registry.disconnect_participant("hall-1-fr", participant.participant_id, "other") is None
 
     assert order == ["callback", "delivered", "callback", "delivered"]
+
+
+
+@pytest.mark.anyio
+async def test_create_booth_publishes_once_and_duplicates_publish_nothing():
+    registry = BoothRegistry()
+    events = await _recorded_events(registry)
+
+    state = await registry.create_booth("pycon2026", "en", "English", 1)
+    with pytest.raises(ValueError):
+        await registry.create_booth("pycon2026", "en", "English", 1)
+
+    assert [event.state for event in events] == [state]
