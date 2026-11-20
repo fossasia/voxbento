@@ -491,16 +491,16 @@ async def test_booth_language_cannot_change_to_one_another_booth_in_the_room_use
     async with _client(cookie) as client:
         url = f"/admin/events/{event_id}/rooms/{room_id}/booths/{booth_id}/edit"
         refused = await client.post(url, data={"language_name": "Hindi", "language_code": "EN"}, headers=ORIGIN)
+        after_refused = await _booth(booth_id)
         page = await client.post(url, data={"language_code": "en"}, headers={**ORIGIN, "accept": "text/html"})
-        unchanged = await client.post(url, data={"language_name": "Français", "language_code": "fr"}, headers=ORIGIN)
+        after_page = await _booth(booth_id)
 
     assert refused.status_code == 409
     assert refused.json()["detail"] == "Another booth in this room already uses en."
+    assert (after_refused.language_code, after_refused.language_name) == ("fr", "French")
     assert page.status_code == 409
     assert "Another booth in this room already uses en." in page.text
-    assert unchanged.status_code == 303
-    booth = await _booth(booth_id)
-    assert (booth.language_code, booth.language_name) == ("fr", "Français")
+    assert (after_page.language_code, after_page.language_name) == ("fr", "French")
 
 
 @pytest.mark.anyio
