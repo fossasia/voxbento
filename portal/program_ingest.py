@@ -202,18 +202,6 @@ def is_conforming_srt_codec(tracks: list[str] | None) -> bool:
     has_h264 = any(t in {"H264", "H.264"} or t.upper() in {"H264", "H.264"} for t in norm_tracks)
     has_aac = any(t in {"AAC", "MPEG-4 Audio"} or t.upper() in {"AAC", "MPEG-4 AUDIO"} for t in norm_tracks)
     allowed_codecs = {"H264", "H.264", "AAC", "MPEG-4 Audio"}
-    all_allowed = all(t in allowed_codecs or t.upper() in {"H264", "H.264", "AAC", "MPEG-4 AUDIO"} for t in norm_tracks)
-    return has_h264 and has_aac and all_allowed
-
-
-def is_conforming_srt_codec(tracks: list[str] | None) -> bool:
-    """Return True if tracks contain H.264 video, AAC audio, and no unsupported codecs."""
-    if not tracks:
-        return False
-    norm_tracks = [t.strip() for t in tracks]
-    has_h264 = any(t in {"H264", "H.264"} or t.upper() in {"H264", "H.264"} for t in norm_tracks)
-    has_aac = any(t in {"AAC", "MPEG-4 Audio"} or t.upper() in {"AAC", "MPEG-4 AUDIO"} for t in norm_tracks)
-    allowed_codecs = {"H264", "H.264", "AAC", "MPEG-4 Audio"}
     all_allowed = all(
         t in allowed_codecs or t.upper() in {"H264", "H.264", "AAC", "MPEG-4 AUDIO"} for t in norm_tracks
     )
