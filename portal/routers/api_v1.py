@@ -488,9 +488,6 @@ async def delete_event(
             status_code=status.HTTP_409_CONFLICT, detail="Cannot delete event while active booths are running."
         )
 
-    for b in active_booths:
-        await booths.remove_booth(event_slug, b["room_id"], b["language_code"])
-
     await revoke_booths_for_deleted_entity(db, level="event", target_id=event.id)
     event.deleted_at = datetime.now(timezone.utc)
 
@@ -502,7 +499,12 @@ async def delete_event(
         status_code=status.HTTP_204_NO_CONTENT,
     )
     db.add(audit)
-    await db.flush()
+    # Commit first, so a failed delete leaves the booths running.
+    await db.commit()
+    for b in active_booths:
+        await booths.remove_booth(event_slug, b["room_id"], b["language_code"])
+    for b in active_booths:
+        await stop_transcription_worker(b["booth_id"])
     return None
 
 
@@ -725,25 +727,29 @@ async def upsert_room(
     booth_res = await db.execute(select(DBBooth).where(DBBooth.room_id == room.id))
     existing_booths = {b.language_code: b for b in booth_res.scalars().all()}
 
+    removed_codes: list[str] = []
     if "target_languages" in payload_dict and payload_dict["target_languages"] is not None:
         requested_langs = set(payload_dict["target_languages"])
 
         # Safe Delete Removed Booths & Languages
+        removed_codes = [code for code in existing_booths if code not in requested_langs]
+        # Check every removed booth first, so a refused update leaves all of them running.
+        for code in removed_codes:
+            # Active Session Guard — use BoothRegistry.get_booth_sync() (not .items())
+            from portal.booth_identity import make_booth_id
+
+            booth_id = make_booth_id(event_slug, room.id, code)
+            active_booth = booths.get_booth_sync(booth_id)
+            if active_booth is not None:
+                has_connected = active_booth.ingest_status == "connected"
+                if has_connected:
+                    raise HTTPException(
+                        status_code=status.HTTP_409_CONFLICT,
+                        detail=f"Cannot remove language '{code}' while it has an active session running.",
+                    )
         for code, b in existing_booths.items():
             if code not in requested_langs:
-                # Active Session Guard — use BoothRegistry.get_booth_sync() (not .items())
-                from portal.booth_identity import make_booth_id
-
-                booth_id = make_booth_id(event_slug, room.id, code)
-                active_booth = booths.get_booth_sync(booth_id)
-                if active_booth is not None:
-                    has_connected = active_booth.ingest_status == "connected"
-                    if has_connected:
-                        raise HTTPException(
-                            status_code=status.HTTP_409_CONFLICT,
-                            detail=f"Cannot remove language '{code}' while it has an active session running.",
-                        )
-                await booths.remove_booth(event_slug, room.id, code)
+                await revoke_booths_for_deleted_entity(db, level="booth", target_id=b.id)
                 await db.delete(b)
                 db.add(
                     OAuthAuditLog(
@@ -817,6 +823,12 @@ async def upsert_room(
         logger.exception("Error generating canonical WHEP URLs")
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Internal server error")
 
+    # Commit first, so a failed update leaves the removed booths running.
+    await db.commit()
+    for code in removed_codes:
+        await booths.remove_booth(event_slug, room.id, code)
+    for code in removed_codes:
+        await stop_transcription_worker(make_booth_id(event_slug, room.id, code))
     return {"status": "success", "room_id": room.id, "booths": returned_booths}
 
 
@@ -848,9 +860,14 @@ async def delete_room(
             status_code=status.HTTP_409_CONFLICT, detail="Cannot delete room while active booths are running."
         )
 
-    for b in room_booths:
-        await booths.remove_booth(event_slug, b["room_id"], b["language_code"])
-
+    # Every booth in the room goes with it, including one another event placed there.
+    room_booth_keys = (
+        await db.execute(
+            select(Event.slug, DBBooth.language_code)
+            .join(Event, Event.id == DBBooth.event_id)
+            .where(DBBooth.room_id == room.id)
+        )
+    ).all()
     await revoke_booths_for_deleted_entity(db, level="room", target_id=room.id)
     await delete_db_room(db, room.id)
 
@@ -862,7 +879,11 @@ async def delete_room(
         status_code=status.HTTP_204_NO_CONTENT,
     )
     db.add(audit)
-    await db.flush()
+    await db.commit()
+    for booth_event_slug, language_code in room_booth_keys:
+        await booths.remove_booth(booth_event_slug, room.id, language_code)
+    for booth_event_slug, language_code in room_booth_keys:
+        await stop_transcription_worker(make_booth_id(booth_event_slug, room.id, language_code))
     return None
 
 
@@ -1006,6 +1027,9 @@ async def delete_booth_endpoint(
 
     await revoke_booths_for_deleted_entity(db, level="booth", target_id=booth.id)
     await delete_booth(db, booth.id)
+    await db.commit()
+    await booths.remove_booth(event_slug, target_room_id, language_code)
+    await stop_transcription_worker(make_booth_id(event_slug, target_room_id, language_code))
     return {"status": "deleted"}
 
 

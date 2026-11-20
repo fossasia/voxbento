@@ -1271,6 +1271,7 @@ async def admin_room_setup_save(request: Request, event_id: int, room_id: int):
         result = await apply_plan(session, event, room, plan, catalog, live_booth_codes=live)
     # The session has committed: drop the old voice settings so AI text languages stop speaking now.
     invalidate_tts_config(room_id)
+    await _end_deleted_booths((event.slug, room_id, code) for code in result.removed_booths)
     query = {"updated": "1"}
     if result.kept_live_booths:
         query["kept_live"] = ",".join(result.kept_live_booths)
@@ -1521,6 +1522,7 @@ async def admin_delete_event(request: Request, event_id: int):
     """Delete an event by ID, returning 404 if missing or redirecting with an error alert on database failure."""
     try:
         async with get_session() as session:
+            deleted_booths = await _booth_keys(session, event_id=event_id)
             await revoke_booths_for_deleted_entity(session, level="event", target_id=event_id)
             deleted = await delete_event(session, event_id)
             if not deleted:
@@ -1533,6 +1535,7 @@ async def admin_delete_event(request: Request, event_id: int):
             url=management_url(request, "events/?error=delete_failed"),
             status_code=status.HTTP_303_SEE_OTHER,
         )
+    await _end_deleted_booths(deleted_booths)
     return safe_redirect(url=management_url(request, "events/"), status_code=status.HTTP_303_SEE_OTHER)
 
 
@@ -2375,8 +2378,10 @@ async def admin_delete_room(request: Request, event_id: int, room_id: int):
         room = await get_room_by_id(session, room_id)
         if room is None or room.event_id != event_id:
             raise HTTPException(status_code=404, detail="Room not found.")
+        deleted_booths = await _booth_keys(session, room_id=room_id)
         await revoke_booths_for_deleted_entity(session, level="room", target_id=room_id)
         await delete_room(session, room_id)
+    await _end_deleted_booths(deleted_booths)
     return safe_redirect(
         url=management_url(request, f"events/{event_id}/rooms/"), status_code=status.HTTP_303_SEE_OTHER
     )
@@ -2836,8 +2841,10 @@ async def admin_delete_booth(request: Request, event_id: int, room_id: int, boot
     """Delete an interpretation booth from a room."""
     async with get_session() as session:
         await booth_in_room(session, event_id, room_id, booth_id)
+        deleted_booths = await _booth_keys(session, booth_id=booth_id)
         await revoke_booths_for_deleted_entity(session, level="booth", target_id=booth_id)
         await delete_booth(session, booth_id)
+    await _end_deleted_booths(deleted_booths)
     return safe_redirect(
         url=management_url(request, f"events/{event_id}/rooms/{room_id}/booths/"),
         status_code=status.HTTP_303_SEE_OTHER,
@@ -3168,6 +3175,39 @@ async def booth_in_room(session, event_id: int, room_id: int, booth_id: int):
     if booth is None or booth.event_id != event_id or booth.room_id != room_id:
         raise HTTPException(status_code=404, detail="Booth not found.")
     return booth
+
+
+async def _booth_keys(
+    session: AsyncSession, *, booth_id: int | None = None, room_id: int | None = None, event_id: int | None = None
+) -> list[tuple[str, int, str]]:
+    """``(event slug, room id, language code)`` of the booths a delete removes, read before it runs."""
+    query = select(Event.slug, DBBooth.room_id, DBBooth.language_code).join(Event, Event.id == DBBooth.event_id)
+    if booth_id is not None:
+        query = query.where(DBBooth.id == booth_id)
+    elif room_id is not None:
+        query = query.where(DBBooth.room_id == room_id)
+    else:
+        # Deleting the event deletes its rooms, and with them every booth in those rooms.
+        event_rooms = select(Room.id).where(Room.event_id == event_id)
+        query = query.where((DBBooth.event_id == event_id) | DBBooth.room_id.in_(event_rooms))
+    rows = await session.execute(query)
+    return [(slug, room, code) for slug, room, code in rows.all()]
+
+
+async def _end_deleted_booths(keys: Iterable[tuple[str, int, str]]) -> None:
+    """Close the sockets of booths whose rows were just deleted, stop their captions and drop their live state.
+
+    The worker and the live state are in memory, not in the deleted rows. Left there, the worker keeps its
+    slot until a restart, and a booth added back with the same language comes back live with the old chat.
+    """
+    keys = list(keys)
+    # Clear every booth's live state before any worker's shutdown yields: a booth added back meanwhile keeps
+    # its own, and a stop cut short leaves no saved state behind to restore.
+    for event_slug, room_id, language_code in keys:
+        await manager.close_booth_sessions(make_booth_id(event_slug, room_id, language_code))
+        await booths.remove_booth(event_slug, room_id, language_code)
+    for event_slug, room_id, language_code in keys:
+        await stop_transcription_worker(make_booth_id(event_slug, room_id, language_code))
 
 
 def invalid_role_redirect(request: Request, path: str, role: str) -> RedirectResponse:
