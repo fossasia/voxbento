@@ -8,6 +8,7 @@ from datetime import datetime, timedelta, timezone
 import pytest
 from fakeredis import FakeAsyncRedis
 from redis.exceptions import ConnectionError as RedisConnectionError
+from sqlalchemy.exc import OperationalError
 from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine
 
 from portal import redis_queue
@@ -204,13 +205,17 @@ async def test_worker_falls_back_to_database_scans_when_redis_is_down(
 
 
 @pytest.mark.anyio
-async def test_worker_survives_processing_errors(redis: FakeAsyncRedis) -> None:
+@pytest.mark.parametrize(
+    "error",
+    [OperationalError("SELECT 1", {}, Exception("database is locked")), RedisConnectionError("down"), TimeoutError()],
+)
+async def test_worker_survives_recoverable_errors(redis: FakeAsyncRedis, error: Exception) -> None:
     calls = 0
 
     async def process_due() -> int:
         nonlocal calls
         calls += 1
-        raise RuntimeError("database unavailable")
+        raise error
 
     task = asyncio.create_task(
         redis_queue.run_worker(
@@ -288,3 +293,12 @@ async def test_failed_scan_is_retried_without_waiting_for_the_reconcile(redis: F
     task.cancel()
     await asyncio.gather(task, return_exceptions=True)
     assert calls == 2  # retried after the back-off, with Redis healthy and no new IDs
+
+
+@pytest.mark.anyio
+async def test_unexpected_errors_stop_the_worker(redis: FakeAsyncRedis) -> None:
+    async def process_due() -> int:
+        raise KeyError("a bug, not an outage")
+
+    with pytest.raises(KeyError):
+        await asyncio.wait_for(redis_queue.run_worker(redis_queue.EMAIL, process_due, wait_secs=0.02), timeout=2)

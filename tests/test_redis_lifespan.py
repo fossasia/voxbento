@@ -53,3 +53,21 @@ async def test_redis_workers_run_with_redis(monkeypatch: pytest.MonkeyPatch, sta
     monkeypatch.setattr(settings, "redis_url", "redis://test:6379/0")
     await _run_lifespan()
     assert started == {"redis_webhook_worker_loop", "redis_notification_worker_loop"}
+
+
+async def test_a_crashed_redis_worker_is_logged(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    monkeypatch.setattr(settings, "redis_url", "redis://test:6379/0")
+
+    async def crash() -> None:
+        raise KeyError("bug")
+
+    async def idle() -> None:
+        await asyncio.Event().wait()
+
+    monkeypatch.setattr("portal.webhooks.worker.redis_webhook_worker_loop", crash)
+    monkeypatch.setattr("portal.notifications.redis_notification_worker_loop", idle)
+    with caplog.at_level("ERROR", logger="portal.tasks"):
+        await _run_lifespan()
+    assert any("redis-webhook-worker" in record.getMessage() for record in caplog.records)

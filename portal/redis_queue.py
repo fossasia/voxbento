@@ -23,6 +23,7 @@ from datetime import datetime, timezone
 from redis.asyncio import Redis
 from redis.exceptions import RedisError
 from sqlalchemy import event
+from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import Session, SessionTransaction
 
@@ -43,6 +44,10 @@ OUTAGE_SCAN_SECS = 5.0
 WAIT_SECS = 1.0
 # IDs drained per wake-up; one database scan serves the whole burst.
 DRAIN_BATCH = 100
+
+# Failures a scan can recover from by trying again: the database or Redis being unreachable
+# or timing out. Anything else is a bug and stops the worker so it is noticed, not retried.
+RECOVERABLE_SCAN_ERRORS = (SQLAlchemyError, RedisError, OSError)
 
 _KEY_PREFIX = "vb:queue"
 _PENDING_INFO_KEY = "vb_redis_queue_pending"
@@ -232,10 +237,14 @@ async def run_worker(
 ) -> None:
     """Call ``process_due`` when IDs arrive, and on a slow timer as a safety net.
 
+    Recoverable failures (``RECOVERABLE_SCAN_ERRORS``) are retried; any other exception
+    propagates and ends the worker.
+
     ``process_due`` claims and processes one bounded batch of due rows from the database
     and returns how many it handled; it is called again until a batch finds none.
     """
     client = get_client()
+    scan_outage = OutageLog(logger, f"redis_queue {name} scan failed")
     last_scan = float("-inf")
     healthy = client is not None
     while True:
@@ -263,10 +272,10 @@ async def run_worker(
             # bounded batch at a time, yielding between batches so other tasks keep running.
             while await process_due():
                 await asyncio.sleep(0)
-        except asyncio.CancelledError:
-            raise
-        except Exception:  # noqa: BLE001 - the worker must keep running; rows stay in the database
-            logger.exception("redis_queue %s worker error", name)
+        except RECOVERABLE_SCAN_ERRORS:
+            scan_outage.failed()
             # Retry the scan after the back-off instead of waiting for the next reconcile.
             last_scan = float("-inf")
             await asyncio.sleep(outage_scan_secs)
+        else:
+            scan_outage.recovered()
