@@ -35,7 +35,13 @@ from portal.models import Event, Room
 from portal.outage_log import OutageLog
 from portal.transcription.process import audio_progress
 from portal.transcription.providers.base import ProviderConfig, ProviderEnum, get_api_key
-from portal.transcription.worker import active_workers, start_transcription_worker, stop_transcription_worker
+from portal.transcription.worker import (
+    ERROR_CODE_REVALIDATION_TIMEOUT,
+    ERROR_CODE_STOPPING_TIMEOUT,
+    active_workers,
+    start_transcription_worker,
+    stop_transcription_worker,
+)
 from portal.websockets.manager import broadcast_transcription
 
 logger = logging.getLogger(__name__)
@@ -721,8 +727,27 @@ async def reconcile_processing(
         room_id=room.id,
         restart_on_key_change=True,
     )
+    if started.status == "failed":
+        logger.warning(
+            "program_ingest transcription_start_failed room_id=%s booth_id=%s error_code=%s",
+            room.id,
+            booth_id,
+            started.error_code,
+        )
+        reason = (
+            "Transcription worker is stopping; retry shortly."
+            if started.error_code == ERROR_CODE_STOPPING_TIMEOUT
+            else (
+                "Timed out revalidating booth status; retry shortly."
+                if started.error_code == ERROR_CODE_REVALIDATION_TIMEOUT
+                else "Failed to start transcription worker."
+            )
+        )
+        current.state, current.reason = "degraded", reason
+        current.processing_state, current.processing_reason = current.state, current.reason
+        return
     current.worker_config = config
-    if started is True or current.worker_started_at is None:
+    if started.status == "started" or current.worker_started_at is None:
         # Read the clock again: replacing the old worker can take a while, and the grace period starts now.
         current.worker_started_at = time.monotonic()
     last_audio = audio_progress.get(booth_id)

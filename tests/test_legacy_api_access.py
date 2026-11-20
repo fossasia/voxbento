@@ -27,6 +27,7 @@ from portal.database import (
 )
 from portal.globals import booths
 from portal.models import DBBooth
+from portal.transcription.worker import TranscriptionStartResult
 from portal.utils import _require_access
 
 client = TestClient(app)
@@ -390,9 +391,15 @@ def booth_team(monkeypatch):
 
     async def record_start(*args, **kwargs):
         calls.append("start")
+        return TranscriptionStartResult(
+            status="started",
+            provider=kwargs.get("provider", "local"),
+            model=kwargs.get("model_size", "tiny"),
+        )
 
     async def record_stop(*args, **kwargs):
         calls.append("stop")
+        return True
 
     monkeypatch.setattr("portal.routers.api.start_transcription_worker", record_start)
     monkeypatch.setattr("portal.routers.api.stop_transcription_worker", record_stop)
@@ -578,6 +585,34 @@ def test_standby_interpreter_cannot_stop_live_transcription(booth_team):
 
         allowed = _stop(room_id, cookies=_user_cookies(user_ids, "interpreter"))
         assert allowed.status_code == 200, allowed.text
+        assert calls == ["stop"]
+
+
+def test_stop_transcription_worker_timeout_returns_503(booth_team, monkeypatch):
+    """When stop_transcription_worker returns False (timeout), the endpoint returns 503 with Retry-After, preserving auth."""
+    user_ids, room_id, _, calls = booth_team
+
+    async def record_stop_timeout(*args, **kwargs):
+        calls.append("stop")
+        return False
+
+    monkeypatch.setattr("portal.routers.api.stop_transcription_worker", record_stop_timeout)
+
+    with ExitStack() as stack:
+        live_id = _join_booth(stack, room_id, _user_cookies(user_ids, "interpreter"), "Live")
+        _join_booth(stack, room_id, _user_cookies(user_ids, "standby"), "Standby")
+
+        # 1. Authorization check remains intact: unauthorized standby is still 403 before stop is invoked
+        refused = _stop(room_id, cookies=_user_cookies(user_ids, "standby"), params={"participant_id": live_id})
+        assert refused.status_code == 403, refused.text
+        assert refused.json()["detail"] == "Only the live interpreter can stop transcription."
+        assert calls == []
+
+        # 2. Authorized interpreter calls stop, but worker stop times out -> 503 with Retry-After header
+        response = _stop(room_id, cookies=_user_cookies(user_ids, "interpreter"))
+        assert response.status_code == 503, response.text
+        assert response.headers.get("retry-after") == "2"
+        assert response.json()["detail"] == "Transcription worker is still stopping; retry shortly"
         assert calls == ["stop"]
 
 

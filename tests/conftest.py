@@ -40,8 +40,8 @@ def _reset_shared_http_client():
     async def _dummy_loop():
         pass
 
-    async def _dummy_enqueue(event_type: str, payload: dict):
-        pass
+    async def _dummy_enqueue(event_type: str, payload: dict) -> bool:
+        return True
 
     portal.webhooks.worker.webhook_worker_loop = _dummy_loop
     portal.webhooks.worker.enqueue_webhook = _dummy_enqueue

@@ -2773,6 +2773,7 @@ class TestBoothCRUD:
 
         async def start(*_args, **_kwargs):
             calls.append("start")
+            return SimpleNamespace(status="started")
 
         async def broadcast(*_args, **_kwargs):
             pass
@@ -2875,6 +2876,7 @@ class TestBoothCRUD:
             # ffmpeg could not be launched after the start call returned: the page must not say "restarted".
             async def start_then_fail(*_args, **_kwargs):
                 calls.append("start")
+                return SimpleNamespace(status="started")
 
             async def not_started(_bid):
                 return False
@@ -2884,6 +2886,24 @@ class TestBoothCRUD:
             location, page = await save(c, enabled=True)
             assert location == f"{url}?saved=captions&worker=failed#captions"
             assert "The caption worker could not be started" in page
+
+            # Start returns failed (e.g. stopping_timeout): wait_for_worker_start must NOT be called.
+            wait_called = False
+
+            async def should_not_be_called(_bid):
+                nonlocal wait_called
+                wait_called = True
+                return True
+
+            async def start_stopping_timeout(*_args, **_kwargs):
+                return SimpleNamespace(status="failed", error_code="stopping_timeout")
+
+            monkeypatch.setattr(admin, "start_transcription_worker", start_stopping_timeout)
+            monkeypatch.setattr(admin, "wait_for_worker_start", should_not_be_called)
+            location, page = await save(c, enabled=True)
+            assert location == f"{url}?saved=captions&worker=failed#captions"
+            assert "The caption worker could not be started" in page
+            assert wait_called is False
 
     @pytest.mark.anyio
     async def test_captions_can_be_turned_off_when_the_saved_service_lost_its_key(self, admin_cookie, seed_event):
@@ -2924,6 +2944,625 @@ class TestBoothCRUD:
         assert saved.transcription_enabled is False
         assert saved.transcription_provider == "deepgram"
         assert saved.transcription_model == "nova-2"
+
+    @pytest.mark.anyio
+    async def test_captions_can_be_turned_off_with_invalid_saved_key_ciphertext(
+        self, admin_cookie, seed_event, monkeypatch
+    ):
+        """When disabling captions, saved provider key must not be decrypted, allowing off even if ciphertext is invalid (#1110)."""
+        from types import SimpleNamespace
+
+        import portal.crypto as crypto
+        import portal.routers.admin as admin
+        from portal.database import get_session
+        from portal.models import Event
+
+        event, room, booth = seed_event
+        url = f"/admin/events/{event.id}/rooms/{room.id}/booths/{booth.id}/"
+
+        # 1. Configures a previously saved provider key with invalid ciphertext
+        await _update_row(
+            Event,
+            event.id,
+            transcription_api_enabled=True,
+            encrypted_deepgram_api_key="invalid-corrupted-ciphertext-token",
+        )
+        await _update_row(
+            type(booth),
+            booth.id,
+            transcription_enabled=True,
+            transcription_provider="deepgram",
+            transcription_model="nova-2",
+        )
+
+        stop_called = False
+
+        async def mock_stop(bid, *args, **kwargs):
+            nonlocal stop_called
+            stop_called = True
+            return True
+
+        monkeypatch.setattr(admin, "stop_transcription_worker", mock_stop)
+        monkeypatch.setattr(
+            admin.booths,
+            "get_booth_sync",
+            lambda _bid: SimpleNamespace(active_interpreter_id="p1", ingest_status="connected", participants={}),
+        )
+
+        decrypt_called = False
+        orig_decrypt = crypto.decrypt_val
+
+        def tracking_decrypt(val):
+            nonlocal decrypt_called
+            decrypt_called = True
+            return orig_decrypt(val)
+
+        monkeypatch.setattr(crypto, "decrypt_val", tracking_decrypt)
+
+        # 2. Submits the admin settings request with captions disabled
+        data = {"transcription_provider": "deepgram", "transcription_model": "nova-2"}
+        async with _client() as c:
+            resp = await c.post(
+                f"{url}transcription-settings",
+                data=data,
+                cookies=admin_cookie,
+                follow_redirects=False,
+            )
+
+        # 3. Verifies the request succeeds
+        assert resp.status_code == 303
+        assert resp.headers["location"] == f"{url}?saved=captions&worker=stopped#captions"
+
+        # 4. Verifies captions are disabled and the settings are committed
+        async with get_session() as sess:
+            saved = await sess.get(type(booth), booth.id)
+        assert saved.transcription_enabled is False
+        assert saved.transcription_provider == "deepgram"
+        assert saved.transcription_model == "nova-2"
+
+        # 5. Verifies the worker-stop operation is reached
+        assert stop_called is True
+
+        # 6. Verifies no attempt is made to decrypt the invalid saved key
+        assert decrypt_called is False
+
+    @pytest.mark.anyio
+    async def test_admin_transcription_settings_revalidates_active_prevents_registration(
+        self, admin_cookie, seed_event, monkeypatch
+    ):
+        """When an admin saves caption settings while booth is live, but persisted state fails revalidation,
+        no replacement worker is registered and redirect indicates superseded (#1110)."""
+        from contextlib import asynccontextmanager
+        from types import SimpleNamespace
+        from unittest.mock import MagicMock
+
+        import portal.routers.admin as admin
+        from portal.booth_identity import make_booth_id
+        from portal.transcription.worker import active_workers
+
+        event, room, booth = seed_event
+        url = f"/admin/events/{event.id}/rooms/{room.id}/booths/{booth.id}/"
+
+        await _update_row(
+            type(booth),
+            booth.id,
+            transcription_enabled=True,
+            transcription_provider="local",
+            transcription_model="tiny",
+        )
+
+        bid = make_booth_id(event.slug, room.id, booth.language_code)
+        monkeypatch.setattr(
+            admin.booths,
+            "get_booth_sync",
+            lambda _bid: SimpleNamespace(active_interpreter_id="p1", ingest_status="connected", participants={}),
+        )
+
+        old_worker = MagicMock()
+        old_worker.state = admin.State.STOPPING
+        monkeypatch.setitem(active_workers, bid, old_worker)
+
+        stop_called = False
+
+        async def mock_stop(target_bid, *args, **kwargs):
+            revalidate = kwargs.get("revalidate")
+            if revalidate is not None:
+                import inspect
+
+                is_active = revalidate()
+                if inspect.isawaitable(is_active):
+                    is_active = await is_active
+                if not is_active:
+                    raise admin.WorkerSupersededError("superseded")
+            nonlocal stop_called
+            stop_called = True
+            active_workers.pop(target_bid, None)
+            return True
+
+        monkeypatch.setattr(admin, "stop_transcription_worker", mock_stop)
+
+        real_get_session = admin.get_session
+        reval_called = False
+
+        @asynccontextmanager
+        async def racing_get_session():
+            async with real_get_session() as s:
+                orig_scalar = s.scalar
+
+                async def mock_scalar(stmt, *args, **kwargs):
+                    nonlocal reval_called
+                    if "events.deleted_at IS NULL" in str(stmt):
+                        reval_called = True
+                        return None
+                    return await orig_scalar(stmt, *args, **kwargs)
+
+                s.scalar = mock_scalar
+                yield s
+
+        monkeypatch.setattr(admin, "get_session", racing_get_session)
+
+        data = {
+            "transcription_enabled": "true",
+            "transcription_provider": "local",
+            "transcription_model": "base",
+        }
+        async with _client() as c:
+            resp = await c.post(
+                f"{url}transcription-settings",
+                data=data,
+                cookies=admin_cookie,
+                follow_redirects=False,
+            )
+
+        assert resp.status_code == 303
+        assert "worker=superseded" in resp.headers["location"]
+        assert active_workers[bid] is old_worker
+        assert stop_called is False
+        assert reval_called is True
+
+    @pytest.mark.anyio
+    async def test_admin_transcription_settings_interleaved_save_does_not_stop_newer_worker(
+        self, admin_cookie, seed_event, monkeypatch
+    ):
+        """Interleaved save test (#1110):
+        1. Request A saves settings ('base').
+        2. Request A completes its initial revalidation check.
+        3. Pause A immediately before its destructive stop.
+        4. Request B saves newer settings ('small') and starts a worker.
+        5. Resume A.
+        6. Verify A cannot stop B's worker.
+        7. Verify the database retains B's settings ('small').
+        8. Verify the active worker remains registered and running.
+        """
+        import asyncio
+        from types import SimpleNamespace
+
+        import portal.routers.admin as admin
+        from portal.booth_identity import make_booth_id
+        from portal.database import get_session
+        from portal.transcription.worker import (
+            State,
+            active_workers,
+        )
+
+        event, room, booth = seed_event
+        url = f"/admin/events/{event.id}/rooms/{room.id}/booths/{booth.id}/"
+        bid = make_booth_id(event.slug, room.id, booth.language_code)
+
+        # Start with booth live and an initial worker registered
+        monkeypatch.setattr(
+            admin.booths,
+            "get_booth_sync",
+            lambda _bid: SimpleNamespace(active_interpreter_id="p1", ingest_status="connected", participants={}),
+        )
+
+        worker_b_stopped = False
+
+        class FakeSession(SimpleNamespace):
+            def stop(self):
+                nonlocal worker_b_stopped
+                worker_b_stopped = True
+                self.state = State.STOPPING
+
+            async def wait_until_stopped(self):
+                return None
+
+        a_revalidated = asyncio.Event()
+        b_started = asyncio.Event()
+
+        real_stop = admin.stop_transcription_worker
+        first_call = True
+
+        async def synchronizing_stop(target_bid, *args, **kwargs):
+            nonlocal first_call
+            if first_call:
+                first_call = False
+                a_revalidated.set()
+                await b_started.wait()
+            return await real_stop(target_bid, *args, **kwargs)
+
+        monkeypatch.setattr(admin, "stop_transcription_worker", synchronizing_stop)
+
+        async def run_request_a():
+            async with _client() as c:
+                return await c.post(
+                    f"{url}transcription-settings",
+                    data={
+                        "transcription_enabled": "true",
+                        "transcription_provider": "local",
+                        "transcription_model": "base",
+                    },
+                    cookies=admin_cookie,
+                    follow_redirects=False,
+                )
+
+        task_a = asyncio.create_task(run_request_a())
+
+        try:
+            await asyncio.wait_for(a_revalidated.wait(), timeout=5.0)
+        except TimeoutError:
+            if task_a.done() and task_a.exception():
+                raise AssertionError(f"Request A failed before stop: {task_a.exception()}") from task_a.exception()
+            raise AssertionError("Timed out waiting for Request A to reach stop")
+
+        # Request B commits newer settings ('small') and starts a worker
+        await _update_row(type(booth), booth.id, transcription_model="small")
+        worker_b = FakeSession(
+            session_id="session_b",
+            state=State.RUNNING,
+            provider_name="local",
+            model_size="small",
+            config=None,
+        )
+        monkeypatch.setitem(active_workers, bid, worker_b)
+
+        # Resume Request A
+        b_started.set()
+        resp_a = await task_a
+
+        # 1. Verify A was rejected as superseded
+        assert resp_a.status_code == 303
+        assert "worker=superseded" in resp_a.headers["location"]
+
+        # 2. Verify A did not stop B's worker
+        assert worker_b_stopped is False
+        assert worker_b.state == State.RUNNING
+
+        # 3. Verify database retains B's settings ('small')
+        async with get_session() as sess:
+            saved = await sess.get(type(booth), booth.id)
+        assert saved.transcription_model == "small"
+
+        # 4. Verify B's worker remains registered and running in active_workers
+        assert active_workers.get(bid) is worker_b
+        assert active_workers[bid].state == State.RUNNING
+
+    @pytest.mark.anyio
+    async def test_admin_transcription_settings_retry_replaces_mismatched_running_worker(
+        self, admin_cookie, seed_event, monkeypatch
+    ):
+        """When an earlier save updated DB to 'base' but worker stop timed out leaving 'tiny' running,
+        an identical retry with 'base' detects the worker config mismatch and replaces it (#1110)."""
+        from types import SimpleNamespace
+        from unittest.mock import AsyncMock
+
+        import portal.routers.admin as admin
+        from portal.booth_identity import make_booth_id
+        from portal.transcription.worker import State, active_workers
+
+        event, room, booth = seed_event
+        url = f"/admin/events/{event.id}/rooms/{room.id}/booths/{booth.id}/"
+        bid = make_booth_id(event.slug, room.id, booth.language_code)
+
+        # Database already has 'base'
+        await _update_row(
+            type(booth),
+            booth.id,
+            transcription_enabled=True,
+            transcription_provider="local",
+            transcription_model="base",
+        )
+
+        monkeypatch.setattr(
+            admin.booths,
+            "get_booth_sync",
+            lambda _bid: SimpleNamespace(active_interpreter_id="p1", ingest_status="connected", participants={}),
+        )
+
+        # Running worker still has 'tiny'
+        old_worker_stopped = False
+
+        class TinyWorker(SimpleNamespace):
+            def stop(self):
+                nonlocal old_worker_stopped
+                old_worker_stopped = True
+                self.state = State.STOPPING
+
+            async def wait_until_stopped(self):
+                return None
+
+        tiny_worker = TinyWorker(
+            session_id="old_tiny",
+            state=State.RUNNING,
+            provider_name="local",
+            model_size="tiny",
+            config=None,
+        )
+        monkeypatch.setitem(active_workers, bid, tiny_worker)
+
+        start_called = False
+
+        async def mock_start(*args, **kwargs):
+            nonlocal start_called
+            start_called = True
+            return SimpleNamespace(status="started")
+
+        monkeypatch.setattr(admin, "start_transcription_worker", mock_start)
+        monkeypatch.setattr(admin, "wait_for_worker_start", AsyncMock(return_value=True))
+
+        async with _client() as c:
+            resp = await c.post(
+                f"{url}transcription-settings",
+                data={
+                    "transcription_enabled": "true",
+                    "transcription_provider": "local",
+                    "transcription_model": "base",
+                },
+                cookies=admin_cookie,
+                follow_redirects=False,
+            )
+
+        assert resp.status_code == 303
+        assert "worker=restarted" in resp.headers["location"]
+        assert old_worker_stopped is True
+        assert start_called is True
+
+    @pytest.mark.anyio
+    async def test_admin_transcription_settings_revalidation_timeout_surfaces_as_failed(
+        self, admin_cookie, seed_event, monkeypatch
+    ):
+        """When revalidation times out, error is surfaced as worker=failed, NOT worker=superseded (#1110)."""
+        from types import SimpleNamespace
+
+        import portal.routers.admin as admin
+        from portal.booth_identity import make_booth_id
+        from portal.transcription.worker import (
+            State,
+            active_workers,
+        )
+
+        event, room, booth = seed_event
+        url = f"/admin/events/{event.id}/rooms/{room.id}/booths/{booth.id}/"
+        bid = make_booth_id(event.slug, room.id, booth.language_code)
+
+        monkeypatch.setattr(
+            admin.booths,
+            "get_booth_sync",
+            lambda _bid: SimpleNamespace(active_interpreter_id="p1", ingest_status="connected", participants={}),
+        )
+
+        worker = SimpleNamespace(
+            session_id="s1",
+            state=State.RUNNING,
+            provider_name="local",
+            model_size="tiny",
+            config=None,
+        )
+        monkeypatch.setitem(active_workers, bid, worker)
+
+        # Simulate revalidation timing out
+        async def mock_timeout_stop(target_bid, *args, **kwargs):
+            raise admin.WorkerRevalidationTimeoutError(f"Timed out revalidating booth status for {target_bid}")
+
+        monkeypatch.setattr(admin, "stop_transcription_worker", mock_timeout_stop)
+
+        async with _client() as c:
+            resp = await c.post(
+                f"{url}transcription-settings",
+                data={
+                    "transcription_enabled": "true",
+                    "transcription_provider": "local",
+                    "transcription_model": "base",
+                },
+                cookies=admin_cookie,
+                follow_redirects=False,
+            )
+
+        assert resp.status_code == 303
+        assert "worker=failed" in resp.headers["location"]
+        assert "worker=superseded" not in resp.headers["location"]
+
+    @pytest.mark.anyio
+    async def test_admin_transcription_settings_revalidation_error_surfaces_as_failed(
+        self, admin_cookie, seed_event, monkeypatch
+    ):
+        """When revalidation experiences an unexpected error, surfaced as worker=failed (#1110)."""
+        from types import SimpleNamespace
+
+        import portal.routers.admin as admin
+        from portal.booth_identity import make_booth_id
+        from portal.transcription.worker import (
+            State,
+            active_workers,
+        )
+
+        event, room, booth = seed_event
+        url = f"/admin/events/{event.id}/rooms/{room.id}/booths/{booth.id}/"
+        bid = make_booth_id(event.slug, room.id, booth.language_code)
+
+        monkeypatch.setattr(
+            admin.booths,
+            "get_booth_sync",
+            lambda _bid: SimpleNamespace(active_interpreter_id="p1", ingest_status="connected", participants={}),
+        )
+
+        worker = SimpleNamespace(
+            session_id="s1",
+            state=State.RUNNING,
+            provider_name="local",
+            model_size="tiny",
+            config=None,
+        )
+        monkeypatch.setitem(active_workers, bid, worker)
+
+        async def mock_error_stop(target_bid, *args, **kwargs):
+            raise admin.WorkerRevalidationError("Database connection lost")
+
+        monkeypatch.setattr(admin, "stop_transcription_worker", mock_error_stop)
+
+        async with _client() as c:
+            resp = await c.post(
+                f"{url}transcription-settings",
+                data={
+                    "transcription_enabled": "true",
+                    "transcription_provider": "local",
+                    "transcription_model": "base",
+                },
+                cookies=admin_cookie,
+                follow_redirects=False,
+            )
+
+        assert resp.status_code == 303
+        assert "worker=failed" in resp.headers["location"]
+        assert "worker=superseded" not in resp.headers["location"]
+
+
+    @pytest.mark.anyio
+    async def test_admin_transcription_settings_disabling_captions_stops_worker_during_overload(
+        self, admin_cookie, seed_event, monkeypatch
+    ):
+        """Disabling captions stops the active worker even when ingest_status is overloaded (#1110)."""
+        from types import SimpleNamespace
+
+        import portal.routers.admin as admin
+        from portal.database import get_session
+        from portal.models import DBBooth
+
+        event, room, booth = seed_event
+        url = f"/admin/events/{event.id}/rooms/{room.id}/booths/{booth.id}/"
+        bid = admin.make_booth_id(event.slug, room.id, booth.language_code)
+
+        await _update_row(
+            DBBooth,
+            booth.id,
+            transcription_enabled=True,
+            transcription_provider="local",
+            transcription_model="tiny",
+        )
+
+        monkeypatch.setitem(
+            admin.active_workers,
+            bid,
+            SimpleNamespace(session_id="s1", state=admin.State.RUNNING, provider_name="local", model_size="tiny"),
+        )
+        monkeypatch.setattr(
+            admin.booths,
+            "get_booth_sync",
+            lambda _bid: SimpleNamespace(active_interpreter_id="p1", ingest_status="overloaded", participants={}),
+        )
+
+        stopped_called = False
+
+        async def mock_stop(bid, *args, **kwargs):
+            nonlocal stopped_called
+            stopped_called = True
+            return True
+
+        monkeypatch.setattr(admin, "stop_transcription_worker", mock_stop)
+
+        async with _client() as c:
+            resp = await c.post(
+                f"{url}transcription-settings",
+                data={
+                    "transcription_provider": "local",
+                    "transcription_model": "tiny",
+                },
+                cookies=admin_cookie,
+                follow_redirects=False,
+            )
+
+        assert resp.status_code == 303
+        assert "worker=stopped" in resp.headers["location"]
+        assert stopped_called is True
+
+        async with get_session() as sess:
+            updated = await sess.get(DBBooth, booth.id)
+            assert updated.transcription_enabled is False
+
+    @pytest.mark.anyio
+    async def test_admin_transcription_settings_recovers_overloaded_worker_with_new_settings(
+        self, admin_cookie, seed_event, monkeypatch
+    ):
+        """Saving new settings while booth is overloaded but interpreter is publishing restarts the worker (#1110)."""
+        from types import SimpleNamespace
+        from unittest.mock import AsyncMock
+
+        import portal.routers.admin as admin
+        from portal.models import DBBooth
+
+        event, room, booth = seed_event
+        url = f"/admin/events/{event.id}/rooms/{room.id}/booths/{booth.id}/"
+        bid = admin.make_booth_id(event.slug, room.id, booth.language_code)
+
+        await _update_row(
+            DBBooth,
+            booth.id,
+            transcription_enabled=True,
+            transcription_provider="local",
+            transcription_model="tiny",
+        )
+
+        p = SimpleNamespace(participant_id="p1", ingest_connected=True)
+        monkeypatch.setattr(
+            admin.booths,
+            "get_booth_sync",
+            lambda _bid: SimpleNamespace(active_interpreter_id="p1", ingest_status="overloaded", participants={"p1": p}),
+        )
+
+        old_worker = SimpleNamespace(
+            session_id="s1",
+            state=admin.State.RUNNING,
+            provider_name="local",
+            model_size="tiny",
+            config=None,
+        )
+        monkeypatch.setitem(admin.active_workers, bid, old_worker)
+
+        stopped_called = False
+        started_called = False
+
+        async def mock_stop(target_bid, *args, **kwargs):
+            nonlocal stopped_called
+            stopped_called = True
+            admin.active_workers.pop(target_bid, None)
+            return True
+
+        async def mock_start(*args, **kwargs):
+            nonlocal started_called
+            started_called = True
+            return SimpleNamespace(status="started")
+
+        monkeypatch.setattr(admin, "stop_transcription_worker", mock_stop)
+        monkeypatch.setattr(admin, "start_transcription_worker", mock_start)
+        monkeypatch.setattr(admin, "wait_for_worker_start", AsyncMock(return_value=True))
+
+        async with _client() as c:
+            resp = await c.post(
+                f"{url}transcription-settings",
+                data={
+                    "transcription_enabled": "true",
+                    "transcription_provider": "local",
+                    "transcription_model": "base",
+                },
+                cookies=admin_cookie,
+                follow_redirects=False,
+            )
+
+        assert resp.status_code == 303
+        assert "worker=restarted" in resp.headers["location"]
+        assert stopped_called is True
+        assert started_called is True
+
 
     @pytest.mark.anyio
     async def test_captions_on_with_the_event_switch_off_returns_a_notice(self, admin_cookie, seed_event):

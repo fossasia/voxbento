@@ -183,6 +183,9 @@ from portal.transcription import ALLOWED_MODELS, ProviderConfig, ProviderEnum, g
 from portal.transcription.worker import (
     State,
     WorkerCapacityError,
+    WorkerRevalidationError,
+    WorkerRevalidationTimeoutError,
+    WorkerSupersededError,
     active_workers,
     start_transcription_worker,
     stop_transcription_worker,
@@ -2458,6 +2461,8 @@ BOOTH_WORKER_NOTICES = {
     "stopped": "The caption worker was stopped.",
     "kept": "Nothing changed, so the caption worker kept running.",
     "off": "Captions stay off.",
+    "stopping": "The previous caption worker is still stopping. Try again shortly.",
+    "superseded": "A newer change replaced this one, so no worker was started.",
     "failed": "The caption worker could not be started, so there are no live captions right now. Try saving again in a moment.",
 }
 BOOTH_ERROR_NOTICES = {
@@ -2969,8 +2974,8 @@ async def admin_transcription_settings(
         db_booth = await booth_in_room(session, event_id, room_id, booth_id)
         try:
             provider_enum = ProviderEnum(transcription_provider)
-        except ValueError:
-            raise HTTPException(status_code=400, detail="Invalid transcription provider")
+        except ValueError as e:
+            raise HTTPException(status_code=400, detail="Invalid transcription provider") from e
         if transcription_model not in ALLOWED_MODELS.get(provider_enum, set()):
             # The page keeps a saved model selectable even after it stops being supported. Turning captions
             # off must still save with it; turning them on with it gets a notice on the Captions tab.
@@ -3017,55 +3022,139 @@ async def admin_transcription_settings(
         db_booth.transcription_enabled = bool(transcription_enabled)
         db_booth.transcription_provider = transcription_provider
         db_booth.transcription_model = transcription_model
-        await session.flush()
-        bid = make_booth_id(event.slug, db_booth.room_id, db_booth.language_code)
-        state = booths.get_booth_sync(bid)
-        # Live means the stream is published (as on the booth page). An interpreter who only opened the
-        # booth, or clicked Off Live, is still "active" but nothing is publishing for a worker to read.
-        is_live = state is not None and state.ingest_status == "connected"
-        worker = ""
-        if is_live:
-            worker = "kept"
-            if not transcription_enabled:
-                await stop_transcription_worker(bid)
-                await broadcast_transcription(bid, "")
-                worker = "stopped" if old_enabled else "off"
-            elif (
-                old_enabled != transcription_enabled
-                or old_provider != transcription_provider
-                or old_model != transcription_model
-                # A start that failed earlier left the settings saved but no worker (or a dead one still in the
-                # registry): saving again retries it. One that is shutting down is about to disappear, so it is
-                # replaced too: stop_transcription_worker waits for it to finish, then a new one starts.
-                or bid not in active_workers
-                or active_workers[bid].state in (State.STOPPING, State.STOPPED)
-            ):
-                await stop_transcription_worker(bid)
-                await broadcast_transcription(bid, "")
-                api_key = get_api_key(event, ProviderEnum(transcription_provider))
-                config = ProviderConfig(api_key=api_key)
-                await asyncio.sleep(0.1)
-                try:
-                    await start_transcription_worker(
-                        event.slug,
-                        db_booth.language_code,
-                        bid,
-                        broadcast_transcription,
-                        transcription_provider,
-                        transcription_model,
-                        config,
-                        room_id=db_booth.room_id,
+        booth_pk = db_booth.id
+        expected_enabled = bool(transcription_enabled)
+        expected_provider = transcription_provider
+        expected_model = transcription_model
+        event_slug = event.slug
+        booth_room_id = db_booth.room_id
+        language_code = db_booth.language_code
+        api_key = (
+            get_api_key(event, provider_enum)
+            if (transcription_enabled and provider_enum != ProviderEnum.LOCAL)
+            else None
+        )
+        await session.commit()
+
+    bid = make_booth_id(event_slug, booth_room_id, language_code)
+    state = booths.get_booth_sync(bid)
+    # Live means the stream is published (as on the booth page). An interpreter who only opened the
+    # booth, or clicked Off Live, is still "active" but nothing is publishing for a worker to read.
+    # An overloaded booth where an interpreter is still publishing audio is also eligible for recovery.
+    is_live = state is not None and (
+        state.ingest_status == "connected"
+        or (
+            state.ingest_status == "overloaded"
+            and any(p.ingest_connected for p in state.participants.values())
+        )
+    )
+    has_worker = bid in active_workers
+    worker = ""
+    if not transcription_enabled:
+        if is_live or has_worker:
+            async def _revalidate_disabled() -> bool:
+                async with get_session() as s:
+                    return (
+                        await s.scalar(
+                            select(DBBooth.id).where(
+                                DBBooth.id == booth_pk,
+                                DBBooth.transcription_enabled.is_(False),
+                            )
+                        )
+                    ) is not None
+
+            try:
+                stopped = await stop_transcription_worker(bid, revalidate=_revalidate_disabled)
+                if stopped is False:
+                    worker = "stopping"
+                else:
+                    await broadcast_transcription(bid, "")
+                    worker = "stopped" if old_enabled else "off"
+            except WorkerSupersededError:
+                worker = "superseded"
+            except (WorkerRevalidationTimeoutError, WorkerRevalidationError):
+                worker = "failed"
+    elif is_live:
+        worker = "kept"
+        worker_session = active_workers.get(bid)
+        needs_replacement = (
+            old_enabled != transcription_enabled
+            or old_provider != transcription_provider
+            or old_model != transcription_model
+            # A start that failed earlier left the settings saved but no worker (or a dead one still in the
+            # registry): saving again retries it. One that is shutting down is about to disappear, so it is
+            # replaced too: stop_transcription_worker waits for it to finish, then a new one starts.
+            or worker_session is None
+            or worker_session.state in (State.STOPPING, State.STOPPED)
+            or (
+                getattr(worker_session, "provider_name", None) is not None
+                and worker_session.provider_name != transcription_provider
+            )
+            or (
+                getattr(worker_session, "model_size", None) is not None
+                and worker_session.model_size != transcription_model
+            )
+        )
+        if needs_replacement:
+            async def _revalidate_active() -> bool:
+                async with get_session() as s:
+                    stmt = (
+                        select(DBBooth.id)
+                        .join(Event, Event.id == DBBooth.event_id)
+                        .where(
+                            DBBooth.id == booth_pk,
+                            DBBooth.room_id == booth_room_id,
+                            DBBooth.language_code == language_code,
+                            Event.deleted_at.is_(None),
+                            DBBooth.transcription_enabled.is_(expected_enabled),
+                            DBBooth.transcription_provider == expected_provider,
+                            DBBooth.transcription_model == expected_model,
+                        )
                     )
-                    # The start call only schedules the worker; ffmpeg is launched right after, so wait for that.
-                    worker = "restarted" if await wait_for_worker_start(bid) else "failed"
-                except WorkerCapacityError:
-                    logger.warning("Could not start caption worker for %s", bid, exc_info=True)
-                    worker = "failed"
-                except Exception:
-                    # Deliberately broad (#1155): the old worker is already stopped and the settings are saved,
-                    # so any start failure must show the notice, not a 500 that rolls the settings back.
-                    logger.exception("Caption worker for %s failed to start", bid)
-                    worker = "failed"
+                    if expected_provider.lower() != "local" and expected_enabled:
+                        stmt = stmt.where(Event.transcription_api_enabled.is_(True))
+                    return (await s.scalar(stmt)) is not None
+
+            try:
+                stopped = await stop_transcription_worker(bid, revalidate=_revalidate_active)
+                if stopped is False:
+                    worker = "stopping"
+                else:
+                    await broadcast_transcription(bid, "")
+                    config = ProviderConfig(api_key=api_key)
+                    await asyncio.sleep(0.1)
+
+                    try:
+                        start_res = await start_transcription_worker(
+                            event_slug,
+                            language_code,
+                            bid,
+                            broadcast_transcription,
+                            transcription_provider,
+                            transcription_model,
+                            config,
+                            room_id=booth_room_id,
+                            revalidate_active=_revalidate_active,
+                        )
+                        # The start call only schedules the worker; ffmpeg is launched right after, so wait for that.
+                        if start_res.status in ("started", "already_running") and await wait_for_worker_start(bid):
+                            worker = "restarted"
+                        elif start_res.error_code == "booth_deleted":
+                            worker = "superseded"
+                        else:
+                            worker = "failed"
+                    except WorkerCapacityError:
+                        logger.warning("Could not start caption worker for %s", bid, exc_info=True)
+                        worker = "failed"
+                    except Exception:
+                        # Deliberately broad (#1155): the old worker is already stopped and the settings are saved,
+                        # so any start failure must show the notice, not a 500 that rolls the settings back.
+                        logger.exception("Caption worker for %s failed to start", bid)
+                        worker = "failed"
+            except WorkerSupersededError:
+                worker = "superseded"
+            except (WorkerRevalidationTimeoutError, WorkerRevalidationError):
+                worker = "failed"
     return safe_redirect(
         url=_booth_saved_url(request, event_id, room_id, booth_id, "captions", worker),
         status_code=status.HTTP_303_SEE_OTHER,
