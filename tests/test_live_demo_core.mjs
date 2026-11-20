@@ -85,6 +85,7 @@ run('clock and end messages', () => {
   assert.equal(formatClock(-3), '0:00');
   assert.match(doneMessage('time_limit', 120), /120-second/);
   assert.equal(doneMessage('stopped', 120), '');
+  assert.match(doneMessage('daily_limit', 120), /for today/);
 });
 
 run('term ranges are whole words, case-insensitive, longest first', () => {

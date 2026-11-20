@@ -207,6 +207,8 @@ on the next reconciliation pass. Saving the same key again keeps the worker runn
 Rooms of a deleted event are skipped by the reconciler, which then stops the room's floor
 worker and its relay, disconnects its encoder and releases its reservation, so the room no longer
 counts against `PROGRAM_INGEST_MAX_ROOMS`. A deleted event no longer authorizes new publishes.
+A room the admin pages delete outright, alone or with its event, has its floor worker stopped
+the same way.
 These steps do not wait for the MediaMTX path list, so they also run while it is unavailable.
 
 States: disabled, waiting, receiving (audio decoder starting), processing (PCM
