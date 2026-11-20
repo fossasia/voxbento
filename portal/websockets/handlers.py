@@ -180,7 +180,8 @@ async def ws_booth(websocket: WebSocket, booth_id: str) -> None:
                 continue
 
             msg_type = data.get("type", "")
-            handler = BOOTH_HANDLERS.get(msg_type)
+            # A non-string type (list, object) is unhashable and must not reach the lookup.
+            handler = BOOTH_HANDLERS.get(msg_type) if isinstance(msg_type, str) else None
             if handler is None:
                 await websocket.send_text(
                     json.dumps({"type": "booth:error", "message": f"Unknown message type: {msg_type}"})

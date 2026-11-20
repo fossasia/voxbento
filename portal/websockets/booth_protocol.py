@@ -25,6 +25,8 @@ from portal.roles import INTERPRETER, can_set_active
 from portal.tasks import track_task
 from portal.websockets.manager import REASON_SUPERSEDED, WS_CLOSE_SUPERSEDED, Session, manager
 
+logger = logging.getLogger(__name__)
+
 
 async def handle_join(ws: WebSocket, session: Session, data: dict) -> None:
     """Handle a client joining a booth session.
@@ -177,10 +179,14 @@ async def release_participant(session: Session, *, immediate: bool) -> None:
             session.booth_id, participant_id, session.language, session.channel_id, connection_id=session.connection_id
         )
     else:
-        state = await booths.disconnect_participant(session.booth_id, participant_id, session.connection_id)
-        if state is None:
-            return  # another socket holds them now
-        schedule_participant_expiry(session.booth_id, participant_id, session.connection_id, grace)
+        async def start_grace(_state: dict) -> None:
+            # Started at commit, so a slow subscriber cannot stretch the grace period.
+            schedule_participant_expiry(session.booth_id, participant_id, session.connection_id, grace)
+
+        # Does nothing when another socket holds the participant now.
+        await booths.disconnect_participant(
+            session.booth_id, participant_id, session.connection_id, before_publish=start_grace
+        )
 
 
 async def handle_chat(ws: WebSocket, session: Session, data: dict) -> None:
@@ -201,7 +207,7 @@ async def handle_set_active(ws: WebSocket, session: Session, data: dict) -> None
         await ws.send_text(json.dumps({"type": "booth:error", "message": "Join the booth first."}))
         return
     target_id = data.get("target_id")
-    if not target_id:
+    if not isinstance(target_id, str) or not target_id:
         await ws.send_text(json.dumps({"type": "booth:error", "message": "Missing target_id."}))
         return
     try:
@@ -277,20 +283,26 @@ async def handle_set_broadcast_unlocked(ws: WebSocket, session: Session, data: d
     if not isinstance(unlocked, bool):
         await ws.send_text(json.dumps({"type": "booth:error", "message": "unlocked must be a boolean."}))
         return
-    try:
-        await booths.set_broadcast_unlocked(session.booth_id, unlocked, session.language, session.channel_id)
+    async def stop_transcription(_state: dict) -> None:
         # Locking the booth must immediately stop everything tied to it: the
         # transcription worker (which pulls audio independently of any browser)
         # is torn down here so captions stop even if the interpreter's client is
-        # unresponsive. Publisher mic/ingest state is already reset inside
-        # set_broadcast_unlocked.
-        if not unlocked:
-            try:
-                from portal.transcription.worker import stop_transcription_worker
+        # unresponsive. It runs before the state is delivered, so a slow socket
+        # cannot keep captions flowing. Publisher mic/ingest state is already
+        # reset inside set_broadcast_unlocked.
+        if unlocked:
+            return
+        try:
+            from portal.transcription.worker import stop_transcription_worker
 
-                await stop_transcription_worker(session.booth_id)
-            except Exception as e:
-                logging.getLogger(__name__).warning(f"Failed to stop transcription on lock: {e}")
+            await stop_transcription_worker(session.booth_id)
+        except Exception as e:
+            logger.warning("Failed to stop transcription on lock: %s", e)
+
+    try:
+        await booths.set_broadcast_unlocked(
+            session.booth_id, unlocked, session.language, session.channel_id, before_publish=stop_transcription
+        )
     except Exception as exc:
         await ws.send_text(json.dumps({"type": "booth:error", "message": str(exc)}))
 

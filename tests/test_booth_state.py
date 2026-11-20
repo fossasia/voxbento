@@ -1,9 +1,12 @@
 from __future__ import annotations
 
+import inspect
+
 import pytest
 
 from portal.auth import booth_session_key, create_participant_token, create_token, create_user_token, decode_token
 from portal.booth_state import BoothRegistry
+from portal.websockets.booth_protocol import BOOTH_HANDLERS
 
 
 async def join(registry, name, role="interpreter"):
@@ -966,6 +969,7 @@ async def test_mutators_publish_one_event_each_and_failures_publish_nothing():
     assert len(events) == 3
 
     message, _ = await registry.add_chat_message("hall-1-fr", active.participant_id, "hi", "French", "c")
+    assert len(events) == 4
     assert events[-1].chat_message == message
 
 
@@ -973,14 +977,18 @@ async def test_mutators_publish_one_event_each_and_failures_publish_nothing():
 async def test_failing_subscriber_does_not_undo_the_change_or_block_others():
     registry = BoothRegistry()
 
-    async def broken(_event):
+    calls = []
+
+    async def broken(event):
+        calls.append(event)
         raise RuntimeError("socket gone")
 
-    events = await _recorded_events(registry)
     registry.subscribe(broken)
     registry.subscribe(broken)  # subscribing twice is harmless
+    events = await _recorded_events(registry)  # registered after the failing subscriber
     participant = await join(registry, "Ana")
 
+    assert len(calls) == 1
     assert len(events) == 1
     state = await registry.get_booth("hall-1-fr")
     assert state["active_interpreter_id"] == participant.participant_id
@@ -1020,8 +1028,7 @@ async def test_mark_ingest_overloaded_publishes_and_ignores_unknown_booths():
 
 
 def test_every_booth_client_message_has_a_handler():
-    from portal.websockets.booth_protocol import BOOTH_HANDLERS
-
+    assert all(inspect.iscoroutinefunction(handler) for handler in BOOTH_HANDLERS.values())
     assert set(BOOTH_HANDLERS) == {
         "booth:join",
         "booth:leave",
@@ -1034,3 +1041,39 @@ def test_every_booth_client_message_has_a_handler():
         "booth:accept-handoff",
         "booth:cancel-handoff",
     }
+
+
+@pytest.mark.anyio
+async def test_idle_handoff_cancel_publishes_nothing():
+    registry = BoothRegistry()
+    participant = await join(registry, "Ana")
+    events = await _recorded_events(registry)
+
+    state = await registry.cancel_handoff("hall-1-fr", participant.participant_id, "French", "c")
+
+    assert state["handoff_state"] == "idle"
+    assert events == []
+
+
+@pytest.mark.anyio
+async def test_disconnect_and_lock_callbacks_run_before_delivery():
+    registry = BoothRegistry()
+    order = []
+
+    async def record(_event):
+        order.append("delivered")
+
+    participant, _ = await registry.join_participant(
+        "hall-1-fr", "Ana", "interpreter", "French", "c", connection_id="sock"
+    )
+    registry.subscribe(record)
+
+    async def started(_state):
+        order.append("callback")
+
+    await registry.disconnect_participant("hall-1-fr", participant.participant_id, "sock", before_publish=started)
+    await registry.set_broadcast_unlocked("hall-1-fr", False, "French", "c", before_publish=started)
+    # Another socket now holds the record: nothing to commit, so no callback or event.
+    assert await registry.disconnect_participant("hall-1-fr", participant.participant_id, "other") is None
+
+    assert order == ["callback", "delivered", "callback", "delivered"]
