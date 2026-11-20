@@ -484,6 +484,13 @@ class TranslationWorker:
             return
 
         recorded = False
+        start_lag = latency = None
+
+        def record(kind: str) -> None:
+            nonlocal recorded
+            translation_metrics.record(provider, model, room.id, kind, start_lag=start_lag, latency=latency)
+            recorded = True
+
         try:
             # Resolved before waiting for an engine slot: the glossary is optional context, and a
             # slow lookup must not hold a slot while other rooms wait.
@@ -510,6 +517,7 @@ class TranslationWorker:
             # Enforce a strict timeout on inference (12s for cloud, 60s for local). Checked before
             # waiting for a slot, so a download never queues segments behind it.
             if _inference_timeout(provider, model) is None:
+                record(FAILED)
                 await self._drop_while_downloading(room.id, lang_code, booth_id_str, model, uuid_segment_id, seq, text)
                 return
 
@@ -519,6 +527,7 @@ class TranslationWorker:
                 # Checked again: the download may have started while this segment waited.
                 timeout_val = _inference_timeout(provider, model)
                 if timeout_val is None:
+                    record(FAILED)
                     await self._drop_while_downloading(
                         room.id, lang_code, booth_id_str, model, uuid_segment_id, seq, text
                     )
@@ -560,16 +569,8 @@ class TranslationWorker:
                         call.cancel()
                         job.keep_slot_until(call)
 
-            translation_metrics.record(
-                provider,
-                model,
-                room.id,
-                FAILED if translated_text is None else TRANSLATED,
-                start_lag=start_lag,
-                latency=latency,
-            )
-            recorded = True
             if translated_text is None:
+                record(FAILED)
                 await tts_manager.broadcast_bundle(
                     room.id, lang_code, booth_id_str, b"", uuid_segment_id, seq, text, "", "pipeline_failed"
                 )
@@ -582,6 +583,7 @@ class TranslationWorker:
                 await tts_manager.broadcast_bundle(
                     room.id, lang_code, booth_id_str, b"", uuid_segment_id, seq, text, "", None, audio_pending=False
                 )
+                record(TRANSLATED)
                 return
 
             # Save to DB using an independent session to avoid concurrent transaction crashes
@@ -618,6 +620,7 @@ class TranslationWorker:
                         **timing_metadata(),
                     },
                 )
+            record(TRANSLATED)
             if booth_id_str.endswith("-floor"):
                 # Non-blocking: queues the translation for the room's YouTube caption track, if it asks for this language.
                 timing = segment_timing.get()
@@ -660,7 +663,7 @@ class TranslationWorker:
                 f"[{booth_id_str}] Translation failed for {lang_code}: {e} (api_key is None? {api_key is None})"
             )
             if not recorded:
-                translation_metrics.record(provider, model, room.id, FAILED)
+                record(FAILED)
             await tts_manager.broadcast_bundle(
                 room.id, lang_code, booth_id_str, b"", uuid_segment_id, seq, text, "", "pipeline_failed"
             )

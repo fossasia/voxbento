@@ -716,7 +716,11 @@ async def mission_control_grid(request: Request, event_slug: str, user=Depends(r
             event_booths.append(state)
         # One section per room the person may control, even before it has booths, with what
         # the floor-caption control needs. Program ingest starts captions on its own.
-        translating_rooms = {db_b.room_id for db_b in db_booths if db_b.translation_enabled}
+        translating_rooms = set(
+            await session.scalars(
+                select(DBBooth.room_id).where(DBBooth.event_id == event.id, DBBooth.translation_enabled.is_(True))
+            )
+        )
         mc_rooms = [
             {
                 "id": room.id,

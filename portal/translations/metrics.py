@@ -7,7 +7,6 @@ from collections.abc import Callable, Iterable
 from dataclasses import dataclass
 
 WINDOW_SECONDS = 300.0
-MAX_OUTCOMES = 20_000
 FAILING_MIN_FAILURES = 2
 
 TRANSLATED = "translated"
@@ -77,12 +76,11 @@ class TranslationMetrics:
         self,
         *,
         window: float = WINDOW_SECONDS,
-        max_outcomes: int = MAX_OUTCOMES,
         clock: Callable[[], float] = time.monotonic,
     ) -> None:
         self.window = window
         self._clock = clock
-        self._outcomes: deque[Outcome] = deque(maxlen=max_outcomes)
+        self._outcomes: deque[Outcome] = deque()
 
     def record(
         self,
@@ -95,12 +93,16 @@ class TranslationMetrics:
         latency: float | None = None,
     ) -> None:
         self._outcomes.append(Outcome(self._clock(), provider, model, room_id, kind, start_lag, latency))
+        self._forget_old()
 
     def recent(self) -> list[Outcome]:
+        self._forget_old()
+        return list(self._outcomes)
+
+    def _forget_old(self) -> None:
         cutoff = self._clock() - self.window
         while self._outcomes and self._outcomes[0].at < cutoff:
             self._outcomes.popleft()
-        return list(self._outcomes)
 
     def by_model(self) -> list[ModelStats]:
         groups: dict[tuple[str, str], list[Outcome]] = {}

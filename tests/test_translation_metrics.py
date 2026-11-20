@@ -114,12 +114,16 @@ def test_room_health_counts_only_that_room():
     assert (two.state, two.translated, two.failed, two.stale) == (FAILING, 0, 2, 0)
 
 
-def test_the_oldest_outcomes_make_room_for_new_ones():
-    metrics = TranslationMetrics(max_outcomes=3, clock=Clock())
-    for kind in (FAILED, FAILED, TRANSLATED, TRANSLATED, TRANSLATED):
-        metrics.record("local", "nllb", 1, kind)
+def test_every_outcome_in_the_window_is_kept_and_older_ones_are_let_go_while_recording():
+    clock = Clock()
+    metrics = TranslationMetrics(window=60, clock=clock)
+    for _ in range(30_000):
+        metrics.record("local", "nllb", 1, TRANSLATED)
+    assert metrics.room(1, None).translated == 30_000
 
-    assert metrics.room(1, None).failed == 0
+    clock.now += 61
+    metrics.record("local", "nllb", 1, FAILED)
+    assert len(metrics._outcomes) == 1
 
 
 # ── Through the worker ──
@@ -128,14 +132,16 @@ def test_the_oldest_outcomes_make_room_for_new_ones():
 class Engine(TranslationEngine):
     kind = EngineKind.MT_API
 
-    def __init__(self, answer: str | None = "", *, hold: asyncio.Event | None = None) -> None:
+    def __init__(self, answer: str | None = "", *, hold: asyncio.Event | None = None, delay: float = 0.0) -> None:
         self.max_concurrency = 1
         self.answer = answer
         self.hold = hold
+        self.delay = delay
 
     async def translate_batch(self, source, targets, texts, context, *, model, api_key=None):
         if self.hold is not None:
             await self.hold.wait()
+        await asyncio.sleep(self.delay)
         return [[self.answer for _ in targets] for _ in texts]
 
 
@@ -177,14 +183,46 @@ def translate(provider: str, room_id: int = 1, lang: str = "fr"):
 
 @pytest.mark.anyio
 async def test_a_translated_segment_records_its_start_lag_and_inference_time(monkeypatch, metrics):
-    monkeypatch.setitem(worker_module.ENGINES, "metrics-ok", Engine(""))
+    monkeypatch.setitem(worker_module.ENGINES, "metrics-ok", Engine("", delay=0.1))
+    monkeypatch.setattr(settings, "translation_max_lag_seconds", 0)
 
-    await translate("metrics-ok")
+    await asyncio.gather(translate("metrics-ok", 1, "fr"), translate("metrics-ok", 1, "de"))
+
+    first, second = metrics.recent()
+    assert (first.provider, first.model, first.room_id, first.kind) == ("metrics-ok", "m", 1, TRANSLATED)
+    assert first.start_lag < 0.05
+    assert 0.1 <= first.latency < 0.5
+    assert second.kind == TRANSLATED
+    assert 0.1 <= second.start_lag < 0.5
+    assert 0.1 <= second.latency < 0.5
+
+
+@pytest.mark.anyio
+async def test_a_translation_that_cannot_be_saved_is_a_failure_with_its_timings(monkeypatch, metrics):
+    monkeypatch.setitem(worker_module.ENGINES, "metrics-unsaved", Engine("Bonjour", delay=0.05))
+
+    def broken_session():
+        raise RuntimeError("database is gone")
+
+    monkeypatch.setattr(worker_module, "get_session", broken_session)
+
+    await translate("metrics-unsaved")
 
     [outcome] = metrics.recent()
-    assert (outcome.provider, outcome.model, outcome.room_id, outcome.kind) == ("metrics-ok", "m", 1, TRANSLATED)
-    assert outcome.start_lag is not None and outcome.start_lag >= 0
-    assert outcome.latency is not None and outcome.latency >= 0
+    assert outcome.kind == FAILED
+    assert outcome.latency >= 0.05
+    assert outcome.start_lag is not None
+
+
+@pytest.mark.anyio
+async def test_a_segment_dropped_while_the_model_downloads_is_a_failure(monkeypatch, metrics):
+    monkeypatch.setitem(worker_module.ENGINES, "metrics-downloading", Engine(""))
+    monkeypatch.setattr(worker_module, "_inference_timeout", lambda provider, model: None)
+
+    await translate("metrics-downloading")
+
+    [outcome] = metrics.recent()
+    assert (outcome.kind, outcome.latency) == (FAILED, None)
 
 
 @pytest.mark.anyio
