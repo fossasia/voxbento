@@ -1,14 +1,16 @@
-"""One scheduler per translation engine, shared by every room that uses it (#1188).
+"""Bounded, fair access to a translation engine, shared by every room that uses it (#1188).
 
 An engine serves a fixed number of calls at once (CPU threads for a local model, a configured
 limit for an API). The scheduler never has more than that in flight against it. Calls beyond
 it wait here, where rooms take turns, and then the languages within a room, so one busy room
-with many languages cannot hold the engine while a small room waits behind it.
+with many languages cannot hold the engine while a small room waits behind it. The worker
+decides what one scheduler covers: a local model, the self-hosted server, or one event's key
+for a hosted provider.
 
 Each channel (one source stream translated into one language, e.g. ``"<booth>:fr"``) keeps the
 limits the worker had before: at most ``per_channel`` calls running and ``queue_limit`` jobs
 admitted at once. A job is admitted when its segment arrives and counts against its channel
-until its call is done.
+until the worker closes it, once the result is saved and delivered.
 """
 
 from __future__ import annotations
@@ -126,6 +128,10 @@ class TranslationScheduler:
         self.capacity = capacity
         self._dispatch()
 
+    def idle(self) -> bool:
+        """Nothing admitted, waiting or running: the scheduler can be dropped without losing anything."""
+        return not self._rooms
+
     def admitted(self, room: Hashable, channel: str) -> int:
         """Jobs ``channel`` holds right now, waiting or running."""
         state = self._rooms.get(room, {}).get(channel)
@@ -195,8 +201,32 @@ class TranslationScheduler:
             channels.move_to_end(channel)
 
     def _next_turn(self) -> tuple[Hashable, OrderedDict[str, _Channel], str, _Channel] | None:
+        """The next job to run: the first room in turn order holding less than its fair share.
+
+        A room's fair share is the capacity split evenly between the rooms using the engine or
+        waiting for it. Running calls are never stopped, so a room whose calls hang can still
+        hold slots it took while it was alone; but once others wait, every slot that frees goes
+        to a room below its share first. A slot no such room can use goes to the next room in
+        turn, so slots never sit idle while someone waits.
+        """
+        rooms = []
         for room, channels in self._rooms.items():
-            for channel, state in channels.items():
-                if state.waiters and state.running < self.per_channel:
-                    return room, channels, channel, state
+            held = sum(state.running for state in channels.values())
+            ready = next(
+                (
+                    (channel, state)
+                    for channel, state in channels.items()
+                    if state.waiters and state.running < self.per_channel
+                ),
+                None,
+            )
+            if held or ready or any(state.waiters for state in channels.values()):
+                rooms.append((room, channels, held, ready))
+        if not rooms:
+            return None
+        fair_share = -(-self.capacity // len(rooms))
+        for below_share_only in (True, False):
+            for room, channels, held, ready in rooms:
+                if ready is not None and (held < fair_share or not below_share_only):
+                    return room, channels, *ready
         return None

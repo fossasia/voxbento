@@ -296,9 +296,37 @@ def test_limits_must_be_positive(arguments):
 # ── Sizing each engine's scheduler ──
 
 
-def test_the_local_model_is_scheduled_one_call_per_ct2_thread():
+def test_each_local_model_is_scheduled_one_call_per_ct2_thread():
+    """Each loaded model has its own CTranslate2 threads, so each model has its own scheduler."""
     assert LocalProvider.max_concurrency == CT2_INTER_THREADS
-    assert worker_module.scheduler_for("local").capacity == CT2_INTER_THREADS
+    key = worker_module._scheduler_key
+    assert key("local", "nllb-200-distilled-600M", None) != key("local", "nllb-200-1.3B", None)
+    assert worker_module.scheduler_for("local", "nllb-200-distilled-600M").capacity == CT2_INTER_THREADS
+
+
+def test_each_hosted_api_key_has_its_own_scheduler():
+    """Each event's key has its own quota, so a failing key only holds up its own event."""
+    key = worker_module._scheduler_key
+    first = key("openai", "gpt-4o-mini", "sk-first-event")
+    assert first != key("openai", "gpt-4o-mini", "sk-second-event")
+    assert first == key("openai", "gpt-4o", "sk-first-event")  # the key decides, not the model
+    # The schedulers keep no copy of a key.
+    assert "sk-first-event" not in first[1]
+    # The self-hosted server is one server, whichever key reaches it.
+    assert key("self_hosted", "llama3.2", "a") == key("self_hosted", "llama3.2", "b")
+
+
+def test_idle_schedulers_are_dropped_when_a_new_one_is_made(monkeypatch):
+    monkeypatch.setattr(worker_module, "SCHEDULERS", {})
+    busy = worker_module.scheduler_for("openai", "m", "busy-key")
+    job = busy.admit("room", "room:fr")
+    worker_module.scheduler_for("openai", "m", "idle-key")
+
+    worker_module.scheduler_for("openai", "m", "third-key")
+
+    assert busy in worker_module.SCHEDULERS.values()
+    assert len(worker_module.SCHEDULERS) == 2  # the idle one is gone
+    job.close()
 
 
 def test_hosted_and_self_hosted_limits_come_from_the_settings(monkeypatch):
@@ -438,14 +466,25 @@ async def test_a_timed_out_call_keeps_its_slot_until_the_engine_is_done(monkeypa
     assert worker_module.scheduler_for("stuck").running == 0
 
 
-async def test_a_segment_waiting_when_the_download_starts_is_dropped_at_its_turn(monkeypatch):
+async def test_a_segment_for_a_downloading_model_is_dropped_after_its_slot_is_free(monkeypatch):
+    """Checked once the segment has its turn; listeners are told after the slot is given back."""
     engine = SlowEngine(max_concurrency=1)
     monkeypatch.setitem(worker_module.ENGINES, "slow", engine)
-    # The model is ready when the segment arrives and downloading by the time it gets a slot.
-    answers = iter([60.0, None])
-    monkeypatch.setattr(worker_module, "_inference_timeout", lambda provider, model: next(answers))
-    bundle = AsyncMock()
+    checks = []
+
+    def downloading(provider, model):
+        checks.append(worker_module.scheduler_for("slow").running)
+        return None
+
+    monkeypatch.setattr(worker_module, "_inference_timeout", downloading)
+    running_when_told = []
+
+    async def bundle(*args, **kwargs):
+        running_when_told.append(worker_module.scheduler_for("slow").running)
+
     monkeypatch.setattr("portal.websockets.manager.tts_manager.broadcast_bundle", bundle)
+    told = AsyncMock(side_effect=bundle)
+    monkeypatch.setattr("portal.websockets.manager.tts_manager.broadcast_bundle", told)
 
     await TranslationWorker(MagicMock())._translate_and_broadcast(
         SimpleNamespace(id=1), fake_room(1), "slow", "m", None, "fr", "French", "en", "English",
@@ -453,8 +492,18 @@ async def test_a_segment_waiting_when_the_download_starts_is_dropped_at_its_turn
     )
 
     assert engine.calls == []
-    assert bundle.await_args.args[8] == "model_downloading"
+    assert checks == [1]  # one check, made while holding the slot
+    assert told.await_args.args[8] == "model_downloading"
+    assert running_when_told == [0]
     assert worker_module.scheduler_for("slow").admitted(1, "event-1-floor:fr") == 0
+
+
+def test_a_loaded_local_model_skips_the_download_lookup(monkeypatch):
+    monkeypatch.setattr(worker_module.local_provider, "is_model_loaded", lambda model: True)
+    lookup = MagicMock(side_effect=AssertionError("no lookup on disk for a loaded model"))
+    monkeypatch.setattr(worker_module.local_provider, "get_download_progress", lookup)
+
+    assert worker_module._inference_timeout("local", "nllb-200-distilled-600M") == 60.0
 
 
 async def test_a_segment_leaves_its_language_queue_before_its_speech_is_made(monkeypatch):
@@ -548,3 +597,141 @@ async def test_a_segment_counts_in_its_language_queue_until_its_text_is_delivere
     await task
     assert scheduler.admitted(1, "event-1-floor:fr") == 0
     assert bundle.await_count == 2
+
+
+# ── A room whose calls hang (maintainer review) ──
+
+
+async def test_a_room_holding_more_than_its_share_lets_a_waiting_room_go_first():
+    """Once a second room waits, every slot that frees goes to it until both hold their share."""
+    scheduler = TranslationScheduler(4, per_channel=4)
+    recorder = Recorder(scheduler)
+    hanging = [recorder.start("busy", "busy:fr") for _ in range(4)]
+    await settle()
+    more_busy = [recorder.start("busy", "busy:fr") for _ in range(2)]
+    small = [recorder.start("small", "small:th") for _ in range(2)]
+    await settle()
+    assert scheduler.running == 4
+
+    # Two of the busy room's calls end: both slots go to the small room, though the busy
+    # room has waited longer and is first in turn.
+    for event in recorder.release[("busy", "busy:fr")][:2]:
+        event.set()
+    await settle()
+    assert recorder.order[4:] == [("small", "small:th"), ("small", "small:th")]
+
+    await recorder.finish_all([*hanging, *more_busy, *small])
+
+
+async def test_spare_slots_still_go_to_a_room_above_its_share():
+    """The share only decides who goes first: no slot sits idle while a room waits."""
+    scheduler = TranslationScheduler(4, per_channel=4)
+    recorder = Recorder(scheduler)
+    small = recorder.start("small", "small:th")
+    busy = [recorder.start("busy", "busy:fr") for _ in range(4)]
+    await settle()
+
+    # Two rooms, so each one's share is 2; the small room needs only 1, so busy gets 3.
+    assert scheduler.running == 4
+    assert recorder.order.count(("busy", "busy:fr")) == 3
+
+    await recorder.finish_all([small, *busy])
+
+
+class ModelEngine(SlowEngine):
+    """Like a local model: one call at a time per model, and the calls wait until released."""
+
+    def __init__(self) -> None:
+        super().__init__(max_concurrency=1)
+        self.release = asyncio.Event()
+
+    async def translate_batch(self, source, targets, texts, context, *, model, api_key=None):
+        self.in_flight += 1
+        self.peak = max(self.peak, self.in_flight)
+        self.calls.append(model)
+        try:
+            await self.release.wait()
+        finally:
+            self.in_flight -= 1
+        return [["" for _ in targets] for _ in texts]
+
+
+async def test_rooms_on_different_local_models_translate_at_the_same_time(monkeypatch):
+    engine = ModelEngine()
+    monkeypatch.setitem(worker_module.ENGINES, "local", engine)
+    monkeypatch.setattr(worker_module, "_inference_timeout", lambda provider, model: 5.0)
+    monkeypatch.setattr("portal.websockets.manager.tts_manager.broadcast_bundle", AsyncMock())
+    worker = TranslationWorker(MagicMock())
+
+    def translate(room_id: int, model: str):
+        return worker._translate_and_broadcast(
+            SimpleNamespace(id=1), fake_room(room_id), "local", model, None, "fr", "French", "en", "English",
+            1, "Hello", f"event-{room_id}-floor", "uuid", 1,
+        )
+
+    tasks = [asyncio.create_task(translate(1, "model-a")), asyncio.create_task(translate(2, "model-b"))]
+    await settle()
+    assert sorted(engine.calls) == ["model-a", "model-b"]
+    assert engine.peak == 2
+
+    engine.release.set()
+    await asyncio.gather(*tasks)
+
+
+async def test_an_event_with_a_stuck_api_key_does_not_hold_up_another_event(monkeypatch):
+    stuck = asyncio.Event()
+
+    class KeyedEngine(SlowEngine):
+        async def translate_batch(self, source, targets, texts, context, *, model, api_key=None):
+            self.calls.append(api_key)
+            if api_key == "stuck-key":
+                await stuck.wait()
+            return [["" for _ in targets] for _ in texts]
+
+    engine = KeyedEngine(max_concurrency=1)
+    monkeypatch.setitem(worker_module.ENGINES, "keyed", engine)
+    monkeypatch.setattr("portal.websockets.manager.tts_manager.broadcast_bundle", AsyncMock())
+    worker = TranslationWorker(MagicMock())
+
+    def translate(room_id: int, key: str):
+        return worker._translate_and_broadcast(
+            SimpleNamespace(id=room_id), fake_room(room_id), "keyed", "m", key, "fr", "French", "en", "English",
+            1, "Hello", f"event-{room_id}-floor", "uuid", 1,
+        )
+
+    blocked = asyncio.create_task(translate(1, "stuck-key"))
+    await settle()
+    # The other event's call goes straight to its own key, though the engine limit is one.
+    await asyncio.wait_for(translate(2, "good-key"), timeout=5)
+    assert engine.calls == ["stuck-key", "good-key"]
+
+    stuck.set()
+    await blocked
+
+
+async def test_the_live_demo_waits_for_the_local_models_slot(monkeypatch):
+    from portal import live_demo
+
+    model = settings.live_demo_translation_model
+    calls = []
+
+    class FakeTranslator:
+        async def translate_batch(self, source, targets, texts, context, *, model, api_key=None):
+            calls.append(model)
+            return [[f"{texts[0]} ({target.code})" for target in targets]]
+
+    monkeypatch.setattr(live_demo, "_translator", lambda: FakeTranslator())
+    request = SimpleNamespace(source=SimpleNamespace(code="en", name="English"), glossary=())
+    targets = [SimpleNamespace(code="fr", name="French")]
+
+    # A booth call holds the model's only slot.
+    booth = worker_module.scheduler_for("local", model).admit("room", "room:fr")
+    await booth.__aenter__()
+    demo = asyncio.create_task(live_demo._local_translate("Hello", request, targets))
+    await settle()
+    assert calls == []
+
+    booth.close()
+    assert await asyncio.wait_for(demo, timeout=5) == {"fr": "Hello (fr)"}
+    assert calls == [model]
+    assert worker_module.scheduler_for("local", model).idle()

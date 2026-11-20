@@ -159,7 +159,7 @@ class ModelEntry:
     last_used: float
 
 
-#: Translations one loaded model runs at once. The scheduler sends no more than this (#1188).
+#: Translations one loaded model runs at once. Each model's scheduler sends no more than this (#1188).
 CT2_INTER_THREADS = 1
 
 _loaded_models = {}
@@ -271,6 +271,9 @@ async def _in_thread(func, /, *args):
     try:
         return await asyncio.shield(work)
     except asyncio.CancelledError:
+        # A second cancel while waiting here (shutdown, or a caller cancelling again) interrupts
+        # the wait: the call then ends, and its slot is freed, while the thread still runs. That
+        # is acceptable at shutdown, the only place it is expected.
         await asyncio.wait([work])
         raise
 
@@ -279,7 +282,8 @@ class LocalProvider(TranslationProvider, TranslationEngine):
     """NLLB through CTranslate2, in the portal process."""
 
     kind = EngineKind.CT2_SEQ2SEQ
-    #: One loaded model per process, and it runs ``CT2_INTER_THREADS`` translations at a time.
+    #: Each loaded model runs ``CT2_INTER_THREADS`` translations at a time. Several models can be
+    #: loaded at once, so the worker gives each model its own scheduler with this limit.
     max_concurrency = CT2_INTER_THREADS
 
     #: Set once the operator has been told the interpretation settings do not apply here.
