@@ -600,3 +600,17 @@ async def test_removing_booths_is_refused_whole_when_one_is_live():
     assert await registry.remove_idle_booths(EVENT, ROOM, ["de", "fr"]) is None
     assert registry.get_booth_sync(f"{EVENT}-{ROOM}-de") is None
     assert registry.get_booth_sync(f"{EVENT}-{ROOM}-fr") is None
+
+
+@pytest.mark.anyio
+async def test_deleting_a_booth_refuses_a_ticket_issued_during_reconnect_grace(media):
+    """A participant kept for the reconnect grace cannot start a new session once the booth is deleted."""
+    client, (active, _), _, _, _ = media
+    reply = await request_ticket(active)
+    await booths.disconnect_participant(BOOTH_ID, active, "Active-socket")
+    assert active in participant_ids()
+
+    await manager.close_booth_sessions(BOOTH_ID)
+
+    assert active in participant_ids()  # the grace itself is unchanged
+    assert await publish(client, token=reply["ticket"], id=str(uuid4())) == 401

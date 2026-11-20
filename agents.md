@@ -199,7 +199,9 @@ The ticket is only checked when the session starts, so the hook also records the
 When that interpreter is removed (access revoked, `booth:leave`, reconnect grace expired) the portal kicks that session by
 id, so a newer publisher on the path is untouched; Mission Control Stop and booth deletion kick the path's current source.
 A socket that only drops keeps its audio for `BOOTH_RECONNECT_GRACE_SECONDS`. Kicks are best effort and run after the
-booth state change, before its broadcast: a MediaMTX failure is logged and never blocks revocation.
+booth state change, before its broadcast: a MediaMTX failure is logged and never blocks revocation. Session records are
+in memory only: after a portal restart, revocation cannot kick a session opened before the restart (Stop and booth deletion
+still end the path's current source).
 
 Caption feed: `/ws/captions/{booth_id}` receives `caption`, `translated_caption` and public `booth:state`. `ws_captions` validates query JWTs: listener tokens are event-scoped, participant tokens are booth-scoped, and user tokens require a currently active account. Without a query token, events with a listener join code require that code, an active user session, or a scoped invite. Code attempts share a bounded pre-verification budget across listener/overlay HTTP, caption WS and TTS WS paths (`portal/join_code_limit.py`); excess caption guesses close with 1008, and excess TTS guesses are refused like any other TTS authorization failure. The audio-delay poll clears a listener code cookie that no longer matches, so tabs left open across a code regenerate do not spend the budget on every poll. Events without a join code retain public caption access with the anonymous connection cap. Rejections are accepted then closed with 4001 (missing/invalid credentials) or 4003 (scope mismatch), so browsers can distinguish them from transport failures. `booth:state` carries only `booth_id`, `event_slug`, `room_id`, `language_code`, `broadcast_unlocked` and `ingest_status`, never participants or booth chat. Overlay reconnects obtain a fresh listener token through `/overlay/.../session`, which rechecks the account/code and channel.
 

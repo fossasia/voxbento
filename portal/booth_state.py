@@ -877,6 +877,18 @@ class BoothRegistry:
             booth = self._booths.get(booth_id)
             return booth.as_public_dict() if booth is not None else None
 
+    def lock_broadcast_sync(self, booth_id: str) -> None:
+        """Stop the booth's broadcast at once, without awaiting the lock.
+
+        Booth deletion calls this before it awaits anything, so a publish ticket
+        issued just before (e.g. to a participant in reconnect grace) is refused.
+        Safe without the lock: nothing here awaits, so no other coroutine runs meanwhile.
+        """
+        booth = self._booths.get(booth_id)
+        if booth is not None and booth.broadcast_unlocked:
+            booth.broadcast_unlocked = False
+            self._changed(booth)
+
     def get_booth_sync(self, booth_id: str) -> Booth | None:
         """Return the raw Booth dataclass without locking.
 

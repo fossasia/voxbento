@@ -310,8 +310,11 @@ class ConnectionManager:
     ) -> None:
         """Revoke authorization and disconnect all active sockets in a booth (e.g. booth deletion).
 
-        Nobody may publish to the booth afterwards, so its MediaMTX source is ended too.
+        Nobody may publish to the booth afterwards, so its broadcast is stopped before
+        anything is awaited (refusing any outstanding publish ticket) and its MediaMTX
+        source is ended too.
         """
+        booths.lock_broadcast_sync(booth_id)
         self._allowed_cache.pop(booth_id, None)
         room_sockets = list(self._rooms.get(booth_id, set()))
         for ws in room_sockets:
