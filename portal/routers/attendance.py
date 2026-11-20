@@ -55,12 +55,13 @@ async def _load(event_id: int) -> _EventAttendance:
         event = await session.get(Event, event_id)
         if event is None or event.deleted_at is not None:
             raise HTTPException(status_code=404, detail="Event not found.")
+        now = datetime.now(tz=timezone.utc)
+        pending = booths.attendance.pending_visits(event.slug)
         result = await session.execute(
             select(InterpreterAttendance).where(InterpreterAttendance.event_id == event_id)
         )
         db_rows = list(result.scalars())
-        now = datetime.now(tz=timezone.utc)
-        rows = rows_for_event(db_rows, booths.attendance.open_visits(event.slug), now)
+        rows = rows_for_event(db_rows, pending, now)
 
         user_ids = {row.user_id for row in rows if row.user_id is not None}
         users: dict[int, tuple[str, str]] = {}

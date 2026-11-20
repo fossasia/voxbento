@@ -154,6 +154,10 @@ class AttendanceTracker:
     def open_visits(self, event_slug: str) -> list[Visit]:
         return [visit for visit in self._open.values() if visit.event_slug == event_slug]
 
+    def pending_visits(self, event_slug: str) -> list[Visit]:
+        """Visits in memory (open or closed awaiting flush) for *event_slug*."""
+        return [visit for visit in list(self._open.values()) + list(self._closed) if visit.event_slug == event_slug]
+
     def _set_interpreting(self, visit: Visit, interpreting: bool, now: datetime) -> None:
         if interpreting and visit.interpreting_since is None:
             visit.interpreting_since = now
@@ -343,7 +347,7 @@ class AttendanceRow:
     interpreting_seconds: float
 
 
-def rows_for_event(db_rows: Iterable, open_visits: Iterable[Visit], now: datetime) -> list[AttendanceRow]:
+def rows_for_event(db_rows: Iterable, pending_visits: Iterable[Visit], now: datetime) -> list[AttendanceRow]:
     """Saved visits, with live visits replacing their (up to a minute old) saved copy."""
     rows: dict[str, AttendanceRow] = {}
     for row in db_rows:
@@ -359,7 +363,8 @@ def rows_for_event(db_rows: Iterable, open_visits: Iterable[Visit], now: datetim
             left_at=_aware(row.left_at or row.last_seen_at),
             interpreting_seconds=row.interpreting_seconds,
         )
-    for visit in open_visits:
+    for visit in pending_visits:
+        end = visit.left_at or now
         rows[visit.id] = AttendanceRow(
             id=visit.id,
             room_id=visit.room_id,
@@ -368,9 +373,9 @@ def rows_for_event(db_rows: Iterable, open_visits: Iterable[Visit], now: datetim
             invite_public_id=visit.invite_public_id,
             display_name=visit.display_name,
             role=visit.role,
-            joined_at=visit.joined_at,
-            left_at=None,
-            interpreting_seconds=visit.interpreting_total(now),
+            joined_at=_aware(visit.joined_at),
+            left_at=_aware(visit.left_at) if visit.left_at is not None else None,
+            interpreting_seconds=visit.interpreting_total(end),
         )
     return sorted(rows.values(), key=lambda r: r.joined_at)
 

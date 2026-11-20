@@ -16,6 +16,7 @@ from portal.attendance import (
     AttendanceTracker,
     close_stale_visits,
     format_duration,
+    rows_for_event,
     summarize,
 )
 from portal.auth import create_user_token
@@ -580,3 +581,354 @@ async def test_shutdown_during_recovery_still_saves_visits(event_setup, clock, m
     async with get_session() as session:
         saved = list((await session.execute(select(InterpreterAttendance))).scalars())
     assert [row.display_name for row in saved] == ["Ana"]
+
+
+# ── Pending visits & closed unflushed regression tests ────────────────────────
+
+
+@pytest.mark.anyio
+async def test_pending_visits_includes_open_and_closed_unflushed(registry, clock):
+    alice = await join(registry, "Alice")
+    bob = await join(registry, "Bob")
+    clock.advance(60)
+    await registry.leave_participant(BOOTH, alice.participant_id, LANG, CHANNEL)
+
+    open_visits = registry.attendance.open_visits("conf")
+    assert len(open_visits) == 1
+    assert open_visits[0].participant_id == bob.participant_id
+
+    pending = registry.attendance.pending_visits("conf")
+    assert len(pending) == 2
+    pending_pids = {v.participant_id for v in pending}
+    assert pending_pids == {alice.participant_id, bob.participant_id}
+
+    # Different event slug should return nothing
+    assert registry.attendance.pending_visits("other") == []
+
+
+def test_rows_for_event_short_visit_closed_before_first_flush(clock):
+    tracker = AttendanceTracker(clock=clock)
+    from portal.attendance import Visit
+
+    visit = Visit(
+        id="v-short-1",
+        booth_id=BOOTH,
+        event_slug="conf",
+        room_id=1,
+        language_code="de",
+        participant_id="p-short-1",
+        user_id=None,
+        invite_public_id=None,
+        display_name="Short Visit Interpreter",
+        role=INTERPRETER,
+        joined_at=T0,
+        left_at=T0 + timedelta(seconds=45),
+        interpreting_seconds=45.0,
+    )
+    tracker._closed.append(visit)
+
+    # Clock moves far ahead (e.g. 10 minutes later)
+    now = T0 + timedelta(minutes=10)
+    rows = rows_for_event([], tracker.pending_visits("conf"), now)
+
+    assert len(rows) == 1
+    assert rows[0].id == "v-short-1"
+    assert rows[0].left_at == T0 + timedelta(seconds=45)
+    assert rows[0].interpreting_seconds == 45.0
+
+    people = summarize(rows, now)
+    assert len(people) == 1
+    person = people[0]
+    assert not person.is_here
+    assert person.last_left == T0 + timedelta(seconds=45)
+    assert person.visits[0].is_open is False
+    assert person.visits[0].present_seconds == 45
+    assert person.visits[0].interpreting_seconds == 45
+
+
+@pytest.mark.anyio
+async def test_rows_for_event_previously_flushed_visit_closes_before_next_flush(event_setup, clock):
+    booth_id = f"conf-{event_setup['room']}-de"
+    registry = BoothRegistry(attendance=AttendanceTracker(clock=clock))
+    ana, _ = await registry.join_participant(
+        booth_id=booth_id,
+        display_name="Ana",
+        role=INTERPRETER,
+        language=LANG,
+        channel_id=CHANNEL,
+        user_id=event_setup["ana"],
+    )
+    await registry.update_participant_state(
+        booth_id, ana.participant_id, LANG, CHANNEL, mic_active=True, ingest_connected=True
+    )
+    clock.advance(60)
+    # First flush: saved while open
+    assert await registry.attendance.flush() == 1
+
+    # Continues interpreting for 30s, then leaves
+    clock.advance(30)
+    await registry.leave_participant(booth_id, ana.participant_id, LANG, CHANNEL)
+
+    # Next flush has NOT run yet. Clock advances another 5 minutes.
+    clock.advance(300)
+    now = clock()
+
+    async with get_session() as session:
+        db_rows = list((await session.execute(select(InterpreterAttendance))).scalars())
+    assert len(db_rows) == 1
+    # DB row is stale: saved at T0+60s, left_at is None, last_seen_at is T0+60s
+    assert db_rows[0].left_at is None
+    assert db_rows[0].last_seen_at.replace(tzinfo=timezone.utc) == T0 + timedelta(seconds=60)
+    assert db_rows[0].interpreting_seconds == 60
+
+    pending = registry.attendance.pending_visits("conf")
+    assert len(pending) == 1
+    assert pending[0].left_at == T0 + timedelta(seconds=90)
+
+    rows = rows_for_event(db_rows, pending, now)
+    # Deduplication: exactly 1 row returned
+    assert len(rows) == 1
+    # In-memory closed visit overwrites stale DB row and stale last_seen_at
+    assert rows[0].left_at == T0 + timedelta(seconds=90)
+    assert rows[0].interpreting_seconds == 90
+
+    people = summarize(rows, now)
+    assert len(people) == 1
+    assert not people[0].is_here
+    assert people[0].last_left == T0 + timedelta(seconds=90)
+    assert people[0].present_seconds == 90
+    assert people[0].interpreting_seconds == 90
+
+
+@pytest.mark.anyio
+async def test_no_visit_lost_or_duplicated_across_flush_lifecycle(event_setup, clock):
+    booth_id = f"conf-{event_setup['room']}-de"
+    registry = BoothRegistry(attendance=AttendanceTracker(clock=clock))
+    ana, _ = await registry.join_participant(
+        booth_id=booth_id,
+        display_name="Ana",
+        role=INTERPRETER,
+        language=LANG,
+        channel_id=CHANNEL,
+        user_id=event_setup["ana"],
+    )
+    await registry.update_participant_state(
+        booth_id, ana.participant_id, LANG, CHANNEL, mic_active=True, ingest_connected=True
+    )
+
+    # 1. Open, unflushed
+    clock.advance(60)
+    async with get_session() as session:
+        db_rows = list((await session.execute(select(InterpreterAttendance))).scalars())
+    rows = rows_for_event(db_rows, registry.attendance.pending_visits("conf"), clock())
+    assert len(rows) == 1
+    assert rows[0].left_at is None
+    assert rows[0].interpreting_seconds == 60
+
+    # 2. Open, flushed
+    assert await registry.attendance.flush() == 1
+    async with get_session() as session:
+        db_rows = list((await session.execute(select(InterpreterAttendance))).scalars())
+    rows = rows_for_event(db_rows, registry.attendance.pending_visits("conf"), clock())
+    assert len(rows) == 1
+    assert rows[0].left_at is None
+    assert rows[0].interpreting_seconds == 60
+
+    # 3. Closed, unflushed
+    clock.advance(30)
+    await registry.leave_participant(booth_id, ana.participant_id, LANG, CHANNEL)
+    async with get_session() as session:
+        db_rows = list((await session.execute(select(InterpreterAttendance))).scalars())
+    rows = rows_for_event(db_rows, registry.attendance.pending_visits("conf"), clock())
+    assert len(rows) == 1
+    assert rows[0].left_at == T0 + timedelta(seconds=90)
+    assert rows[0].interpreting_seconds == 90
+
+    # 4. Closed, flushed
+    assert await registry.attendance.flush() == 1
+    async with get_session() as session:
+        db_rows = list((await session.execute(select(InterpreterAttendance))).scalars())
+    rows = rows_for_event(db_rows, registry.attendance.pending_visits("conf"), clock())
+    assert len(rows) == 1
+    assert rows[0].left_at == T0 + timedelta(seconds=90)
+    assert rows[0].interpreting_seconds == 90
+
+
+@pytest.mark.anyio
+async def test_load_snapshots_memory_before_db_query(event_setup, clock, monkeypatch):
+    """_load() snapshots pending visits before querying DB so a flush mid-query cannot drop visits."""
+    from contextlib import asynccontextmanager
+
+    import portal.database as db_module
+    import portal.routers.attendance as att_router
+    from portal.routers.attendance import _load
+
+    booth_id = f"conf-{event_setup['room']}-de"
+    registry = BoothRegistry(attendance=AttendanceTracker(clock=clock))
+    monkeypatch.setattr(portal_globals.booths, "attendance", registry.attendance)
+
+    ana, _ = await registry.join_participant(
+        booth_id=booth_id,
+        display_name="Ana",
+        role=INTERPRETER,
+        language=LANG,
+        channel_id=CHANNEL,
+        user_id=event_setup["ana"],
+    )
+    await registry.update_participant_state(
+        booth_id, ana.participant_id, LANG, CHANNEL, mic_active=True, ingest_connected=True
+    )
+    clock.advance(60)
+    await registry.leave_participant(booth_id, ana.participant_id, LANG, CHANNEL)
+
+    # Before _load: visit is in memory (_closed), DB has 0 rows for this visit
+    assert len(registry.attendance._closed) == 1
+    async with db_module.get_session() as session:
+        db_count = len(list((await session.execute(select(InterpreterAttendance))).scalars()))
+    assert db_count == 0
+
+    # Wrap session so that when _load queries InterpreterAttendance, a flush runs
+    # right after the DB query executes its snapshot (returning 0 rows):
+    @asynccontextmanager
+    async def hooked_session():
+        async with db_module.get_session() as session:
+            orig_execute = session.execute
+
+            async def mock_execute(statement, *args, **kwargs):
+                if "interpreter_attendance" in str(statement).lower():
+                    # Query DB first (DB returns 0 rows since flush hasn't committed yet)
+                    result = await orig_execute(statement, *args, **kwargs)
+                    # Flush commits right now, persisting the visit to DB and clearing _closed:
+                    await registry.attendance.flush()
+                    return result
+                return await orig_execute(statement, *args, **kwargs)
+
+            session.execute = mock_execute
+            yield session
+
+    monkeypatch.setattr(att_router, "get_session", hooked_session)
+
+    # Call the actual _load() function!
+    data = await _load(event_setup["event"])
+
+    # If _load snapshotted memory first: data.rows has 1 row with accurate left_at and interpreting_seconds.
+    # If _load queried DB first: data.rows would be 0 (dropped visit).
+    assert len(data.rows) == 1
+    assert data.rows[0].left_at == T0 + timedelta(seconds=60)
+    assert data.rows[0].interpreting_seconds == 60
+
+
+@pytest.mark.anyio
+async def test_flush_preserves_visits_closed_concurrently_during_persistence(event_setup, clock, monkeypatch):
+    """A visit closed while flush() is awaiting database persistence remains in _closed for the next flush."""
+    import portal.attendance as attendance_module
+
+    booth_id = f"conf-{event_setup['room']}-de"
+    registry = BoothRegistry(attendance=AttendanceTracker(clock=clock))
+
+    alice, _ = await registry.join_participant(
+        booth_id=booth_id,
+        display_name="Alice",
+        role=INTERPRETER,
+        language=LANG,
+        channel_id=CHANNEL,
+        user_id=event_setup["ana"],
+    )
+    clock.advance(60)
+    await registry.leave_participant(booth_id, alice.participant_id, LANG, CHANNEL)
+    assert len(registry.attendance._closed) == 1
+
+    real_save_visits = attendance_module.save_visits
+
+    async def save_with_concurrent_close(visits, now):
+        # While the first batch is being saved to DB, Bob joins and leaves:
+        bob, _ = await registry.join_participant(
+            booth_id=booth_id,
+            display_name="Bob",
+            role=INTERPRETER,
+            language=LANG,
+            channel_id=CHANNEL,
+        )
+        clock.advance(30)
+        await registry.leave_participant(booth_id, bob.participant_id, LANG, CHANNEL)
+        return await real_save_visits(visits, now)
+
+    monkeypatch.setattr(attendance_module, "save_visits", save_with_concurrent_close)
+
+    # First flush saves Alice:
+    written = await registry.attendance.flush()
+    assert written == 1
+
+    # Alice was saved and cleared from _closed, but Bob (closed during flush) remains in _closed:
+    assert len(registry.attendance._closed) == 1
+    assert registry.attendance._closed[0].display_name == "Bob"
+
+    # Restore real save_visits:
+    monkeypatch.setattr(attendance_module, "save_visits", real_save_visits)
+
+    # Second flush saves Bob:
+    written_second = await registry.attendance.flush()
+    assert written_second == 1
+    assert registry.attendance._closed == []
+
+    # Both visits are saved in database:
+    async with get_session() as session:
+        db_rows = list((await session.execute(select(InterpreterAttendance))).scalars())
+    assert {r.display_name for r in db_rows} == {"Alice", "Bob"}
+
+
+@pytest.mark.anyio
+async def test_closed_unflushed_visit_in_html_view_and_csv_export(event_setup, monkeypatch):
+    clock = Clock()
+    clock.now = datetime.now(tz=timezone.utc) - timedelta(minutes=15)
+    registry = BoothRegistry(attendance=AttendanceTracker(clock=clock))
+    monkeypatch.setattr(portal_globals.booths, "attendance", registry.attendance)
+    booth_id = f"conf-{event_setup['room']}-de"
+
+    # Join, interpret for 3 minutes, then leave. Do NOT flush to DB.
+    ana, _ = await registry.join_participant(
+        booth_id=booth_id,
+        display_name="Ana",
+        role=INTERPRETER,
+        language=LANG,
+        channel_id=CHANNEL,
+        user_id=event_setup["ana"],
+    )
+    await registry.update_participant_state(
+        booth_id, ana.participant_id, LANG, CHANNEL, mic_active=True, ingest_connected=True
+    )
+    clock.advance(180)
+    await registry.leave_participant(booth_id, ana.participant_id, LANG, CHANNEL)
+
+    # Verify visit is in _closed and DB is empty
+    assert len(registry.attendance._closed) == 1
+    async with get_session() as session:
+        db_count = len(list((await session.execute(select(InterpreterAttendance))).scalars()))
+    assert db_count == 0
+
+    owner = cookies(event_setup["owner"], "owner@example.com")
+    async with client() as http:
+        page = await http.get(f"/workspace/events/{event_setup['event']}/attendance/", cookies=owner)
+        export = await http.get(f"/workspace/events/{event_setup['event']}/attendance/export", cookies=owner)
+
+    # 1. HTML view verification
+    assert page.status_code == 200
+    assert "Ana Interpreter" in page.text
+    assert "ana@example.com" in page.text
+    assert "3m" in page.text
+    # Should not show "● In booth now" for a closed visit
+    assert "● In booth now" not in page.text
+
+    # 2. CSV export verification
+    assert export.status_code == 200
+    lines = export.text.lstrip("\ufeff").splitlines()
+    assert lines[0].startswith("Interpreter,")
+    ana_line = next(line for line in lines if "Ana Interpreter" in line)
+    # Check that Left (UTC) is non-empty and duration is 3.0 minutes
+    parts = ana_line.split(",")
+    # parts: [Interpreter, Detail, Booth, Joined, Left, Minutes in booth, Minutes interpreting]
+    assert len(parts) >= 7
+    left_utc = parts[4]
+    assert left_utc != ""
+    assert parts[5] == "3.0"
+    assert parts[6] == "3.0"
