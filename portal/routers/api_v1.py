@@ -45,15 +45,16 @@ router = APIRouter(prefix="/api/v1")
 # attribute on the Event model.  Adding a new provider only requires one
 # new entry here.
 _API_KEY_FIELDS: list[tuple[str, str]] = [
-    ("openai_api_key",             "encrypted_openai_api_key"),
-    ("deepgram_api_key",           "encrypted_deepgram_api_key"),
-    ("nvidia_api_key",             "encrypted_nvidia_api_key"),
-    ("elevenlabs_api_key",         "encrypted_elevenlabs_api_key"),
+    ("openai_api_key", "encrypted_openai_api_key"),
+    ("deepgram_api_key", "encrypted_deepgram_api_key"),
+    ("nvidia_api_key", "encrypted_nvidia_api_key"),
+    ("elevenlabs_api_key", "encrypted_elevenlabs_api_key"),
     ("translation_openai_api_key", "encrypted_translation_openai_api_key"),
-    ("openrouter_api_key",         "encrypted_openrouter_api_key"),
-    ("gemini_api_key",             "encrypted_gemini_api_key"),
-    ("anthropic_api_key",          "encrypted_anthropic_api_key"),
-    ("groq_api_key",               "encrypted_groq_api_key"),
+    ("openrouter_api_key", "encrypted_openrouter_api_key"),
+    ("gemini_api_key", "encrypted_gemini_api_key"),
+    ("anthropic_api_key", "encrypted_anthropic_api_key"),
+    ("groq_api_key", "encrypted_groq_api_key"),
+    ("atlascloud_api_key", "encrypted_atlascloud_api_key"),
 ]
 
 
@@ -547,9 +548,8 @@ class RoomUpsert(BaseModel):
         return validated
 
 
-def _apply_floor_settings(room, payload_dict: dict):
-    if "name" in payload_dict and payload_dict["name"] is not None:
-        room.display_name = payload_dict["name"]
+def _sync_floor_transcription_settings(room: Room, payload_dict: dict) -> None:
+    """Apply floor transcription configuration and source language to the room instance."""
     if "enable_transcription" in payload_dict and payload_dict["enable_transcription"] is not None:
         room.floor_transcription_enabled = payload_dict["enable_transcription"]
     if "transcription_provider" in payload_dict:
@@ -559,6 +559,10 @@ def _apply_floor_settings(room, payload_dict: dict):
         room.floor_transcription_model = payload_dict["transcription_model"] or "tiny"
     if "source_language" in payload_dict:
         room.floor_language_code = payload_dict["source_language"]
+
+
+def _sync_floor_translation_settings(room: Room, payload_dict: dict) -> None:
+    """Apply floor translation configuration to the room instance."""
     if "enable_translation" in payload_dict and payload_dict["enable_translation"] is not None:
         room.floor_translation_enabled = payload_dict["enable_translation"]
     if "translation_provider" in payload_dict:
@@ -567,11 +571,11 @@ def _apply_floor_settings(room, payload_dict: dict):
         room.floor_translation_model = payload_dict["translation_model"]
 
 
-def _check_self_hosted_translation(payload_dict: dict, room: Room | None) -> None:
-    """Reject self-hosted translation this server can't run, before anything is written.
+def _check_server_translation(payload_dict: dict, room: Room | None) -> None:
+    """Reject self-hosted or built-in translation this server can't run, before anything is written.
 
-    An explicit model must be on the allow list; when the model is left out, the room keeps an
-    allowed model it already has or gets the default one. An update that turns translation off is
+    An explicit model must be on the server's allow list; when the model is left out, the room keeps
+    an allowed model it already has or gets the default one. An update that turns translation off is
     never rejected, so it still works after the server or a model is removed.
     """
     if not {"translation_provider", "translation_model", "enable_translation"} & payload_dict.keys():
@@ -579,18 +583,31 @@ def _check_self_hosted_translation(payload_dict: dict, room: Room | None) -> Non
     if payload_dict.get("enable_translation") is False:
         return
     current_provider = room.floor_translation_provider if room else None
-    if payload_dict.get("translation_provider", current_provider) != TranslationProviderEnum.SELF_HOSTED.value:
+    provider = payload_dict.get("translation_provider", current_provider)
+    if provider == TranslationProviderEnum.SELF_HOSTED.value:
+        if not settings.self_hosted_llm_enabled:
+            raise HTTPException(status_code=422, detail="Self-hosted translation is not configured on this server")
+        allows, model_or_default, name = (
+            settings.self_hosted_llm_allows,
+            settings.self_hosted_llm_model_or_default,
+            "self-hosted",
+        )
+    elif provider == TranslationProviderEnum.LOCAL.value:
+        if not settings.local_translation_model_list:
+            raise HTTPException(status_code=422, detail="Built-in translation is not offered on this server")
+        allows, model_or_default, name = (
+            settings.local_translation_allows,
+            settings.local_translation_model_or_default,
+            "built-in",
+        )
+    else:
         return
-    if not settings.self_hosted_llm_enabled:
-        raise HTTPException(status_code=422, detail="Self-hosted translation is not configured on this server")
     model = payload_dict.get("translation_model")
     if model is not None:
-        if not settings.self_hosted_llm_allows(model):
-            raise HTTPException(status_code=422, detail="translation_model is not allowed for self-hosted translation")
+        if not allows(model):
+            raise HTTPException(status_code=422, detail=f"translation_model is not allowed for {name} translation")
         return
-    payload_dict["translation_model"] = settings.self_hosted_llm_model_or_default(
-        room.floor_translation_model if room else None
-    )
+    payload_dict["translation_model"] = model_or_default(room.floor_translation_model if room else None)
 
 
 _TRANSLATION_SETUP_FIELDS = {
@@ -648,6 +665,190 @@ async def _check_translation_languages(db: AsyncSession, payload_dict: dict, roo
         raise HTTPException(status_code=422, detail=error)
 
 
+def _apply_room_settings(room: Room, payload_dict: dict) -> None:
+    """Apply display name, floor transcription, and floor translation settings to the room."""
+    if "name" in payload_dict and payload_dict["name"] is not None:
+        room.display_name = payload_dict["name"]
+    _sync_floor_transcription_settings(room, payload_dict)
+    _sync_floor_translation_settings(room, payload_dict)
+
+
+async def _create_or_update_base_room(
+    db: AsyncSession,
+    event: Event,
+    eventyay_room_id: str,
+    payload_dict: dict,
+) -> tuple[Room, str, int]:
+    """Create or update the base room while preserving upsert and concurrency transaction semantics."""
+    room_res = await db.execute(
+        select(Room).where(Room.event_id == event.id, Room.eventyay_room_id == eventyay_room_id)
+    )
+    room = room_res.scalars().first()
+
+    _check_server_translation(payload_dict, room)
+    await _check_translation_languages(db, payload_dict, room)
+
+    if room:
+        _apply_room_settings(room, payload_dict)
+        return room, "room.updated", status.HTTP_200_OK
+
+    # Require name for creation
+    if "name" not in payload_dict or not payload_dict["name"]:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="name is required to create a new room")
+
+    from sqlalchemy.exc import IntegrityError
+
+    try:
+        async with db.begin_nested():
+            room = Room(
+                event_id=event.id,
+                eventyay_room_id=eventyay_room_id,
+                display_name=payload_dict["name"],
+            )
+            _apply_room_settings(room, payload_dict)
+            db.add(room)
+            await db.flush()
+    except IntegrityError:
+        room_res = await db.execute(
+            select(Room).where(Room.event_id == event.id, Room.eventyay_room_id == eventyay_room_id)
+        )
+        room = room_res.scalars().first()
+        if not room:
+            raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Failed to upsert room")
+        _apply_room_settings(room, payload_dict)
+        return room, "room.updated", status.HTTP_200_OK
+
+    return room, "room.created", status.HTTP_201_CREATED
+
+
+async def _delete_removed_languages_and_booths(
+    db: AsyncSession,
+    event: Event,
+    room: Room,
+    eventyay_room_id: str,
+    requested_langs: set[str],
+    existing_booths: dict[str, DBBooth],
+    existing_langs: dict[str, RoomTranslationLanguage],
+    token: OAuthToken,
+) -> None:
+    """Delete unrequested booths and languages, enforcing active-session safety checks."""
+    from portal.booth_identity import make_booth_id
+    from portal.globals import booths
+
+    # Safe Delete Removed Booths & Languages
+    removed_booths = [(code, b) for code, b in existing_booths.items() if code not in requested_langs]
+    # Active Session Guard — checked and removed in one locked step, before any cleanup
+    live_code = await booths.remove_idle_booths(event.slug, room.id, [code for code, _ in removed_booths])
+    if live_code is not None:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=f"Cannot remove language '{live_code}' while it has an active session running.",
+        )
+    for code, b in removed_booths:
+        booth_id = make_booth_id(event.slug, room.id, code)
+        await stop_booth_publish(booth_id, take_booth_publishers(booth_id))
+        await db.delete(b)
+        db.add(
+            OAuthAuditLog(
+                token_id=token.id,
+                client_id=token.client_id,
+                action="booth.deleted",
+                request_path=f"/api/v1/events/{event.slug}/rooms/{eventyay_room_id}/booths/{code}",
+                status_code=status.HTTP_200_OK,
+            )
+        )
+
+    for code, rl in existing_langs.items():
+        if code not in requested_langs:
+            await db.delete(rl)
+
+
+async def _create_missing_languages_and_booths(
+    db: AsyncSession,
+    event: Event,
+    room: Room,
+    eventyay_room_id: str,
+    requested_langs: set[str],
+    existing_booths: dict[str, DBBooth],
+    existing_langs: dict[str, RoomTranslationLanguage],
+    token: OAuthToken,
+) -> None:
+    """Create missing translation languages and booths inside savepoints."""
+    from sqlalchemy.exc import IntegrityError
+
+    # Create Missing Booths & Languages
+    for code in requested_langs:
+        if code not in existing_langs:
+            try:
+                async with db.begin_nested():
+                    db.add(RoomTranslationLanguage(room_id=room.id, language_code=code, language_name=code))
+                    await db.flush()
+            except IntegrityError:
+                pass
+
+        if code not in existing_booths:
+            try:
+                async with db.begin_nested():
+                    new_booth = DBBooth(room_id=room.id, language_code=code, event_id=event.id, language_name=code)
+                    db.add(new_booth)
+                    db.add(
+                        OAuthAuditLog(
+                            token_id=token.id,
+                            client_id=token.client_id,
+                            action="booth.created",
+                            request_path=f"/api/v1/events/{event.slug}/rooms/{eventyay_room_id}/booths/{code}",
+                            status_code=status.HTTP_201_CREATED,
+                        )
+                    )
+                    await db.flush()
+            except IntegrityError:
+                pass
+
+
+async def _sync_target_languages_and_booths(
+    db: AsyncSession,
+    event: Event,
+    room: Room,
+    eventyay_room_id: str,
+    requested_langs: set[str],
+    token: OAuthToken,
+) -> None:
+    """Reconcile requested target languages with the room's persisted booths and translation languages."""
+    lang_res = await db.execute(select(RoomTranslationLanguage).where(RoomTranslationLanguage.room_id == room.id))
+    existing_langs = {rl.language_code: rl for rl in lang_res.scalars().all()}
+
+    booth_res = await db.execute(select(DBBooth).where(DBBooth.room_id == room.id))
+    existing_booths = {b.language_code: b for b in booth_res.scalars().all()}
+
+    await _delete_removed_languages_and_booths(
+        db, event, room, eventyay_room_id, requested_langs, existing_booths, existing_langs, token
+    )
+    await _create_missing_languages_and_booths(
+        db, event, room, eventyay_room_id, requested_langs, existing_booths, existing_langs, token
+    )
+
+
+async def _build_booths_response(db: AsyncSession, event_slug: str, room_id: int) -> list[dict[str, str]]:
+    """Build the canonical booth response list with WHEP and WHIP URLs."""
+    from portal.booth_identity import make_mediamtx_path
+    from portal.config import settings
+
+    final_booth_res = await db.execute(select(DBBooth).where(DBBooth.room_id == room_id))
+    final_booths = final_booth_res.scalars().all()
+
+    returned_booths = []
+    try:
+        for b in final_booths:
+            whip_path = make_mediamtx_path(event_slug, room_id, b.language_code)
+            whep_url = f"{settings.mediamtx_whip_base}/{whip_path}/whep"
+            returned_booths.append({"language": b.language_code, "whip_path": whip_path, "whep_url": whep_url})
+    except Exception:
+        logger.exception("Error generating canonical WHEP URLs")
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Internal server error")
+
+    return returned_booths
+
+
 @router.put("/events/{event_slug}/rooms/{eventyay_room_id}")
 async def upsert_room(
     event_slug: str,
@@ -657,120 +858,18 @@ async def upsert_room(
     token: OAuthToken = Depends(require_oauth_scope("rooms:write")),
 ):
     """Create or update a room after validating its resulting translation configuration."""
-    from portal.booth_identity import make_mediamtx_path
-    from portal.globals import booths
-
     event = await _get_event_for_request(db, event_slug, write_lock=True)
     if not event:
-        raise HTTPException(status_code=404, detail="Event not found")
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Event not found")
 
     await _verify_token_rbac(db, token, event, manage=True, lock_event=True, write_lock=True)
 
-    room_res = await db.execute(
-        select(Room).where(Room.event_id == event.id, Room.eventyay_room_id == eventyay_room_id)
-    )
-    room = room_res.scalars().first()
-
     payload_dict = payload.model_dump(exclude_unset=True)
-    _check_self_hosted_translation(payload_dict, room)
-    await _check_translation_languages(db, payload_dict, room)
-
-    if room:
-        _apply_floor_settings(room, payload_dict)
-        action = "room.updated"
-        status_code_ret = status.HTTP_200_OK
-    else:
-        # Require name for creation
-        if "name" not in payload_dict or not payload_dict["name"]:
-            raise HTTPException(status_code=400, detail="name is required to create a new room")
-
-        from sqlalchemy.exc import IntegrityError
-
-        try:
-            async with db.begin_nested():
-                room = Room(event_id=event.id, eventyay_room_id=eventyay_room_id, display_name=payload_dict["name"])
-                _apply_floor_settings(room, payload_dict)
-                db.add(room)
-                await db.flush()
-        except IntegrityError:
-            room_res = await db.execute(
-                select(Room).where(Room.event_id == event.id, Room.eventyay_room_id == eventyay_room_id)
-            )
-            room = room_res.scalars().first()
-            if not room:
-                raise HTTPException(status_code=500, detail="Failed to upsert room")
-            _apply_floor_settings(room, payload_dict)
-            action = "room.updated"
-            status_code_ret = status.HTTP_200_OK
-        else:
-            action = "room.created"
-            status_code_ret = status.HTTP_201_CREATED
-
-    lang_res = await db.execute(select(RoomTranslationLanguage).where(RoomTranslationLanguage.room_id == room.id))
-    existing_langs = {rl.language_code: rl for rl in lang_res.scalars().all()}
-
-    booth_res = await db.execute(select(DBBooth).where(DBBooth.room_id == room.id))
-    existing_booths = {b.language_code: b for b in booth_res.scalars().all()}
+    room, action, status_code_ret = await _create_or_update_base_room(db, event, eventyay_room_id, payload_dict)
 
     if "target_languages" in payload_dict and payload_dict["target_languages"] is not None:
         requested_langs = set(payload_dict["target_languages"])
-
-        # Safe Delete Removed Booths & Languages
-        removed_booths = [(code, b) for code, b in existing_booths.items() if code not in requested_langs]
-        # Active Session Guard — checked and removed in one locked step, before any cleanup
-        live_code = await booths.remove_idle_booths(event_slug, room.id, [code for code, _ in removed_booths])
-        if live_code is not None:
-            raise HTTPException(
-                status_code=status.HTTP_409_CONFLICT,
-                detail=f"Cannot remove language '{live_code}' while it has an active session running.",
-            )
-        for code, b in removed_booths:
-            booth_id = make_booth_id(event_slug, room.id, code)
-            await stop_booth_publish(booth_id, take_booth_publishers(booth_id))
-            await db.delete(b)
-            db.add(
-                OAuthAuditLog(
-                    token_id=token.id,
-                    client_id=token.client_id,
-                    action="booth.deleted",
-                    request_path=f"/api/v1/events/{event_slug}/rooms/{eventyay_room_id}/booths/{code}",
-                    status_code=status.HTTP_200_OK,
-                )
-            )
-
-        for code, rl in existing_langs.items():
-            if code not in requested_langs:
-                await db.delete(rl)
-
-        # Create Missing Booths & Languages
-        from sqlalchemy.exc import IntegrityError
-
-        for code in requested_langs:
-            if code not in existing_langs:
-                try:
-                    async with db.begin_nested():
-                        db.add(RoomTranslationLanguage(room_id=room.id, language_code=code, language_name=code))
-                        await db.flush()
-                except IntegrityError:
-                    pass
-
-            if code not in existing_booths:
-                try:
-                    async with db.begin_nested():
-                        new_booth = DBBooth(room_id=room.id, language_code=code, event_id=event.id, language_name=code)
-                        db.add(new_booth)
-                        db.add(
-                            OAuthAuditLog(
-                                token_id=token.id,
-                                client_id=token.client_id,
-                                action="booth.created",
-                                request_path=f"/api/v1/events/{event_slug}/rooms/{eventyay_room_id}/booths/{code}",
-                                status_code=status.HTTP_201_CREATED,
-                            )
-                        )
-                        await db.flush()
-                except IntegrityError:
-                    pass
+        await _sync_target_languages_and_booths(db, event, room, eventyay_room_id, requested_langs, token)
 
     # Audit Logging
     audit = OAuthAuditLog(
@@ -784,21 +883,7 @@ async def upsert_room(
 
     await db.flush()
 
-    # Construct Response with Canonical WHEP URLs
-    final_booth_res = await db.execute(select(DBBooth).where(DBBooth.room_id == room.id))
-    final_booths = final_booth_res.scalars().all()
-
-    returned_booths = []
-    from portal.config import settings
-
-    try:
-        for b in final_booths:
-            whip_path = make_mediamtx_path(event.slug, room.id, b.language_code)
-            whep_url = f"{settings.mediamtx_whip_base}/{whip_path}/whep"
-            returned_booths.append({"language": b.language_code, "whip_path": whip_path, "whep_url": whep_url})
-    except Exception:
-        logger.exception("Error generating canonical WHEP URLs")
-        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Internal server error")
+    returned_booths = await _build_booths_response(db, event.slug, room.id)
 
     return {"status": "success", "room_id": room.id, "booths": returned_booths}
 
@@ -860,9 +945,7 @@ async def patch_room_settings(
     if not event:
         raise HTTPException(status_code=404, detail="Event not found")
 
-    await _verify_token_rbac(
-        db, token, event, room_id, manage=True, lock_event=True, write_lock=True
-    )
+    await _verify_token_rbac(db, token, event, room_id, manage=True, lock_event=True, write_lock=True)
     return {"status": "success"}
 
 
@@ -912,7 +995,11 @@ async def get_booth(
     target_room_id = _extract_room_id(room, room_id)
     language_code = _validate_lang(language_code)
 
-    result = await db.execute(select(DBBooth).where(DBBooth.room_id == target_room_id, DBBooth.language_code == language_code, DBBooth.event_id == event.id))
+    result = await db.execute(
+        select(DBBooth).where(
+            DBBooth.room_id == target_room_id, DBBooth.language_code == language_code, DBBooth.event_id == event.id
+        )
+    )
     booth = result.scalars().first()
     if not booth:
         raise HTTPException(status_code=404, detail="Booth not found")
@@ -937,9 +1024,7 @@ async def create_booth(
     if not event:
         raise HTTPException(status_code=404, detail="Event not found")
 
-    room = await _verify_token_rbac(
-        db, token, event, room_id, manage=True, lock_event=True, write_lock=True
-    )
+    room = await _verify_token_rbac(db, token, event, room_id, manage=True, lock_event=True, write_lock=True)
     target_room_id = _extract_room_id(room, room_id)
     language_code = _validate_lang(language_code)
     if language_code == "floor":
@@ -948,7 +1033,9 @@ async def create_booth(
             detail="'floor' is not a valid booth language for a room.",
         )
 
-    result = await db.execute(select(DBBooth).where(DBBooth.room_id == target_room_id, DBBooth.language_code == language_code))
+    result = await db.execute(
+        select(DBBooth).where(DBBooth.room_id == target_room_id, DBBooth.language_code == language_code)
+    )
     if result.scalars().first():
         raise HTTPException(status_code=409, detail="Booth already exists")
 
@@ -974,13 +1061,15 @@ async def delete_booth_endpoint(
     if not event:
         raise HTTPException(status_code=404, detail="Event not found")
 
-    room = await _verify_token_rbac(
-        db, token, event, room_id, manage=True, lock_event=True, write_lock=True
-    )
+    room = await _verify_token_rbac(db, token, event, room_id, manage=True, lock_event=True, write_lock=True)
     target_room_id = _extract_room_id(room, room_id)
     language_code = _validate_lang(language_code)
 
-    result = await db.execute(select(DBBooth).where(DBBooth.room_id == target_room_id, DBBooth.language_code == language_code, DBBooth.event_id == event.id))
+    result = await db.execute(
+        select(DBBooth).where(
+            DBBooth.room_id == target_room_id, DBBooth.language_code == language_code, DBBooth.event_id == event.id
+        )
+    )
     booth = result.scalars().first()
     if not booth:
         raise HTTPException(status_code=404, detail="Booth not found")
@@ -1186,6 +1275,7 @@ class EventAPIKeysUpdate(BaseModel):
     gemini_api_key: str | None = None
     anthropic_api_key: str | None = None
     groq_api_key: str | None = None
+    atlascloud_api_key: str | None = None
 
 
 @router.patch("/events/{event_slug}/api_keys", response_model=dict)

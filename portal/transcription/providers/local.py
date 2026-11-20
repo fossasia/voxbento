@@ -130,6 +130,8 @@ class LocalProvider(TranscriptionProvider):
             overlap_audio = chunk
 
         audio_data = np.frombuffer(overlap_audio, np.int16).astype(np.float32) / 32768.0
+        if prompt is None:
+            prompt = config.prompt
         return await asyncio.to_thread(
             self._run_inference, audio_data, language_code, model_variant, booth_state, prompt, overlap_seconds
         )

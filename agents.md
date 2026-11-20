@@ -84,10 +84,12 @@ VoxBento is a production-grade **browser-first interpretation booth console** fo
 | `portal/meeting_source.py` | Managed Jitsi floor agent lifecycle reconciler |
 | `portal/program_ingest.py` | Floor authorization and reconciliation for Program Stream Ingest |
 | `portal/program_relay.py` | YouTube RTMPS destination management and relay health convergence |
+| `portal/youtube_account.py` | Google OAuth and YouTube Live API metadata (no media): Sign in with YouTube, broadcast linking, YouTube status |
 | `portal/outage_log.py` | `OutageLog` — reconcile loops log a repeating failure once per outage, not per tick |
 | `portal/booth_recovery.py` | Saves each booth's Go Live switch and active interpreter to `booth_live_state` and restores them at startup (TD-03) |
 | `portal/attendance.py` | `AttendanceTracker` — interpreter visits and interpreting time from booth state, batched writes to `interpreter_attendance` (#1215) |
 | `portal/live_demo.py` | Home-page live demo (`/ws/demo/live`): local Whisper → NLLB → Supertonic pipeline, site + visitor glossary, admission limits, and the admin-edited `live_demo_settings` row (`/admin/live-demo/`) |
+| `portal/live_demo_ai.py` | Independent live demo speech, translation and voice settings and encrypted keys; no event or room dependency |
 | `portal/user_admin.py` | Administrative access rules, user flags (`can_host`, `is_admin`, `is_active`, `email_verified`) |
 | `portal/templates/` | Jinja2 HTML — `base.html`, `interpreter_booth.html`, `listener-event.html`, `admin/` |
 | `portal/static/css/tokens.css` | Shared design tokens (`--vb-*` colours, radii, shadows, fonts), linked first on every page; new CSS uses these instead of new hex values |
@@ -96,7 +98,7 @@ VoxBento is a production-grade **browser-first interpretation booth console** fo
 | `portal/static/js/admin.js` | Admin panel JS helpers |
 | `mediamtx.yml` | MediaMTX config — WHIP/WHEP paths, RTSP, Control API, `overridePublisher` |
 | `docker-compose.yml` | portal + mediamtx + jitsi-web/prosody/jicofo/jvb |
-| `alembic/versions/` | 38 migrations (001–038); run `uv run alembic upgrade head` |
+| `alembic/versions/` | 44 migrations (001–044); run `uv run alembic upgrade head` |
 
 ---
 
@@ -213,7 +215,7 @@ MediaMTX RTSP (8554) → ffmpeg PCM → TranscriptionProvider → CaptionAggrega
 
 Providers: `local` (faster-whisper, CPU), `openai` (whisper-1/realtime), `deepgram` (nova-3/nova-2), `atlascloud` (Seed ASR 2.0 async predictions), `nvidia` (Parakeet), `elevenlabs` (scribe_v2).
 Worker lifecycle: `start_transcription_worker` / `stop_transcription_worker` in `portal/transcription/worker.py`.
-Max concurrent workers: 10 (`MAX_TOTAL_WORKERS`).
+Max concurrent workers: default 10 (`MAX_TOTAL_WORKERS`, configurable via `settings.max_transcription_workers` / `MAX_TRANSCRIPTION_WORKERS`).
 
 ---
 

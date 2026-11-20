@@ -28,15 +28,15 @@ def upgrade() -> None:
         sa.Column("language", sa.String(length=100), nullable=False),
         sa.Column("channel_id", sa.String(length=200), nullable=False),
         sa.Column("room_id", sa.Integer(), nullable=True),
-        sa.Column("broadcast_unlocked", sa.Boolean(), nullable=False, server_default="0"),
+        sa.Column("broadcast_unlocked", sa.Boolean(), nullable=False, server_default=sa.false()),
         sa.Column("active_participant_id", sa.String(length=64), nullable=True),
         sa.Column("active_session_key", sa.String(length=100), nullable=True),
         sa.Column("active_display_name", sa.String(length=200), nullable=True),
         sa.Column("active_role", sa.String(length=32), nullable=True),
         sa.Column("active_user_id", sa.Integer(), nullable=True),
         sa.Column("active_invite_public_id", sa.String(length=32), nullable=True),
-        sa.Column("active_mic_active", sa.Boolean(), nullable=False, server_default="0"),
-        sa.Column("active_ingest_connected", sa.Boolean(), nullable=False, server_default="0"),
+        sa.Column("active_mic_active", sa.Boolean(), nullable=False, server_default=sa.false()),
+        sa.Column("active_ingest_connected", sa.Boolean(), nullable=False, server_default=sa.false()),
         sa.Column("updated_at", sa.DateTime(timezone=True), nullable=False),
     )
 
