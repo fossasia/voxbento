@@ -406,8 +406,13 @@ class BoothRegistry:
         channel_id: str,
         room_id: int | None = None,
     ) -> dict:
+        """Return the booth's public state, creating the booth if needed. Publishes only a creation."""
         async with self._lock:
-            return self._get_or_create_booth(booth_id, language, channel_id, room_id=room_id).as_public_dict()
+            created = booth_id not in self._booths
+            state = self._get_or_create_booth(booth_id, language, channel_id, room_id=room_id).as_public_dict()
+        if created:
+            await self._publish(booth_id, state)
+        return state
 
     async def join_participant(
         self,

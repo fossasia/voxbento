@@ -1090,3 +1090,15 @@ async def test_create_booth_publishes_once_and_duplicates_publish_nothing():
         await registry.create_booth("pycon2026", "en", "English", 1)
 
     assert [event.state for event in events] == [state]
+
+
+
+@pytest.mark.anyio
+async def test_snapshot_publishes_only_when_it_creates_the_booth():
+    registry = BoothRegistry()
+    events = await _recorded_events(registry)
+
+    state = await registry.snapshot("hall-1-fr", "French", "c")
+    await registry.snapshot("hall-1-fr", "French", "c")
+
+    assert [event.state for event in events] == [state]
