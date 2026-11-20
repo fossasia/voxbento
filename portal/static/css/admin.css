@@ -434,6 +434,9 @@ code { font-family: var(--font-mono); font-size: 0.85em; background: var(--color
 .mc-people { list-style: none; margin: 0; padding: 0; display: grid; gap: 6px; }
 .mc-person { display: flex; align-items: center; justify-content: space-between; gap: 8px; font-size: 0.9rem; }
 .mc-person.is-active .mc-person-name { font-weight: 700; color: var(--color-primary); }
+.mc-person-side { display: inline-flex; align-items: center; gap: 6px; flex-shrink: 0; }
+.mc-make-live { padding: 2px 10px; font-size: 0.75rem; }
+.mc-booth-closed { grid-column: 1 / -1; margin: 0; font-size: 0.8125rem; color: var(--vb-color-danger-text); }
 .mc-person-tag { margin-left: 6px; padding: 1px 6px; border-radius: 4px; background: #dbeafe; color: #1e40af; font-size: 0.6875rem; font-weight: 700; text-transform: uppercase; }
 .mc-listen-head { display: flex; align-items: center; justify-content: space-between; }
 .mc-volume { width: 100%; }

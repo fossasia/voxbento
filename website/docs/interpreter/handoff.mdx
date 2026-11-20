@@ -31,14 +31,16 @@ When a room_coordinator or active interpreter triggers a handoff, Voxbento immed
 
 ## Steps to Hand Off (Coordinator Perspective)
 
-As a coordinator, you initiate the handoff from the participant roster panel inside the booth.
+As a coordinator, you choose who is live from **Mission Control** (`/mission-control/{event_slug}/`). You don't need to open the booth, and you never appear in its roster.
 
-### Locate the incoming interpreter in the roster
+### Find the booth and the incoming interpreter
 
-Open the **Participant Roster** panel. You'll see all connected participants with their role labels. Find the backup interpreter you want to promote — they should already be joined and in an idle state.
-  ### Click Set Active
+Each booth card lists the interpreters in that booth, marks who is **live**, and shows whether each one is **Speaking**, **Muted** or **Reconnecting…**. The backup interpreter should already be in the booth.
+  ### Click Make live
 
-Click **Set Active** next to the interpreter's name. Voxbento immediately designates them as the active interpreter and broadcasts the updated roster to everyone in the booth.
+Click **Make live** next to their name. If the current interpreter is on air, Mission Control asks you to confirm first. Voxbento then makes them the active interpreter and sends the updated roster to everyone in the booth. An interpreter who is reconnecting can't be made live until they are back.
+
+If someone else changed who is live after you looked (another coordinator, or the interpreters finishing a handover), Voxbento refuses your change and tells you, so check the card and try again.
   ### Old stream is replaced
 
 Within approximately one to two seconds, the media relay switches to the new publisher and stops forwarding the old stream. The outgoing interpreter sees their Audio Status change to **Idle**.
@@ -48,7 +50,7 @@ Signal the incoming interpreter (via chat or a pre-agreed cue) to click **UNMUTE
 
 ## Steps for the Incoming Interpreter
 
-Smooth handoffs depend on the incoming interpreter being ready before the room_coordinator clicks **Set Active**.
+Smooth handoffs depend on the incoming interpreter being ready before the coordinator clicks **Make live** in Mission Control.
 
 ### Join the booth before your shift starts
 
