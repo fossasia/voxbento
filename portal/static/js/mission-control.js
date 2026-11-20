@@ -194,8 +194,11 @@ function renderTranslationHealth(room) {
   status.id = `mc-translation-${room.id}`;
   const reason = el('span', 'mc-captions-reason');
   box.append(label, status, reason);
+  let checking = false;
 
   async function refresh() {
+    if (checking) return;
+    checking = true;
     try {
       const res = await fetch(`/api/rooms/${room.id}/translation-health`);
       if (!res.ok) throw new Error(String(res.status));
@@ -209,6 +212,8 @@ function renderTranslationHealth(room) {
       status.className = 'mc-pill is-problem';
       reason.textContent = '';
       console.debug('Translation health failed', err);
+    } finally {
+      checking = false;
     }
   }
 

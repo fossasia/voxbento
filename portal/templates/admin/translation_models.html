@@ -63,7 +63,7 @@
 <section class="card email-card" id="translation-health">
   <div class="card-header">
     <h2>Translation health</h2>
-    <p>How every translation engine is doing across all events, over the last {{ window_minutes }} minutes. Start lag is how long a segment waited for the engine{% if lag_budget %}; a segment that waits more than {{ '%g' % lag_budget }} s is dropped as stale{% endif %}. Reload the page to update it.</p>
+    <p>How every translation engine is doing across all events, over the last {{ window_minutes }} minutes. Start lag is the time from when a segment arrived until the engine started on it{% if lag_budget %}; a segment that cannot start within {{ '%g' % lag_budget }} s is dropped as stale{% endif %}. Reload the page to update it.</p>
   </div>
 
   <h3 class="tm-health-title">Engines now</h3>

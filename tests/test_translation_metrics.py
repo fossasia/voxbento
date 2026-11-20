@@ -11,7 +11,7 @@ from fastapi_app import app
 from portal.auth import create_user_token
 from portal.config import settings
 from portal.database import configure, create_booth, create_event, create_room, dispose, get_session, init_db
-from portal.models import User
+from portal.models import Room, User
 from portal.routers import admin as admin_router
 from portal.routers import translation_models as models_router
 from portal.translations import worker as worker_module
@@ -387,3 +387,21 @@ async def test_the_models_page_says_when_nothing_was_translated(monkeypatch, wor
     health = res.text.split('id="translation-health"')[1]
     assert "No translations in the last 5 minutes." in health
     assert "None. A model loads when a room first translates with it." in health
+
+
+@pytest.mark.anyio
+async def test_a_room_translating_past_the_first_hundred_booths_still_gets_its_status(world):
+    async with get_session() as s:
+        event_id = (await s.get(Room, world["room"])).event_id
+        for index in range(50):
+            room = await create_room(s, event_id=event_id, display_name=f"Hall {index}")
+            await create_booth(s, event_id=event_id, room_id=room.id, language_code="da", language_name="Danish")
+            await create_booth(s, event_id=event_id, room_id=room.id, language_code="de", language_name="German")
+        late = await create_room(s, event_id=event_id, display_name="Late Room")
+        booth = await create_booth(s, event_id=event_id, room_id=late.id, language_code="es", language_name="Spanish")
+        booth.translation_enabled = True
+
+    async with client(world["admin"]) as c:
+        page = (await c.get("/mission-control/metricscon/")).text
+
+    assert '"translation": true' in page.split('"name": "Late Room"')[1].split("}")[0]
