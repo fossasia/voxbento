@@ -100,8 +100,23 @@ class CaptionAggregator:
             logger.debug("[%s] Partial-caption timing unavailable during database failure.", booth_id, exc_info=True)
         return {}
 
+    async def handle_interim(self, booth_id: str, text: str):
+        """Show words still being recognised after the ones already settled, without keeping them.
+
+        Used by streaming providers that settle audio in chunks (Deepgram): the next interim
+        result replaces this one, and only settled chunks reach ``handle_chunk``.
+        """
+        if not text.strip():
+            return
+        state = self._get_state(booth_id)
+        preview = f"{state.current_utterance} {text.strip()}".strip()
+        await self.broadcast_callback(
+            booth_id, {"type": "caption", "status": "partial", "text": preview,
+                       "segment_id": state.segment_id, **await self.partial_timing(booth_id)}
+        )
+
     async def handle_chunk(self, booth_id: str, text: str):
-        """Used by Local Whisper. Appends finalized chunks and splits on punctuation."""
+        """Used by Local Whisper and Deepgram. Appends finalized chunks and splits on punctuation."""
         if not text.strip():
             return
 

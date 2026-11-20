@@ -79,7 +79,7 @@ Never use Jitsi's audio as the broadcast source. Interpreter mic → WHIP → Me
 
 ## Deepgram (Transcription)
 
-- `wss://api.deepgram.com/v1/listen?model=nova-2&language={lang}&encoding=linear16&sample_rate=16000&channels=1&interim_results=true&keepalive=true&endpointing=2000&smart_format=true&punctuate=true`
+- `wss://api.deepgram.com/v1/listen?model=nova-3&language={lang}&encoding=linear16&sample_rate=16000&channels=1&interim_results=true&endpointing=800&utterance_end_ms=1500&smart_format=true&punctuate=true&numerals=true&keyterm=…` (built by `build_listen_url`)
 - Auth: `Authorization: Token {api_key}`.
 - Protocol: WebSocket streaming — send raw PCM, receive JSON transcripts.
 - KeepAlive: sends `{"type":"KeepAlive"}` every 5 seconds if no audio.

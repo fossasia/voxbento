@@ -75,3 +75,20 @@ SUPERTONIC_SUPPORTED_LANGS = {
     "uk",
     "vi",
 }
+
+
+# ElevenLabs Eleven v4: one voice speaks every language it supports, so no per-language map.
+# "George", a premade voice every account has, used in ElevenLabs' own API examples.
+ELEVENLABS_DEFAULT_VOICE_ID = "JBFqnCBsd6RMkjVDRZzb"
+
+# ISO 639-1 codes Eleven v4 speaks (its 90+ languages, Thai included), from
+# https://elevenlabs.io/docs/overview/models#supported-languages. Languages without a
+# two-letter code (Cantonese, Filipino, ...) are left out: booths use ISO 639-1.
+ELEVENLABS_SUPPORTED_LANGS = {
+    "af", "am", "ar", "as", "az", "be", "bg", "bn", "bs", "ca", "cs", "cy", "da", "de", "el",
+    "en", "es", "et", "fa", "ff", "fi", "fr", "gl", "gu", "ha", "he", "hi", "hr", "hu", "hy",
+    "id", "is", "it", "ja", "jv", "ka", "kk", "kn", "ko", "ky", "lb", "lg", "ln", "lo", "lt",
+    "lv", "mi", "mk", "ml", "mn", "mr", "ms", "mt", "my", "ne", "nl", "no", "oc", "or", "pa",
+    "pl", "ps", "pt", "ro", "ru", "sd", "sk", "sl", "sn", "so", "sr", "sv", "sw", "ta", "te",
+    "tg", "th", "tr", "uk", "ur", "uz", "vi", "wo", "zh", "zu",
+}  # fmt: skip

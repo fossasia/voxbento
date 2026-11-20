@@ -39,11 +39,14 @@ from portal.routers.demo import router as demo_router
 from portal.routers.developer import router as developer_router
 from portal.routers.interpreter import router as interpreter_router
 from portal.routers.listener import router as listener_router
+from portal.routers.meeting_analysis import router as meeting_analysis_router
 from portal.routers.meeting_source import router as meeting_source_router
 from portal.routers.oauth import router as oauth_router
 from portal.routers.program_ingest import router as program_ingest_router
 from portal.routers.public import router as public_router
+from portal.routers.translation_models import router as translation_models_router
 from portal.routers.webhooks import router as webhooks_router
+from portal.routers.youtube import router as youtube_router
 from portal.security_headers import SecurityHeadersMiddleware, apply_security_headers, forwarded_https
 from portal.websockets.handlers import router as ws_router
 from portal.workspace_routing import WorkspaceRoutingMiddleware
@@ -111,6 +114,17 @@ async def lifespan(app: FastAPI):
     meeting_task = asyncio.create_task(meeting_source.reconcile_loop())
     attendance_task = asyncio.create_task(booths.attendance.run())
 
+    # Bring back booths that were live before this restart, then keep saving them (TD-03).
+    recovery_task = None
+    if settings.booth_state_recovery_enabled:
+        from portal import booth_recovery
+        from portal.websockets.manager import schedule_participant_expiry
+
+        restored = await booth_recovery.restore(booths, max_age_seconds=settings.booth_state_max_age_seconds)
+        for booth_id, participant_id in restored:
+            schedule_participant_expiry(booth_id, participant_id, None, settings.booth_restart_grace_seconds)
+        recovery_task = asyncio.create_task(booth_recovery.run(booths))
+
     dg.track_task(asyncio.create_task(_gen()))
 
     logging.getLogger("uvicorn.access").addFilter(_UvicornTokenRedactor())
@@ -120,6 +134,8 @@ async def lifespan(app: FastAPI):
     tasks_to_cancel = [reaper_task, webhook_task, notification_task, rate_limit_cleanup_task, meeting_task, attendance_task]
     if ingest_task:
         tasks_to_cancel.append(ingest_task)
+    if recovery_task:
+        tasks_to_cancel.append(recovery_task)
     for task in tasks_to_cancel:
         task.cancel()
     await asyncio.gather(*tasks_to_cancel, return_exceptions=True)
@@ -390,8 +406,11 @@ app.include_router(api_v1_router)
 
 app.include_router(admin_router)
 app.include_router(program_ingest_router)
+app.include_router(youtube_router)
 app.include_router(meeting_source_router)
 app.include_router(attendance_router)
+app.include_router(translation_models_router)
+app.include_router(meeting_analysis_router)
 
 app.include_router(demo_router)
 
