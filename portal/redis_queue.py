@@ -267,4 +267,6 @@ async def run_worker(
             raise
         except Exception:  # noqa: BLE001 - the worker must keep running; rows stay in the database
             logger.exception("redis_queue %s worker error", name)
+            # Retry the scan after the back-off instead of waiting for the next reconcile.
+            last_scan = float("-inf")
             await asyncio.sleep(outage_scan_secs)

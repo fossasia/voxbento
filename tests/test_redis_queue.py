@@ -268,3 +268,23 @@ async def test_worker_drains_a_large_backlog_in_one_scan(redis: FakeAsyncRedis) 
     await asyncio.gather(task, return_exceptions=True)
     assert backlog == 0
     assert calls == 101  # 100 full batches, then one that finds nothing
+
+
+@pytest.mark.anyio
+async def test_failed_scan_is_retried_without_waiting_for_the_reconcile(redis: FakeAsyncRedis) -> None:
+    calls = 0
+
+    async def process_due() -> int:
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            raise OSError("database unreachable")
+        return 0
+
+    task = asyncio.create_task(
+        redis_queue.run_worker(redis_queue.EMAIL, process_due, reconcile_secs=60, outage_scan_secs=0.05, wait_secs=0.02)
+    )
+    await asyncio.sleep(0.3)
+    task.cancel()
+    await asyncio.gather(task, return_exceptions=True)
+    assert calls == 2  # retried after the back-off, with Redis healthy and no new IDs
