@@ -18,7 +18,7 @@ from sqlalchemy.exc import SQLAlchemyError
 import portal.webhooks.worker as _wh_worker
 from portal.auth import WSAuthError, can_perform_role
 from portal.booth_identity import booth_id_to_mediamtx_path, parse_booth_id
-from portal.booth_publish import TICKET_TTL_SECS, issue_ticket
+from portal.booth_publish import TICKET_TTL_SECS, end_booth_publish, end_publishers_for, issue_ticket
 from portal.config import settings
 from portal.globals import booths
 from portal.roles import ALL_ROLES, INTERPRETER, can_set_active
@@ -158,6 +158,9 @@ class ConnectionManager:
         await _remove_retained_participants(
             booths.remove_disconnected(invite_public_id=str(token_id), booth_id=booth_id)
         )
+        # A publisher whose socket had already dropped with no retained record (grace 0, or expired)
+        # is ended by identity, so their audio does not outlive the revoked invite (#1285).
+        await end_publishers_for(invite_public_id=str(token_id), booth_id=booth_id)
 
     def revocation_epoch(self, user_id: int, booth_id: str | None = None) -> tuple[int, int]:
         """Return (user_wide_epoch, booth_specific_epoch) for this user and booth."""
@@ -294,6 +297,9 @@ class ConnectionManager:
             tasks = [self.close_session(ws, code=code, reason=reason) for ws in revoked_sockets]
             await asyncio.gather(*tasks, return_exceptions=True)
         await _remove_retained_participants(booths.remove_disconnected(user_id=user_id, booth_id=booth_id))
+        # A publisher whose socket had already dropped with no retained record (grace 0, or expired)
+        # is ended by identity, so their audio does not outlive the user's revoked access (#1285).
+        await end_publishers_for(user_id=user_id, booth_id=booth_id)
 
     async def close_booth_sessions(
         self,
@@ -844,13 +850,30 @@ async def _handle_leave(session: Session) -> None:
     await broadcast_booth_state(session.booth_id, state)
 
 
-async def _remove_retained_participants(removal: Awaitable[list[tuple[str, dict]]]) -> None:
+async def _safe_end_booth_publish(booth_id: str, **kwargs) -> None:
+    """Call end_booth_publish without ever disturbing the revocation that triggered it.
+
+    end_booth_publish swallows an unreachable or slow MediaMTX itself; this guard keeps an
+    unexpected programming error from skipping a socket's cleanup or a booth-state broadcast.
+    """
+    try:
+        await end_booth_publish(booth_id, **kwargs)
+    except Exception:
+        logger.exception("Unexpected error ending WHIP session for booth %s", booth_id)
+
+
+async def _remove_retained_participants(
+    removal: Awaitable[list[tuple[str, dict, list[tuple[str, bool]]]]],
+) -> None:
     """Remove participants whose access was revoked while their socket was down, and tell their booths.
 
     Without this they would keep their place, and an active slot with live audio, until the
-    reconnect or restart grace ran out, although they can no longer reconnect.
+    reconnect or restart grace ran out, although they can no longer reconnect. Their WHIP session
+    is ended too, so a publisher removed here does not keep playing to listeners (#1285).
     """
-    for booth_id, state in await removal:
+    for booth_id, state, removed in await removal:
+        for participant_id, was_active in removed:
+            await _safe_end_booth_publish(booth_id, participant_id=participant_id, was_active=was_active)
         await broadcast_booth_state(booth_id, state)
 
 
@@ -880,9 +903,14 @@ async def release_participant(session: Session, *, immediate: bool) -> None:
     session.participant_id = None
     grace = settings.booth_reconnect_grace_seconds
     if immediate or grace <= 0:
-        state = await booths.leave_participant(
+        # was_active is read under the removal's lock, since removing the active interpreter
+        # promotes the next one and would otherwise misname the session to end (#1285).
+        state, was_active = await booths.leave_participant_reporting_active(
             session.booth_id, participant_id, session.language, session.channel_id, connection_id=session.connection_id
         )
+        if immediate:
+            # Access ended, not an ordinary drop: end the audio they are still sending (#1285).
+            await _safe_end_booth_publish(session.booth_id, participant_id=participant_id, was_active=was_active)
     else:
         state = await booths.disconnect_participant(session.booth_id, participant_id, session.connection_id)
         if state is None:
@@ -1000,6 +1028,13 @@ async def _handle_set_broadcast_unlocked(ws: WebSocket, session: Session, data: 
         # unresponsive. Publisher mic/ingest state is already reset inside
         # set_broadcast_unlocked.
         if not unlocked:
+            # Stop is meant to take the booth off air, so end the WHIP session too: otherwise the
+            # audio keeps playing to direct WHEP readers until the interpreter's browser reacts
+            # (#1285). Done before the transcription-shutdown await below so a concurrent unlock and
+            # fresh publisher cannot slip in first; still guarded below against that race.
+            booth = booths.get_booth_sync(session.booth_id)
+            if booth is not None and not booth.broadcast_unlocked:
+                await _safe_end_booth_publish(session.booth_id)
             try:
                 from portal.transcription.worker import stop_transcription_worker
 

@@ -74,7 +74,7 @@ VoxBento is a production-grade **browser-first interpretation booth console** fo
 | `portal/config.py` | `Settings` — pydantic-settings; all env vars / `.env` |
 | `portal/models.py` | SQLAlchemy declarative models: `Event`, `Room`, `DBBooth`, `InviteToken`, `User`, `EventMembership`, `RoomMembership`, `BoothMembership`, `HostingRequest`, `AIVocabularyEntry`, etc. |
 | `portal/database.py` | Async engine, session factory (`get_session`), all CRUD helpers |
-| `portal/booth_publish.py` | Single-use WHIP publish tickets for interpreter booth paths; checked by the MediaMTX auth hook |
+| `portal/booth_publish.py` | Single-use WHIP publish tickets for interpreter booth paths; checked by the MediaMTX auth hook; records the authorised session as the path's publisher and ends it (`end_booth_publish`) when access ends |
 | `portal/booth_identity.py` | `make_booth_id`, `make_mediamtx_path`, `parse_booth_id`, `validate_event_slug`, `validate_language_code` |
 | `portal/roles.py` | `Permission` enum, `ROLE_PERMISSIONS` dict, `ALL_ROLES` set, `_ROLE_RANK` |
 | `portal/crypto.py` | `encrypt_val` / `decrypt_val` (Fernet, SHA-256 key derivation) |
