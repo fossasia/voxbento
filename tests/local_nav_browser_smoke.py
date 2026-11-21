@@ -50,7 +50,7 @@ async def main() -> None:
                 page = await browser.new_page(viewport={"width": 360, "height": 800})
                 await page.goto(f"{origin}/local", wait_until="load")
 
-                for width in (360, 768, 1024, 1279, 1280):
+                for width in (320, 360, 768, 1024, 1279, 1280):
                     await page.set_viewport_size({"width": width, "height": 800})
                     desktop_nav = page.locator("#local-desktop-nav")
                     menu_toggle = page.locator("#navbar details > summary")
@@ -73,6 +73,7 @@ async def main() -> None:
                     assert layout["pageWidth"] <= width, layout
                     assert layout["brandRight"] <= layout["controlsLeft"], layout
                     assert layout["controlsRight"] <= width, layout
+                    assert await page.locator(".local-app-badge").is_visible() == (width > 340)
 
                 await page.context.add_cookies([{"name": "user_token", "value": user_token, "url": origin}])
                 await page.reload(wait_until="load")

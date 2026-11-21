@@ -92,6 +92,9 @@
             text-transform: uppercase;
             box-shadow: 2px 2px 0px #0d0f10;
         }
+        @media (max-width: 340px) {
+            .local-app-badge { display: none; }
+        }
     </style>
 </head>
 
@@ -102,7 +105,7 @@
         <div class="max-w-7xl mx-auto px-4 md:px-6 h-16 flex items-center justify-between">
             <a href="/" class="flex items-center gap-2 md:gap-3 flex-shrink-0">
                 <img src="{{ url_for('static', path='img/app_icon.png') }}" alt="VoxBento Icon" class="w-7 h-7 md:w-8 md:h-8 brutal-border rounded shadow-none">
-                <span class="text-lg md:text-[1.35rem] font-black tracking-tight text-[#0d0f10]">VoxBento <span class="bg-[#fbbf24] text-[#0d0f10] text-xs px-2 py-0.5 rounded border border-[#0d0f10] ml-1 uppercase font-mono font-black">Local</span></span>
+                <span class="text-lg md:text-[1.35rem] font-black tracking-tight text-[#0d0f10]">VoxBento <span class="local-app-badge bg-[#fbbf24] text-[#0d0f10] text-xs px-2 py-0.5 rounded border border-[#0d0f10] ml-1 uppercase font-mono font-black">Local</span></span>
             </a>
             <nav id="local-desktop-nav" class="hidden xl:!flex items-center gap-8 text-sm font-bold text-[#0d0f10]">
                 <a href="/" class="hover:text-brand-600 transition-colors uppercase tracking-wider">Web Console</a>
