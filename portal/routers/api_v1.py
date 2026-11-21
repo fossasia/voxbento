@@ -2,10 +2,10 @@ from __future__ import annotations
 
 import logging
 from datetime import datetime, timezone
-from typing import Annotated, Any
+from typing import Annotated, Any, Literal
 
-from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
-from pydantic import BaseModel, Field, field_validator
+from fastapi import APIRouter, Depends, HTTPException, Path, Query, Request, status
+from pydantic import AliasChoices, BaseModel, ConfigDict, Field, field_validator
 from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -30,15 +30,23 @@ from portal.models import (
 )
 from portal.rate_limit import auth_rate_limiter
 from portal.roles import EVENT_OWNER
-from portal.transcription.constants import ProviderEnum
+from portal.room_setup import engine_catalog, language_name, server_unavailable_reason, voice_languages_for
+from portal.transcription.constants import ALLOWED_MODELS, ProviderEnum
+from portal.transcription.providers.base import get_api_key
 from portal.transcription.worker import active_workers, start_transcription_worker, stop_transcription_worker
-from portal.translations.constants import TranslationProviderEnum
+from portal.translations.constants import TRANSLATION_MODELS, TranslationProviderEnum
+from portal.translations.keys import get_translation_api_key
 from portal.translations.model_languages import language_support_error
+from portal.translations.prompts import MAX_PERSONA_CHARS, MAX_STYLE_CHARS
+from portal.tts.providers.base import TTSProviderEnum
+from portal.tts.worker import invalidate_config as invalidate_tts_config
 from portal.websockets.revocation import revoke_booths_for_deleted_entity
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/v1")
+
+_MAX_DATABASE_ID = 2**31 - 1
 
 # Maps each EventAPIKeysUpdate field name to its corresponding encrypted
 # attribute on the Event model.  Adding a new provider only requires one
@@ -114,6 +122,8 @@ async def _verify_token_rbac(
     manage: bool = False,
     lock_event: bool = False,
     write_lock: bool = False,
+    room_id_kind: Literal["auto", "internal", "eventyay"] = "auto",
+    reject_ambiguous_room_id: bool = False,
 ) -> Room | None:
     """Validate OAuth RBAC and optionally lock the event for a mutating request.
 
@@ -137,24 +147,35 @@ async def _verify_token_rbac(
 
     resolved_room: Room | None = None
     if room_id is not None:
-        # Check Eventyay ID first to avoid colliding with an internal autoincrement ID in the same event
-        stmt = select(Room).where(Room.event_id == event.id, Room.eventyay_room_id == str(room_id))
-        res = await db.execute(stmt)
-        resolved_room = res.scalars().first()
+        if room_id_kind in {"auto", "eventyay"}:
+            # ``auto`` keeps the existing Eventyay-ID-first behavior for legacy
+            # routes. Settings updates use an explicit identifier kind instead.
+            stmt = select(Room).where(Room.event_id == event.id, Room.eventyay_room_id == str(room_id))
+            res = await db.execute(stmt)
+            resolved_room = res.scalars().first()
 
-        parsed_id: int | None = None
-        if isinstance(room_id, int):
-            parsed_id = room_id
-        elif isinstance(room_id, str) and room_id.isascii() and room_id.isdecimal():
-            try:
-                parsed_id = int(room_id)
-            except ValueError:
+        if (not resolved_room or reject_ambiguous_room_id) and room_id_kind in {"auto", "internal"}:
+            parsed_id: int | None = None
+            if isinstance(room_id, int):
+                parsed_id = room_id
+            elif room_id_kind == "auto" and isinstance(room_id, str) and room_id.isascii() and room_id.isdecimal():
+                try:
+                    parsed_id = int(room_id)
+                except ValueError:
+                    parsed_id = None
+
+            if parsed_id is not None and not 1 <= parsed_id <= _MAX_DATABASE_ID:
                 parsed_id = None
-
-        if not resolved_room and parsed_id is not None:
-            resolved_room = await db.get(Room, parsed_id)
-            if resolved_room and resolved_room.event_id != event.id:
-                resolved_room = None
+            if parsed_id is not None:
+                internal_room = await db.get(Room, parsed_id)
+                if internal_room and internal_room.event_id != event.id:
+                    internal_room = None
+                if resolved_room and internal_room and resolved_room.id != internal_room.id:
+                    raise HTTPException(
+                        status_code=status.HTTP_409_CONFLICT,
+                        detail="Room identifier is ambiguous; use an explicit internal or Eventyay settings route",
+                    )
+                resolved_room = resolved_room or internal_room
 
         if not resolved_room:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Room not found")
@@ -206,6 +227,8 @@ class EventResponse(BaseModel):
 
 
 def _extract_room_id(room: Room | Any, room_id: int | str) -> int:
+    """Return the internal room primary key for either supported room identifier."""
+
     if room is not None and hasattr(room, "id") and isinstance(room.id, int):
         return room.id
     if isinstance(room_id, int):
@@ -516,7 +539,7 @@ class RoomUpsert(BaseModel):
     transcription_model: str | None = Field(None, max_length=40)
     source_language: str | None = Field(None, max_length=10)
     enable_translation: bool | None = None
-    translation_provider: str | None = Field(None, max_length=50)
+    translation_provider: TranslationProviderEnum | None = Field(None)
     translation_model: str | None = Field(None, max_length=100)
 
     @field_validator(
@@ -547,6 +570,363 @@ class RoomUpsert(BaseModel):
         return validated
 
 
+class RoomSettingsUpdate(BaseModel):
+    """Settings that can be changed through the versioned room API.
+
+    The API deliberately exposes an allow-list instead of accepting arbitrary
+    database attributes.  A few aliases are kept for compatibility with the
+    room sync payload used by Eventyay (for example, ``enable_transcription``
+    maps to ``floor_transcription_enabled``).
+    """
+
+    model_config = ConfigDict(extra="forbid", populate_by_name=True)
+
+    display_name: str | None = Field(
+        None,
+        min_length=1,
+        max_length=200,
+        validation_alias=AliasChoices("display_name", "name"),
+    )
+    jitsi_url: Any = Field(
+        None,
+        description="Meeting URLs must be changed through the dedicated meeting-source workflow.",
+    )
+    audio_delay_ms: int | None = Field(None, ge=0, le=10_000)
+    relay_booth_id: int | None = Field(None, ge=1, le=_MAX_DATABASE_ID)
+
+    floor_transcription_enabled: bool | None = Field(
+        None,
+        validation_alias=AliasChoices("floor_transcription_enabled", "enable_transcription"),
+    )
+    floor_transcription_provider: ProviderEnum | None = Field(
+        None,
+        validation_alias=AliasChoices("floor_transcription_provider", "transcription_provider"),
+    )
+    floor_transcription_model: str | None = Field(
+        None,
+        max_length=40,
+        validation_alias=AliasChoices("floor_transcription_model", "transcription_model"),
+    )
+    floor_language_code: str | None = Field(
+        None,
+        max_length=10,
+        validation_alias=AliasChoices("floor_language_code", "source_language"),
+    )
+
+    floor_translation_enabled: bool | None = Field(
+        None,
+        validation_alias=AliasChoices("floor_translation_enabled", "enable_translation"),
+    )
+    floor_translation_provider: TranslationProviderEnum | None = Field(
+        None,
+        validation_alias=AliasChoices("floor_translation_provider", "translation_provider"),
+    )
+    floor_translation_model: str | None = Field(
+        None,
+        max_length=100,
+        validation_alias=AliasChoices("floor_translation_model", "translation_model"),
+    )
+    floor_ai_interpreter_persona: str | None = Field(None, max_length=MAX_PERSONA_CHARS)
+    floor_ai_interpretation_style: str | None = Field(None, max_length=MAX_STYLE_CHARS)
+    floor_ai_vocabulary_enabled: bool | None = None
+
+    floor_tts_enabled: bool | None = None
+    floor_tts_provider: TTSProviderEnum | None = None
+    floor_tts_voice: Literal["M1", "M2", "M3", "M4", "M5", "F1", "F2", "F3", "F4", "F5"] | None = None
+
+    @field_validator("floor_language_code")
+    @classmethod
+    def validate_language_code(cls, value):
+        """Normalize and validate ISO language codes before persistence."""
+
+        if value is None:
+            return value
+        normalised = validate_language_code(value)
+        if normalised == "floor":
+            raise ValueError("'floor' is not a valid source language for a room")
+        return normalised
+
+    @field_validator(
+        "floor_transcription_model",
+        "floor_language_code",
+        "floor_translation_provider",
+        "floor_translation_model",
+        "floor_ai_interpreter_persona",
+        "floor_ai_interpretation_style",
+        mode="before",
+    )
+    @classmethod
+    def empty_string_to_none(cls, value):
+        """Treat blank optional string settings as an explicit value to clear."""
+
+        if isinstance(value, str) and not value.strip():
+            return None
+        return value
+
+    @field_validator("display_name", mode="before")
+    @classmethod
+    def normalize_display_name(cls, value):
+        """Trim room names while preserving validation for blank names."""
+
+        return value.strip() if isinstance(value, str) else value
+
+
+_NON_NULL_ROOM_SETTINGS = frozenset(
+    {
+        "display_name",
+        "audio_delay_ms",
+        "floor_transcription_enabled",
+        "floor_transcription_provider",
+        "floor_transcription_model",
+        "floor_translation_enabled",
+        "floor_ai_vocabulary_enabled",
+        "floor_tts_enabled",
+        "floor_tts_provider",
+        "floor_tts_voice",
+    }
+)
+
+_TRANSCRIPTION_ROOM_SETTINGS = frozenset(
+    {
+        "floor_transcription_enabled",
+        "floor_transcription_provider",
+        "floor_transcription_model",
+        "floor_language_code",
+    }
+)
+_TRANSLATION_ROOM_SETTINGS = frozenset(
+    {
+        "floor_translation_enabled",
+        "floor_translation_provider",
+        "floor_translation_model",
+        "floor_language_code",
+    }
+)
+_TTS_ROOM_SETTINGS = frozenset(
+    {"floor_tts_enabled", "floor_tts_provider", "floor_tts_voice", "floor_translation_enabled"}
+)
+
+
+def _effective_room_setting(room: Room, updates: dict, field: str):
+    value = updates[field] if field in updates else getattr(room, field)
+    return getattr(value, "value", value)
+
+
+def _validate_transcription_settings(event: Event, room: Room, updates: dict) -> None:
+    if not _TRANSCRIPTION_ROOM_SETTINGS.intersection(updates):
+        return
+
+    enabled = bool(_effective_room_setting(room, updates, "floor_transcription_enabled"))
+    provider_value = _effective_room_setting(room, updates, "floor_transcription_provider")
+    model = _effective_room_setting(room, updates, "floor_transcription_model")
+    language = _effective_room_setting(room, updates, "floor_language_code")
+
+    if not enabled and not {"floor_transcription_provider", "floor_transcription_model"}.intersection(updates):
+        return
+    try:
+        provider = ProviderEnum(provider_value)
+    except (TypeError, ValueError):
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            detail="A valid transcription provider is required for transcription settings",
+        ) from None
+    if model not in ALLOWED_MODELS[provider]:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            detail=f"Invalid transcription model '{model}' for provider '{provider.value}'",
+        )
+    if not enabled:
+        return
+    if provider == ProviderEnum.NONE:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            detail="Transcription cannot be enabled with provider 'none'",
+        )
+    if not language:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            detail="Select a source language before enabling transcription",
+        )
+    unavailable = server_unavailable_reason(provider.value)
+    if unavailable:
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail=unavailable)
+    if provider != ProviderEnum.LOCAL:
+        if not event.transcription_api_enabled:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+                detail="Enable the event transcription API before selecting an external provider",
+            )
+        try:
+            provider_key = get_api_key(event, provider)
+        except ValueError:
+            provider_key = None
+        if not provider_key:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+                detail=f"Configure the {provider.value} API key before enabling this provider",
+            )
+
+
+def _translation_sync_payload(updates: dict) -> dict:
+    field_map = {
+        "floor_translation_enabled": "enable_translation",
+        "floor_translation_provider": "translation_provider",
+        "floor_translation_model": "translation_model",
+        "floor_language_code": "source_language",
+    }
+    return {field_map[field]: getattr(value, "value", value) for field, value in updates.items() if field in field_map}
+
+
+async def _validate_translation_settings(db: AsyncSession, event: Event, room: Room, updates: dict) -> None:
+    translation_changed = bool(_TRANSLATION_ROOM_SETTINGS.intersection(updates))
+    tts_needs_translation = bool(
+        {"floor_tts_enabled", "floor_tts_provider", "floor_tts_voice"}.intersection(updates)
+        and _effective_room_setting(room, updates, "floor_tts_enabled")
+    )
+    if not translation_changed and not tts_needs_translation:
+        return
+
+    if "floor_translation_provider" in updates and "floor_translation_model" not in updates:
+        provider = _effective_room_setting(room, updates, "floor_translation_provider")
+        if provider != room.floor_translation_provider:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+                detail="translation_model is required when changing translation_provider",
+            )
+
+    sync_payload = _translation_sync_payload(updates)
+    if tts_needs_translation and not translation_changed:
+        sync_payload = {
+            "enable_translation": _effective_room_setting(room, updates, "floor_translation_enabled"),
+            "translation_provider": _effective_room_setting(room, updates, "floor_translation_provider"),
+            "translation_model": _effective_room_setting(room, updates, "floor_translation_model"),
+            "source_language": _effective_room_setting(room, updates, "floor_language_code"),
+        }
+    _check_server_translation(sync_payload, room)
+    if "translation_model" in sync_payload and "floor_translation_model" not in updates:
+        updates["floor_translation_model"] = sync_payload["translation_model"]
+
+    enabled = bool(_effective_room_setting(room, updates, "floor_translation_enabled"))
+    provider_value = _effective_room_setting(room, updates, "floor_translation_provider")
+    model = _effective_room_setting(room, updates, "floor_translation_model")
+    try:
+        provider = TranslationProviderEnum(provider_value)
+    except (TypeError, ValueError):
+        provider = None
+    choice_changed = bool({"floor_translation_provider", "floor_translation_model"}.intersection(updates) or enabled)
+    if choice_changed:
+        if provider is None or not model:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+                detail="A translation provider and model are required before enabling translation",
+            )
+        if provider not in {TranslationProviderEnum.LOCAL, TranslationProviderEnum.SELF_HOSTED}:
+            if model not in TRANSLATION_MODELS.get(provider.value, ()):
+                raise HTTPException(
+                    status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+                    detail=f"Invalid translation model '{model}' for provider '{provider.value}'",
+                )
+    if enabled:
+        language = _effective_room_setting(room, updates, "floor_language_code")
+        if not language:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+                detail="Select a source language before enabling translation",
+            )
+        if provider not in {TranslationProviderEnum.LOCAL, TranslationProviderEnum.SELF_HOSTED}:
+            try:
+                provider_key = get_translation_api_key(event, provider.value)
+            except ValueError:
+                provider_key = None
+            if not provider_key:
+                raise HTTPException(
+                    status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+                    detail=f"Configure the {provider.value} translation API key before enabling this provider",
+                )
+        has_target = await db.scalar(
+            select(RoomTranslationLanguage.id)
+            .where(
+                RoomTranslationLanguage.room_id == room.id,
+                RoomTranslationLanguage.enabled.is_(True),
+            )
+            .limit(1)
+        )
+        if has_target is None:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+                detail="Add at least one enabled target language before enabling translation",
+            )
+
+    await _check_translation_languages(db, sync_payload, room, force=tts_needs_translation)
+    if enabled and not _effective_room_setting(room, updates, "floor_transcription_enabled"):
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            detail="Enable floor transcription before enabling translation",
+        )
+
+
+async def _validate_tts_settings(db: AsyncSession, event: Event, room: Room, updates: dict) -> None:
+    if not _TTS_ROOM_SETTINGS.intersection(updates):
+        return
+    if not _effective_room_setting(room, updates, "floor_tts_enabled"):
+        return
+    if not _effective_room_setting(room, updates, "floor_translation_enabled"):
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            detail="Enable floor translation before enabling TTS",
+        )
+
+    provider_value = _effective_room_setting(room, updates, "floor_tts_provider")
+    try:
+        provider = TTSProviderEnum(provider_value)
+    except (TypeError, ValueError):
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            detail="A valid TTS provider is required before enabling TTS",
+        ) from None
+    if provider in {TTSProviderEnum.DEEPGRAM, TTSProviderEnum.ELEVENLABS}:
+        key_provider = ProviderEnum(provider.value)
+        try:
+            provider_key = get_api_key(event, key_provider)
+        except ValueError:
+            provider_key = None
+        if not provider_key:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+                detail=f"{provider.value} TTS is not available for this event",
+            )
+    if engine_catalog(event).find("voice", provider.value) is None:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            detail=f"{provider.value} TTS is not available for this event",
+        )
+
+    spoken_codes = list(
+        await db.scalars(
+            select(RoomTranslationLanguage.language_code).where(
+                RoomTranslationLanguage.room_id == room.id,
+                RoomTranslationLanguage.enabled.is_(True),
+                RoomTranslationLanguage.tts_enabled.is_(True),
+            )
+        )
+    )
+    if not spoken_codes:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            detail="Add at least one AI voice target language before enabling TTS",
+        )
+    supported = set(voice_languages_for(provider.value))
+    unsupported = [language_name(code) for code in spoken_codes if code not in supported]
+    if unsupported:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            detail=(
+                f"{provider.value} TTS can't speak {', '.join(unsupported)}. "
+                "Choose another provider or use AI captions for that language"
+            ),
+        )
+
+
 def _sync_floor_transcription_settings(room: Room, payload_dict: dict) -> None:
     """Apply floor transcription configuration and source language to the room instance."""
     if "enable_transcription" in payload_dict and payload_dict["enable_transcription"] is not None:
@@ -565,7 +945,8 @@ def _sync_floor_translation_settings(room: Room, payload_dict: dict) -> None:
     if "enable_translation" in payload_dict and payload_dict["enable_translation"] is not None:
         room.floor_translation_enabled = payload_dict["enable_translation"]
     if "translation_provider" in payload_dict:
-        room.floor_translation_provider = payload_dict["translation_provider"]
+        val = payload_dict["translation_provider"]
+        room.floor_translation_provider = getattr(val, "value", val)
     if "translation_model" in payload_dict:
         room.floor_translation_model = payload_dict["translation_model"]
 
@@ -618,7 +999,9 @@ _TRANSLATION_SETUP_FIELDS = {
 }
 
 
-async def _check_translation_languages(db: AsyncSession, payload_dict: dict, room: Room | None) -> None:
+async def _check_translation_languages(
+    db: AsyncSession, payload_dict: dict, room: Room | None, *, force: bool = False
+) -> None:
     """Reject a translation model that cannot handle the room's languages, before anything is written.
 
     Looks at the room as it will be once the update is applied. Only an update that changes
@@ -657,7 +1040,7 @@ async def _check_translation_languages(db: AsyncSession, payload_dict: dict, roo
         payload_dict["source_language"] if "source_language" in payload_dict else before[3],
         before[4] if targets is None else sorted(set(targets)),
     )
-    if not proposed[0] or (room is not None and proposed == before):
+    if not proposed[0] or (room is not None and proposed == before and not force):
         return
     error = language_support_error(proposed[1], proposed[2], (proposed[3], *proposed[4]))
     if error:
@@ -935,19 +1318,155 @@ async def delete_room(
     return None
 
 
-@router.patch("/events/{event_slug}/rooms/{room_id}/settings")
-async def patch_room_settings(
+async def _patch_room_settings(
     event_slug: str,
     room_id: int | str,
+    payload: RoomSettingsUpdate,
     db: AsyncSession = Depends(get_db_session),
     token: OAuthToken = Depends(require_oauth_scope("rooms:write")),
+    *,
+    room_id_kind: Literal["auto", "internal", "eventyay"],
+    request_room_id: int | str,
 ):
+    """Apply a validated partial update to an explicitly identified room."""
+
     event = await _get_event_for_request(db, event_slug, write_lock=True)
     if not event:
         raise HTTPException(status_code=404, detail="Event not found")
 
-    await _verify_token_rbac(db, token, event, room_id, manage=True, lock_event=True, write_lock=True)
-    return {"status": "success"}
+    room = await _verify_token_rbac(
+        db,
+        token,
+        event,
+        room_id,
+        manage=True,
+        lock_event=True,
+        write_lock=True,
+        room_id_kind=room_id_kind,
+        reject_ambiguous_room_id=room_id_kind == "auto",
+    )
+    if room is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Room not found")
+
+    updates = payload.model_dump(exclude_unset=True)
+    if not updates:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="At least one room setting is required")
+
+    null_forbidden = sorted(field for field in updates if field in _NON_NULL_ROOM_SETTINGS and updates[field] is None)
+    if null_forbidden:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            detail=f"These room settings cannot be null: {', '.join(null_forbidden)}",
+        )
+
+    if "jitsi_url" in updates:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            detail="Meeting URLs must be changed through the dedicated meeting-source workflow",
+        )
+
+    if "relay_booth_id" in updates and updates["relay_booth_id"] is not None:
+        relay_booth = await db.scalar(
+            select(DBBooth)
+            .join(Room, Room.id == DBBooth.room_id)
+            .where(
+                DBBooth.id == updates["relay_booth_id"],
+                DBBooth.event_id == event.id,
+                Room.event_id == event.id,
+            )
+        )
+        if relay_booth is None:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Relay booth not found")
+
+    _validate_transcription_settings(event, room, updates)
+    await _validate_translation_settings(db, event, room, updates)
+    await _validate_tts_settings(db, event, room, updates)
+
+    for field, value in updates.items():
+        setattr(room, field, getattr(value, "value", value))
+
+    audit = OAuthAuditLog(
+        token_id=token.id,
+        client_id=token.client_id,
+        event_id=event.id,
+        action="room.settings_updated",
+        request_path=f"/api/v1/events/{event_slug}/rooms/{request_room_id}/settings",
+        status_code=status.HTTP_200_OK,
+    )
+    db.add(audit)
+    await db.flush()
+    await db.commit()
+    if _TTS_ROOM_SETTINGS.intersection(updates):
+        invalidate_tts_config(room.id)
+
+    return {
+        "status": "success",
+        "room_id": room.id,
+        "settings": {field: getattr(room, field) for field in updates},
+    }
+
+
+@router.patch("/events/{event_slug}/rooms/{room_id}/settings")
+async def patch_room_settings(
+    event_slug: str,
+    room_id: Annotated[str, Path(min_length=1, max_length=200)],
+    payload: RoomSettingsUpdate,
+    db: AsyncSession = Depends(get_db_session),
+    token: OAuthToken = Depends(require_oauth_scope("rooms:write")),
+):
+    """Update an unambiguous legacy room identifier, preserving Eventyay-first lookup."""
+
+    return await _patch_room_settings(
+        event_slug,
+        room_id,
+        payload,
+        db,
+        token,
+        room_id_kind="auto",
+        request_room_id=room_id,
+    )
+
+
+@router.patch("/events/{event_slug}/rooms/internal/{room_id}/settings")
+async def patch_internal_room_settings(
+    event_slug: str,
+    room_id: Annotated[int, Path(ge=1, le=_MAX_DATABASE_ID)],
+    payload: RoomSettingsUpdate,
+    db: AsyncSession = Depends(get_db_session),
+    token: OAuthToken = Depends(require_oauth_scope("rooms:write")),
+):
+    """Update a room using its explicit internal primary-key identifier."""
+
+    return await _patch_room_settings(
+        event_slug,
+        room_id,
+        payload,
+        db,
+        token,
+        room_id_kind="internal",
+        request_room_id=f"internal/{room_id}",
+    )
+
+
+@router.patch("/events/{event_slug}/rooms/eventyay/{eventyay_room_id}/settings")
+async def patch_eventyay_room_settings(
+    event_slug: str,
+    eventyay_room_id: Annotated[str, Path(min_length=1, max_length=200)],
+    payload: RoomSettingsUpdate,
+    db: AsyncSession = Depends(get_db_session),
+    token: OAuthToken = Depends(require_oauth_scope("rooms:write")),
+):
+    """Update a room using its explicit Eventyay room identifier."""
+
+    return await _patch_room_settings(
+        event_slug,
+        eventyay_room_id,
+        payload,
+        db,
+        token,
+        room_id_kind="eventyay",
+        request_room_id=f"eventyay/{eventyay_room_id}",
+    )
 
 
 @router.get("/events/{event_slug}/rooms/{room_id}/booths")
