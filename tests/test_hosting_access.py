@@ -2026,3 +2026,15 @@ async def test_get_access_flags_room_coordinator_on_event_page():
 
     assert own == {"is_admin": False, "is_event_owner": False, "is_room_coordinator": True}
     assert other == {"is_admin": False, "is_event_owner": False, "is_room_coordinator": False}
+
+
+@pytest.mark.anyio
+async def test_request_demo_button_visibility_starts_at_tablet_breakpoint():
+    async with client() as http:
+        response = await http.get('/')
+
+    assert response.status_code == 200, response.text
+    button = next(line for line in response.text.splitlines() if 'data-demo-modal-open' in line)
+    classes = button.split('class="', 1)[1].split('"', 1)[0].split()
+    assert '!hidden' in classes
+    assert 'md:!inline-flex' in classes
