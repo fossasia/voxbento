@@ -1806,6 +1806,10 @@ async def _translation_form_response(
     return response
 
 
+def _duplicate_booth_language(language_code: str) -> TranslationLanguageError:
+    return TranslationLanguageError(status_code=409, detail=f"Another booth in this room already uses {language_code}.")
+
+
 def _require_translatable(provider: str | None, model: str | None, language_codes: Iterable[str | None]) -> None:
     """Refuse a translation model that cannot handle the language spoken or a language translated into."""
     error = language_support_error(provider, model, language_codes)
@@ -2945,8 +2949,16 @@ async def admin_edit_booth(request: Request, event_id: int, room_id: int, booth_
                         booth.translation_model,
                         (language_code, *_enabled_codes(booth.translation_languages)),
                     )
+                if language_code != booth.language_code and await _room_has_booth_language(
+                    session, room_id, language_code
+                ):
+                    raise _duplicate_booth_language(language_code)
                 booth.language_code = language_code
-            await session.flush()
+            saved_code = booth.language_code
+            try:
+                await session.flush()
+            except IntegrityError:
+                raise _duplicate_booth_language(saved_code)
     except TranslationLanguageError as error:
         return await _translation_form_response(request, error, event_id, room_id, booth_id)
     return safe_redirect(
