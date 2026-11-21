@@ -12,21 +12,26 @@ The Voxbento API uses bearer token authentication. You call the `voxbento.com` t
 
 ## Binding an OAuth exchange to an event
 
-OAuth integrations using `/oauth/token` can send an `event` form field with
+Confidential OAuth clients **must** send an `event` form field with
 `grant_type=authorization_code`. Its value must be the event slug retained by
 the integration's server when the flow started, alongside its validated OAuth
 state. Do not take this value from the returning browser or consent form.
 
 VoxBento checks that slug against the authorization code before consuming the
 code, creating tokens, or granting event membership. A mismatch returns HTTP 400
-with `error: "invalid_grant"`. Both successful authorization-code and refresh-token
+with `error: "invalid_grant"`; omitting it entirely returns HTTP 400 with
+`error: "invalid_request"`. Both successful authorization-code and refresh-token
 responses include `event`, the slug bound to the issued token.
 
-The parameter is optional for compatibility. Existing clients keep working, but
-omitting it does **not** prevent an event swap. Deploy the VoxBento support first,
-then update Eventyay or another integration to send its server-retained event on
-every authorization-code exchange. Also verify the returned event before storing
-the tokens. Checking only the response is too late to prevent a membership grant.
+Only a confidential client's exchange grants event ownership, so the field is
+required there and optional for public clients. An integration that cannot yet
+send it will fail the exchange: update it to supply its server-retained event
+slug on every authorization-code exchange. Verifying only the returned `event`
+is too late, because the membership grant has already happened by then.
+
+The consent form's own event is separately bound to the client and the signed-in
+user, so the hidden `event_id` cannot be swapped in the browser to obtain a code
+for someone else's event.
 
 ## Obtaining a Token
 
