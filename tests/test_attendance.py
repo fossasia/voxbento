@@ -1239,13 +1239,17 @@ async def test_delete_event_savepoint_rollback_of_deleting_tx_keeps_attendance(d
     tracker._closed.append(visit)
     assert len(tracker.pending_visits(slug)) == 1
 
+    class _ForcedRollback(Exception):
+        pass
+
     session_factory = db_module._get_session_factory()
     async with session_factory() as session:
         try:
             async with session.begin_nested():
-                await delete_event(session, ev.id)
-                raise RuntimeError("rollback deleting savepoint")
-        except RuntimeError:
+                deleted = await delete_event(session, ev.id)
+                assert deleted is True
+                raise _ForcedRollback("rollback deleting savepoint")
+        except _ForcedRollback:
             pass
         await session.commit()
 
@@ -1284,7 +1288,8 @@ async def test_delete_event_released_savepoint_then_outer_rollback_keeps_attenda
 
     session_factory = db_module._get_session_factory()
     async with session_factory() as session:
-        await delete_event(session, ev.id)
+        deleted = await delete_event(session, ev.id)
+        assert deleted is True
         async with session.begin_nested():
             pass
         await session.rollback()

@@ -14,7 +14,6 @@ any database operations.
 
 from __future__ import annotations
 
-import asyncio
 import hashlib
 import hmac
 import logging
@@ -26,7 +25,6 @@ from datetime import date, datetime, timedelta, timezone
 import sqlalchemy as sa
 from sqlalchemy import event as sa_event
 from sqlalchemy import func, or_, select, update
-from sqlalchemy.exc import InvalidRequestError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 from sqlalchemy.orm import Session, joinedload, selectinload
 
@@ -283,27 +281,15 @@ def register_attendance_discard(sync_session: Session, slug: str) -> None:
             root_tx = curr
         curr = curr.parent
 
-    def _remove(event_name: str, fn: object) -> None:
-        if sa_event.contains(sync_session, event_name, fn):
-            try:
-                sa_event.remove(sync_session, event_name, fn)
-            except InvalidRequestError:
-                logger.debug("%s listener already removed for %s", event_name, slug)
-
-    def _defer_remove(event_name: str, fn: object) -> None:
-        try:
-            loop = asyncio.get_running_loop()
-            loop.call_soon(_remove, event_name, fn)
-        except RuntimeError:
-            _remove(event_name, fn)
+    cancelled = False
 
     def _on_commit(_s: object) -> None:
+        if cancelled:
+            return
         if sync_session.in_nested_transaction():
             return
         if sync_session.get_transaction() is not root_tx:
             return
-        _remove("after_soft_rollback", _on_soft_rollback)
-        _defer_remove("after_commit", _on_commit)
         try:
             from portal.globals import booths
 
@@ -312,9 +298,9 @@ def register_attendance_discard(sync_session: Session, slug: str) -> None:
             logger.exception("Failed to discard attendance for event %s", slug)
 
     def _on_soft_rollback(_s: object, previous_transaction: object) -> None:
+        nonlocal cancelled
         if previous_transaction in chain:
-            _remove("after_commit", _on_commit)
-            _defer_remove("after_soft_rollback", _on_soft_rollback)
+            cancelled = True
 
     sa_event.listen(sync_session, "after_commit", _on_commit)
     sa_event.listen(sync_session, "after_soft_rollback", _on_soft_rollback)
