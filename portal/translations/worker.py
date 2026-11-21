@@ -14,6 +14,7 @@ from portal.translations.keys import get_translation_api_key
 from portal.translations.providers.anthropic import AnthropicProvider
 from portal.translations.providers.base import ProviderEngine
 from portal.translations.providers.gemini import GeminiProvider
+from portal.translations.providers.libretranslate import LibreTranslateProvider
 from portal.translations.providers.local import LocalProvider
 from portal.translations.providers.openai import OpenAIProvider
 from portal.translations.vocabulary import resolve_vocabulary_entries
@@ -44,9 +45,18 @@ for p in OPENAI_COMPATIBLE_ENDPOINTS.keys():
 ENGINES[TranslationProviderEnum.SELF_HOSTED.value] = ProviderEngine(
     TranslationProviderEnum.SELF_HOSTED.value, openai_provider, EngineKind.OPENAI_COMPATIBLE_LLM
 )
+# LibreTranslate runs its own small HTTP API, separate from the OpenAI-compatible protocol.
+ENGINES[TranslationProviderEnum.LIBRETRANSLATE.value] = ProviderEngine(
+    TranslationProviderEnum.LIBRETRANSLATE.value, LibreTranslateProvider(), EngineKind.MT_API
+)
 
-# Providers that run without a per-event API key.
-KEYLESS_PROVIDERS = {TranslationProviderEnum.LOCAL.value, TranslationProviderEnum.SELF_HOSTED.value}
+# Providers that run without a per-event API key. LibreTranslate's key is server-wide and
+# optional, so event owners never need to set one.
+KEYLESS_PROVIDERS = {
+    TranslationProviderEnum.LOCAL.value,
+    TranslationProviderEnum.SELF_HOSTED.value,
+    TranslationProviderEnum.LIBRETRANSLATE.value,
+}
 
 
 @dataclass
