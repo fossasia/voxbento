@@ -1212,15 +1212,19 @@ label {
   }
 
   .header-btn--handover.state-flash-yellow {
-    background: #fbbf24;
-    box-shadow: 0 0 0 2px rgb(217 119 6 / 0.5);
+    background: var(--vb-color-warning);
+    border-color: var(--vb-color-warning-text);
+    box-shadow: 0 0 0 2px color-mix(in srgb, var(--vb-color-warning) 50%, transparent);
   }
 
   .booth-layout,
   .booth-layout *,
   .booth-layout *::before,
-  .booth-layout *::after {
+  .booth-layout *::after,
+  .toast,
+  .toast * {
     transition-duration: 0.01ms !important;
   }
 }
+
 
