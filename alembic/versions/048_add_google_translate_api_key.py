@@ -2,8 +2,8 @@
 
 Adds the encrypted Google Cloud Translation key to events (#1202).
 
-Revision ID: 046
-Revises: 045
+Revision ID: 048
+Revises: 047
 Create Date: 2026-11-11
 
 """
@@ -16,8 +16,8 @@ import sqlalchemy as sa
 
 from alembic import op
 
-revision: str = "046"
-down_revision: Union[str, Sequence[str], None] = "045"
+revision: str = "048"
+down_revision: Union[str, Sequence[str], None] = "047"
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
 

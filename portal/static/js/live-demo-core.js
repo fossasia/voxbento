@@ -137,6 +137,7 @@ export const CLOSE_MESSAGES = Object.freeze({
 export function doneMessage(reason, maxSeconds) {
   if (reason === 'time_limit') return `That's the ${maxSeconds}-second limit for one try. Press the mic to go again.`;
   if (reason === 'idle') return 'Stopped after a quiet spell. Press the mic to go again.';
+  if (reason === 'daily_limit') return "That's all the demo time for today. Please come back tomorrow.";
   return '';
 }
 

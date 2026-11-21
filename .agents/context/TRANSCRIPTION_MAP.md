@@ -88,7 +88,8 @@ Jitsi Meet Floor Conference
 | `portal/transcription/providers/deepgram.py` | `DeepgramProvider` — nova-3/nova-2 WebSocket streaming; glossary source terms (`speech_keyterms` in `portal/translations/vocabulary.py`, read once per stream, honours `floor_ai_vocabulary_enabled`) sent as nova-3 `keyterm`s or nova-2 `keywords=term:2`; settled chunks collected until `speech_final`/`UtteranceEnd` |
 | `portal/transcription/providers/nvidia.py` | `NVIDIAProvider` — Parakeet-RNNT/CTC via Riva gRPC |
 | `portal/transcription/providers/elevenlabs.py` | `ElevenLabsProvider` — scribe_v2 |
-| `portal/translations/worker.py` | `TranslationWorker`: per-language translation dispatch, timeouts and delivery; `ENGINES` maps each provider to its `TranslationEngine` |
+| `portal/translations/worker.py` | `TranslationWorker`: per-language translation dispatch, timeouts and delivery; `ENGINES` maps each provider to its `TranslationEngine`; `scheduler_for` gives each local model, the self-hosted server and each event on a hosted provider one shared `TranslationScheduler` |
+| `portal/translations/scheduler.py` | `TranslationScheduler`: at most `max_concurrency` engine calls in flight; rooms take turns, then languages, and a room below its fair share of slots goes first; per-language limits (2 running, 15 admitted in all, waiting or running). The live demo's local translations use it too |
 | `portal/translations/engine.py` | `TranslationEngine` interface (`translate_batch`, `translate_text`), `Language`, `TranslationContext`, `EngineKind`; the worker calls engines only through it |
 | `portal/translations/providers/` | Backends: `LocalProvider` (NLLB, an engine itself) and the prompt-based cloud providers, wrapped by `ProviderEngine` in `base.py` |
 | `portal/translations/constants.py` | Translation providers and the hosted models offered for each; the self-hosted list comes from the registry |
@@ -163,6 +164,28 @@ Cancels the asyncio Task and awaits it; removes from state dicts.
 | `handle_final(booth_id, text)` | completed utterance | Broadcasts `{type:"caption", status:"final", text}`; resets state |
 | `handle_chunk(booth_id, text)` | Whisper text chunk | Appends to buffer; splits on sentence boundary (`[.?!]+`); broadcasts `final` for each sentence, `partial` for remainder |
 | `handle_clear(booth_id)` | silence/endpoint | Broadcasts `{type:"caption", status:"clear"}` |
+
+Final captions on a room's canonical floor feed allocate `seq` atomically from
+`Room.floor_caption_seq` for both Jitsi and program ingest. The counter survives
+worker replacement, provider retries, portal restarts and floor-source changes;
+each room advances independently. Only program ingest attaches presentation-delay
+metadata. Translation text and TTS frames carry the same sequence and segment UUID
+as their source caption, so listeners can discard late audio without mistaking new
+sentences for consumed segments.
+
+Sequence allocation and the original-caption broadcast share a per-room lock
+across aggregators; unrelated rooms do not wait for one another. If the DB fails,
+original captions still arrive with their UUID and no sequence, and skip storage,
+translation and TTS until allocation recovers. This avoids inventing a fallback
+counter that could conflict with the durable stream. Missing/deleted rooms drop
+pending finals rather than publishing an invalid sequence.
+
+Every published floor final is also offered to the room's YouTube caption track
+(`youtube_captions.offer`, non-blocking), inside the same per-room lock so posts
+follow allocation order. YouTube numbers its own posts, so a track set to the
+floor's original text keeps receiving captions during an allocation outage; a
+track set to a translated language pauses with translation. Dropped finals for
+deleted rooms are not offered.
 
 ---
 

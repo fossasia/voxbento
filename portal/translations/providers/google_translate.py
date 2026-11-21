@@ -11,6 +11,7 @@ from collections.abc import Sequence
 import httpx
 
 import portal.globals as pg
+from portal.config import settings
 from portal.translations.engine import (
     EngineKind,
     Language,
@@ -29,6 +30,11 @@ class GoogleTranslateEngine(TranslationEngine):
     """Translates through the Cloud Translation Basic (v2) API with the event's API key."""
 
     kind = EngineKind.MT_API
+
+    @property
+    def max_concurrency(self) -> int:
+        """Calls in flight at once, shared with the other hosted providers' limit (#1267)."""
+        return settings.translation_api_concurrency
 
     async def translate_batch(
         self,
