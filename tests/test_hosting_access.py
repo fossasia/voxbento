@@ -235,6 +235,62 @@ async def test_invite_acceptance_flow_and_primitive_copying():
 
 
 @pytest.mark.anyio
+async def test_invite_accept_page_renders_accessible_password_toggles():
+    """New-account invite branch shows a show/hide toggle per password field (#1318)."""
+    async with get_session() as session:
+        user = await create_user(
+            session,
+            email="toggle-invite@example.com",
+            display_name="Toggle Invite",
+            password_hash=None,
+            email_verified=False,
+            can_host=False,
+        )
+        raw_token, _tok = await create_hosting_invite(session, user.id, 3600)
+
+    async with client() as http:
+        resp_get = await http.get(f"/invite/accept/{raw_token}")
+    assert resp_get.status_code == 200
+    content = resp_get.text
+
+    assert content.count('class="password-input-wrapper"') == 2
+    assert "js/password-toggle.js" in content
+    assert (
+        '<button type="button" id="toggle-password" class="password-toggle-btn" '
+        'aria-label="Show password" aria-controls="password"' in content
+    )
+    assert (
+        '<button type="button" id="toggle-password-confirm" class="password-toggle-btn" '
+        'aria-label="Show password" aria-controls="password_confirm"' in content
+    )
+    assert "password-toggle-icon--hide hidden" in content
+
+
+@pytest.mark.anyio
+async def test_invite_accept_page_existing_user_has_password_toggle():
+    async with get_session() as session:
+        user = await create_user(
+            session,
+            email="toggle-invite-existing@example.com",
+            display_name="Toggle Existing",
+            password_hash=hash_password("existing-pass-123"),
+            email_verified=True,
+            can_host=False,
+        )
+        raw_token, _tok = await create_hosting_invite(session, user.id, 3600)
+
+    async with client() as http:
+        resp = await http.get(f"/invite/accept/{raw_token}")
+    assert resp.status_code == 200
+    assert "Enter your password to accept the invitation" in resp.text
+    assert resp.text.count('class="password-input-wrapper"') == 1
+    assert (
+        '<button type="button" id="toggle-password" class="password-toggle-btn" '
+        'aria-label="Show password" aria-controls="password"' in resp.text
+    )
+
+
+@pytest.mark.anyio
 async def test_revoked_user_accepts_invite_restores_access():
     """When a user with revoked hosting accepts an invitation, revoked_at and requested_at are cleared and event access is restored."""
     async with get_session() as session:
