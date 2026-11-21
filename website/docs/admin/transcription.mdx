@@ -69,7 +69,7 @@ Uses ElevenLabs' **Speech-to-Text** (Scribe) service. Requires an ElevenLabs API
 ElevenLabs Scribe provides high-accuracy transcription for various languages and supports low-latency streaming.
 
 :::info
-While ElevenLabs is widely known for Text-to-Speech, Voxbento utilizes their **Scribe** service specifically for high-quality **Speech-to-Text** (transcription).
+Voxbento uses their **Scribe** service for **Speech-to-Text** (transcription). The same key also unlocks the **ElevenLabs v4** AI voice, which speaks 90+ languages including Thai (Deepgram Aura has no Thai voice).
 :::
 
 </TabItem>
@@ -219,7 +219,7 @@ Translated segments are broadcast to subscribers through two synchronized paths 
 Translations can be customized using room **AI Interpreter Persona**, **Interpretation Style**, and uploaded **Vocabulary Glossaries** (see [AI Interpretation](./ai-interpretation.mdx)).
 
 ### Direct Push Text-to-Speech (TTS)
-When a room language uses **AI voice**, translated segments are synthesized into natural speech via **Deepgram Aura** or self-hosted **Supertonic ONNX**. Attendees receive binary framed messages on:
+When a room language uses **AI voice**, translated segments are synthesized into natural speech via **Deepgram Aura**, **ElevenLabs v4** (one voice for every language, Thai included) or self-hosted **Supertonic ONNX**. Attendees receive binary framed messages on:
 ```text
 /ws/tts/{room_id}/{language_code}/{booth_id}
 ```

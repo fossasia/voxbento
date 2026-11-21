@@ -61,7 +61,7 @@ Jitsi Meet Floor Conference
         ▼
    TTS Worker (tts/worker.py)
    Reads 'final' translated segments → buffers punctuation → routes to TTS provider
-   (Deepgram Aura cloud WebSocket OR Supertonic self-hosted in-process ONNX)
+   (Deepgram Aura cloud WebSocket, ElevenLabs v4 cloud HTTP stream, OR Supertonic self-hosted in-process ONNX)
         │
         ▼
    broadcast_bundle() (WebSocket /ws/tts/{room_id}/{language_code}/{booth_id}) -> AudioScheduler -> Web Audio API
@@ -96,8 +96,8 @@ Jitsi Meet Floor Conference
 | `portal/translations/prompts.py` | Contextual prompt construction incorporating room AI persona and style instructions |
 | `portal/translations/vocabulary.py` | AI interpretation vocabulary & glossary resolution, CSV import/export, and matching |
 | `portal/tts/worker.py` | `TTSWorker`, buffers punctuation, chunks text, routes to a TTS provider, pushes raw PCM binary to `tts_manager` |
-| `portal/tts/providers/` | `TTSProvider` ABC + factory; `DeepgramTTSProvider` (Aura WebSocket) and `SupertonicTTSProvider` (in-process ONNX, 44.1k→24k resample) |
-| `portal/tts/constants.py` | `DEEPGRAM_VOICE_MAPPING` (language→Aura voice) plus Supertonic preset voices, language map, and supported languages |
+| `portal/tts/providers/` | `TTSProvider` ABC + factory; `DeepgramTTSProvider` (Aura WebSocket), `ElevenLabsTTSProvider` (Eleven v4 Turbo → v4 over `/v1/text-to-dialogue/stream`, `pcm_24000`) and `SupertonicTTSProvider` (in-process ONNX, 44.1k→24k resample) |
+| `portal/tts/constants.py` | `DEEPGRAM_VOICE_MAPPING` (language→Aura voice) plus Supertonic preset voices, language map, and supported languages; `ELEVENLABS_DEFAULT_VOICE_ID` and `ELEVENLABS_SUPPORTED_LANGS` (Eleven v4, Thai included) |
 
 ---
 
@@ -125,7 +125,7 @@ External provider use requires `event.transcription_api_enabled = True`.
 
 1. Acquires `active_workers_lock`.
 2. Returns immediately if worker already running for this `booth_id`.
-3. Returns immediately if `len(active_workers) >= MAX_TOTAL_WORKERS` (10).
+3. Returns immediately if `len(active_workers) >= settings.max_transcription_workers` (default 10, configurable via `MAX_TRANSCRIPTION_WORKERS`).
 4. Creates asyncio Task running `transcription_worker(...)`.
 5. Stores in `active_workers[booth_id]` = `{task, provider, stderr_task}`.
 
@@ -163,6 +163,28 @@ Cancels the asyncio Task and awaits it; removes from state dicts.
 | `handle_final(booth_id, text)` | completed utterance | Broadcasts `{type:"caption", status:"final", text}`; resets state |
 | `handle_chunk(booth_id, text)` | Whisper text chunk | Appends to buffer; splits on sentence boundary (`[.?!]+`); broadcasts `final` for each sentence, `partial` for remainder |
 | `handle_clear(booth_id)` | silence/endpoint | Broadcasts `{type:"caption", status:"clear"}` |
+
+Final captions on a room's canonical floor feed allocate `seq` atomically from
+`Room.floor_caption_seq` for both Jitsi and program ingest. The counter survives
+worker replacement, provider retries, portal restarts and floor-source changes;
+each room advances independently. Only program ingest attaches presentation-delay
+metadata. Translation text and TTS frames carry the same sequence and segment UUID
+as their source caption, so listeners can discard late audio without mistaking new
+sentences for consumed segments.
+
+Sequence allocation and the original-caption broadcast share a per-room lock
+across aggregators; unrelated rooms do not wait for one another. If the DB fails,
+original captions still arrive with their UUID and no sequence, and skip storage,
+translation and TTS until allocation recovers. This avoids inventing a fallback
+counter that could conflict with the durable stream. Missing/deleted rooms drop
+pending finals rather than publishing an invalid sequence.
+
+Every published floor final is also offered to the room's YouTube caption track
+(`youtube_captions.offer`, non-blocking), inside the same per-room lock so posts
+follow allocation order. YouTube numbers its own posts, so a track set to the
+floor's original text keeps receiving captions during an allocation outage; a
+track set to a translated language pauses with translation. Dropped finals for
+deleted rooms are not offered.
 
 ---
 
