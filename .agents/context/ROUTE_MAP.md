@@ -287,8 +287,11 @@ the admin CSRF token (`require_admin_csrf`, `X-CSRF-Token`).
 - `POST /workspace/events/{event_id}/rooms/{room_id}/analysis/`: event owners,
   origin-checked. Form `session` (`{channel}:{first segment id}`, one of the
   channel's sessions as listed on the page), or `channel` alone for its latest
-  session; `channel` is `floor` or a booth language code with stored segments. Redirects with `?error=disabled|busy|channel`; one report per room
-  is written at a time, in a tracked background task.
+  session; `channel` is `floor` or a booth language code with stored segments. Optional `language`: write the report
+  from the session's translation into that language (`transcript_translations`). Redirects with
+  `?error=disabled|busy|channel|language`; one report per room is written at a time, in a tracked background task.
+  Events with `meeting_analysis_auto` also get reports when a channel's captions stop (no route; `portal/meeting_analysis/auto.py`).
+  `GET /mission-control/{event_slug}/` passes each room's latest report and its reports link in `data-config`.
 - `GET /workspace/events/{event_id}/rooms/{room_id}/analysis/{report_id}/`:
   owners and coordinators; one report with Summary and Transcript tabs. The
   transcript shows the segments of the report's session up to `covered_until`.

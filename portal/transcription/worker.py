@@ -308,3 +308,10 @@ async def stop_transcription_worker(booth_id: str):
         async with active_workers_lock:
             if active_workers.get(booth_id) is session:
                 active_workers.pop(booth_id)
+        if session.room_id is not None:
+            # Imported here: meeting analysis reads room setup, which imports this package.
+            from portal.meeting_analysis.auto import schedule_auto_report
+
+            # The session may have ended: its event can ask for a meeting report on it. Captions that
+            # start again within the wait carry on the same session, so no report is written then.
+            schedule_auto_report(session.room_id, session.language_code, lambda: booth_id in active_workers)

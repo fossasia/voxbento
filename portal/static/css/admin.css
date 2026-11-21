@@ -418,6 +418,9 @@ code { font-family: var(--font-mono); font-size: 0.85em; background: var(--color
 .mc-captions-label { font-size: 0.875rem; font-weight: 600; color: var(--color-text); }
 .mc-captions-reason { flex-basis: 100%; text-align: right; font-size: 0.8125rem; color: var(--color-text-secondary); }
 .mc-captions-reason:empty { display: none; }
+.mc-reports { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin-bottom: 14px; }
+.mc-reports-title { font-size: 0.875rem; font-weight: 600; }
+.mc-reports .btn { margin-left: auto; }
 
 .mc-pill { display: inline-flex; align-items: center; padding: 3px 10px; border-radius: 999px; font-size: 0.75rem; font-weight: 600; background: #eef1f6; color: #475467; white-space: nowrap; }
 .mc-pill.is-on { background: #dcfce7; color: #166534; }

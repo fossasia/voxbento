@@ -6,7 +6,7 @@ from dataclasses import dataclass
 from datetime import datetime
 from typing import Protocol
 
-from portal.meeting_analysis.constants import MAX_TRANSCRIPT_CHARS, PART_CHARS
+from portal.meeting_analysis.constants import GLOSSARY_CHARS, GLOSSARY_TERMS, MAX_TRANSCRIPT_CHARS, PART_CHARS
 from portal.meeting_analysis.schema import AnalysisResult
 
 
@@ -105,12 +105,42 @@ set of notes covering all of these parts: one title, one overview, and sections 
 parts instead of repeating it. Keep the same JSON keys and follow the rules above."""
 
 
-def _context(event_name: str, room_name: str, channel_label: str) -> list[str]:
-    return [
+def fit_glossary(terms: Sequence[str], limit: int = GLOSSARY_CHARS, count: int = GLOSSARY_TERMS) -> tuple[str, ...]:
+    """The glossary terms the prompt names: cleaned, each once, within the prompt's budget."""
+    kept: list[str] = []
+    seen: set[str] = set()
+    size = 0
+    for term in terms:
+        text = _clean(_TRANSCRIPT_TAG.sub(" ", term), 120)
+        folded = text.casefold()
+        if not text or folded in seen:
+            continue
+        if len(kept) >= count or size + len(text) + 3 > limit:
+            break
+        seen.add(folded)
+        kept.append(text)
+        size += len(text) + 3
+    return tuple(kept)
+
+
+def _context(
+    event_name: str,
+    room_name: str,
+    channel_label: str,
+    glossary: Sequence[str] = (),
+    translated: bool = False,
+) -> list[str]:
+    context = [
         f"Event: {_clean(event_name, 200)}",
         f"Room: {_clean(room_name, 200)}",
         f"Channel: {_clean(channel_label, 200)}",
     ]
+    if translated:
+        context.append("The transcript is a machine translation of what was said, so a few words may be off.")
+    if glossary:
+        context.append("Glossary: when these names and terms come up, spell them exactly as written here.")
+        context += [f"- {term}" for term in glossary]
+    return context
 
 
 def _system(language_name: str) -> str:
@@ -126,8 +156,10 @@ def build_analysis_messages(
     transcript: str,
     truncated: bool = False,
     part: tuple[int, int] | None = None,
+    glossary: Sequence[str] = (),
+    translated: bool = False,
 ) -> tuple[str, str]:
-    context = _context(event_name, room_name, channel_label)
+    context = _context(event_name, room_name, channel_label, glossary, translated)
     if part is not None:
         context.append(f"This is part {part[0]} of {part[1]} of the session. Write notes for this part only.")
     if truncated:
@@ -166,8 +198,10 @@ def build_merge_messages(
     language_name: str,
     parts: Sequence[AnalysisResult],
     truncated: bool = False,
+    glossary: Sequence[str] = (),
+    translated: bool = False,
 ) -> tuple[str, str]:
-    context = _context(event_name, room_name, channel_label)
+    context = _context(event_name, room_name, channel_label, glossary, translated)
     if truncated:
         context.append("Only the first part of the session fits, so report on that part.")
     return _system(language_name) + "\n" + MERGE_RULES, "\n".join(context) + f"\n\n<notes>\n{_notes(parts)}\n</notes>"

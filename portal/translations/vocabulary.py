@@ -197,16 +197,24 @@ def parse_vocabulary_csv(file_content: str) -> tuple[list[VocabularyEntryInput],
 def _term_matches(entry: AIVocabularyEntry, transcript_text: str) -> bool:
     if entry.priority >= HIGH_PRIORITY_THRESHOLD:
         return True
+    return _mentions(entry, transcript_text)
+
+
+def _mentions(entry: AIVocabularyEntry, transcript_text: str, folded_text: str | None = None) -> bool:
+    """Whether the entry's source term occurs in the text, whatever its priority.
+
+    ``folded_text`` is ``transcript_text.casefold()``, for callers that match many entries against a long text.
+    """
+    haystack = transcript_text
+    if not entry.case_sensitive:
+        haystack = folded_text if folded_text is not None else transcript_text.casefold()
+    term = entry.source_term if entry.case_sensitive else entry.source_term.casefold()
     if entry.match_type == "exact":
         # Word boundaries, so "US" does not match inside "USB" or "status".
         # Case folding rather than re.IGNORECASE, to stay consistent with the
         # phrase branch and the overlap rules (so "Straße" matches "STRASSE").
-        term = entry.source_term if entry.case_sensitive else entry.source_term.casefold()
-        haystack = transcript_text if entry.case_sensitive else transcript_text.casefold()
         return re.search(rf"(?<!\w){re.escape(term)}(?!\w)", haystack) is not None
-    haystack = transcript_text if entry.case_sensitive else transcript_text.casefold()
-    needle = entry.source_term if entry.case_sensitive else entry.source_term.casefold()
-    return needle in haystack
+    return term in haystack
 
 
 # NLLB keeps "[1]" to "[15]" as single tokens and copies them through unchanged in about
@@ -441,6 +449,51 @@ async def resolve_vocabulary_entries(
         reverse=True,
     )
     return deduplicated[:max_entries]
+
+
+async def mentioned_glossary_terms(
+    session: AsyncSession,
+    event_id: int,
+    room_id: int,
+    booth_id: int | None,
+    transcript_text: str,
+    target_language: str | None = None,
+) -> list[str]:
+    """Glossary terms for notes written from a transcript (meeting reports, #1080), the most important first.
+
+    Only entries whose source term occurs in ``transcript_text`` (the spoken transcript) count.
+    Without ``target_language`` the notes are written from that transcript, so its source terms
+    are returned, from entries for any target language. With one, the notes are written from the
+    translation into it, so the target terms of the entries for that language (or ``all``) are.
+    Scopes as in ``resolve_vocabulary_entries``: event-wide, this room, and this booth only.
+    """
+    scope_filters = [
+        AIVocabularyEntry.room_id.is_(None) & AIVocabularyEntry.booth_id.is_(None),
+        (AIVocabularyEntry.room_id == room_id) & AIVocabularyEntry.booth_id.is_(None),
+    ]
+    if booth_id is not None:
+        scope_filters.append(
+            (AIVocabularyEntry.booth_id == booth_id)
+            & (AIVocabularyEntry.room_id.is_(None) | (AIVocabularyEntry.room_id == room_id))
+        )
+    query = select(AIVocabularyEntry).where(AIVocabularyEntry.event_id == event_id, or_(*scope_filters))
+    if target_language is not None:
+        query = query.where(AIVocabularyEntry.target_language.in_(("all", target_language)))
+    stream = await session.stream_scalars(query.order_by(AIVocabularyEntry.priority.desc(), AIVocabularyEntry.id))
+    folded_text = transcript_text.casefold()
+    terms: list[str] = []
+    seen: set[str] = set()
+    processed = 0
+    async for entry in stream:
+        processed += 1
+        if processed % _RESOLVER_YIELD_EVERY == 0:
+            await asyncio.sleep(0)
+        source = entry.source_term.casefold()
+        if source in seen or not _mentions(entry, transcript_text, folded_text):
+            continue
+        seen.add(source)
+        terms.append(entry.source_term if target_language is None else entry.target_term)
+    return terms
 
 
 def _neutralize_csv_text(value: str) -> str:

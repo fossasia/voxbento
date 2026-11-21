@@ -144,6 +144,7 @@ These variables control external encoder ingest and YouTube RTMPS forwarding.
 | `SELF_HOSTED_LLM_API_KEY` | _(empty)_ | Optional bearer token, for servers started with an API key (for example vLLM `--api-key`). |
 | `MEETING_ANALYSIS_OLLAMA_BASE_URL` | `http://localhost:11434` | Ollama (or OpenAI-compatible) server used for meeting reports when an event chooses the Local service. |
 | `MEETING_ANALYSIS_OLLAMA_NUM_CTX` | `32768` | Context window, in tokens, requested from Ollama for meeting reports. |
+| `MEETING_ANALYSIS_AUTO_MIN_LINES` | `20` | Events with automatic meeting reports get one only for a session with at least this many transcript lines, so a sound check leaves no report. |
 
 The other `LIVE_DEMO_*` values are defaults: once an Admin saves **Admin → Live demo**, the saved settings are used instead (`LIVE_DEMO_TRANSLATION_MODEL` stays server-only). The demo runs Whisper, NLLB and, with voice on, Supertonic in the portal process: about 1.2 GB of models, downloaded on first use and kept in memory while in use.
 

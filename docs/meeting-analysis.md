@@ -4,9 +4,9 @@ After a session, VoxBento can ask an AI service to read a room's stored
 transcript and write meeting notes: a title, a one or two sentence overview,
 and sections whose headings the AI chooses to fit that meeting (for example the
 products, decisions or questions discussed), each with short points. Decisions
-and follow-ups get their own section only when there were some. This is phase 1
-of #1080: reports are written only when an event owner asks for one. Nothing
-runs automatically when a session ends.
+and follow-ups get their own section only when there were some. An event owner
+asks for a report, or the event writes one automatically when a channel's
+captions stop (see [Automatic reports](#automatic-reports)).
 
 ## Turning it on
 
@@ -87,6 +87,60 @@ Each finished report can also be downloaded as Markdown.
   checks this before every request, so it never keeps calling the AI service
   once a new report has been started. Generate it again.
 
+## Reports from a translation
+
+When the room's captions were translated, **Write it from** offers each
+language they were translated into. A report from a translation reads the
+translated captions listeners saw for that session, instead of the transcript
+as spoken, and is written in that language. Its channel is shown as, for
+example, "Floor audio (French translation)". Lines that were never translated
+(nobody was listening in that language at the time) are left out, and the page
+says so if none of the chosen session was translated.
+
+## Glossary
+
+When the room uses its glossary (the room's AI vocabulary switch), every request
+lists the glossary terms that come up in the session, so names and product terms
+are spelled the way the organisers chose:
+
+- A report from the transcript as spoken lists the source terms said in it,
+  from entries for any target language.
+- A report from a translation lists the target terms for that language (or
+  `all`) of the entries said in it.
+
+Event-wide entries, the room's entries and, for a booth's channel, that booth's
+entries count. At most 40 terms and 1,500 characters are sent, the most
+important first, so every request stays within its budget.
+
+## Automatic reports
+
+Tick **Write a report automatically when captions stop** under Meeting Reports
+on the event's API keys page (meeting reports must be on too). Then, about a
+minute after a room's floor or booth captions stop, a report is written on that
+channel's latest session:
+
+- Only for a session with at least `MEETING_ANALYSIS_AUTO_MIN_LINES` transcript
+  lines (default 20), so a sound check leaves no report.
+- Not when captions start again within that minute: a quick restart (a changed
+  key, a dropped stream) carries on the same session.
+- Not when the session already has a report covering it. If the session goes on
+  after its report (captions started again later, within 30 minutes), the next
+  stop writes a new report covering all of it.
+- Only one report per room is written at a time, so an automatic report waits
+  for the room's current one, trying again every minute for up to 30 minutes.
+
+Automatic reports read the transcript as spoken, and are marked "written
+automatically" in the list. A server restart in that minute drops the pending
+report; an owner can still generate it on the Meeting reports page.
+
+## Mission Control
+
+When meeting reports are on, each room in Mission Control shows its latest
+report: what it covers, whether it is being written, ready or failed (updated
+while it is written), and a link to it and to all the room's reports. Room
+coordinators open the reports there to read and download them; event owners
+generate them on the same page.
+
 ## Tested models
 
 Groq, with a free-tier key, on a 17-line review meeting, a 6-line Hindi booth
@@ -104,7 +158,8 @@ transcript and a 900-line (capped) session:
 | | Event owner / Admin | Room coordinator | Listeners |
 | --- | :-: | :-: | :-: |
 | Turn reports on and choose the service | ✓ | | |
-| Generate a report | ✓ | | |
+| Generate a report, or turn on automatic reports | ✓ | | |
+| See the latest report in Mission Control | ✓ | ✓ | |
 | Read and download reports | ✓ | ✓ | |
 
 Reports are never shown on listener, embed or overlay pages.
@@ -123,7 +178,6 @@ Migration `045_meeting_analysis.py` adds `events.meeting_analysis_enabled`,
 `events.meeting_analysis_provider` and `events.meeting_analysis_model`, and the
 `meeting_reports` table. Reports are deleted with their room or event.
 
-## Not in phase 1
-
-Automatic reports when a session ends, per-language report variants from the
-translated segments, glossary terms in the prompt, and a Mission Control panel.
+Migration `048_meeting_reports_phase2.py` adds `events.meeting_analysis_auto`,
+and `meeting_reports.transcript_language` (the translation a report read; empty
+for the transcript as spoken) and `meeting_reports.automatic`.

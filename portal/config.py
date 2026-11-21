@@ -236,6 +236,9 @@ class Settings(BaseSettings):
 
     meeting_analysis_ollama_base_url: str = "http://localhost:11434"
     meeting_analysis_ollama_num_ctx: int = 32768
+    # Automatic meeting reports (#1080): written only for a session with at least this many
+    # transcript lines, so a short sound check or a brief test leaves no report behind.
+    meeting_analysis_auto_min_lines: int = Field(default=20, ge=1)
     # Home-page live demo (/ws/demo/live): visitors speak and get captions, translations and a
     # voice from the server's own models. Public, so its load is capped per server and per IP.
     # Admins switch it on at /admin/live-demo/ (off until then); False forbids it on this server.

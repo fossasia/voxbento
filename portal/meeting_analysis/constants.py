@@ -50,6 +50,15 @@ DEFAULT_RETRY_WAIT_SECONDS = 15.0
 STALE_AFTER = timedelta(minutes=30)
 SESSION_GAP = timedelta(minutes=30)
 JOB_TIMEOUT = timedelta(minutes=25)
+# Automatic reports wait this long after captions stop, so a quick restart (a new key, a
+# dropped stream) continues the session instead of ending it.
+AUTO_DELAY = timedelta(seconds=60)
+# While another report of the room is being written, an automatic one waits and tries again.
+AUTO_RETRY_WAIT = timedelta(seconds=60)
+AUTO_RETRIES = 30
+# Glossary terms named in the prompt, and the characters they may take (requests stay under REQUEST_CHARS).
+GLOSSARY_TERMS = 40
+GLOSSARY_CHARS = 1_500
 
 
 def model_for(provider: str, model: str | None) -> str:

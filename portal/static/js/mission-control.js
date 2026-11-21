@@ -8,6 +8,7 @@
  *   - Listen in through a per-booth volume slider (WHEP)
  *   - Turn a booth's broadcast on or off
  *   - Start and stop the floor captions of each room
+ *   - See each room's latest meeting report and open its reports page
  *   - Open a booth themselves
  *
  * The page passes its data in data-config on #mission-control (no inline script).
@@ -61,6 +62,7 @@ function init() {
     head.appendChild(title);
     head.appendChild(renderFloorCaptions(room));
     section.appendChild(head);
+    if (room.reports) section.appendChild(renderReports(room.reports));
 
     const grid = el('div', 'mc-grid');
     grid.id = `booth-grid-${room.id}`;
@@ -97,6 +99,61 @@ const CAPTION_STATES = {
   reconnecting: ['Reconnecting…', 'is-busy'],
   degraded: ['Needs attention', 'is-problem'],
 };
+
+const REPORT_STATES = {
+  pending: ['Writing…', 'is-busy'],
+  running: ['Writing…', 'is-busy'],
+  done: ['Ready', 'is-on'],
+  failed: ["Couldn't write", 'is-problem'],
+};
+const REPORT_POLL_MS = 10000;
+const REPORT_MAX_POLLS = 180;
+
+/** A room's meeting reports: its latest report, kept up to date while it is written, and a link to all of them. */
+function renderReports(reports) {
+  const box = el('div', 'mc-reports');
+  box.appendChild(el('span', 'mc-captions-label', 'Meeting reports'));
+  const latest = reports.latest;
+  if (!latest) {
+    box.appendChild(el('span', 'mc-muted', 'No reports yet.'));
+  } else {
+    const status = el('span', 'mc-pill');
+    const title = el('a', 'mc-reports-title', latest.title);
+    const detail = el('span', 'mc-muted', `${latest.channel}${latest.automatic ? ' · written automatically' : ''} · ${latest.when}`);
+    box.append(status, title, detail);
+
+    const show = (state) => {
+      const [text, tone] = REPORT_STATES[state] || REPORT_STATES.pending;
+      status.textContent = text;
+      status.className = `mc-pill ${tone}`;
+      title.href = state === 'done' ? `${reports.url}${latest.id}/` : reports.url;
+    };
+    show(latest.status);
+
+    if (latest.status === 'pending' || latest.status === 'running') {
+      let polls = 0;
+      const poll = async () => {
+        polls += 1;
+        try {
+          const res = await fetch(`${reports.statusUrl}${latest.id}`, { headers: { Accept: 'application/json' } });
+          if (res.ok) {
+            const data = await res.json();
+            show(data.status);
+            if (data.status !== 'pending' && data.status !== 'running') return;
+          }
+        } catch (err) {
+          console.debug('Meeting report status failed', err);
+        }
+        if (polls < REPORT_MAX_POLLS) setTimeout(poll, REPORT_POLL_MS);
+      };
+      setTimeout(poll, REPORT_POLL_MS);
+    }
+  }
+  const all = el('a', 'btn btn-sm btn-outline', 'All reports');
+  all.href = reports.url;
+  box.appendChild(all);
+  return box;
+}
 
 function renderFloorCaptions(room) {
   const box = el('div', 'mc-captions');
