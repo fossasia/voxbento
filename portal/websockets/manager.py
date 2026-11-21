@@ -712,11 +712,8 @@ async def broadcast_transcription(booth_id: str, payload: str | dict):
         # Legacy support and error handling
         text = payload
         if text.startswith("[Server overloaded") or text.startswith("[Transcription provider failed"):
+            # Captions failing does not stop the interpreter's audio: ingest_status stays as it is.
             await manager.broadcast(booth_id, {"type": "booth:error", "message": text})
-            booth = booths.get_booth_sync(booth_id)
-            if booth:
-                booth.ingest_status = "overloaded"
-                await broadcast_booth_state(booth_id, booth.as_public_dict())
         else:
             msg = {"type": "caption", "status": "final", "text": text}
             await listener_manager.broadcast(booth_id, msg)
