@@ -366,6 +366,18 @@ async def provision_listener_token(
         return {"token": token}
 
 
+def _validate_booth_path(event_slug: str, language_code: str) -> tuple[str, str]:
+    """Return the normalized event slug and language code, or answer 400, as the booth state route does.
+
+    Otherwise ``make_booth_id`` raises ``ValueError`` further down, which ends as a 500. The normalized
+    values are the ones stored, so lookups must use them rather than the raw path parameters.
+    """
+    try:
+        return validate_event_slug(event_slug), validate_language_code(language_code)
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
+
+
 @router.delete("/events/{event_slug}/rooms/{room_id}/booths/{language_code}", status_code=status.HTTP_204_NO_CONTENT)
 async def delete_booth_by_language(
     request: Request,
@@ -376,6 +388,7 @@ async def delete_booth_by_language(
     credentials: HTTPAuthorizationCredentials | None = Depends(security),
 ):
     """Delete a booth from an event."""
+    event_slug, language_code = _validate_booth_path(event_slug, language_code)
     booth_id = make_booth_id(event_slug, room_id, language_code)
     room_db_id = room_id
     async with get_session() as session:
@@ -552,6 +565,7 @@ async def delete_event_booth(
     credentials: HTTPAuthorizationCredentials | None = Depends(security),
 ):
     """Delete a booth provisioned via API."""
+    event_slug, language_code = _validate_booth_path(event_slug, language_code)
     booth_id = ""
     room_id = 0
     async with get_session() as session:
@@ -748,6 +762,7 @@ async def event_booth_whip_url(
     credentials: HTTPAuthorizationCredentials | None = Depends(security),
 ) -> dict:
     """Event-scoped WHIP URL — validates event ownership before returning."""
+    event_slug, language_code = _validate_booth_path(event_slug, language_code)
     if room_id is None:
         async with get_session() as session:
             ev = await get_event_by_slug(session, event_slug)
@@ -810,6 +825,7 @@ async def api_transcription_start(
     Validates operator/booth access and verifies that transcription is enabled
     and configured for the booth before starting the background worker session.
     """
+    event_slug, language_code = _validate_booth_path(event_slug, language_code)
     booth_id = make_booth_id(event_slug, room_id, language_code)
     async with get_session() as session:
         event = await get_event_by_slug(session, event_slug)
@@ -883,6 +899,7 @@ async def api_transcription_stop(
     token: str = Query(""),
     credentials: HTTPAuthorizationCredentials | None = Depends(security),
 ):
+    event_slug, language_code = _validate_booth_path(event_slug, language_code)
     booth_id = make_booth_id(event_slug, room_id, language_code)
     async with get_session() as session:
         event = await get_event_by_slug(session, event_slug)
