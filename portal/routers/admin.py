@@ -17,7 +17,7 @@ from fastapi import APIRouter, Depends, Form, HTTPException, Query, Request, sta
 from fastapi.responses import JSONResponse, RedirectResponse, Response
 from fastapi.templating import Jinja2Templates
 from pydantic import BaseModel
-from sqlalchemy import delete, func, select
+from sqlalchemy import delete, func, select, update
 from sqlalchemy import inspect as sa_inspect
 from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -168,6 +168,7 @@ from portal.room_setup import COMMON_LANGUAGES as ROOM_COMMON_LANGUAGES
 from portal.room_setup import DELIVERY_EXPLANATIONS as ROOM_DELIVERY_EXPLANATIONS
 from portal.room_setup import DELIVERY_HINTS as ROOM_DELIVERY_HINTS
 from portal.room_setup import DELIVERY_LABELS as ROOM_DELIVERY_LABELS
+from portal.room_setup import LANGUAGE_NAMES as ROOM_LANGUAGE_NAMES
 from portal.room_setup import SPEECH_MODELS as ROOM_SPEECH_MODELS
 from portal.room_setup import VOICE_PRESETS as ROOM_VOICE_PRESETS
 from portal.room_setup import language_name as room_language_name
@@ -2847,6 +2848,52 @@ async def admin_delete_booth(request: Request, event_id: int, room_id: int, boot
     )
 
 
+async def _lock_booth_for_settings(session, booth_id: int) -> None:
+    """Serialize translation settings saves for one booth, as ``_lock_event_for_request`` does for events.
+
+    Each save reads the booth's language rows and then adds or disables rows. Two overlapping saves
+    would both work from the rows they read: different selections could both stay enabled, and the
+    same new code would be inserted twice and fail on the unique index. PostgreSQL takes a row lock.
+    SQLite ignores ``FOR UPDATE``, so a no-op update takes the database write lock instead. Either
+    lock is held until the save commits, so the next save reads the rows it left.
+    """
+    if session.get_bind().dialect.name == "sqlite":
+        await session.execute(
+            update(DBBooth)
+            .where(DBBooth.id == booth_id)
+            .values(translation_enabled=DBBooth.translation_enabled)
+            .execution_options(synchronize_session=False)
+        )
+    else:
+        await session.execute(select(DBBooth.id).where(DBBooth.id == booth_id).with_for_update())
+
+
+def _clean_booth_target_languages(codes: list[str], saved: set[str]) -> list[str]:
+    """The submitted target languages as the lowercase codes room setup offers, each once.
+
+    Each code gets one row per booth, so a repeat or a second spelling ("ES" next to "es")
+    would break the save or translate every segment twice. Empty values are skipped. A code
+    the booth already has, in any case, is kept in its saved spelling: the language picker
+    sends back saved codes it does not list, and refusing them would block every later save
+    of the booth, while a new row for "es" next to a saved "ES" would translate twice.
+    """
+    # Sorted so that when both "ES" and "es" are saved, the lowercase row is the one kept.
+    saved_spelling = {code.strip().lower(): code for code in sorted(saved)}
+    cleaned: list[str] = []
+    for raw in codes:
+        key = raw.strip().lower()
+        if not key:
+            continue
+        if key not in saved_spelling and key not in ROOM_LANGUAGE_NAMES:
+            raise TranslationLanguageError(
+                status_code=400, detail="One of the chosen translation languages isn't recognised."
+            )
+        code = saved_spelling.get(key, key)
+        if code not in cleaned:
+            cleaned.append(code)
+    return cleaned
+
+
 @router.post(
     "/admin/events/{event_id}/rooms/{room_id}/booths/{booth_id}/translation-settings",
     dependencies=[Depends(require_event_owner), Depends(require_admin_csrf)],
@@ -2864,7 +2911,11 @@ async def admin_booth_translation_settings(
     """Save supported translation settings or return the validation error to the form."""
     try:
         async with get_session() as session:
+            await _lock_booth_for_settings(session, booth_id)
             db_booth = await booth_in_room(session, event_id, room_id, booth_id)
+            translation_languages = _clean_booth_target_languages(
+                translation_languages, {lang.language_code for lang in db_booth.translation_languages}
+            )
             event = await get_event_by_id(session, event_id)
             if event is None:
                 raise HTTPException(status_code=404, detail="Event not found.")
