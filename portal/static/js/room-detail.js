@@ -1,6 +1,7 @@
 // Room page (owner view): tabs, the room audio chooser and the AI settings pickers.
 // Values the page needs come from data attributes on #room-detail (no inline script).
 
+import { bindModelFilter } from './model-filter.js';
 import { initTabs } from './tabs.js';
 
 const root = document.getElementById('room-detail');
@@ -45,21 +46,10 @@ function initAudioChooser() {
 function initAiSettings() {
   const speechProvider = document.getElementById('floor_transcription_provider');
   const speechModel = document.getElementById('floor_transcription_model');
-  if (speechProvider && speechModel) {
-    const options = [...speechModel.options];
-    const filterModels = () => {
-      const visible = options.filter((opt) => opt.dataset.provider === speechProvider.value);
-      options.forEach((opt) => {
-        opt.hidden = !visible.includes(opt);
-        opt.disabled = !visible.includes(opt);
-      });
-      if (!visible.some((opt) => opt.selected) && visible.length) visible[0].selected = true;
-      const modelDetails = speechModel.closest('details');
-      if (modelDetails) modelDetails.hidden = visible.length < 2;
-    };
-    speechProvider.addEventListener('change', filterModels);
-    filterModels();
-  }
+  const modelDetails = speechModel?.closest('details');
+  bindModelFilter(speechProvider, speechModel, 'provider', (visible) => {
+    if (modelDetails) modelDetails.hidden = visible.length < 2;
+  });
 
   const transProvider = document.getElementById('floor_translation_provider');
   const transModel = document.getElementById('floor_translation_model');
