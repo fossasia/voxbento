@@ -49,3 +49,14 @@ def test_home_page_contains_local_download_links():
     assert "/local" in html
     assert "Local App" in html
     assert "Download App" in html
+
+
+def test_local_page_navigation_collapses_at_tablet_widths():
+    response = client.get("/local")
+    assert response.status_code == 200
+    html = response.text
+    assert 'id="local-desktop-nav" class="hidden xl:!flex' in html
+    assert 'class="relative xl:!hidden"' in html
+    assert 'aria-label="Toggle navigation menu"' in html
+    assert 'id="local-mobile-menu"' in html
+    assert 'class="neo-btn-primary hidden sm:!inline-flex' in html

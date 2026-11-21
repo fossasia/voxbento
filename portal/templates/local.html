@@ -104,7 +104,7 @@
                 <img src="{{ url_for('static', path='img/app_icon.png') }}" alt="VoxBento Icon" class="w-7 h-7 md:w-8 md:h-8 brutal-border rounded shadow-none">
                 <span class="text-lg md:text-[1.35rem] font-black tracking-tight text-[#0d0f10]">VoxBento <span class="bg-[#fbbf24] text-[#0d0f10] text-xs px-2 py-0.5 rounded border border-[#0d0f10] ml-1 uppercase font-mono font-black">Local</span></span>
             </a>
-            <nav class="flex max-md:hidden items-center gap-8 text-sm font-bold text-[#0d0f10]">
+            <nav id="local-desktop-nav" class="hidden xl:!flex items-center gap-8 text-sm font-bold text-[#0d0f10]">
                 <a href="/" class="hover:text-brand-600 transition-colors uppercase tracking-wider">Web Console</a>
                 <a href="#features" class="hover:text-brand-600 transition-colors uppercase tracking-wider">Features</a>
                 <a href="#downloads" class="hover:text-brand-600 transition-colors uppercase tracking-wider">All Platforms</a>
@@ -114,18 +114,30 @@
                 </a>
             </nav>
             <div class="flex items-center gap-2 md:gap-4 text-xs md:text-sm font-bold flex-shrink-0">
-                <a href="#downloads" class="neo-btn-primary px-3 sm:px-4 py-2 rounded text-xs uppercase tracking-wider">
+                <a href="#downloads" class="neo-btn-primary hidden sm:!inline-flex px-3 sm:px-4 py-2 rounded text-xs uppercase tracking-wider">
                     Download
                 </a>
                 {% if current_user %}
                 <a href="{{ management_home }}" class="brutal-btn brutal-btn-outline !px-3 !py-2 text-xs">
-                    Dashboard
+                    <span class="hidden sm:inline">Dashboard</span><span class="sm:hidden">Dash</span>
                 </a>
                 {% else %}
                 <a href="/login" class="brutal-btn brutal-btn-outline !px-3 !py-2 text-xs">
                     Sign in
                 </a>
                 {% endif %}
+                <details class="relative xl:!hidden">
+                    <summary aria-label="Toggle navigation menu" class="brutal-btn brutal-btn-outline !px-2 !py-2 text-xs inline-flex items-center justify-center cursor-pointer list-none">
+                        <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M4 6h16M4 12h16M4 18h16"></path></svg>
+                    </summary>
+                    <nav id="local-mobile-menu" class="absolute right-0 top-full z-50 mt-2 w-56 rounded border-[3px] border-[#0d0f10] bg-[#eef2f6] p-3 text-xs font-bold uppercase tracking-wider shadow-[4px_4px_0_#0d0f10]">
+                        <a href="/" class="block rounded px-3 py-2 hover:bg-white">Web Console</a>
+                        <a href="#features" class="block rounded px-3 py-2 hover:bg-white">Features</a>
+                        <a href="#downloads" class="block rounded px-3 py-2 hover:bg-white">All Platforms</a>
+                        <a href="#downloads" class="block rounded px-3 py-2 hover:bg-white">Download</a>
+                        <a href="{{ github_repo_url }}" target="_blank" rel="noopener noreferrer" class="block rounded px-3 py-2 hover:bg-white">GitHub</a>
+                    </nav>
+                </details>
             </div>
         </div>
     </header>
