@@ -45,6 +45,11 @@ class FakeElement {
     this._value = '';
     this._selectedIndex = -1;
     this.scrollTop = 0;
+    this.inert = false;
+  }
+
+  get parentElement() {
+    return this.parentNode;
   }
 
   get id() {
@@ -108,6 +113,7 @@ class FakeElement {
   }
 
   appendChild(child) {
+    if (child.parentNode) child.parentNode.removeChild(child);
     child.parentNode = this;
     this.children.push(child);
     if (this.tagName === 'SELECT' && this._selectedIndex === -1) this._selectedIndex = 0;
@@ -125,6 +131,14 @@ class FakeElement {
     this.children = this.children.filter((c) => c !== child);
     child.parentNode = null;
     return child;
+  }
+
+  contains(target) {
+    return this === target || this.children.some((child) => child.contains(target));
+  }
+
+  focus() {
+    document.activeElement = this;
   }
 
   querySelector(selector) {
@@ -198,11 +212,26 @@ function isConnected(el) {
 }
 
 const document = {
+  body: null,
+  activeElement: null,
+  fullscreenElement: null,
+  listeners: {},
   getElementById: (id) => {
     const el = elementsById.get(id);
     return el && isConnected(el) ? el : null;
   },
   createElement: (tagName) => new FakeElement(tagName),
+  addEventListener(type, handler) {
+    (this.listeners[type] = this.listeners[type] || []).push(handler);
+  },
+  dispatchEvent(event) {
+    (this.listeners[event.type] || []).forEach((handler) => handler(event));
+  },
+  exitFullscreen() {
+    this.fullscreenElement = null;
+    this.dispatchEvent(new Event('fullscreenchange'));
+    return Promise.resolve();
+  },
 };
 
 function make(tagName, id) {
@@ -228,6 +257,7 @@ function make(tagName, id) {
   'tts-sync-group',
   'tts-sync-toggle',
   'captions-container',
+  'captions-focus-btn',
   'tap-to-listen-btn',
 ].forEach((id) => make('div', id));
 ['room-select', 'language-select', 'caption-mode-select', 'translation-lang-select'].forEach((id) =>
@@ -241,6 +271,22 @@ const captionModeSelect = document.getElementById('caption-mode-select');
 captionModeSelect.innerHTML =
   '<option value="original">Original</option><option value="translated">Translated</option>';
 document.getElementById('waiting-text').className = 'absolute inset-0 flex';
+
+document.body = new FakeElement('body');
+const pageMain = new FakeElement('main');
+const listenerPage = new FakeElement('div');
+const listenerHeader = new FakeElement('header');
+const audioControls = new FakeElement('div');
+const pageFooter = new FakeElement('footer');
+const captionsContainer = document.getElementById('captions-container');
+const captionsFocusBtn = document.getElementById('captions-focus-btn');
+document.body.appendChild(pageMain);
+pageMain.appendChild(listenerPage);
+listenerPage.appendChild(listenerHeader);
+listenerPage.appendChild(audioControls);
+listenerPage.appendChild(captionsContainer);
+captionsContainer.appendChild(captionsFocusBtn);
+document.body.appendChild(pageFooter);
 
 // Captions box: each history row is rowHeight px tall and 300px are visible.
 // Like a browser, it fires "scroll" only when scrollTop actually changes.
@@ -350,6 +396,12 @@ Object.assign(globalThis, {
   fetch,
   window: {
     location: { protocol: 'http:', host: 'portal.test', href: 'http://portal.test/listener/demo', search: '' },
+    scrollX: 0,
+    scrollY: 0,
+    scrollTo(x, y) {
+      this.scrollX = x;
+      this.scrollY = y;
+    },
     history: {
       replaceState(_state, _title, url) {
         globalThis.window.location.href = String(url);
@@ -437,6 +489,62 @@ function sendFloorSegment(seq, segmentId, text, translation, stage) {
 
 async function run() {
   await import(pathToFileURL(path.join(__dirname, '..', 'portal', 'static', 'js', 'listener-event.js')).href);
+
+  console.log('\n── Captions focus mode ──');
+  window.scrollX = 24;
+  window.scrollY = 552;
+  document.activeElement = captionsFocusBtn;
+  captionsFocusBtn.dispatchEvent(new Event('pointerdown'));
+  window.scrollY = 478;
+  captionsFocusBtn.dispatchEvent(new Event('click'));
+  assert(captionsContainer.classList.contains('focus-mode'), 'the full-screen control enables the CSS focus layout');
+  assert(captionsFocusBtn.getAttribute('aria-pressed') === 'true', 'the full-screen control exposes its active state');
+  assert(listenerHeader.inert && audioControls.inert && pageFooter.inert, 'page content outside captions is inert while focused');
+  window.scrollY = 130;
+
+  document.activeElement = document.getElementById('translation-lang-select');
+  const dismissDropdown = new Event('keydown', { cancelable: true });
+  Object.defineProperty(dismissDropdown, 'key', { value: 'Escape' });
+  dismissDropdown.preventDefault();
+  document.dispatchEvent(dismissDropdown);
+  assert(captionsContainer.classList.contains('focus-mode'), 'Escape that dismisses an open selector keeps captions focused');
+
+  const exitFromSelector = new Event('keydown', { cancelable: true });
+  Object.defineProperty(exitFromSelector, 'key', { value: 'Escape' });
+  document.dispatchEvent(exitFromSelector);
+  assert(!captionsContainer.classList.contains('focus-mode'), 'Escape exits focus mode after a selector is closed');
+  assert(!listenerHeader.inert && !audioControls.inert && !pageFooter.inert, 'page content is restored on exit');
+  assert(window.scrollX === 24 && window.scrollY === 552, 'exit restores the page scroll position');
+
+  let finishFullscreenRequest;
+  captionsContainer.requestFullscreen = () => new Promise((resolve) => {
+    finishFullscreenRequest = () => {
+      document.fullscreenElement = captionsContainer;
+      resolve();
+      document.dispatchEvent(new Event('fullscreenchange'));
+    };
+  });
+  captionsFocusBtn.dispatchEvent(new Event('click'));
+  captionsFocusBtn.dispatchEvent(new Event('click'));
+  finishFullscreenRequest();
+  await flush();
+  await flush();
+  assert(document.fullscreenElement !== captionsContainer, 'a pending fullscreen request is exited when focus mode was cancelled');
+  assert(!captionsContainer.classList.contains('focus-mode'), 'a late fullscreen request does not desynchronize the focus control');
+
+  captionsContainer.requestFullscreen = () => {
+    document.fullscreenElement = captionsContainer;
+    document.dispatchEvent(new Event('fullscreenchange'));
+    return Promise.resolve();
+  };
+  captionsFocusBtn.dispatchEvent(new Event('click'));
+  await flush();
+  assert(captionsContainer.classList.contains('focus-mode'), 'successful browser fullscreen keeps focus mode active');
+  document.exitFullscreen();
+  assert(!captionsContainer.classList.contains('focus-mode'), 'browser fullscreen exit restores the listener page');
+  assert(!listenerHeader.inert && !audioControls.inert && !pageFooter.inert, 'browser exit restores page accessibility');
+  delete captionsContainer.requestFullscreen;
+
   choose(roomSelect, '1');
 
   console.log('\n── Shareable listener link ──');
@@ -669,6 +777,18 @@ async function run() {
     'a failed translation shows nothing, got "' + historyBox.textContent + '"',
   );
   assert(historyBox.textContent.includes('Hello'), 'the original caption of a failed translation still shows');
+
+  console.log('\n── Optional captions focus control ──');
+  const focusButtonUrl = pathToFileURL(path.join(__dirname, '..', 'portal', 'static', 'js', 'listener-event.js'));
+  elementsById.delete('captions-focus-btn');
+  try {
+    await import(focusButtonUrl.href + '?without-focus-button=1');
+    assert(true, 'the listener module loads when the optional focus button is absent');
+  } catch (error) {
+    assert(false, 'the listener module loads when the optional focus button is absent: ' + error.message);
+  } finally {
+    elementsById.set('captions-focus-btn', captionsFocusBtn);
+  }
 
   console.log('\n' + passed + ' passed, ' + failed + ' failed');
   process.exit(failed > 0 ? 1 : 0);
