@@ -196,8 +196,9 @@ jobs:
             let statusBanner = '';
             if (isSuccess) {
               statusBanner = '> [!NOTE]\n> **All signals passed**: 0 dropped, 0 failed, 0 missing translations.\n';
-            } else if (metrics.exit_code !== 0 || (totalsRow && (totalsRow.dropped > 0 || totalsRow.failed > 0 || totalsRow.missing > 0))) {
-              const exitCode = typeof metrics.exit_code === 'number' ? metrics.exit_code : 1;
+            } else if ((Number.isInteger(metrics.exit_code) && metrics.exit_code !== 0) || (totalsRow && (totalsRow.dropped > 0 || totalsRow.failed > 0 || totalsRow.missing > 0))) {
+              // A missing exit code means the harness never ran: report it as incomplete, not a regression.
+              const exitCode = Number.isInteger(metrics.exit_code) ? metrics.exit_code : 1;
               statusBanner = `> [!WARNING]\n> **Regression detected**: The load harness exited with status \`${exitCode}\` (dropped, failed, missing translations or unhandled error).\n`;
             } else {
               statusBanner = '> [!WARNING]\n> **Benchmark incomplete**: The load harness did not complete or produced no valid benchmark data.\n';
