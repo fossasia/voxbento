@@ -1,9 +1,12 @@
 from __future__ import annotations
 
+import inspect
+
 import pytest
 
 from portal.auth import booth_session_key, create_participant_token, create_token, create_user_token, decode_token
 from portal.booth_state import BoothRegistry
+from portal.websockets.booth_protocol import BOOTH_HANDLERS
 
 
 async def join(registry, name, role="interpreter"):
@@ -935,3 +938,167 @@ def test_booth_session_key_tells_users_and_invite_visits_apart():
     assert booth_session_key(decode_token(create_token())) is None
     assert booth_session_key({"sub": "x", "kind": "listener"}) is None
     assert booth_session_key(None) is None
+
+
+async def _recorded_events(registry):
+    events = []
+
+    async def record(event):
+        events.append(event)
+
+    registry.subscribe(record)
+    return events
+
+
+@pytest.mark.anyio
+async def test_mutators_publish_one_event_each_and_failures_publish_nothing():
+    registry = BoothRegistry()
+    events = await _recorded_events(registry)
+    active = await join(registry, "Active")
+    backup = await join(registry, "Backup")
+    assert len(events) == 2
+
+    await registry.set_active_interpreter("hall-1-fr", active.participant_id, backup.participant_id, "French", "c")
+    assert len(events) == 3
+    assert events[-1].state["active_interpreter_id"] == backup.participant_id
+
+    with pytest.raises(PermissionError):
+        await registry.set_active_interpreter("hall-1-fr", active.participant_id, active.participant_id, "French", "c")
+    with pytest.raises(ValueError):
+        await registry.add_chat_message("hall-1-fr", active.participant_id, "  ", "French", "c")
+    assert len(events) == 3
+
+    message, _ = await registry.add_chat_message("hall-1-fr", active.participant_id, "hi", "French", "c")
+    assert len(events) == 4
+    assert events[-1].chat_message == message
+
+
+@pytest.mark.anyio
+async def test_failing_subscriber_does_not_undo_the_change_or_block_others():
+    registry = BoothRegistry()
+
+    calls = []
+
+    async def broken(event):
+        calls.append(event)
+        raise RuntimeError("socket gone")
+
+    registry.subscribe(broken)
+    registry.subscribe(broken)  # subscribing twice is harmless
+    events = await _recorded_events(registry)  # registered after the failing subscriber
+    participant = await join(registry, "Ana")
+
+    assert len(calls) == 1
+    assert len(events) == 1
+    state = await registry.get_booth("hall-1-fr")
+    assert state["active_interpreter_id"] == participant.participant_id
+
+
+@pytest.mark.anyio
+async def test_join_callback_runs_before_publish_and_publish_survives_its_failure():
+    registry = BoothRegistry()
+    order = []
+
+    async def record(_event):
+        order.append("published")
+
+    async def announce(_participant, _state):
+        order.append("announced")
+        raise RuntimeError("socket closed")
+
+    registry.subscribe(record)
+    with pytest.raises(RuntimeError):
+        await registry.join_participant(
+            "hall-1-fr", "Ana", "interpreter", "French", "c", before_publish=announce
+        )
+
+    assert order == ["announced", "published"]
+
+
+@pytest.mark.anyio
+async def test_mark_ingest_overloaded_publishes_and_ignores_unknown_booths():
+    registry = BoothRegistry()
+    events = await _recorded_events(registry)
+    assert await registry.mark_ingest_overloaded("hall-1-fr") is None
+    await join(registry, "Ana")
+    state = await registry.mark_ingest_overloaded("hall-1-fr")
+
+    assert state["ingest_status"] == "overloaded"
+    assert events[-1].state["ingest_status"] == "overloaded"
+
+
+def test_every_booth_client_message_has_a_handler():
+    assert all(inspect.iscoroutinefunction(handler) for handler in BOOTH_HANDLERS.values())
+    assert set(BOOTH_HANDLERS) == {
+        "booth:join",
+        "booth:leave",
+        "booth:chat",
+        "booth:set-active",
+        "booth:update-state",
+        "booth:request-publish-ticket",
+        "booth:set-broadcast-unlocked",
+        "booth:initiate-handoff",
+        "booth:accept-handoff",
+        "booth:cancel-handoff",
+    }
+
+
+@pytest.mark.anyio
+async def test_idle_handoff_cancel_publishes_nothing():
+    registry = BoothRegistry()
+    participant = await join(registry, "Ana")
+    events = await _recorded_events(registry)
+
+    state = await registry.cancel_handoff("hall-1-fr", participant.participant_id, "French", "c")
+
+    assert state["handoff_state"] == "idle"
+    assert events == []
+
+
+@pytest.mark.anyio
+async def test_disconnect_and_lock_callbacks_run_before_delivery():
+    registry = BoothRegistry()
+    order = []
+
+    async def record(_event):
+        order.append("delivered")
+
+    participant, _ = await registry.join_participant(
+        "hall-1-fr", "Ana", "interpreter", "French", "c", connection_id="sock"
+    )
+    registry.subscribe(record)
+
+    async def started(_state):
+        order.append("callback")
+
+    await registry.disconnect_participant("hall-1-fr", participant.participant_id, "sock", before_publish=started)
+    await registry.set_broadcast_unlocked("hall-1-fr", False, "French", "c", before_publish=started)
+    # Another socket now holds the record: nothing to commit, so no callback or event.
+    assert await registry.disconnect_participant("hall-1-fr", participant.participant_id, "other") is None
+
+    assert order == ["callback", "delivered", "callback", "delivered"]
+
+
+
+@pytest.mark.anyio
+async def test_create_booth_publishes_once_and_duplicates_publish_nothing():
+    registry = BoothRegistry()
+    events = await _recorded_events(registry)
+
+    state = await registry.create_booth("pycon2026", "en", "English", 1)
+    with pytest.raises(ValueError):
+        await registry.create_booth("pycon2026", "en", "English", 1)
+
+    assert [event.state for event in events] == [state]
+
+
+
+@pytest.mark.anyio
+async def test_snapshot_publishes_only_when_it_creates_the_booth():
+    registry = BoothRegistry()
+    events = await _recorded_events(registry)
+
+    state = await registry.snapshot("hall-1-fr", "French", "c")
+    await registry.snapshot("hall-1-fr", "French", "c")
+
+    assert [event.state for event in events] == [state]
