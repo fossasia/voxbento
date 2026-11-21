@@ -298,6 +298,7 @@ jobs:
           node tests/test_program_sender_source.mjs
           node tests/test_youtube_connect.mjs
           node tests/test_live_demo_core.mjs
+          node tests/test_room_setup_draft.mjs
           node --test tests/test_modal_dialogs.mjs
           node --test tests/test_agent_attribution.mjs
 
