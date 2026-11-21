@@ -47,29 +47,53 @@ jobs:
             # Validate in a separate checkout: the current portal may still bind
             # the live source directory until this deployment replaces it.
             deployment_dir="$PWD"
-            # Last value of KEY in the live .env, without surrounding quotes.
-            env_value() { sed -n "s/^$1=//p" "$deployment_dir/.env" | tail -n 1 | tr -d "\"'"; }
-            portal_port=$(env_value PORTAL_HOST_PORT)
-            portal_port=${portal_port:-8000}
-            case "$portal_port" in
-              ''|*[!0-9]*) echo "ERROR: PORTAL_HOST_PORT must be a port number"; exit 1 ;;
-            esac
             test -z "$(git status --porcelain --untracked-files=no)"
             git fetch origin main
             candidate_commit=$(git rev-parse origin/main)
             candidate_dir=$(mktemp -d "${TMPDIR:-/tmp}/voxbento-deploy.XXXXXX")
             git worktree add --detach "$candidate_dir" "$candidate_commit"
-            trap 'git -C "$deployment_dir" worktree remove --force "$candidate_dir"' EXIT
+
+            # If the deploy fails after the host's Caddy files change, put the previous
+            # files back and reload, so Caddy keeps routing to the running portal.
+            caddy_changed=
+            caddy_migrated=
+            # Runs inside a condition, where set -e does not apply: return on each failure.
+            caddy_restore() {
+              if sudo test -f /etc/caddy/sites/voxbento.caddy.previous; then
+                sudo mv -f /etc/caddy/sites/voxbento.caddy.previous /etc/caddy/sites/voxbento.caddy || return 1
+              else
+                sudo rm -f /etc/caddy/sites/voxbento.caddy || return 1
+              fi
+              if [ -n "$caddy_migrated" ]; then
+                sudo mv -f /etc/caddy/Caddyfile.before-sites /etc/caddy/Caddyfile || return 1
+              fi
+            }
+            finish() {
+              status=$?
+              if [ "$status" -ne 0 ] && [ -n "$caddy_changed" ]; then
+                echo "Deploy failed after Caddy files changed; restoring the previous Caddy configuration"
+                if caddy_restore && sudo systemctl reload caddy; then
+                  echo "Previous Caddy configuration restored"
+                else
+                  echo "WARNING: could not restore Caddy; check /etc/caddy"
+                fi
+              fi
+              git -C "$deployment_dir" worktree remove --force "$candidate_dir"
+            }
+            trap finish EXIT
             cd "$candidate_dir"
             umask 077
             cp "$deployment_dir/.env" .env
 
             # Host-local Compose overrides named in COMPOSE_FILE but not tracked in Git
             # live only in the deployment directory; the candidate needs them too.
-            compose_files=$(env_value COMPOSE_FILE)
+            # COMPOSE_FILE is read directly because Compose cannot run without these files.
+            compose_files=$(sed -n 's/^[[:space:]]*COMPOSE_FILE[[:space:]]*=[[:space:]]*//p' .env \
+              | tail -n 1 | sed 's/[[:space:]]#.*//; s/[[:space:]]*$//' | tr -d "\"'")
             for compose_file in $(printf '%s' "$compose_files" | tr ':' ' '); do
               case "$compose_file" in /*|*..*) continue ;; esac
               if [ ! -e "$compose_file" ] && [ -f "$deployment_dir/$compose_file" ]; then
+                mkdir -p "$(dirname "$compose_file")"
                 cp "$deployment_dir/$compose_file" "$compose_file"
                 echo "Using host-local $compose_file"
               fi
@@ -78,6 +102,15 @@ jobs:
             # Keep image tags, networks and persistent volumes under the existing
             # project name even when Compose runs in a temporary checkout.
             compose() { docker compose --project-name voxbento "$@"; }
+
+            # The portal's host port, resolved by Compose itself so quoting, spacing and
+            # comments in .env are read exactly as they are for the published port.
+            portal_port=$(compose config --environment | sed -n 's/^PORTAL_HOST_PORT=//p' | tail -n 1)
+            portal_port=${portal_port:-8000}
+            case "$portal_port" in
+              ''|*[!0-9]*) echo "ERROR: PORTAL_HOST_PORT must be a port number"; exit 1 ;;
+            esac
+
             echo "--- building deployment images ---"
             compose build
 
@@ -88,12 +121,36 @@ jobs:
 
             # The repo Caddyfile holds only VoxBento's sites. It is installed as
             # /etc/caddy/sites/voxbento.caddy, imported by the host's main Caddyfile,
-            # so other apps on the same server keep their own site files.
+            # so other sites on the same host keep their own files.
             caddy_site="$candidate_dir/.voxbento.caddy"
+            caddy_import='import /etc/caddy/sites/*.caddy'
+            caddy_migrate=
             if [ -f Caddyfile ]; then
               sed "s/reverse_proxy localhost:8000 /reverse_proxy localhost:$portal_port /" \
                 Caddyfile > "$caddy_site"
               sudo caddy validate --config "$caddy_site" --adapter caddyfile
+              if ! sudo grep -qxF "$caddy_import" /etc/caddy/Caddyfile; then
+                # Older deploys owned the whole main file. Move it to the new layout only
+                # if it holds nothing at top level beyond what the repo Caddyfile defines.
+                top_level() {
+                  sed 's/[[:space:]]*$//' "$1" | grep -v -e '^[[:space:]]' -e '^#' -e '^}$' -e '^$' | sort -u
+                }
+                sudo cat /etc/caddy/Caddyfile > "$candidate_dir/.main.caddy"
+                top_level "$candidate_dir/.main.caddy" > "$candidate_dir/.main.top"
+                top_level Caddyfile > "$candidate_dir/.site.top"
+                unknown=$(comm -23 "$candidate_dir/.main.top" "$candidate_dir/.site.top")
+                if ! grep -qF 'Caddyfile — voxbento.com production' "$candidate_dir/.main.caddy" \
+                  || [ -n "$unknown" ]; then
+                  echo "ERROR: /etc/caddy/Caddyfile does not contain"
+                  echo "  $caddy_import"
+                  echo "and cannot be replaced automatically. Entries not in the VoxBento Caddyfile:"
+                  printf '  %s\n' "$unknown"
+                  echo "Move any other sites to their own file in /etc/caddy/sites/, put VoxBento's"
+                  echo "sites in /etc/caddy/sites/voxbento.caddy, add the import line, then re-run."
+                  exit 1
+                fi
+                caddy_migrate=1
+              fi
             fi
 
             # YouTube relay mode lives in docker-compose.relay.yml, selected by COMPOSE_FILE
@@ -123,20 +180,17 @@ jobs:
             git checkout main
             git merge --ff-only "$candidate_commit"
             if [ -f "$caddy_site" ]; then
-              caddy_import='import /etc/caddy/sites/*.caddy'
               sudo install -d -m 755 /etc/caddy/sites
               # Renames on the same filesystem: Caddy must never read a partial copy.
               # The .next name does not match the import glob.
               sudo install -m 644 "$caddy_site" /etc/caddy/sites/voxbento.caddy.next
-              caddy_migrated=
-              if ! sudo grep -qxF "$caddy_import" /etc/caddy/Caddyfile; then
-                # One-time move from the old layout, where deploys owned the whole main file.
-                if ! sudo grep -qF 'Caddyfile — voxbento.com production' /etc/caddy/Caddyfile; then
-                  echo "ERROR: /etc/caddy/Caddyfile is not managed by VoxBento and does not contain"
-                  echo "  $caddy_import"
-                  echo "Add that line to it, then re-run the deploy."
-                  exit 1
-                fi
+              if sudo test -f /etc/caddy/sites/voxbento.caddy; then
+                sudo install -m 644 /etc/caddy/sites/voxbento.caddy /etc/caddy/sites/voxbento.caddy.previous
+              else
+                sudo rm -f /etc/caddy/sites/voxbento.caddy.previous
+              fi
+              caddy_changed=1
+              if [ -n "$caddy_migrate" ]; then
                 sudo install -m 644 /etc/caddy/Caddyfile /etc/caddy/Caddyfile.before-sites
                 printf '%s\n' "# Each app on this host owns one file in /etc/caddy/sites/." "$caddy_import" \
                   | sudo tee /etc/caddy/Caddyfile.next > /dev/null
@@ -144,24 +198,9 @@ jobs:
                 caddy_migrated=1
                 echo "Main Caddyfile now imports /etc/caddy/sites (old copy: Caddyfile.before-sites)"
               fi
-              if sudo test -f /etc/caddy/sites/voxbento.caddy; then
-                sudo install -m 644 /etc/caddy/sites/voxbento.caddy /etc/caddy/sites/voxbento.caddy.previous
-              fi
               sudo mv -f /etc/caddy/sites/voxbento.caddy.next /etc/caddy/sites/voxbento.caddy
-              # Check the whole host configuration, including other apps' sites, before reload.
-              # On failure, put the files back so a later reload or reboot still works.
-              if ! sudo caddy validate --config /etc/caddy/Caddyfile; then
-                echo "ERROR: host Caddy configuration is invalid with this release; restoring it"
-                if sudo test -f /etc/caddy/sites/voxbento.caddy.previous; then
-                  sudo mv -f /etc/caddy/sites/voxbento.caddy.previous /etc/caddy/sites/voxbento.caddy
-                else
-                  sudo rm -f /etc/caddy/sites/voxbento.caddy
-                fi
-                if [ -n "$caddy_migrated" ]; then
-                  sudo mv -f /etc/caddy/Caddyfile.before-sites /etc/caddy/Caddyfile
-                fi
-                exit 1
-              fi
+              # Check the whole host configuration, including other sites, before reload.
+              sudo caddy validate --config /etc/caddy/Caddyfile
               sudo systemctl reload caddy
               echo "Caddy config updated and reloaded"
             fi

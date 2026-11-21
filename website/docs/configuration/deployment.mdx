@@ -171,9 +171,15 @@ The repository `Caddyfile` contains only VoxBento's sites. Deploys install it as
 contain `import /etc/caddy/sites/*.caddy`, so other apps on the same server keep their
 own files in `/etc/caddy/sites/`. On a host where an earlier deploy owned the whole main
 file, the first deploy keeps a copy as `/etc/caddy/Caddyfile.before-sites` and replaces
-the main file with that import. A main file that VoxBento did not write stops the
-deploy until the import line is added. The whole host configuration is validated
-before Caddy reloads; if it is invalid, the previous files are restored.
+the main file with that import. That happens only when the main file holds nothing at
+top level beyond the sites in the repository `Caddyfile`. Otherwise (another site, a
+global options block, or a main file VoxBento did not write) the deploy stops during
+preflight, before anything changes, and lists the entries to move. The whole host
+configuration is validated before Caddy reloads. If validation, the reload, container
+replacement or the health check fails after the Caddy files change, the previous files
+are restored and Caddy is reloaded. The portal host port is read with
+`docker compose config --environment`, so `.env` quoting, spacing and comments are
+interpreted exactly as Compose does.
 
 Caddy imports optional, host-owned route snippets from
 `/etc/caddy/voxbento-routes/*.caddy` inside the `voxbento.com` site. The candidate
