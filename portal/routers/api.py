@@ -46,7 +46,6 @@ from portal.transcription import ProviderConfig, ProviderEnum, get_api_key
 from portal.transcription.worker import (
     ERROR_CODE_REVALIDATION_TIMEOUT,
     ERROR_CODE_STOPPING_TIMEOUT,
-    TranscriptionStartResult,
     start_transcription_worker,
     stop_transcription_worker,
 )
@@ -915,44 +914,36 @@ async def api_transcription_start(
         )
     except ValueError as e:
         raise HTTPException(status_code=429, detail=str(e)) from e
-    if isinstance(result, TranscriptionStartResult):
-        if result.status == "failed":
-            logger.error("[%s] Transcription worker failed to start: %s", booth_id, result.error)
-            if result.error_code in (ERROR_CODE_STOPPING_TIMEOUT, ERROR_CODE_REVALIDATION_TIMEOUT):
-                retry_after = str(math.ceil(settings.transcription_startup_timeout_secs))
-                detail = (
-                    "Transcription worker is still stopping; retry shortly"
-                    if result.error_code == ERROR_CODE_STOPPING_TIMEOUT
-                    else "Timed out revalidating booth status; retry shortly"
-                )
-                raise HTTPException(
-                    status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-                    detail=detail,
-                    headers={"Retry-After": retry_after},
-                )
-            if result.error_code == "booth_deleted":
-                raise HTTPException(
-                    status_code=status.HTTP_404_NOT_FOUND,
-                    detail="Booth is no longer active",
-                )
-            raise HTTPException(
-                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                detail="Failed to start transcription worker",
+    if result.status == "failed":
+        logger.error("[%s] Transcription worker failed to start: %s", booth_id, result.error)
+        if result.error_code in (ERROR_CODE_STOPPING_TIMEOUT, ERROR_CODE_REVALIDATION_TIMEOUT):
+            retry_after = str(math.ceil(settings.transcription_startup_timeout_secs))
+            detail = (
+                "Transcription worker is still stopping; retry shortly"
+                if result.error_code == ERROR_CODE_STOPPING_TIMEOUT
+                else "Timed out revalidating booth status; retry shortly"
             )
-        result_status = result.status
-        res_provider = result.provider
-        res_model = result.model
-    else:
-        result_status = "started"
-        res_provider = provider
-        res_model = model_size
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail=detail,
+                headers={"Retry-After": retry_after},
+            )
+        if result.error_code == "booth_deleted":
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Booth is no longer active",
+            )
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Failed to start transcription worker",
+        )
 
-    logger.info("Transcription worker running for booth %s (provider: %s)", booth_id, res_provider)
+    logger.info("Transcription worker running for booth %s (provider: %s)", booth_id, result.provider)
     return {
         "status": "started",
-        "already_running": result_status == "already_running",
-        "provider": res_provider,
-        "model": res_model,
+        "already_running": result.status == "already_running",
+        "provider": result.provider,
+        "model": result.model,
     }
 
 
