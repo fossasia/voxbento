@@ -990,3 +990,50 @@ async def test_the_live_demo_skips_a_segment_that_waited_too_long_for_the_model(
     assert calls == []
     assert worker_module.scheduler_for("local", model).idle()
 
+
+async def test_stale_segments_never_fill_their_language_queue(monkeypatch):
+    """Each stale drop leaves its channel, so more than ``QUEUE_LIMIT`` in a row do not block the next one."""
+    engine = HeldEngine()
+    engine.release.set()
+    monkeypatch.setitem(worker_module.ENGINES, "held", engine)
+    monkeypatch.setattr(settings, "translation_max_lag_seconds", 0.5)
+    bundle = AsyncMock()
+    monkeypatch.setattr("portal.websockets.manager.tts_manager.broadcast_bundle", bundle)
+    worker = TranslationWorker(MagicMock())
+
+    def translate(seq: int, arrived_at: float | None = None):
+        return worker._translate_and_broadcast(
+            SimpleNamespace(id=1), fake_room(1), "held", "m", None, "fr", "French", "en", "English",
+            1, "Hello", "event-1-floor", "uuid", seq, arrived_at=arrived_at,
+        )
+
+    for seq in range(1, QUEUE_LIMIT + 2):
+        await translate(seq, arrived_at=time.monotonic() - 1.0)
+    assert [call.args[8] for call in bundle.await_args_list] == ["stale"] * (QUEUE_LIMIT + 1)
+    assert worker_module.scheduler_for("held", "m", 1).admitted(1, "event-1-floor:fr") == 0
+
+    # The next segment is admitted and translated as usual.
+    await translate(QUEUE_LIMIT + 2)
+    assert engine.calls == ["fr"]
+
+
+async def test_a_segment_for_a_downloading_model_is_skipped_quietly_when_its_listener_left(monkeypatch):
+    engine = HeldEngine()
+    monkeypatch.setitem(worker_module.ENGINES, "held", engine)
+    # The model is downloading by the time the segment gets its turn, and nobody listens any more.
+    monkeypatch.setattr(worker_module, "_inference_timeout", lambda provider, model: None)
+    bundle = AsyncMock()
+    monkeypatch.setattr("portal.websockets.manager.tts_manager.broadcast_bundle", bundle)
+    monkeypatch.setattr("portal.websockets.manager.tts_manager.has_listeners", lambda room_id, lang, booth_id: False)
+    monkeypatch.setattr("portal.websockets.manager.listener_manager.has_listeners", lambda booth_id: False)
+    monkeypatch.setattr(worker_module.youtube_captions, "wants", lambda room_id, lang: False)
+
+    await TranslationWorker(MagicMock())._translate_and_broadcast(
+        SimpleNamespace(id=1), fake_room(1), "held", "m", None, "fr", "French", "en", "English",
+        1, "Hello", "event-1-floor", "uuid", 1, "event-1-fr", recheck_audience=True,
+    )
+
+    assert engine.calls == []
+    bundle.assert_not_awaited()
+    assert worker_module.scheduler_for("held", "m", 1).admitted(1, "event-1-floor:fr") == 0
+

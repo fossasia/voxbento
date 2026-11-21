@@ -537,9 +537,9 @@ class TranslationWorker:
                 # A download runs in its own thread and holds no slot, so nothing queues behind it.
                 timeout_val = _inference_timeout(provider, model)
                 downloading = timeout_val is None
-                if not downloading and recheck_audience and target_booth_id:
+                if recheck_audience and target_booth_id:
                     # Checked again now that the segment has its turn: the last listener may have
-                    # left while it waited, and then no inference runs for it (#1189).
+                    # left while it waited, and then nothing runs or is sent for it (#1189).
                     audience = _audience(room.id, lang_code, booth_id_str, target_booth_id)
                     nobody_listens = audience is None
                     synthesize_audio = audience == LISTENERS
@@ -560,13 +560,13 @@ class TranslationWorker:
                         vocabulary_entries,
                     )
 
+            if nobody_listens:
+                logger.info("[%s] Nobody listens to %s any more. Skipping segment %s.", booth_id_str, lang_code, seq)
+                return
+
             if downloading:
                 # Told after the slot is free, so the next segment does not wait for this broadcast.
                 await self._drop_while_downloading(room.id, lang_code, booth_id_str, model, uuid_segment_id, seq, text)
-                return
-
-            if nobody_listens:
-                logger.info("[%s] Nobody listens to %s any more. Skipping segment %s.", booth_id_str, lang_code, seq)
                 return
 
             if translated_text is None:
