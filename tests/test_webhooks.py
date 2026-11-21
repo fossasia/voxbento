@@ -1,20 +1,40 @@
 from __future__ import annotations
 
+import asyncio
 import ipaddress
 import json
 import socket
+import time
 from datetime import datetime, timedelta, timezone
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import httpx
 import pytest
 from fastapi import HTTPException
-from sqlalchemy import select
+from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
-from portal.models import Base, OAuthAuditLog, WebhookDelivery, WebhookSubscription
+from portal import database
+from portal.models import (
+    Base,
+    DeveloperAccount,
+    OAuthAuditLog,
+    User,
+    WebhookDelivery,
+    WebhookSubscription,
+)
 from portal.routers.webhooks import validate_ssrf
-from portal.webhooks.worker import process_delivery, sign_payload
+from portal.webhooks import worker
+from portal.webhooks.worker import (
+    DeliveryAttempt,
+    claim_due_deliveries,
+    load_delivery_job,
+    process_delivery,
+    record_delivery_attempt,
+    recover_stale_claims,
+    run_worker_iteration,
+    sign_payload,
+)
 
 # ---------------------------------------------------------------------------
 # Fixtures
@@ -32,6 +52,81 @@ async def db():
     async with session_factory() as session:
         async with session.begin():
             yield session
+
+
+@pytest.fixture
+async def worker_db(tmp_path):
+    """Configure the real database factory against a file-backed SQLite DB.
+
+    File-backed SQLite is required to reproduce the write-lock regression:
+    concurrent connections in the same process do not share an in-memory DB.
+    """
+    await database.dispose()
+    database.configure(f"sqlite+aiosqlite:///{tmp_path / 'webhooks.db'}")
+    await database.init_db()
+    try:
+        yield
+    finally:
+        await database.dispose()
+
+
+async def seed_delivery(
+    *,
+    attempt_count: int = 0,
+    consecutive_failures: int = 0,
+    status: str = "delivering",
+    next_attempt_at: datetime | None = None,
+    delivery_count: int = 1,
+    target_url: str = "https://example.com/webhook",
+) -> tuple[int, int, int]:
+    """Create a user, developer account, subscription and deliveries.
+
+    Returns ``(delivery_id, subscription_id, developer_account_id)`` for the
+    first delivery.
+    """
+    async with database.get_session() as session:
+        user = User(email="webhook@example.invalid", display_name="Webhook Owner")
+        session.add(user)
+        await session.flush()
+
+        account = DeveloperAccount(user_id=user.id, status="approved")
+        session.add(account)
+        await session.flush()
+
+        subscription = WebhookSubscription(
+            developer_account_id=account.id,
+            target_url=target_url,
+            event_types=["session.status_changed"],
+            secret_key="secret",
+            is_active=True,
+            consecutive_failures=consecutive_failures,
+        )
+        session.add(subscription)
+        await session.flush()
+
+        deliveries = [
+            WebhookDelivery(
+                subscription_id=subscription.id,
+                event_type="session.status_changed",
+                payload={"is_active": True, "index": index},
+                status=status,
+                attempt_count=attempt_count,
+                next_attempt_at=next_attempt_at or datetime.now(timezone.utc),
+            )
+            for index in range(delivery_count)
+        ]
+        session.add_all(deliveries)
+        await session.flush()
+
+        return deliveries[0].id, subscription.id, account.id
+
+
+def successful_client() -> AsyncMock:
+    client = AsyncMock(spec=httpx.AsyncClient)
+    response = MagicMock()
+    response.raise_for_status = MagicMock()
+    client.post.return_value = response
+    return client
 
 
 # ---------------------------------------------------------------------------
@@ -170,39 +265,19 @@ async def test_validate_ssrf_development_bypass_matches_exact_hostname(dns, monk
 
 
 @pytest.mark.anyio
-async def test_process_delivery_success(db):
-    # Setup Data
-    sub = WebhookSubscription(
-        developer_account_id=1,
-        target_url="https://example.com/webhook",
-        event_types=["session.status_changed"],
-        secret_key="secret",
-        is_active=True,
-    )
-    db.add(sub)
-    await db.flush()
+async def test_process_delivery_success(worker_db):
+    delivery_id, _, _ = await seed_delivery()
 
-    delivery = WebhookDelivery(
-        subscription_id=sub.id, event_type="session.status_changed", payload={"is_active": True}, status="delivering"
-    )
-    db.add(delivery)
-    await db.flush()
+    mock_client = successful_client()
 
-    # Mock HTTP Client
-    mock_client = AsyncMock(spec=httpx.AsyncClient)
-    mock_response = MagicMock()
-    mock_response.raise_for_status = MagicMock()
-    mock_client.post.return_value = mock_response
+    await process_delivery(mock_client, delivery_id)
 
-    # Process
-    await process_delivery(mock_client, db, delivery)
+    async with database.get_session() as session:
+        delivery = await session.get(WebhookDelivery, delivery_id)
+        assert delivery.status == "succeeded"
+        assert delivery.attempt_count == 1
+        assert delivery.last_error is None
 
-    # Assertions
-    assert delivery.status == "succeeded"
-    assert delivery.attempt_count == 1
-    assert delivery.last_error is None
-
-    # Assert client was called correctly
     mock_client.post.assert_called_once()
     args, kwargs = mock_client.post.call_args
     assert str(args[0]) == "https://93.184.216.34/webhook"
@@ -215,57 +290,51 @@ async def test_process_delivery_success(db):
     assert ",v1=" in sig_header, f"Expected ',v1=' in signature, got: {sig_header}"
 
     posted_payload = json.loads(kwargs["content"])
-    assert posted_payload["delivery_id"] == delivery.id
+    assert posted_payload["delivery_id"] == delivery_id
     assert posted_payload["event_type"] == "session.status_changed"
     assert posted_payload["payload_version"] == "1"
-    assert posted_payload["data"] == {"is_active": True}
-
-
-async def _make_delivery(db, target_url: str) -> WebhookDelivery:
-    sub = WebhookSubscription(
-        developer_account_id=1,
-        target_url=target_url,
-        event_types=["session.status_changed"],
-        secret_key="secret",
-        is_active=True,
-    )
-    db.add(sub)
-    await db.flush()
-    delivery = WebhookDelivery(
-        subscription_id=sub.id, event_type="session.status_changed", payload={"is_active": True}, status="delivering"
-    )
-    db.add(delivery)
-    await db.flush()
-    return delivery
+    assert posted_payload["data"] == {"is_active": True, "index": 0}
 
 
 @pytest.mark.anyio
 @pytest.mark.parametrize("dns_errno", [socket.EAI_AGAIN, socket.EAI_NONAME])
 @pytest.mark.parametrize("recovered_ip, expected_status", [("93.184.216.34", "succeeded"), ("127.0.0.1", "dead")])
 async def test_process_delivery_revalidates_after_dns_failure(
-    db, dns, monkeypatch, dns_errno, recovered_ip, expected_status
+    worker_db, dns, monkeypatch, dns_errno, recovered_ip, expected_status
 ):
-    delivery = await _make_delivery(db, "https://recovery.example.test/hook")
-    mock_client = AsyncMock(spec=httpx.AsyncClient)
-    mock_client.post.return_value = MagicMock()
+    delivery_id, _, _ = await seed_delivery(target_url="https://recovery.example.test/hook")
+    mock_client = successful_client()
     before = datetime.now(timezone.utc)
 
     with monkeypatch.context() as resolver:
         resolver.setattr(
             socket, "getaddrinfo", MagicMock(side_effect=socket.gaierror(dns_errno, "resolver unavailable"))
         )
-        await process_delivery(mock_client, db, delivery)
+        await process_delivery(mock_client, delivery_id)
 
-    assert delivery.status == "failed"
-    assert delivery.attempt_count == 1
-    assert (
-        before + timedelta(seconds=2) <= delivery.next_attempt_at <= datetime.now(timezone.utc) + timedelta(seconds=2)
-    )
-    assert "resolver unavailable" in delivery.last_error
+    async with database.get_session() as session:
+        delivery = await session.get(WebhookDelivery, delivery_id)
+        assert delivery.status == "failed"
+        assert delivery.attempt_count == 1
+        assert (
+            before + timedelta(seconds=2)
+            <= delivery.next_attempt_at.replace(tzinfo=timezone.utc)
+            <= datetime.now(timezone.utc) + timedelta(seconds=2)
+        )
+        assert "resolver unavailable" in delivery.last_error
     mock_client.post.assert_not_called()
 
     dns["recovery.example.test"] = [recovered_ip]
-    await process_delivery(mock_client, db, delivery)
+    # Simulate the retry: the worker claims the delivery again after its backoff.
+    async with database.get_session() as session:
+        delivery = await session.get(WebhookDelivery, delivery_id)
+        delivery.status = "delivering"
+        delivery.next_attempt_at = datetime.now(timezone.utc)
+
+    await process_delivery(mock_client, delivery_id)
+
+    async with database.get_session() as session:
+        delivery = await session.get(WebhookDelivery, delivery_id)
 
     assert delivery.status == expected_status
     if expected_status == "succeeded":
@@ -281,18 +350,25 @@ async def test_process_delivery_revalidates_after_dns_failure(
 @pytest.mark.parametrize(
     "attempt_count, expected_status, backoff", [(1, "failed", 4), (2, "failed", 8), (3, "dead", None)]
 )
-async def test_process_delivery_dns_failures_use_retry_limit(db, monkeypatch, attempt_count, expected_status, backoff):
-    delivery = await _make_delivery(db, "https://outage.example.test/hook")
-    delivery.attempt_count = attempt_count
-    sub = await db.get(WebhookSubscription, delivery.subscription_id)
-    sub.consecutive_failures = 4
+async def test_process_delivery_dns_failures_use_retry_limit(
+    worker_db, monkeypatch, attempt_count, expected_status, backoff
+):
+    delivery_id, subscription_id, _ = await seed_delivery(
+        target_url="https://outage.example.test/hook",
+        attempt_count=attempt_count,
+        consecutive_failures=4,
+    )
     mock_client = AsyncMock(spec=httpx.AsyncClient)
     monkeypatch.setattr(
         socket, "getaddrinfo", MagicMock(side_effect=socket.gaierror(socket.EAI_AGAIN, "resolver unavailable"))
     )
     before = datetime.now(timezone.utc)
 
-    await process_delivery(mock_client, db, delivery)
+    await process_delivery(mock_client, delivery_id)
+
+    async with database.get_session() as session:
+        delivery = await session.get(WebhookDelivery, delivery_id)
+        sub = await session.get(WebhookSubscription, subscription_id)
 
     assert delivery.status == expected_status
     assert delivery.attempt_count == attempt_count + 1
@@ -300,7 +376,7 @@ async def test_process_delivery_dns_failures_use_retry_limit(db, monkeypatch, at
     if backoff is not None:
         assert (
             before + timedelta(seconds=backoff)
-            <= delivery.next_attempt_at
+            <= delivery.next_attempt_at.replace(tzinfo=timezone.utc)
             <= datetime.now(timezone.utc) + timedelta(seconds=backoff)
         )
         assert sub.consecutive_failures == 4
@@ -312,14 +388,16 @@ async def test_process_delivery_dns_failures_use_retry_limit(db, monkeypatch, at
 
 @pytest.mark.anyio
 @pytest.mark.parametrize("rebound_ip", ["127.0.0.1", "::7f00:1", "::a00:1"])
-async def test_process_delivery_rejects_rebound_dns(db, dns, rebound_ip):
+async def test_process_delivery_rejects_rebound_dns(worker_db, dns, rebound_ip):
     dns["rebind.attacker.test"] = ["93.184.216.34"]
-    await validate_ssrf("https://rebind.attacker.test:9443/hook")
-    delivery = await _make_delivery(db, "https://rebind.attacker.test:9443/hook")
+    delivery_id, _, _ = await seed_delivery(target_url="https://rebind.attacker.test:9443/hook")
 
     dns["rebind.attacker.test"] = [rebound_ip]
     mock_client = AsyncMock(spec=httpx.AsyncClient)
-    await process_delivery(mock_client, db, delivery)
+    await process_delivery(mock_client, delivery_id)
+
+    async with database.get_session() as session:
+        delivery = await session.get(WebhookDelivery, delivery_id)
 
     mock_client.post.assert_not_called()
     assert delivery.status == "dead"
@@ -328,13 +406,16 @@ async def test_process_delivery_rejects_rebound_dns(db, dns, rebound_ip):
 
 @pytest.mark.anyio
 @pytest.mark.parametrize("connect_failure", [httpx.ConnectError, httpx.ConnectTimeout])
-async def test_process_delivery_keeps_port_and_tries_next_vetted_ip(db, dns, connect_failure):
+async def test_process_delivery_keeps_port_and_tries_next_vetted_ip(worker_db, dns, connect_failure):
     dns["dual.example.org"] = ["2606:2800:220:1::1", "2606:2800:220:1::2", "93.184.216.34"]
-    delivery = await _make_delivery(db, "https://dual.example.org:8443/hook?a=1")
+    delivery_id, _, _ = await seed_delivery(target_url="https://dual.example.org:8443/hook?a=1")
 
     mock_client = AsyncMock(spec=httpx.AsyncClient)
     mock_client.post.side_effect = [connect_failure("IPv6 unreachable"), MagicMock()]
-    await process_delivery(mock_client, db, delivery)
+    await process_delivery(mock_client, delivery_id)
+
+    async with database.get_session() as session:
+        delivery = await session.get(WebhookDelivery, delivery_id)
 
     assert delivery.status == "succeeded"
     urls = [str(call.args[0]) for call in mock_client.post.call_args_list]
@@ -343,24 +424,9 @@ async def test_process_delivery_keeps_port_and_tries_next_vetted_ip(db, dns, con
 
 
 @pytest.mark.anyio
-async def test_process_delivery_http_error_retry(db):
-    sub = WebhookSubscription(
-        developer_account_id=1,
-        target_url="https://example.com/webhook",
-        event_types=["session.status_changed"],
-        secret_key="secret",
-        is_active=True,
-    )
-    db.add(sub)
-    await db.flush()
+async def test_process_delivery_http_error_retry(worker_db):
+    delivery_id, _, _ = await seed_delivery()
 
-    delivery = WebhookDelivery(
-        subscription_id=sub.id, event_type="session.status_changed", payload={"is_active": True}, status="delivering"
-    )
-    db.add(delivery)
-    await db.flush()
-
-    # Mock HTTP Client throwing error
     mock_client = AsyncMock(spec=httpx.AsyncClient)
     mock_response = MagicMock()
     mock_response.status_code = 500
@@ -368,168 +434,274 @@ async def test_process_delivery_http_error_retry(db):
         "500 Server Error", request=MagicMock(), response=mock_response
     )
 
-    # Process
-    await process_delivery(mock_client, db, delivery)
+    await process_delivery(mock_client, delivery_id)
 
-    # Assertions (Failed, should retry)
-    assert delivery.status == "failed"
-    assert delivery.attempt_count == 1
-    assert delivery.last_error == "HTTP error: 500"
-    assert delivery.next_attempt_at is not None
-    # Backoff is 2^1 = 2 seconds
-    assert delivery.next_attempt_at > datetime.now(timezone.utc)
+    async with database.get_session() as session:
+        delivery = await session.get(WebhookDelivery, delivery_id)
+        assert delivery.status == "failed"
+        assert delivery.attempt_count == 1
+        assert delivery.last_error == "HTTP error: 500"
+        assert delivery.next_attempt_at is not None
+        # Backoff is 2^1 = 2 seconds
+        assert delivery.next_attempt_at.replace(tzinfo=timezone.utc) > datetime.now(timezone.utc)
 
 
 @pytest.mark.anyio
-async def test_process_delivery_circuit_breaker(db):
-    sub = WebhookSubscription(
-        developer_account_id=1,
-        target_url="https://example.com/webhook",
-        event_types=["session.status_changed"],
-        secret_key="secret",
-        is_active=True,
+async def test_process_delivery_timeout_retries(worker_db):
+    delivery_id, _, _ = await seed_delivery()
+
+    mock_client = AsyncMock(spec=httpx.AsyncClient)
+    mock_client.post.side_effect = httpx.ReadTimeout("timed out")
+
+    await process_delivery(mock_client, delivery_id)
+
+    async with database.get_session() as session:
+        delivery = await session.get(WebhookDelivery, delivery_id)
+        assert delivery.status == "failed"
+        assert delivery.attempt_count == 1
+        assert delivery.last_error.startswith("Request error:")
+
+
+@pytest.mark.anyio
+async def test_process_delivery_invalid_url_is_recorded(worker_db):
+    delivery_id, _, _ = await seed_delivery()
+
+    mock_client = AsyncMock(spec=httpx.AsyncClient)
+    mock_client.post.side_effect = httpx.InvalidURL("invalid URL")
+
+    await process_delivery(mock_client, delivery_id)
+
+    async with database.get_session() as session:
+        delivery = await session.get(WebhookDelivery, delivery_id)
+        assert delivery.status == "failed"
+        assert delivery.last_error.startswith("Invalid URL:")
+
+
+@pytest.mark.anyio
+async def test_process_delivery_circuit_breaker(worker_db):
+    delivery_id, subscription_id, _ = await seed_delivery(
+        attempt_count=3,  # Next attempt will be 4th (max)
         consecutive_failures=4,  # 1 more to disable
     )
-    db.add(sub)
-    await db.flush()
-
-    delivery = WebhookDelivery(
-        subscription_id=sub.id,
-        event_type="session.status_changed",
-        payload={"is_active": True},
-        status="delivering",
-        attempt_count=3,  # Next attempt will be 4th (max)
-    )
-    db.add(delivery)
-    await db.flush()
 
     mock_client = AsyncMock(spec=httpx.AsyncClient)
     mock_client.post.side_effect = httpx.RequestError("Connection timeout")
 
-    # Process
-    await process_delivery(mock_client, db, delivery)
+    await process_delivery(mock_client, delivery_id)
 
-    # Assertions (Dead, Circuit Breaker)
+    async with database.get_session() as session:
+        delivery = await session.get(WebhookDelivery, delivery_id)
+        subscription = await session.get(WebhookSubscription, subscription_id)
+        audits = (await session.execute(select(OAuthAuditLog))).scalars().all()
+
     assert delivery.status == "dead"
     assert delivery.attempt_count == 4
-
-    assert sub.consecutive_failures == 5
-    assert sub.is_active is False  # Circuit broken
-
-    # Audit log should be created
-    audit_result = await db.execute(select(OAuthAuditLog))
-    audits = audit_result.scalars().all()
+    assert subscription.consecutive_failures == 5
+    assert subscription.is_active is False  # Circuit broken
     assert len(audits) == 1
     assert audits[0].action == "webhook.circuit_breaker_tripped"
     assert audits[0].client_id is None  # Zero-client case coverage
 
 
 @pytest.mark.anyio
-async def test_process_delivery_circuit_breaker_with_multiple_clients(db):
+async def test_process_delivery_circuit_breaker_with_multiple_clients(worker_db):
     from portal.models import OAuthClient
 
-    client1 = OAuthClient(developer_account_id=1, client_id="client_1", name="C1")
-    client2 = OAuthClient(developer_account_id=1, client_id="client_2", name="C2")
-    db.add_all([client1, client2])
-    await db.flush()
+    delivery_id, subscription_id, account_id = await seed_delivery(attempt_count=3, consecutive_failures=4)
 
-    sub = WebhookSubscription(
-        developer_account_id=1,
-        target_url="https://example.com/webhook",
-        event_types=["session.status_changed"],
-        secret_key="secret",
-        is_active=True,
-        consecutive_failures=4,
-    )
-    db.add(sub)
-    await db.flush()
-
-    delivery = WebhookDelivery(
-        subscription_id=sub.id,
-        event_type="session.status_changed",
-        payload={"is_active": True},
-        status="delivering",
-        attempt_count=3,
-    )
-    db.add(delivery)
-    await db.flush()
+    async with database.get_session() as session:
+        session.add_all(
+            [
+                OAuthClient(developer_account_id=account_id, client_id="client_1", name="C1"),
+                OAuthClient(developer_account_id=account_id, client_id="client_2", name="C2"),
+            ]
+        )
+        await session.flush()
+        client1_id = await session.scalar(select(OAuthClient.id).where(OAuthClient.client_id == "client_1"))
 
     mock_client = AsyncMock(spec=httpx.AsyncClient)
     mock_client.post.side_effect = httpx.RequestError("Connection timeout")
 
-    await process_delivery(mock_client, db, delivery)
+    await process_delivery(mock_client, delivery_id)
 
-    audit_result = await db.execute(select(OAuthAuditLog))
-    audits = audit_result.scalars().all()
+    async with database.get_session() as session:
+        audits = (await session.execute(select(OAuthAuditLog))).scalars().all()
+
     assert len(audits) == 1
     assert audits[0].action == "webhook.circuit_breaker_tripped"
-    assert audits[0].client_id == client1.id  # Verifies order_by(OAuthClient.id) selects the oldest client
+    assert audits[0].client_id == client1_id  # Verifies order_by(OAuthClient.id) selects the oldest client
 
 
 @pytest.mark.anyio
-async def test_atomic_queue_claim(db):
-    """Test that multiple workers do not claim the same webhook delivery."""
-    sub = WebhookSubscription(
-        developer_account_id=1,
-        target_url="https://example.com/webhook",
-        event_types=["session.status_changed"],
-        secret_key="secret",
-        is_active=True,
-    )
-    db.add(sub)
-    await db.flush()
-
-    # Create 5 pending deliveries
-    for i in range(5):
-        delivery = WebhookDelivery(
-            subscription_id=sub.id, event_type="session.status_changed", payload={"id": i}, status="pending"
-        )
-        db.add(delivery)
-    await db.flush()
-
+async def test_atomic_queue_claim(worker_db):
+    """Two concurrent workers cannot claim the same delivery."""
+    await seed_delivery(delivery_count=15, status="pending")
     now = datetime.now(timezone.utc)
-    from sqlalchemy import select, update
 
-    # Simulate worker 1 claiming 3 items
-    subquery1 = (
-        select(WebhookDelivery.id)
-        .where(WebhookDelivery.status.in_(["pending", "failed"]))
-        .where(WebhookDelivery.next_attempt_at <= now)
-        .limit(3)
-    )
-    stmt1 = (
-        update(WebhookDelivery)
-        .where(WebhookDelivery.id.in_(subquery1))
-        .values(status="delivering")
-        .returning(WebhookDelivery)
-    )
-    result1 = await db.execute(stmt1)
-    claimed1 = result1.scalars().all()
+    async def claim_once() -> list[int]:
+        async with database.get_session() as session:
+            return await claim_due_deliveries(session, now)
 
-    # Simulate worker 2 claiming 3 items at the exact same time
-    subquery2 = (
-        select(WebhookDelivery.id)
-        .where(WebhookDelivery.status.in_(["pending", "failed"]))
-        .where(WebhookDelivery.next_attempt_at <= now)
-        .limit(3)
-    )
-    stmt2 = (
-        update(WebhookDelivery)
-        .where(WebhookDelivery.id.in_(subquery2))
-        .values(status="delivering")
-        .returning(WebhookDelivery)
-    )
-    result2 = await db.execute(stmt2)
-    claimed2 = result2.scalars().all()
+    claimed1, claimed2 = await asyncio.gather(claim_once(), claim_once())
 
-    # Worker 1 should get 3, Worker 2 should get the remaining 2
-    assert len(claimed1) == 3
-    assert len(claimed2) == 2
+    # Batch size caps the first claim; the winner of the race is not deterministic.
+    assert sorted([len(claimed1), len(claimed2)]) == [5, 10]
+    assert set(claimed1).isdisjoint(claimed2)
 
-    # No overlap in claimed IDs
-    ids1 = {d.id for d in claimed1}
-    ids2 = {d.id for d in claimed2}
-    assert ids1.isdisjoint(ids2)
+
+@pytest.mark.anyio
+async def test_worker_recovers_expired_claim(worker_db):
+    """A delivery left in ``delivering`` by a crashed worker is retried."""
+    delivery_id, _, _ = await seed_delivery(
+        status="delivering",
+        next_attempt_at=datetime.now(timezone.utc) - timedelta(seconds=5),
+    )
+    mock_client = successful_client()
+
+    claimed = await run_worker_iteration(mock_client)
+
+    assert claimed == 1
+    mock_client.post.assert_called_once()
+    async with database.get_session() as session:
+        delivery = await session.get(WebhookDelivery, delivery_id)
+        assert delivery.status == "succeeded"
+
+
+@pytest.mark.anyio
+async def test_worker_isolates_unexpected_delivery_failure(worker_db, monkeypatch):
+    """One failing dispatch does not strand the rest of the claimed batch."""
+    await seed_delivery(delivery_count=2, status="pending")
+    real_process_delivery = worker.process_delivery
+    calls = 0
+
+    async def flaky_process_delivery(client, delivery_id, job=None):
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            raise RuntimeError("boom")
+        await real_process_delivery(client, delivery_id, job)
+
+    monkeypatch.setattr(worker, "process_delivery", flaky_process_delivery)
+    mock_client = successful_client()
+
+    claimed = await run_worker_iteration(mock_client)
+
+    assert claimed == 2
+    mock_client.post.assert_called_once()
+    async with database.get_session() as session:
+        deliveries = list((await session.scalars(select(WebhookDelivery).order_by(WebhookDelivery.id))).all())
+    assert [delivery.status for delivery in deliveries] == ["failed", "succeeded"]
+    assert [delivery.attempt_count for delivery in deliveries] == [1, 1]
+    assert deliveries[0].last_error == "Unexpected dispatch error."
+
+
+@pytest.mark.anyio
+async def test_recovery_dead_letters_exhausted_claim(worker_db):
+    now = datetime.now(timezone.utc)
+    delivery_id, subscription_id, _ = await seed_delivery(
+        status="delivering",
+        next_attempt_at=now - timedelta(seconds=5),
+        attempt_count=3,
+        consecutive_failures=4,
+    )
+
+    async with database.get_session() as session:
+        recovered = await recover_stale_claims(session, now)
+    async with database.get_session() as session:
+        delivery = await session.get(WebhookDelivery, delivery_id)
+        subscription = await session.get(WebhookSubscription, subscription_id)
+        audits = (await session.execute(select(OAuthAuditLog))).scalars().all()
+
+    assert recovered == 1
+    assert delivery.status == "dead"
+    assert delivery.attempt_count == 4
+    assert subscription.consecutive_failures == 5
+    assert subscription.is_active is False
+    assert len(audits) == 1
+
+
+@pytest.mark.anyio
+async def test_late_worker_cannot_overwrite_reclaimed_delivery(worker_db):
+    """A worker whose lease expired must not write over a newer claim."""
+    now = datetime.now(timezone.utc)
+    delivery_id, _, _ = await seed_delivery(
+        status="delivering",
+        next_attempt_at=now - timedelta(seconds=5),
+    )
+    async with database.get_session() as session:
+        stale_job = await load_delivery_job(session, delivery_id)
+    assert stale_job is not None
+
+    async with database.get_session() as session:
+        await recover_stale_claims(session, now)
+    async with database.get_session() as session:
+        claimed = await claim_due_deliveries(session, now)
+    assert claimed == [delivery_id]
+
+    async with database.get_session() as session:
+        await record_delivery_attempt(session, stale_job, DeliveryAttempt(success=True))
+
+    async with database.get_session() as session:
+        delivery = await session.get(WebhookDelivery, delivery_id)
+        assert delivery.status == "delivering"
+
+
+@pytest.mark.anyio
+async def test_slow_receiver_does_not_block_unrelated_writes(worker_db):
+    """A held webhook response must not keep a SQLite write lock open."""
+    await seed_delivery(delivery_count=2, status="pending")
+    async with database.get_session() as session:
+        user_id = await session.scalar(select(User.id))
+
+    first_request = asyncio.Event()
+    request_count = 0
+
+    async def receiver(request: httpx.Request) -> httpx.Response:
+        nonlocal request_count
+        request_count += 1
+        first_request.set()
+        await asyncio.sleep(1.5)
+        return httpx.Response(200, request=request)
+
+    client = httpx.AsyncClient(transport=httpx.MockTransport(receiver), timeout=5.0)
+
+    async def poll_worker() -> None:
+        while True:
+            await worker.run_worker_iteration(client)
+            await asyncio.sleep(0.05)
+
+    task = asyncio.create_task(poll_worker())
+    try:
+        with patch.object(worker, "validate_ssrf", return_value=None):
+            await asyncio.wait_for(first_request.wait(), timeout=5)
+
+            started = time.monotonic()
+            async with database.get_session() as session:
+                await session.execute(update(User).where(User.id == user_id).values(display_name="After"))
+            write_seconds = time.monotonic() - started
+
+            assert write_seconds < 1.0, f"unrelated write blocked for {write_seconds:.2f}s"
+
+            statuses = []
+            for _ in range(200):
+                async with database.get_session() as session:
+                    statuses = list(
+                        (await session.scalars(select(WebhookDelivery.status).order_by(WebhookDelivery.id))).all()
+                    )
+                if statuses == ["succeeded", "succeeded"]:
+                    break
+                await asyncio.sleep(0.05)
+
+            async with database.get_session() as session:
+                display_name = await session.scalar(select(User.display_name).where(User.id == user_id))
+
+        assert request_count == 2
+        assert display_name == "After"
+        assert statuses == ["succeeded", "succeeded"]
+    finally:
+        task.cancel()
+        await asyncio.gather(task, return_exceptions=True)
+        await client.aclose()
 
 
 @pytest.mark.anyio
@@ -772,48 +944,22 @@ async def test_create_webhook_quota_limit(db, monkeypatch):
 
 
 @pytest.mark.anyio
-async def test_process_delivery_handles_failed_refresh_gracefully(db, monkeypatch):
-    from unittest.mock import AsyncMock
+async def test_process_delivery_records_success_without_refreshing(worker_db):
+    """The outcome is written from a fresh row read, so no stale ORM object can break it.
 
-    from sqlalchemy.exc import SQLAlchemyError
+    A delivery that succeeds must also clear the subscription's failure counter.
+    """
+    delivery_id, subscription_id, _ = await seed_delivery(consecutive_failures=2)
 
-    from portal.webhooks.worker import process_delivery
+    await process_delivery(successful_client(), delivery_id)
 
-    sub = WebhookSubscription(
-        developer_account_id=1,
-        target_url="https://example.com/webhook",
-        event_types=["session.status_changed"],
-        secret_key="secret",
-        is_active=True,
-        consecutive_failures=2,
-    )
-    db.add(sub)
-    await db.flush()
+    async with database.get_session() as session:
+        delivery = await session.get(WebhookDelivery, delivery_id)
+        subscription = await session.get(WebhookSubscription, subscription_id)
 
-    delivery = WebhookDelivery(
-        subscription_id=sub.id,
-        event_type="session.status_changed",
-        payload={"is_active": True},
-        status="pending",
-        attempt_count=0,
-    )
-    db.add(delivery)
-    await db.flush()
-
-    mock_client = AsyncMock(spec=httpx.AsyncClient)
-    mock_resp = AsyncMock()
-    mock_resp.raise_for_status = MagicMock(return_value=None)
-    mock_client.post.return_value = mock_resp
-
-    async def mock_refresh(instance):
-        raise SQLAlchemyError("Simulated database refresh failure")
-
-    monkeypatch.setattr(db, "refresh", mock_refresh)
-
-    # Must complete successfully without raising exception on sub access
-    await process_delivery(mock_client, db, delivery)
     assert delivery.status == "succeeded"
     assert delivery.last_error is None
+    assert subscription.consecutive_failures == 0
 
 
 @pytest.mark.anyio
