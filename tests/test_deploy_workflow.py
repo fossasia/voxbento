@@ -50,6 +50,7 @@ case "$name:$*" in
   docker:*"config --environment"*) stage=other
     printf '%b' "$COMPOSE_ENV" ;;
   docker:*" up "*) stage=up ;;
+  docker:*"image prune"*) stage=prune ;;
   docker:*build*) stage=build
     test -z "$EXPECT_FILE" || test -f "$EXPECT_FILE" || exit 93 ;;
   docker:*run*) stage=preflight
@@ -157,13 +158,14 @@ def test_successful_deploy_uses_candidate_then_preserves_project_identity(
     assert "--filter label=com.docker.compose.project=voxbento" in prune_call
     reload = next(i for i, call in enumerate(calls) if call.startswith("sudo|systemctl reload caddy|"))
     up = next(i for i, call in enumerate(calls) if " up " in call)
-    assert install < rename < reload < up
+    # Caddy switches only once the replacement portal is healthy, before cleanup.
+    assert up < health < install < rename < reload < prune
     assert "sudo|cp " not in "\n".join(calls)
     assert not list(temporary.glob("voxbento-deploy.*"))
 
 
 @pytest.mark.parametrize("stage", ["install", "rename", "reload"])
-def test_failed_caddy_install_stops_container_replacement(
+def test_failed_caddy_activation_fails_deploy_and_keeps_rollback_images(
     deployment: tuple[Path, Path, str, dict[str, str]],
     stage: str,
 ) -> None:
@@ -171,10 +173,15 @@ def test_failed_caddy_install_stops_container_replacement(
     result = run_deployment(env, stage)
     assert result.returncode == 42, result.stdout + result.stderr
     calls = (temporary / "calls").read_text()
-    assert " up " not in calls
+    health = calls.index("curl|")
+    assert calls.index(" up ") < health < calls.index("sudo|install")
     assert "image prune" not in calls
-    if stage in {"install", "rename"}:
+    if stage == "install":
+        # Nothing on disk changed yet: no restore, no reload.
         assert "systemctl reload" not in calls
+        assert "Caddy activation failed" not in result.stdout
+    else:
+        assert "Caddy activation failed" in result.stdout
     assert not list(temporary.glob("voxbento-deploy.*"))
 
 
@@ -187,8 +194,9 @@ def test_unhealthy_replacement_retains_rollback_images(
     calls = (temporary / "calls").read_text()
     assert "logs portal --tail=50" in calls
     assert "image prune" not in calls
-    assert "Previous Caddy configuration restored" in result.stdout
-    assert "mv -f /etc/caddy/sites/voxbento.caddy.previous /etc/caddy/sites/voxbento.caddy" in calls
+    # Caddy keeps routing to the configuration it had; the new site was never activated.
+    changes = ("install", "mv", "rm", "tee", "systemctl")
+    assert not any(call.startswith(changes) for call in sudo_calls(temporary))
     assert not list(temporary.glob("voxbento-deploy.*"))
 
 
@@ -227,7 +235,11 @@ def test_portal_host_port_sets_health_check_and_caddy_upstream(
 
 def test_compose_resolves_portal_host_port_like_published_port(tmp_path: Path) -> None:
     """The workflow trusts `docker compose config --environment`; check that it parses .env."""
-    if subprocess.run(["docker", "compose", "version"], capture_output=True).returncode != 0:
+    try:
+        version = subprocess.run(["docker", "compose", "version"], capture_output=True, timeout=30)
+    except FileNotFoundError:
+        pytest.skip("Docker is not installed")
+    if version.returncode != 0:
         pytest.skip("Docker Compose is not installed")
     (tmp_path / "compose.yml").write_text(
         'services:\n  a:\n    image: busybox\n    ports: ["127.0.0.1:${PORTAL_HOST_PORT:-8000}:8000"]\n'
@@ -296,6 +308,9 @@ def test_legacy_main_caddyfile_is_replaced_by_sites_import(
         ("other.example {\\n    respond 200\\n}\\n", "other.example {"),
         (LEGACY_MAIN + "app.example.org {\\n    reverse_proxy localhost:9000\\n}\\n", "app.example.org {"),
         ("{\\n    email ops@example.org\\n}\\n" + LEGACY_MAIN, "{"),
+        # Braces, not indentation, delimit Caddy blocks.
+        (LEGACY_MAIN + "    app.example.org {\\n        respond 200\\n    }\\n", "app.example.org {"),
+        (LEGACY_MAIN + "\\tapp.example.org  {  # other app\\n\\t\\trespond 200\\n\\t}\\n", "app.example.org {"),
     ],
 )
 def test_main_caddyfile_with_other_entries_stops_before_any_change(
@@ -339,21 +354,30 @@ def test_invalid_host_caddy_config_is_restored(
     # Caddy is reloaded only once, with the restored files.
     assert calls.count("systemctl reload caddy") == 1
     assert after.index("systemctl reload caddy") == len(after) - 1
-    assert " up " not in (temporary / "calls").read_text()
+    assert "image prune" not in (temporary / "calls").read_text()
 
 
-def test_failed_container_replacement_restores_changed_caddy(
+def test_failed_container_replacement_leaves_caddy_untouched(
     deployment: tuple[Path, Path, str, dict[str, str]],
 ) -> None:
     _, temporary, _, env = deployment
     result = run_deployment(env, "up")
     assert result.returncode == 42, result.stdout + result.stderr
+    changes = ("install", "mv", "rm", "tee", "systemctl")
+    assert not any(call.startswith(changes) for call in sudo_calls(temporary))
+
+
+def test_failure_after_caddy_activation_keeps_it(
+    deployment: tuple[Path, Path, str, dict[str, str]],
+) -> None:
+    _, temporary, _, env = deployment
+    result = run_deployment(env, "prune")
+    assert result.returncode == 42, result.stdout + result.stderr
     calls = sudo_calls(temporary)
-    assert calls.count("systemctl reload caddy") == 2
-    first_reload = calls.index("systemctl reload caddy")
-    restore = "mv -f /etc/caddy/sites/voxbento.caddy.previous /etc/caddy/sites/voxbento.caddy"
-    assert first_reload < calls.index(restore)
-    assert "Previous Caddy configuration restored" in result.stdout
+    # The active site matches the healthy portal; a cleanup failure must not roll it back.
+    assert calls.count("systemctl reload caddy") == 1
+    assert "mv -f /etc/caddy/sites/voxbento.caddy.previous /etc/caddy/sites/voxbento.caddy" not in calls
+    assert "Caddy activation failed" not in result.stdout
 
 
 def test_mediamtx_public_hosts_come_from_environment() -> None:
