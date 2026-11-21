@@ -203,6 +203,22 @@ The default `DATABASE_URL` uses SQLite, which stores data in a single file on th
 </details>
 
 <details>
+<summary>Optional: deliver webhooks and email through Redis</summary>
+
+By default the portal checks the database every second for webhooks and every 10 seconds for email to send. With Redis, it starts delivering as soon as a message is queued and checks the database only every 30 seconds as a safety net.
+
+  Add to your `.env`, then start the stack with the `redis` profile:
+
+  ```bash
+  REDIS_URL=redis://redis:6379/0
+  docker compose --profile redis up -d
+  ```
+
+  Redis holds only the IDs of queued messages, so it needs no persistence or backups. If Redis stops, nothing is lost: the portal logs the outage once and checks the database every 5 seconds until Redis is back. Remove `REDIS_URL` to go back to database polling.
+
+</details>
+
+<details>
 <summary>Put a reverse proxy in front for TLS</summary>
 
 WebRTC **requires HTTPS** in production browsers — Chrome and Firefox will not allow microphone access over plain HTTP from a non-localhost origin. Put a reverse proxy in front of the portal and MediaMTX to terminate TLS.

@@ -14,6 +14,7 @@ from fastapi import HTTPException
 from sqlalchemy import select, update
 from sqlalchemy.exc import SQLAlchemyError
 
+from portal import redis_queue
 from portal.database import get_session
 from portal.models import OAuthAuditLog, WebhookDelivery, WebhookSubscription
 from portal.routers.webhooks import validate_ssrf
@@ -43,6 +44,8 @@ async def enqueue_webhook(event_type: str, payload: dict) -> None:
             if deliveries:
                 db.add_all(deliveries)
                 await db.flush()
+        # After the session commits, so the worker is never woken for an uncommitted row.
+        await redis_queue.enqueue(redis_queue.WEBHOOKS, [delivery.id for delivery in deliveries])
     except Exception as e:
         logger.error(f"Failed to enqueue webhook: {e}", exc_info=True)
 
@@ -168,42 +171,58 @@ async def process_delivery(client: httpx.AsyncClient, db, delivery: WebhookDeliv
             delivery.next_attempt_at = datetime.now(timezone.utc) + timedelta(seconds=backoff_seconds)
 
 
-async def webhook_worker_loop():
-    """Background polling worker for webhooks."""
+def delivery_client() -> httpx.AsyncClient:
+    """HTTP client for webhook delivery."""
     # Delivery connects to the IP vetted by validate_ssrf. Pooled connections are keyed by
     # that IP, so keep-alive would reuse a TLS session verified for one webhook hostname for
     # another. The explicit transport also skips environment proxies, which would tunnel to
     # the IP and verify TLS against it.
     transport = httpx.AsyncHTTPTransport(limits=httpx.Limits(max_keepalive_connections=0))
-    async with httpx.AsyncClient(timeout=5.0, transport=transport) as client:
+    return httpx.AsyncClient(timeout=5.0, transport=transport)
+
+
+async def process_due_webhooks(client: httpx.AsyncClient, limit: int = 10) -> int:
+    """Claim up to ``limit`` due deliveries, deliver them, and return how many were claimed."""
+    retries: list[tuple[int, datetime]] = []
+    async with get_session() as db:
+        now = datetime.now(timezone.utc)
+
+        subquery = (
+            select(WebhookDelivery.id)
+            .where(WebhookDelivery.status.in_(["pending", "failed"]))
+            .where(WebhookDelivery.next_attempt_at <= now)
+            .limit(limit)
+        )
+
+        stmt = (
+            update(WebhookDelivery)
+            .where(WebhookDelivery.id.in_(subquery))
+            .values(status="delivering")
+            .returning(WebhookDelivery)
+        )
+
+        result = await db.execute(stmt)
+        claimed_deliveries = result.scalars().all()
+
+        for delivery in claimed_deliveries:
+            await process_delivery(client, db, delivery)
+            if delivery.status == "failed":
+                retries.append((delivery.id, delivery.next_attempt_at))
+        if claimed_deliveries:
+            await db.flush()
+
+    # Retries are scheduled only after the session commits their new due time.
+    for delivery_id, due in retries:
+        await redis_queue.enqueue(redis_queue.WEBHOOKS, [delivery_id], due)
+    return len(claimed_deliveries)
+
+
+async def webhook_worker_loop():
+    """Background polling worker for webhooks."""
+    async with delivery_client() as client:
         while True:
             try:
-                claimed = False
-                async with get_session() as db:
-                    now = datetime.now(timezone.utc)
-
-                    subquery = (
-                        select(WebhookDelivery.id)
-                        .where(WebhookDelivery.status.in_(["pending", "failed"]))
-                        .where(WebhookDelivery.next_attempt_at <= now)
-                        .limit(10)
-                    )
-
-                    stmt = (
-                        update(WebhookDelivery)
-                        .where(WebhookDelivery.id.in_(subquery))
-                        .values(status="delivering")
-                        .returning(WebhookDelivery)
-                    )
-
-                    result = await db.execute(stmt)
-                    claimed_deliveries = result.scalars().all()
-
-                    if claimed_deliveries:
-                        claimed = True
-                        for delivery in claimed_deliveries:
-                            await process_delivery(client, db, delivery)
-                        await db.flush()
+                claimed = await process_due_webhooks(client)
 
                 # Sleep OUTSIDE the database session to release the SQLite lock
                 if not claimed:
@@ -213,3 +232,13 @@ async def webhook_worker_loop():
             except Exception as e:
                 logger.error(f"Webhook worker error: {e}", exc_info=True)
                 await asyncio.sleep(5)
+
+
+async def redis_webhook_worker_loop() -> None:
+    """Webhook worker woken by Redis instead of polling the database every second."""
+    async with delivery_client() as client:
+
+        async def process_due() -> int:
+            return await process_due_webhooks(client)
+
+        await redis_queue.run_worker(redis_queue.WEBHOOKS, process_due)

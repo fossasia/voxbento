@@ -45,6 +45,9 @@ services:
       # Override with a PostgreSQL URL for production deployments:
       #   DATABASE_URL=postgresql+asyncpg://user:pass@db:5432/interpretation
       DATABASE_URL: "${DATABASE_URL:-sqlite+aiosqlite:////data/interpretation.db}"
+      # Optional Redis dispatch for webhook and email delivery; empty keeps database polling.
+      # Enable with REDIS_URL=redis://redis:6379/0 and: docker compose --profile redis up -d
+      REDIS_URL: "${REDIS_URL:-}"
     volumes:
       # Source and dependencies come from the image, never the live checkout.
       # Persist database across container restarts
@@ -63,6 +66,21 @@ services:
       timeout: 5s
       retries: 3
       start_period: 10s
+
+  # ── Optional Redis (webhook and email dispatch) ───────────────
+  # Started only with --profile redis. It holds delivery IDs only; the database keeps every
+  # message, so no persistence is needed and the portal falls back to scanning it when Redis
+  # is down. Not published on the host.
+  redis:
+    image: redis:8.4-alpine
+    profiles: ["redis"]
+    command: ["redis-server", "--save", "", "--appendonly", "no", "--maxmemory", "64mb", "--maxmemory-policy", "noeviction"]
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 3s
+      retries: 3
+    restart: unless-stopped
 
   # ── Floor Bot Service ─────────────────────────────────────────
   floor-bot:

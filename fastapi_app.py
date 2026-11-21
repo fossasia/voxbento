@@ -17,7 +17,7 @@ from starlette.exceptions import HTTPException as StarletteHTTPException
 from starlette.middleware.base import BaseHTTPMiddleware
 from unilimit.integrations.fastapi import RateLimitExceeded, setup
 
-from portal import meeting_source, program_ingest
+from portal import meeting_source, program_ingest, redis_queue
 from portal.auth import (
     ADMIN_CSRF_COOKIE,
     generate_admin_csrf_token,
@@ -48,6 +48,7 @@ from portal.routers.translation_models import router as translation_models_route
 from portal.routers.webhooks import router as webhooks_router
 from portal.routers.youtube import router as youtube_router
 from portal.security_headers import SecurityHeadersMiddleware, apply_security_headers, forwarded_https
+from portal.tasks import track_task
 from portal.websockets.handlers import router as ws_router
 from portal.workspace_routing import WorkspaceRoutingMiddleware
 
@@ -81,6 +82,7 @@ async def lifespan(app: FastAPI):
     from portal.tts.demo_gen import ensure_demo_generated
 
     settings.validate_production_secrets()
+    settings.validate_redis_url()
 
     pg.shared_http_client = httpx.AsyncClient(timeout=10.0)
 
@@ -107,8 +109,18 @@ async def lifespan(app: FastAPI):
     manager.set_token_checker(_reaper_mod.check_booth_tokens)
     reaper_task = asyncio.create_task(_reaper_mod.session_reaper_loop())
 
-    webhook_task = asyncio.create_task(_webhook_worker_mod.webhook_worker_loop())
-    notification_task = asyncio.create_task(_notifications_mod.notification_worker_loop())
+    # With REDIS_URL the outbox workers wake on Redis instead of polling the database.
+    if settings.redis_enabled:
+        webhook_task = asyncio.create_task(_webhook_worker_mod.redis_webhook_worker_loop(), name="redis-webhook-worker")
+        notification_task = asyncio.create_task(
+            _notifications_mod.redis_notification_worker_loop(), name="redis-email-worker"
+        )
+        # These workers stop on an unexpected error instead of retrying it; log that at once.
+        track_task(webhook_task)
+        track_task(notification_task)
+    else:
+        webhook_task = asyncio.create_task(_webhook_worker_mod.webhook_worker_loop())
+        notification_task = asyncio.create_task(_notifications_mod.notification_worker_loop())
     rate_limit_cleanup_task = asyncio.create_task(_rate_limit_cleanup_loop())
     ingest_task = asyncio.create_task(program_ingest.reconcile_loop()) if settings.program_ingest_enabled else None
     meeting_task = asyncio.create_task(meeting_source.reconcile_loop())
@@ -139,6 +151,7 @@ async def lifespan(app: FastAPI):
     for task in tasks_to_cancel:
         task.cancel()
     await asyncio.gather(*tasks_to_cancel, return_exceptions=True)
+    await redis_queue.close()
 
     if pg.shared_http_client:
         await pg.shared_http_client.aclose()

@@ -35,6 +35,7 @@ def _reset_shared_http_client():
     # Disable the background webhook loop and enqueueing during tests to prevent SQLite lock contention
     # and hanging threads when the test event loop closes.
     original_loop = portal.webhooks.worker.webhook_worker_loop
+    original_redis_loop = portal.webhooks.worker.redis_webhook_worker_loop
     original_enqueue = portal.webhooks.worker.enqueue_webhook
 
     async def _dummy_loop():
@@ -44,6 +45,7 @@ def _reset_shared_http_client():
         pass
 
     portal.webhooks.worker.webhook_worker_loop = _dummy_loop
+    portal.webhooks.worker.redis_webhook_worker_loop = _dummy_loop
     portal.webhooks.worker.enqueue_webhook = _dummy_enqueue
 
     pg.shared_http_client = None
@@ -51,6 +53,7 @@ def _reset_shared_http_client():
     pg.shared_http_client = None
     reset_login_limiter()
     portal.webhooks.worker.webhook_worker_loop = original_loop
+    portal.webhooks.worker.redis_webhook_worker_loop = original_redis_loop
     portal.webhooks.worker.enqueue_webhook = original_enqueue
 
 

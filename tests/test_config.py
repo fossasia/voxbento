@@ -187,3 +187,31 @@ def test_max_transcription_workers_env_override(monkeypatch: pytest.MonkeyPatch)
 def test_max_transcription_workers_bounds(invalid_val: int) -> None:
     with pytest.raises(ValidationError):
         Settings(_env_file=None, max_transcription_workers=invalid_val)
+
+
+def test_redis_disabled_by_default(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("REDIS_URL", raising=False)
+    settings = Settings(_env_file=None)
+    assert settings.redis_enabled is False
+    settings.validate_redis_url()
+
+
+@pytest.mark.parametrize("url", ["redis://redis:6379/0", "rediss://cache.example:6380/1", "unix:///run/redis.sock"])
+def test_redis_url_accepts_redis_schemes(url: str) -> None:
+    settings = Settings(_env_file=None, redis_url=f"  {url} ")
+    assert settings.redis_enabled is True
+    settings.validate_redis_url()
+
+
+@pytest.mark.parametrize(
+    "url", ["http://redis:6379", "localhost:6379", "postgresql://db/x", "redis://redis:abc/0", "redis://redis:99999/0"]
+)
+def test_redis_url_rejects_unusable_urls(url: str) -> None:
+    with pytest.raises(RuntimeError, match="REDIS_URL"):
+        Settings(_env_file=None, redis_url=url).validate_redis_url()
+
+
+def test_redis_url_error_does_not_echo_the_password() -> None:
+    with pytest.raises(RuntimeError) as exc:
+        Settings(_env_file=None, redis_url="redis://:hunter2secret@redis:abc/0").validate_redis_url()
+    assert "hunter2secret" not in str(exc.value)
