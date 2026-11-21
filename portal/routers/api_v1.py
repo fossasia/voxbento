@@ -6,6 +6,7 @@ from typing import Annotated, Any
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 from pydantic import BaseModel, Field, field_validator
+from sqlalchemy import event as sa_event
 from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -503,6 +504,25 @@ async def delete_event(
     )
     db.add(audit)
     await db.flush()
+
+    def _discard_attendance(_s: object) -> None:
+        try:
+            sa_event.remove(db.sync_session, "after_rollback", _on_rollback)
+        except Exception:
+            pass
+        try:
+            booths.attendance.discard_event(event_slug)
+        except Exception:
+            logger.exception("Failed to discard attendance for event %s", event_slug)
+
+    def _on_rollback(_s: object) -> None:
+        try:
+            sa_event.remove(db.sync_session, "after_commit", _discard_attendance)
+        except Exception:
+            pass
+
+    sa_event.listen(db.sync_session, "after_commit", _discard_attendance, once=True)
+    sa_event.listen(db.sync_session, "after_rollback", _on_rollback, once=True)
     return None
 
 

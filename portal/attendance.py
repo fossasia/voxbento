@@ -17,7 +17,7 @@ from __future__ import annotations
 import asyncio
 import logging
 from collections.abc import Callable, Iterable
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import date, datetime, timezone, tzinfo
 from typing import TYPE_CHECKING
 from uuid import uuid4
@@ -67,6 +67,7 @@ class Visit:
     left_at: datetime | None = None
     interpreting_seconds: float = 0.0
     interpreting_since: datetime | None = None
+    discarded: bool = False
 
     def interpreting_total(self, now: datetime) -> float:
         """Seconds interpreted so far, including the stretch still running."""
@@ -104,6 +105,7 @@ class AttendanceTracker:
     clock: Callable[[], datetime] = _utc_now
     _open: dict[tuple[str, str], Visit] = field(default_factory=dict)
     _closed: list[Visit] = field(default_factory=list)
+    _in_flight: list[Visit] = field(default_factory=list)
     _outage: OutageLog = field(default_factory=lambda: OutageLog(logger, "attendance_flush_failed"))
 
     # ── Live path (synchronous, called under the booth registry lock) ─────────
@@ -156,7 +158,21 @@ class AttendanceTracker:
 
     def pending_visits(self, event_slug: str) -> list[Visit]:
         """Visits in memory (open or closed awaiting flush) for *event_slug*."""
-        return [visit for visit in list(self._open.values()) + list(self._closed) if visit.event_slug == event_slug]
+        return [
+            replace(visit)
+            for visit in list(self._open.values()) + list(self._closed)
+            if visit.event_slug == event_slug
+        ]
+
+    def discard_event(self, event_slug: str) -> None:
+        """Discard all in-memory visits (open, closed, or in-flight save) for a deleted event."""
+        all_visits = list(self._open.values()) + list(self._closed) + self._in_flight
+        for visit in all_visits:
+            if visit.event_slug == event_slug:
+                visit.discarded = True
+        self._open = {k: v for k, v in self._open.items() if v.event_slug != event_slug}
+        self._closed = [v for v in self._closed if v.event_slug != event_slug]
+        self._in_flight = [v for v in self._in_flight if v.event_slug != event_slug]
 
     def _set_interpreting(self, visit: Visit, interpreting: bool, now: datetime) -> None:
         if interpreting and visit.interpreting_since is None:
@@ -181,12 +197,15 @@ class AttendanceTracker:
         visits = closed + list(self._open.values())
         if not visits:
             return 0
+        self._in_flight = visits
         try:
             written = await save_visits(visits, now)
         except (SQLAlchemyError, OSError):
             self._outage.failed()
             logger.debug("Attendance flush failed", exc_info=True)
             return 0
+        finally:
+            self._in_flight = []
         self._outage.recovered()
         # Visits closed while the save ran stay queued for the next flush.
         done = {id(visit) for visit in closed}
@@ -217,11 +236,15 @@ class AttendanceTracker:
 
 async def save_visits(visits: Iterable[Visit], now: datetime) -> int:
     """Insert or update one row per visit, in one transaction."""
-    visits = list(visits)
+    visits = [v for v in visits if not v.discarded]
+    if not visits:
+        return 0
     slugs = {visit.event_slug for visit in visits}
     written = 0
     async with get_session() as session:
-        result = await session.execute(select(Event.slug, Event.id).where(Event.slug.in_(slugs)))
+        result = await session.execute(
+            select(Event.slug, Event.id).where(Event.slug.in_(slugs), Event.deleted_at.is_(None))
+        )
         event_ids = dict(result.all())
         # A user deleted since joining must not fail the whole batch on the foreign key. The
         # visit is kept without the account; if the deletion races this check, this flush
@@ -229,6 +252,8 @@ async def save_visits(visits: Iterable[Visit], now: datetime) -> int:
         wanted = {visit.user_id for visit in visits if visit.user_id is not None}
         existing = set((await session.execute(select(User.id).where(User.id.in_(wanted)))).scalars()) if wanted else set()
         for visit in visits:
+            if visit.discarded:
+                continue
             if visit.user_id is not None and visit.user_id not in existing:
                 visit.user_id = None
             event_id = event_ids.get(visit.event_slug)
@@ -364,7 +389,8 @@ def rows_for_event(db_rows: Iterable, pending_visits: Iterable[Visit], now: date
             interpreting_seconds=row.interpreting_seconds,
         )
     for visit in pending_visits:
-        end = visit.left_at or now
+        end = min(visit.left_at, now) if visit.left_at is not None else now
+        left_at = min(_aware(visit.left_at), now) if visit.left_at is not None else None
         rows[visit.id] = AttendanceRow(
             id=visit.id,
             room_id=visit.room_id,
@@ -374,7 +400,7 @@ def rows_for_event(db_rows: Iterable, pending_visits: Iterable[Visit], now: date
             display_name=visit.display_name,
             role=visit.role,
             joined_at=_aware(visit.joined_at),
-            left_at=_aware(visit.left_at) if visit.left_at is not None else None,
+            left_at=left_at,
             interpreting_seconds=visit.interpreting_total(end),
         )
     return sorted(rows.values(), key=lambda r: r.joined_at)

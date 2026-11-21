@@ -23,6 +23,7 @@ from contextlib import asynccontextmanager
 from datetime import date, datetime, timedelta, timezone
 
 import sqlalchemy as sa
+from sqlalchemy import event as sa_event
 from sqlalchemy import func, or_, select, update
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 from sqlalchemy.orm import joinedload, selectinload
@@ -247,6 +248,7 @@ async def delete_event(session: AsyncSession, event_id: int) -> bool:
     ev = await get_event_by_id(session, event_id)
     if ev is None:
         return False
+    slug = ev.slug
     # Break the rooms.relay_booth_id -> booths.id <-> booths.room_id -> rooms.id cycle.
     # Scope by booth, not by the room's event: admin_edit_room assigns relay_booth_id
     # straight from the form, so a room in another event can point at one of these booths.
@@ -261,6 +263,27 @@ async def delete_event(session: AsyncSession, event_id: int) -> bool:
 
     await session.delete(ev)
     await session.flush()
+
+    def _discard_attendance(_s: object) -> None:
+        try:
+            sa_event.remove(session.sync_session, "after_rollback", _on_rollback)
+        except Exception:
+            pass
+        try:
+            from portal.globals import booths
+
+            booths.attendance.discard_event(slug)
+        except Exception:
+            logger.exception("Failed to discard attendance for event %s", slug)
+
+    def _on_rollback(_s: object) -> None:
+        try:
+            sa_event.remove(session.sync_session, "after_commit", _discard_attendance)
+        except Exception:
+            pass
+
+    sa_event.listen(session.sync_session, "after_commit", _discard_attendance, once=True)
+    sa_event.listen(session.sync_session, "after_rollback", _on_rollback, once=True)
     return True
 
 

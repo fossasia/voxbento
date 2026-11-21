@@ -3,17 +3,22 @@
 from __future__ import annotations
 
 import os
+from contextlib import asynccontextmanager
 from datetime import datetime, timedelta, timezone
+from uuid import uuid4
 
 import pytest
 from httpx import ASGITransport, AsyncClient
 from sqlalchemy import select
 
 from fastapi_app import app
+from portal import attendance as attendance_module
+from portal import database as db_module
 from portal import globals as portal_globals
 from portal.attendance import (
     AttendanceRow,
     AttendanceTracker,
+    Visit,
     close_stale_visits,
     format_duration,
     rows_for_event,
@@ -27,13 +32,16 @@ from portal.database import (
     create_event,
     create_room,
     create_user,
+    delete_event,
     dispose,
     get_session,
     init_db,
     set_event_membership,
 )
-from portal.models import InterpreterAttendance
+from portal.models import Event, InterpreterAttendance
 from portal.roles import EVENT_OWNER, INTERPRETER, ROOM_COORDINATOR
+from portal.routers import attendance as att_router
+from portal.routers.attendance import _load
 from portal.workspace_routing import workspace_to_admin_path
 
 os.environ["BOOTH_ACCESS_TOKEN"] = ""
@@ -458,6 +466,17 @@ async def test_day_tabs_and_booth_filter_narrow_the_page_and_the_csv(event_setup
                 )
             )
     monkeypatch.setattr(portal_globals.booths, "attendance", AttendanceTracker())
+    try:
+        from zoneinfo import ZoneInfo
+        ZoneInfo("Asia/Kolkata")
+    except Exception:
+        monkeypatch.setattr(
+            att_router,
+            "_viewer_tz",
+            lambda req: timezone(timedelta(hours=5, minutes=30))
+            if "Asia%2FKolkata" in req.cookies.get("vb_tz", "")
+            else timezone.utc,
+        )
     owner = cookies(event_setup["owner"], "owner@example.com")
     base = f"/workspace/events/{event_setup['event']}/attendance/"
     async with client() as http:
@@ -608,7 +627,6 @@ async def test_pending_visits_includes_open_and_closed_unflushed(registry, clock
 
 def test_rows_for_event_short_visit_closed_before_first_flush(clock):
     tracker = AttendanceTracker(clock=clock)
-    from portal.attendance import Visit
 
     visit = Visit(
         id="v-short-1",
@@ -757,12 +775,6 @@ async def test_no_visit_lost_or_duplicated_across_flush_lifecycle(event_setup, c
 @pytest.mark.anyio
 async def test_load_snapshots_memory_before_db_query(event_setup, clock, monkeypatch):
     """_load() snapshots pending visits before querying DB so a flush mid-query cannot drop visits."""
-    from contextlib import asynccontextmanager
-
-    import portal.database as db_module
-    import portal.routers.attendance as att_router
-    from portal.routers.attendance import _load
-
     booth_id = f"conf-{event_setup['room']}-de"
     registry = BoothRegistry(attendance=AttendanceTracker(clock=clock))
     monkeypatch.setattr(portal_globals.booths, "attendance", registry.attendance)
@@ -821,8 +833,6 @@ async def test_load_snapshots_memory_before_db_query(event_setup, clock, monkeyp
 @pytest.mark.anyio
 async def test_flush_preserves_visits_closed_concurrently_during_persistence(event_setup, clock, monkeypatch):
     """A visit closed while flush() is awaiting database persistence remains in _closed for the next flush."""
-    import portal.attendance as attendance_module
-
     booth_id = f"conf-{event_setup['room']}-de"
     registry = BoothRegistry(attendance=AttendanceTracker(clock=clock))
 
@@ -932,3 +942,206 @@ async def test_closed_unflushed_visit_in_html_view_and_csv_export(event_setup, m
     assert left_utc != ""
     assert parts[5] == "3.0"
     assert parts[6] == "3.0"
+
+
+@pytest.mark.anyio
+async def test_load_snapshots_prevent_interpreting_time_extending_past_captured_now(event_setup, clock, monkeypatch):
+    """If interpreting state changes during _load's DB query, report duration does not exceed captured now."""
+    booth_id = f"conf-{event_setup['room']}-de"
+    registry = BoothRegistry(attendance=AttendanceTracker(clock=clock))
+    monkeypatch.setattr(portal_globals.booths, "attendance", registry.attendance)
+
+    ana, _ = await registry.join_participant(
+        booth_id=booth_id,
+        display_name="Ana",
+        role=INTERPRETER,
+        language=LANG,
+        channel_id=CHANNEL,
+        user_id=event_setup["ana"],
+    )
+    await registry.update_participant_state(
+        booth_id, ana.participant_id, LANG, CHANNEL, mic_active=True, ingest_connected=True
+    )
+    clock.advance(60)
+
+    # Hook session.execute to advance clock and mutate live visit while _load awaits DB:
+    @asynccontextmanager
+    async def hooked_session():
+        async with db_module.get_session() as session:
+            orig_execute = session.execute
+
+            async def mock_execute(statement, *args, **kwargs):
+                if "interpreter_attendance" in str(statement).lower():
+                    result = await orig_execute(statement, *args, **kwargs)
+                    # Advance clock by 30s and stop interpreting mid-query:
+                    clock.advance(30)
+                    await registry.update_participant_state(
+                        booth_id, ana.participant_id, LANG, CHANNEL, mic_active=False, ingest_connected=True
+                    )
+                    return result
+                return await orig_execute(statement, *args, **kwargs)
+
+            session.execute = mock_execute
+            yield session
+
+    monkeypatch.setattr(att_router, "get_session", hooked_session)
+
+    data = await _load(event_setup["event"])
+    assert len(data.rows) == 1
+    # Interpreting seconds should reflect the snapshot before await (60s), not the later 90s:
+    assert data.rows[0].interpreting_seconds == 60
+    people = summarize(data.rows, data.now, users=data.users, invite_labels=data.invite_labels)
+    assert people[0].visits[0].interpreting_seconds == 60
+    assert people[0].visits[0].present_seconds == 60
+
+
+@pytest.mark.anyio
+async def test_reused_event_slug_does_not_leak_old_visits_into_new_event(db, clock, monkeypatch):
+    """When an event is deleted and its slug reused, visits from the deleted event are not included."""
+    slug = f"reuse-{uuid4().hex[:8]}"
+    registry = BoothRegistry(attendance=AttendanceTracker(clock=clock))
+    monkeypatch.setattr(portal_globals.booths, "attendance", registry.attendance)
+
+    async with get_session() as session:
+        ev1 = await create_event(session, slug=slug, display_name="Event One")
+        room1 = await create_room(session, event_id=ev1.id, display_name="Room 1")
+        booth_id = f"{slug}-{room1.id}-de"
+
+    # Interpreter joins booth in Event 1:
+    ana, _ = await registry.join_participant(
+        booth_id=booth_id,
+        display_name="Ana Former",
+        role=INTERPRETER,
+        language=LANG,
+        channel_id=f"{slug}-1-de",
+    )
+    clock.advance(60)
+    await registry.leave_participant(booth_id, ana.participant_id, LANG, f"{slug}-1-de")
+
+    # Pending visits has the visit from Event 1:
+    assert len(registry.attendance.pending_visits(slug)) == 1
+
+    # Delete Event 1:
+    async with get_session() as session:
+        assert await delete_event(session, ev1.id) is True
+
+    # Memory was purged for deleted event:
+    assert registry.attendance.pending_visits(slug) == []
+
+    # Create Event 2 reusing the same slug:
+    clock.advance(60)
+    async with get_session() as session:
+        ev2 = await create_event(session, slug=slug, display_name="Event Two")
+
+    # Load attendance for Event 2:
+    data = await _load(ev2.id)
+    assert len(data.rows) == 0
+
+
+@pytest.mark.anyio
+async def test_reused_event_slug_in_flight_flush_does_not_save_discarded_visits(db, clock, monkeypatch):
+    """An in-flight flush does not write visits into a new event reusing the same slug."""
+    slug = f"inflight-{uuid4().hex[:8]}"
+    tracker = AttendanceTracker(clock=clock)
+    monkeypatch.setattr(portal_globals.booths, "attendance", tracker)
+
+    async with get_session() as session:
+        ev1 = await create_event(session, slug=slug, display_name="Event 1")
+        room1 = await create_room(session, event_id=ev1.id, display_name="Room 1")
+
+    visit = Visit(
+        id=uuid4().hex,
+        booth_id=f"{slug}-{room1.id}-de",
+        event_slug=slug,
+        room_id=room1.id,
+        language_code="de",
+        participant_id="part-1",
+        user_id=None,
+        invite_public_id=None,
+        display_name="Ana Inflight",
+        role="interpreter",
+        joined_at=clock(),
+        left_at=clock(),
+        interpreting_seconds=30.0,
+    )
+    tracker._closed.append(visit)
+
+    # Hook get_session so that during the Event lookup inside save_visits, ev1 is deleted
+    # and ev2 is recreated with the same slug. The event query will find ev2, but visit.discarded
+    # must prevent writing the old visit under ev2.
+    orig_get_session = attendance_module.get_session
+
+    @asynccontextmanager
+    async def hooked_session():
+        async with orig_get_session() as session:
+            orig_execute = session.execute
+
+            async def mock_execute(statement, *args, **kwargs):
+                stmt_str = str(statement).lower()
+                if "events.slug in" in stmt_str or "events.slug" in stmt_str:
+                    # Concurrently delete ev1 and recreate ev2 with the same slug mid-query:
+                    async with orig_get_session() as s2:
+                        await delete_event(s2, ev1.id)
+                        await create_event(s2, slug=slug, display_name="Event 2")
+                return await orig_execute(statement, *args, **kwargs)
+
+            session.execute = mock_execute
+            yield session
+
+    monkeypatch.setattr(attendance_module, "get_session", hooked_session)
+
+    await tracker.flush()
+
+    # Verify no visits were saved for ev2:
+    async with get_session() as session:
+        ev2_rows = (
+            await session.execute(
+                select(InterpreterAttendance).join(Event).where(Event.slug == slug)
+            )
+        ).scalars().all()
+        assert len(ev2_rows) == 0
+
+
+@pytest.mark.anyio
+async def test_delete_event_rollback_does_not_discard_attendance(db, clock, monkeypatch):
+    """If delete_event rolls back, its pending attendance visits are not discarded on a later commit."""
+    slug = f"rollback-{uuid4().hex[:8]}"
+    tracker = AttendanceTracker(clock=clock)
+    monkeypatch.setattr(portal_globals.booths, "attendance", tracker)
+
+    async with get_session() as session:
+        ev = await create_event(session, slug=slug, display_name="Event Rollback")
+        room = await create_room(session, event_id=ev.id, display_name="Room 1")
+
+    visit = Visit(
+        id=uuid4().hex,
+        booth_id=f"{slug}-{room.id}-de",
+        event_slug=slug,
+        room_id=room.id,
+        language_code="de",
+        participant_id="part-rb",
+        user_id=None,
+        invite_public_id=None,
+        display_name="Ana Rollback",
+        role="interpreter",
+        joined_at=clock(),
+        left_at=clock(),
+        interpreting_seconds=45.0,
+    )
+    tracker._closed.append(visit)
+    assert len(tracker.pending_visits(slug)) == 1
+
+    # Call delete_event on a session, then roll back:
+    session_factory = db_module._get_session_factory()
+    async with session_factory() as session:
+        await delete_event(session, ev.id)
+        await session.rollback()
+
+        # Same session commits an unrelated change later:
+        await create_event(session, slug=f"other-{uuid4().hex[:8]}", display_name="Other")
+        await session.commit()
+
+    # The pending visits for the rolled-back event must still be present:
+    assert len(tracker.pending_visits(slug)) == 1
+    assert tracker.pending_visits(slug)[0].discarded is False
+
