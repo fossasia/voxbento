@@ -608,6 +608,50 @@ async def test_is_invite_token_revoked_retries_transient_db_error(monkeypatch):
     assert revoked is False
 
 
+@pytest.mark.anyio
+async def test_is_invite_token_revoked_raises_when_requested_on_db_error(monkeypatch):
+    from sqlalchemy.exc import OperationalError
+
+    import portal.database
+    from portal.auth import invalidate_token_revocation_cache, is_invite_token_revoked
+
+    invalidate_token_revocation_cache()
+    calls = 0
+
+    async def failing_get_invite_token(session, key):
+        nonlocal calls
+        calls += 1
+        raise OperationalError("SELECT invite_tokens", {}, RuntimeError("database down"))
+
+    monkeypatch.setattr(portal.database, "get_invite_token_by_public_id", failing_get_invite_token)
+
+    # When raise_on_error is False (default): fails closed by returning True after retries
+    revoked_default = await is_invite_token_revoked("test-public-id-default")
+    assert calls == 2
+    assert revoked_default is True
+
+    # When raise_on_error is True: re-raises the original exception unchanged after retries
+    invalidate_token_revocation_cache()
+    calls = 0
+    with pytest.raises(OperationalError):
+        await is_invite_token_revoked("test-public-id-raise", raise_on_error=True)
+    assert calls == 2
+
+    # Preserves non-database exception types unchanged
+    invalidate_token_revocation_cache()
+    calls = 0
+
+    async def runtime_failing_get_invite_token(session, key):
+        nonlocal calls
+        calls += 1
+        raise RuntimeError("custom failure")
+
+    monkeypatch.setattr(portal.database, "get_invite_token_by_public_id", runtime_failing_get_invite_token)
+    with pytest.raises(RuntimeError, match="custom failure"):
+        await is_invite_token_revoked("test-public-id-runtime", raise_on_error=True)
+    assert calls == 2
+
+
 # 9. Legacy JWT without the token-id claim: no crash, behavior matches the documented choice.
 @pytest.mark.anyio
 async def test_legacy_jwt_without_token_id_claim_no_crash():
