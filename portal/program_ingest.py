@@ -202,9 +202,7 @@ def is_conforming_srt_codec(tracks: list[str] | None) -> bool:
     has_h264 = any(t in {"H264", "H.264"} or t.upper() in {"H264", "H.264"} for t in norm_tracks)
     has_aac = any(t in {"AAC", "MPEG-4 Audio"} or t.upper() in {"AAC", "MPEG-4 AUDIO"} for t in norm_tracks)
     allowed_codecs = {"H264", "H.264", "AAC", "MPEG-4 Audio"}
-    all_allowed = all(
-        t in allowed_codecs or t.upper() in {"H264", "H.264", "AAC", "MPEG-4 AUDIO"} for t in norm_tracks
-    )
+    all_allowed = all(t in allowed_codecs or t.upper() in {"H264", "H.264", "AAC", "MPEG-4 AUDIO"} for t in norm_tracks)
     return has_h264 and has_aac and all_allowed
 
 
@@ -461,6 +459,10 @@ async def authorize_publish(data: MediaAuth) -> None:
                 current = health.setdefault(parsed_room_id, IngestHealth())
                 current.backup_session_id = session_id
                 current.backup_reservation_started_at = time.monotonic()
+                current.backup_high_bitrate_cycles = 0
+                current.backup_last_cycle_bytes = -1
+                current.backup_last_cycle_time = 0.0
+                current.backup_conforming = True
                 return
             room.program_session_id = session_id
         current = health.setdefault(parsed_room_id, IngestHealth())
@@ -1112,7 +1114,7 @@ async def release_deleted_event_sessions() -> None:
     reservation, so the next pass retries it.
     """
     async with get_session() as session:
-        rows = (
+        db_rows = (
             await session.execute(
                 select(Room.id, Event.slug)
                 .join(Event)
@@ -1123,6 +1125,21 @@ async def release_deleted_event_sessions() -> None:
                 )
             )
         ).all()
+        mem_room_ids = [rid for rid, h in health.items() if h.backup_session_id or h.reservation_started_at]
+        if mem_room_ids:
+            mem_rows = (
+                await session.execute(
+                    select(Room.id, Event.slug)
+                    .join(Event)
+                    .where(
+                        Room.id.in_(mem_room_ids),
+                        Event.deleted_at.is_not(None),
+                    )
+                )
+            ).all()
+            rows = list({(r[0], r[1]) for r in (db_rows + mem_rows)})
+        else:
+            rows = db_rows
     for room_id, slug in rows:
         try:
             async with room_lock(room_id), get_session() as session:
@@ -1132,13 +1149,21 @@ async def release_deleted_event_sessions() -> None:
                         await kick(make_mediamtx_path(slug, room_id, "floor"), reserved_source(room))
                         room.program_session_id = None
                         room.program_disconnected_at = utc_now()
+                    backup_kicked = False
                     if room.program_backup_connected_at:
                         backup_path = make_backup_floor_path(slug, room_id)
                         current_backup = await media_path(backup_path)
-                        await kick(backup_path, current_backup.source if current_backup else None)
+                        backup_source = (
+                            current_backup.source if current_backup and current_backup.source else None
+                        ) or reserved_backup_source(room)
+                        await kick(backup_path, backup_source)
+                        backup_kicked = True
                         room.program_backup_connected_at = None
                     current = health.get(room_id)
                     if current:
+                        if current.backup_session_id and not backup_kicked:
+                            backup_path = make_backup_floor_path(slug, room_id)
+                            await kick(backup_path, reserved_backup_source(room))
                         current.backup_session_id = None
                         current.backup_reservation_started_at = None
                         current.backup_connected = False
@@ -1322,10 +1347,18 @@ async def reconcile_once() -> None:
                             else:
                                 current.backup_conforming = True
                                 backup_sess_id = backup_snapshot.source.id if backup_snapshot.source else None
-                                if current.backup_session_id and backup_sess_id != current.backup_session_id:
+                                if (
+                                    current.backup_session_id is not None
+                                    and backup_sess_id is not None
+                                    and backup_sess_id != current.backup_session_id
+                                ) or (
+                                    current.backup_last_cycle_bytes >= 0
+                                    and backup_snapshot.bytesReceived < current.backup_last_cycle_bytes
+                                ):
                                     current.backup_high_bitrate_cycles = 0
                                     current.backup_last_cycle_bytes = -1
                                     current.backup_last_cycle_time = 0.0
+                                current.backup_session_id = backup_sess_id
 
                                 if current.backup_last_cycle_bytes >= 0 and current.backup_last_cycle_time > 0:
                                     dt = now - current.backup_last_cycle_time
