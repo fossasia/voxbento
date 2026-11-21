@@ -20,6 +20,7 @@ services:
       # Relay mode is a kind of program ingest, so it needs both switches.
       PROGRAM_INGEST_ENABLED: "true"
       PROGRAM_RELAY_ENABLED: "true"
+      PROGRAM_RTMPS_ENABLED: "true"
       PROGRAM_RTMPS_PUBLIC_BASE: "${PROGRAM_RTMPS_PUBLIC_BASE:?set PROGRAM_RTMPS_PUBLIC_BASE, e.g. rtmps://voxbento.com:1936}"
       PROGRAM_RELAY_BASE: "http://program-relay:8090"
       PROGRAM_RELAY_CONTROL_SECRET: "${PROGRAM_RELAY_CONTROL_SECRET:?set PROGRAM_RELAY_CONTROL_SECRET (openssl rand -hex 32)}"

@@ -1,0 +1,182 @@
+{% extends 'admin/base.html' %}
+{% block title %}Interpreter attendance — {{ event.display_name }}{% endblock %}
+
+{% macro when(value) -%}
+  <time datetime='{{ value.isoformat() }}' data-local-time>{{ value.strftime('%b %d, %H:%M') }} UTC</time>
+{%- endmacro %}
+
+{% block breadcrumb %}
+<nav class='breadcrumb'>
+  <a href='{{ management_prefix }}/'>{{ 'My events' if is_workspace else 'Overview' }}</a> <span>/</span>
+  <a href='{{ management_prefix }}/events/{{ event.id }}/'>{{ event.display_name }}</a> <span>/</span>
+  <span class='breadcrumb-current' aria-current='page'>Interpreter attendance</span>
+</nav>
+{% endblock %}
+
+{% block content %}
+<div class='page-header'>
+  <div>
+    <h1>Interpreter attendance</h1>
+    <p class='meta-text'>{{ event.display_name }} · Who joined each booth, for how long, and how much of that time they spent interpreting</p>
+  </div>
+  <div class='att-actions'>
+    {% if people %}
+    <a href='{{ management_prefix }}/events/{{ event.id }}/attendance/export{{ filters.query() }}' class='btn btn-primary' download>Download CSV</a>
+    {% endif %}
+    <a href='{{ management_prefix }}/events/{{ event.id }}/' class='btn btn-outline'>&larr; Back to event</a>
+  </div>
+</div>
+
+{% if has_any %}
+{% set base = management_prefix ~ '/events/' ~ event.id ~ '/attendance/' %}
+{% set booth_q = ('booth=' ~ filters.booth) if filters.booth else '' %}
+<nav class='ha-tabs att-days' aria-label='Day'>
+  <a class='ha-tab{{ " is-active" if not filters.day else "" }}' href='{{ base }}{{ ("?" ~ booth_q) if booth_q else "" }}'
+     {% if not filters.day %}aria-current='page'{% endif %}>All days</a>
+  {% for d in days %}
+  <a class='ha-tab{{ " is-active" if d == filters.day else "" }}' href='{{ base }}?day={{ d.isoformat() }}{{ ("&" ~ booth_q) if booth_q else "" }}'
+     {% if d == filters.day %}aria-current='page'{% endif %}>
+    {{ 'Today' if d == today else d.strftime('%a %d %b') }}
+  </a>
+  {% endfor %}
+</nav>
+
+<form class='att-filters' method='get' action='{{ base }}' data-attendance-filters>
+  {% if filters.day %}<input type='hidden' name='day' value='{{ filters.day.isoformat() }}' />{% endif %}
+  <label class='visually-hidden' for='att-search'>Search interpreters</label>
+  <input class='ul-input ul-input--search' id='att-search' type='search' placeholder='Search by name or email'
+         autocomplete='off' data-attendance-search {% if not people %}disabled{% endif %} />
+  <label class='ul-filter-label' for='att-booth'>Booth</label>
+  <select class='ul-input ul-input--select' id='att-booth' name='booth' data-auto-submit>
+    <option value=''>All booths</option>
+    {% for value, label in booth_options %}
+    <option value='{{ value }}'{% if value == filters.booth %} selected{% endif %}>{{ label }}</option>
+    {% endfor %}
+  </select>
+  <noscript><button type='submit' class='btn btn-sm'>Apply</button></noscript>
+  <span class='att-count' data-attendance-count aria-live='polite'>
+    {{ people|length }} interpreter{{ 's' if people|length != 1 else '' }}
+  </span>
+</form>
+{% endif %}
+
+{% if people %}
+<div class='stat-cards att-stats'>
+  <div class='stat-card'>
+    <div class='stat-num'>{{ people|length }}</div>
+    <div class='stat-name'>Interpreter{{ 's' if people|length != 1 else '' }}</div>
+  </div>
+  <div class='stat-card'>
+    <div class='stat-num'>
+      {% if here_now %}<span class='att-live-dot' aria-hidden='true'></span>{% endif %}{{ here_now }}
+    </div>
+    <div class='stat-name'>In a booth now</div>
+  </div>
+  <div class='stat-card'>
+    <div class='stat-num'>{{ total_present|duration }}</div>
+    <div class='stat-name'>Time in booths</div>
+  </div>
+  <div class='stat-card'>
+    <div class='stat-num'>{{ total_interpreting|duration }}</div>
+    <div class='stat-name'>Interpreting</div>
+  </div>
+</div>
+
+<div class='data-table-container'>
+  <table class='data-table att-table'>
+    <thead>
+      <tr>
+        <th scope='col' data-sort='text' aria-sort='none'>Interpreter</th>
+        <th scope='col'>Booth</th>
+        <th scope='col' data-sort='number' aria-sort='ascending'>Joined</th>
+        <th scope='col' data-sort='number' aria-sort='none'>Left</th>
+        <th scope='col' class='att-num' data-sort='number' aria-sort='none'>Time in booth</th>
+        <th scope='col' data-sort='number' aria-sort='none'>Interpreting</th>
+        <th scope='col'>Visits</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for person in people %}
+      <tr data-search='{{ (person.name ~ " " ~ person.detail)|lower }}'>
+        <td data-value='{{ person.name|lower }}'>
+          <div class='att-name'>{{ person.name }}</div>
+          {% if person.detail %}<div class='att-detail'>{{ person.detail }}</div>{% endif %}
+        </td>
+        <td>
+          <div class='att-booths'>
+            {% for booth in person.booths %}
+            <span class='chip'>{{ booth_names[booth] }}</span>
+            {% endfor %}
+          </div>
+        </td>
+        <td class='att-time' data-value='{{ person.first_joined.timestamp() }}'>{{ when(person.first_joined) }}</td>
+        <td class='att-time' data-value='{{ person.last_left.timestamp() if person.last_left else 9999999999 }}'>
+          {% if person.is_here %}
+          <span class='status-live'>● In booth now</span>
+          {% else %}
+          {{ when(person.last_left) }}
+          {% endif %}
+        </td>
+        <td class='att-num' data-value='{{ person.present_seconds }}'>{{ person.present_seconds|duration }}</td>
+        <td data-value='{{ person.interpreting_seconds }}'>
+          <div class='att-share'>
+            <span class='att-share-value'>{{ person.interpreting_seconds|duration }}</span>
+            <span class='att-bar' role='img' aria-label='{{ person.interpreting_share }}% of time in booth'>
+              <span class='att-bar-fill' style='width: {{ person.interpreting_share }}%'></span>
+            </span>
+            <span class='att-share-pct'>{{ person.interpreting_share }}%</span>
+          </div>
+        </td>
+        <td>
+          <details class='att-visits'>
+            <summary>{{ person.visits|length }} visit{{ 's' if person.visits|length != 1 else '' }}</summary>
+            <ol>
+              {% for visit in person.visits %}
+              <li>
+                <span class='att-visit-span'>
+                  {{ when(visit.joined_at) }} &ndash;
+                  {% if visit.is_open %}now{% else %}{{ when(visit.left_at) }}{% endif %}
+                </span>
+                <span class='att-visit-meta'>
+                  {{ booth_names[(visit.room_id, visit.language_code)] }} ·
+                  {{ visit.present_seconds|duration }} in booth ·
+                  {{ visit.interpreting_seconds|duration }} interpreting
+                </span>
+              </li>
+              {% endfor %}
+            </ol>
+          </details>
+        </td>
+      </tr>
+      {% endfor %}
+      <tr class='att-no-match' data-attendance-empty hidden>
+        <td colspan='7'>No interpreter matches that search.</td>
+      </tr>
+    </tbody>
+  </table>
+</div>
+
+<p class='muted att-footnote'>
+  <strong>Interpreting</strong> counts only while the person is the booth's active interpreter, their audio is
+  connected and their microphone is on. A visit lasts from opening the booth page to leaving it; if someone
+  reconnects, each connection is a separate visit, and overlapping visits are counted once.
+  Times are shown in <span id='att-timezone'>UTC</span>; the CSV uses UTC.
+</p>
+{% elif has_any %}
+<div class='empty-state'>
+  <div class='empty-state-title'>Nobody in this booth on this day</div>
+  <p class='empty-state-text empty-state-text--narrow'>Pick another day or booth to see who was there.</p>
+  <a href='{{ management_prefix }}/events/{{ event.id }}/attendance/' class='btn btn-outline'>Show everything</a>
+</div>
+{% else %}
+<div class='empty-state'>
+  <div class='empty-state-title'>No one has joined a booth yet</div>
+  <p class='empty-state-text empty-state-text--narrow'>
+    When interpreters open their booth page, you will see when they joined and left, and how long they
+    were interpreting. Share booth access from the Team page.
+  </p>
+  <a href='{{ management_prefix }}/events/{{ event.id }}/team/' class='btn btn-primary'>Open team</a>
+</div>
+{% endif %}
+<script type='module' src='{{ url_for("static", path="js/attendance.js") }}?v={{ asset_version }}'></script>
+{% endblock %}

@@ -82,6 +82,17 @@ jobs:
               echo "(or run scripts/setup-youtube-relay.sh), then re-run the deploy."
               exit 1
             fi
+            # RTMPS-only ingest lives in docker-compose.rtmps.yml (the relay file also opens it).
+            # Never let a deploy without either file close a listening RTMPS port.
+            # `compose` is the project-scoped `docker compose` wrapper defined above.
+            rtmps_open=$(docker ps -q --filter label=com.docker.compose.project=voxbento \
+              --filter label=com.docker.compose.service=mediamtx --filter publish=1936)
+            if [ -n "$rtmps_open" ] && ! compose config | grep -q MTX_RTMPSADDRESS; then
+              echo "ERROR: MediaMTX accepts RTMPS on 1936 but this deploy would close it."
+              echo "Add docker-compose.rtmps.yml (or docker-compose.relay.yml) to COMPOSE_FILE in .env"
+              echo "(or run scripts/setup-youtube-relay.sh --ingest-only), then re-run the deploy."
+              exit 1
+            fi
 
             # Only advance the live checkout after all preflight checks pass.
             cd "$deployment_dir"

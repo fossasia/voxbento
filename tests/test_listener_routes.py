@@ -76,6 +76,30 @@ class TestListenerRoutes:
         assert b"Enter the join code" in resp.content
         assert b"cdn.tailwindcss.com" not in resp.content
         assert b"css/listener-join.css" in resp.content
+        assert b'name="room"' not in resp.content
+        assert b'name="lang"' not in resp.content
+
+    @pytest.mark.anyio
+    async def test_join_form_keeps_room_and_language_from_link(self, seed_event):
+        event, room, _ = seed_event
+
+        async with _client() as c:
+            resp = await c.get(f"/listener/{event.slug}", params={"room": str(room.id), "lang": "en"})
+
+        assert resp.status_code == 200
+        assert f'<input type="hidden" name="room" value="{room.id}">'.encode() in resp.content
+        assert b'<input type="hidden" name="lang" value="en">' in resp.content
+
+    @pytest.mark.anyio
+    async def test_join_form_escapes_room_and_language_from_link(self, seed_event):
+        event, _, _ = seed_event
+
+        async with _client() as c:
+            resp = await c.get(f"/listener/{event.slug}", params={"room": '"><script>', "lang": "en"})
+
+        assert resp.status_code == 200
+        assert b'"><script>' not in resp.content
+        assert b"&#34;&gt;&lt;script&gt;" in resp.content
 
     @pytest.mark.anyio
     async def test_invalid_join_code_shows_error(self, seed_event):
@@ -108,6 +132,27 @@ class TestListenerRoutes:
 
         assert resp.status_code == 200
         assert "listener_code_testcon" in resp.headers["set-cookie"]
+
+    @pytest.mark.anyio
+    @pytest.mark.parametrize("forwarded_proto, secure", [("https", True), (None, False)])
+    async def test_join_code_cookie_secure_flag_follows_scheme(self, seed_event, monkeypatch, forwarded_proto, secure):
+        from portal.config import settings
+        from portal.database import get_session
+
+        monkeypatch.setattr(settings, "public_base_url", "http://localhost:8000")
+        event, _, _ = seed_event
+        async with get_session() as s:
+            db_event = await s.get(type(event), event.id)
+            db_event.listener_join_code = "ROOM42"
+
+        headers = {"x-forwarded-proto": forwarded_proto} if forwarded_proto else {}
+        async with _client() as c:
+            resp = await c.get(f"/listener/{event.slug}?code=ROOM42", headers=headers)
+
+        cookie = resp.headers["set-cookie"]
+        assert ("Secure" in cookie) is secure
+        assert "HttpOnly" in cookie
+        assert "samesite=lax" in cookie.lower()
 
     @pytest.mark.anyio
     async def test_listener_status_is_announced(self, seed_event):

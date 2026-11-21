@@ -6,6 +6,8 @@ Create Date: 2026-07-10 10:50:16.584854
 
 """
 
+from __future__ import annotations
+
 from typing import Sequence, Union
 
 import sqlalchemy as sa
@@ -22,7 +24,7 @@ depends_on: Union[str, Sequence[str], None] = None
 # Accounts that never had a password (magic-link only) get this value: it is a
 # syntactically valid bcrypt hash, so verify_password() returns False instead of
 # raising on a malformed sentinel such as "!".
-UNUSABLE_PASSWORD_HASH = "$2b$12$1aYpux5SCNRE8fdq7A9kA.EItXdjXFxo/TiD8NvdjQIpErr9VD7YO"
+UNUSABLE_PASSWORD_HASH = "$2b$12$1aYpux5SCNRE8fdq7A9kA.EItXdjXFxo/TiD8NvdjQIpErr9VD7YO"  # nosec B105 # discarded random secret; downgrade sentinel
 
 
 def upgrade() -> None:
@@ -41,7 +43,7 @@ def upgrade() -> None:
         sa.PrimaryKeyConstraint("id"),
     )
     op.create_index(op.f("ix_auth_tokens_jti"), "auth_tokens", ["jti"], unique=True)
-    op.add_column("users", sa.Column("email_verified", sa.Boolean(), server_default="0", nullable=False))
+    op.add_column("users", sa.Column("email_verified", sa.Boolean(), server_default=sa.false(), nullable=False))
     # Batch mode recreates the table on SQLite, because ALTER COLUMN ... DROP NOT NULL
     # is only supported from SQLite 3.53.0 (2026-04-09). Same approach as 020/021/024.
     with op.batch_alter_table("users") as batch_op:

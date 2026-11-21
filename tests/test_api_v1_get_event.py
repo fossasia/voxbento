@@ -411,6 +411,7 @@ class TestGetEventAuthentication:
         assert resp.status_code == 403
         assert resp.json()["detail"] == "User account is inactive"
 
+
 # ---------------------------------------------------------------------------
 # Confidential clients — pre-existing behavior from PR #624, pinned here so
 # this endpoint's authorization changes cannot widen it unnoticed.
@@ -481,3 +482,4 @@ class TestGetEventConfidentialClient:
 
         assert resp.status_code == 403
         assert resp.json()["detail"] == "User account is inactive"
+

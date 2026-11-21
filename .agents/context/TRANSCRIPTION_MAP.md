@@ -18,7 +18,7 @@ Active interpreter Go Live
         │
         ▼
    ffmpeg (spawned by transcription worker)
-   -rtsp_transport tcp → PCM s16le 16kHz mono → stdout pipe
+   -rtsp_transport tcp → PCM s16le mono at provider.sample_rate (16kHz, 24kHz for OpenAI) → stdout pipe
 ```
 
 ### 2. Floor Audio Pipeline
@@ -61,7 +61,7 @@ Jitsi Meet Floor Conference
         ▼
    TTS Worker (tts/worker.py)
    Reads 'final' translated segments → buffers punctuation → routes to TTS provider
-   (Deepgram Aura cloud WebSocket OR Supertonic self-hosted in-process ONNX)
+   (Deepgram Aura cloud WebSocket, ElevenLabs v4 cloud HTTP stream, OR Supertonic self-hosted in-process ONNX)
         │
         ▼
    broadcast_bundle() (WebSocket /ws/tts/{room_id}/{language_code}/{booth_id}) -> AudioScheduler -> Web Audio API
@@ -85,16 +85,19 @@ Jitsi Meet Floor Conference
 | `portal/transcription/providers/local.py` | `LocalProvider` — faster-whisper CPU; model cache + LRU eviction |
 | `portal/transcription/providers/openai.py` | `OpenAIProvider` — whisper-1 (REST) + gpt-4o-realtime (WebSocket) |
 | `portal/transcription/providers/atlascloud.py` | `AtlasCloudProvider` — Seed ASR 2.0 async Audio API |
-| `portal/transcription/providers/deepgram.py` | `DeepgramProvider` — nova-2 WebSocket streaming |
+| `portal/transcription/providers/deepgram.py` | `DeepgramProvider` — nova-3/nova-2 WebSocket streaming; glossary source terms (`speech_keyterms` in `portal/translations/vocabulary.py`, read once per stream, honours `floor_ai_vocabulary_enabled`) sent as nova-3 `keyterm`s or nova-2 `keywords=term:2`; settled chunks collected until `speech_final`/`UtteranceEnd` |
 | `portal/transcription/providers/nvidia.py` | `NVIDIAProvider` — Parakeet-RNNT/CTC via Riva gRPC |
 | `portal/transcription/providers/elevenlabs.py` | `ElevenLabsProvider` — scribe_v2 |
-| `portal/translations/worker.py` | `start_translation_worker()`, LLM translation loop, multithreaded translation dispatch |
-| `portal/translations/constants.py` | Translation models enum mapped to Anthropic, OpenAI, Groq, Gemini, etc. |
+| `portal/translations/worker.py` | `TranslationWorker`: per-language translation dispatch, timeouts and delivery; `ENGINES` maps each provider to its `TranslationEngine` |
+| `portal/translations/engine.py` | `TranslationEngine` interface (`translate_batch`, `translate_text`), `Language`, `TranslationContext`, `EngineKind`; the worker calls engines only through it |
+| `portal/translations/providers/` | Backends: `LocalProvider` (NLLB, an engine itself) and the prompt-based cloud providers, wrapped by `ProviderEngine` in `base.py` |
+| `portal/translations/constants.py` | Translation providers and the hosted models offered for each; the self-hosted list comes from the registry |
+| `portal/translations/registry.py` | `TranslationModel`: one entry per self-hosted model (engine kind, pinned Hugging Face repo and revision, ISO 639-1 to model language codes, memory, capabilities, licence); `get_translation_model()` |
 | `portal/translations/prompts.py` | Contextual prompt construction incorporating room AI persona and style instructions |
 | `portal/translations/vocabulary.py` | AI interpretation vocabulary & glossary resolution, CSV import/export, and matching |
 | `portal/tts/worker.py` | `TTSWorker`, buffers punctuation, chunks text, routes to a TTS provider, pushes raw PCM binary to `tts_manager` |
-| `portal/tts/providers/` | `TTSProvider` ABC + factory; `DeepgramTTSProvider` (Aura WebSocket) and `SupertonicTTSProvider` (in-process ONNX, 44.1k→24k resample) |
-| `portal/tts/constants.py` | `DEEPGRAM_VOICE_MAPPING` (language→Aura voice) plus Supertonic preset voices, language map, and supported languages |
+| `portal/tts/providers/` | `TTSProvider` ABC + factory; `DeepgramTTSProvider` (Aura WebSocket), `ElevenLabsTTSProvider` (Eleven v4 Turbo → v4 over `/v1/text-to-dialogue/stream`, `pcm_24000`) and `SupertonicTTSProvider` (in-process ONNX, 44.1k→24k resample) |
+| `portal/tts/constants.py` | `DEEPGRAM_VOICE_MAPPING` (language→Aura voice) plus Supertonic preset voices, language map, and supported languages; `ELEVENLABS_DEFAULT_VOICE_ID` and `ELEVENLABS_SUPPORTED_LANGS` (Eleven v4, Thai included) |
 
 ---
 
@@ -105,7 +108,7 @@ Jitsi Meet Floor Conference
 | `local` | `LocalProvider` | `tiny`, `base`, `small`, `medium`, `large-v2`, `large-v3` | None | CPU inference via `faster-whisper` (in thread pool) |
 | `openai` | `OpenAIProvider` | `whisper-1`, `gpt-4o-realtime-preview`, `gpt-4o-mini-realtime-preview` | `openai_api_key` | REST (whisper-1) or WebSocket realtime |
 | `atlascloud` | `AtlasCloudProvider` | `bytedance/seed-asr-2.0` | `atlascloud_api_key` | Async JSON submit + prediction polling |
-| `deepgram` | `DeepgramProvider` | `nova-2` | `deepgram_api_key` | WebSocket streaming (with `numerals=true` for interpretation) |
+| `deepgram` | `DeepgramProvider` | `nova-3`, `nova-2` | `deepgram_api_key` | WebSocket streaming (with `numerals=true` for interpretation) |
 | `nvidia` | `NVIDIAProvider` | `parakeet-rnnt`, `parakeet-ctc` | `nvidia_api_key` | Riva gRPC |
 | `elevenlabs` | `ElevenLabsProvider` | `scribe_v2` | `elevenlabs_api_key` | — |
 
@@ -122,14 +125,14 @@ External provider use requires `event.transcription_api_enabled = True`.
 
 1. Acquires `active_workers_lock`.
 2. Returns immediately if worker already running for this `booth_id`.
-3. Returns immediately if `len(active_workers) >= MAX_TOTAL_WORKERS` (10).
+3. Returns immediately if `len(active_workers) >= settings.max_transcription_workers` (default 10, configurable via `MAX_TRANSCRIPTION_WORKERS`).
 4. Creates asyncio Task running `transcription_worker(...)`.
 5. Stores in `active_workers[booth_id]` = `{task, provider, stderr_task}`.
 
 ### `transcription_worker(...)` (internal)
 
 1. Builds the canonical MediaMTX path with `make_mediamtx_path(event_slug, room_id, language_code)` and prefixes it with `settings.mediamtx_rtsp_base`, producing `rtsp://mediamtx:8554/{event_slug}/{room_id}/{language_code}`.
-2. Spawns ffmpeg: PCM s16le 16kHz mono via subprocess pipe.
+2. Spawns ffmpeg: PCM s16le mono at `provider.sample_rate` (16kHz, 24kHz for OpenAI) via subprocess pipe.
 3. Starts `stderr_task` to drain ffmpeg stderr (debug log only).
 4. Calls `provider.run_stream(process, ...)` — blocks until stream ends.
 5. `finally`: kills ffmpeg, removes from `active_workers`/`active_processes`.
@@ -142,7 +145,7 @@ Cancels the asyncio Task and awaits it; removes from state dicts.
 
 ## Audio Chunking (default `run_stream` in `base.py`)
 
-- Chunk size: `16000 * 2 * 3 = 96000 bytes` = 3 seconds of PCM.
+- Chunk size: `self.sample_rate * 2 * 3` bytes = 3 seconds of PCM (96000 bytes at 16kHz).
 - Reader queues chunks into `asyncio.Queue(maxsize=2)`.
 - Queue full → oldest chunk dropped; `booth_state.chunks_dropped_total` incremented.
 - `consecutive_drops >= 3` → sends `[Server overloaded…]` error.
@@ -160,6 +163,28 @@ Cancels the asyncio Task and awaits it; removes from state dicts.
 | `handle_final(booth_id, text)` | completed utterance | Broadcasts `{type:"caption", status:"final", text}`; resets state |
 | `handle_chunk(booth_id, text)` | Whisper text chunk | Appends to buffer; splits on sentence boundary (`[.?!]+`); broadcasts `final` for each sentence, `partial` for remainder |
 | `handle_clear(booth_id)` | silence/endpoint | Broadcasts `{type:"caption", status:"clear"}` |
+
+Final captions on a room's canonical floor feed allocate `seq` atomically from
+`Room.floor_caption_seq` for both Jitsi and program ingest. The counter survives
+worker replacement, provider retries, portal restarts and floor-source changes;
+each room advances independently. Only program ingest attaches presentation-delay
+metadata. Translation text and TTS frames carry the same sequence and segment UUID
+as their source caption, so listeners can discard late audio without mistaking new
+sentences for consumed segments.
+
+Sequence allocation and the original-caption broadcast share a per-room lock
+across aggregators; unrelated rooms do not wait for one another. If the DB fails,
+original captions still arrive with their UUID and no sequence, and skip storage,
+translation and TTS until allocation recovers. This avoids inventing a fallback
+counter that could conflict with the durable stream. Missing/deleted rooms drop
+pending finals rather than publishing an invalid sequence.
+
+Every published floor final is also offered to the room's YouTube caption track
+(`youtube_captions.offer`, non-blocking), inside the same per-room lock so posts
+follow allocation order. YouTube numbers its own posts, so a track set to the
+floor's original text keeps receiving captions during an allocation outage; a
+track set to a translated language pauses with translation. Dropped finals for
+deleted rooms are not offered.
 
 ---
 

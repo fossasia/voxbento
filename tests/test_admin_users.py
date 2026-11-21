@@ -10,7 +10,12 @@ import pytest
 from httpx import ASGITransport, AsyncClient
 
 from fastapi_app import app
-from portal.auth import create_user_token, hash_password
+from portal.auth import (
+    create_user_token,
+    decode_token,
+    generate_admin_csrf_token,
+    hash_password,
+)
 from portal.database import (
     configure,
     create_auth_token,
@@ -29,8 +34,14 @@ from portal.database import (
 )
 
 os.environ["BOOTH_ACCESS_TOKEN"] = ""
-JSON = {"origin": "http://test", "accept": "application/json"}
-FORM = {"origin": "http://test"}
+JSON = {
+    "origin": "http://test",
+    "accept": "application/json",
+}
+FORM = {
+    "origin": "http://test",
+    "content-type": "application/x-www-form-urlencoded",
+}
 
 
 @pytest.fixture(autouse=True)
@@ -59,7 +70,13 @@ async def make_user(email: str, name: str, *, password: bool = True, **kwargs) -
 
 
 def cookies_for(user_id: int, email: str, is_admin: bool = False) -> dict[str, str]:
-    return {"user_token": create_user_token(user_id=user_id, email=email, is_admin=is_admin)}
+    user_token = create_user_token(user_id=user_id, email=email, is_admin=is_admin)
+    session_id = str(decode_token(user_token)["jti"])
+    csrf_token = generate_admin_csrf_token(session_id)
+    return {
+        "user_token": user_token,
+        "admin_csrf": csrf_token,
+    }
 
 
 @pytest.fixture
@@ -79,11 +96,15 @@ def switch(html: str, field: str, user_id: int) -> str:
     return match.group(1)
 
 
-async def set_access(http: AsyncClient, cookies, user_id: int, field: str, value: bool, headers=JSON):
+async def set_access(http: AsyncClient, cookies, user_id: int, field: str, value: bool, headers=None):
+    request_headers = {**JSON, **(headers or {})}
+    if "content-type" in request_headers:
+        request_headers.pop("accept", None)
+    request_headers["X-CSRF-Token"] = cookies["admin_csrf"]
     return await http.post(
         f"/admin/users/{user_id}/access",
         data={"field": field, "value": "true" if value else "false"},
-        headers=headers,
+        headers=request_headers,
         cookies=cookies,
         follow_redirects=False,
     )
@@ -142,7 +163,9 @@ async def test_switch_states_and_safeguards(admin):
     assert "You can&#39;t deactivate your own account" in switch(html, "active", admin["id"])
     assert "You can&#39;t unverify your own email address" in switch(html, "verified", admin["id"])
     assert 'aria-checked="true"' in switch(html, "verified", host)
+    assert 'title="Deactivate this user account"' in switch(html, "active", host)
     assert 'aria-checked="false"' in switch(html, "verified", stub)
+    assert 'title="Reactivate this user account"' in switch(html, "active", off)
     # Accounts that aren't set up or are deactivated can't be granted access from the list.
     assert "disabled" in switch(html, "hosting", stub)
     assert "disabled" in switch(html, "hosting", off) and "disabled" in switch(html, "admin", off)
@@ -312,18 +335,23 @@ async def test_access_endpoint_validation(admin):
     user_id = await make_user("x@example.org", "X")
     async with client() as http:
         cross = await set_access(
-            http, admin["cookies"], user_id, "admin", True, headers={"origin": "https://evil.example"}
+            http,
+            admin["cookies"],
+            user_id,
+            "admin",
+            True,
+            headers={**JSON, "origin": "https://evil.example"},
         )
         bad_field = await http.post(
             f"/admin/users/{user_id}/access",
             data={"field": "is_admin", "value": "true"},
-            headers=JSON,
+            headers={**JSON, "X-CSRF-Token": admin["cookies"]["admin_csrf"]},
             cookies=admin["cookies"],
         )
         bad_value = await http.post(
             f"/admin/users/{user_id}/access",
             data={"field": "admin", "value": "yes"},
-            headers=JSON,
+            headers={**JSON, "X-CSRF-Token": admin["cookies"]["admin_csrf"]},
             cookies=admin["cookies"],
         )
         missing = await set_access(http, admin["cookies"], 9999, "admin", True)
@@ -360,12 +388,21 @@ async def test_plain_form_posts_return_to_the_page_with_a_message(admin):
 @pytest.mark.anyio
 async def test_legacy_toggles_follow_the_same_rules(admin):
     async with client() as http:
-        no_origin = await http.post(f"/admin/users/{admin['id']}/toggle-admin", cookies=admin["cookies"])
+        no_origin = await http.post(
+            f"/admin/users/{admin['id']}/toggle-admin",
+            headers={"X-CSRF-Token": admin["cookies"]["admin_csrf"]},
+            cookies=admin["cookies"],
+        )
         self_demote = await http.post(
-            f"/admin/users/{admin['id']}/toggle-admin", headers=FORM, cookies=admin["cookies"], follow_redirects=False
+            f"/admin/users/{admin['id']}/toggle-admin",
+            headers={**FORM, "X-CSRF-Token": admin["cookies"]["admin_csrf"]},
+            cookies=admin["cookies"],
+            follow_redirects=False,
         )
         owner_route = await http.post(
-            f"/admin/users/{admin['id']}/events/1/toggle-owner", headers=FORM, cookies=admin["cookies"]
+            f"/admin/users/{admin['id']}/events/1/toggle-owner",
+            headers={**FORM, "X-CSRF-Token": admin["cookies"]["admin_csrf"]},
+            cookies=admin["cookies"],
         )
     assert no_origin.status_code == 400
     assert self_demote.headers["location"].endswith("error=self_admin")
@@ -386,21 +423,21 @@ async def test_delete_needs_the_email_typed_and_never_self(admin):
         wrong = await http.post(
             f"/admin/users/{user_id}/delete",
             data={"confirm_email": "lukas@example.com"},
-            headers=FORM,
+            headers={**FORM, "X-CSRF-Token": admin["cookies"]["admin_csrf"]},
             cookies=admin["cookies"],
             follow_redirects=False,
         )
         self_delete = await http.post(
             f"/admin/users/{admin['id']}/delete",
             data={"confirm_email": "hong@example.org"},
-            headers=FORM,
+            headers={**FORM, "X-CSRF-Token": admin["cookies"]["admin_csrf"]},
             cookies=admin["cookies"],
             follow_redirects=False,
         )
         ok = await http.post(
             f"/admin/users/{user_id}/delete",
             data={"confirm_email": " LUKAS@example.org "},
-            headers=FORM,
+            headers={**FORM, "X-CSRF-Token": admin["cookies"]["admin_csrf"]},
             cookies=admin["cookies"],
             follow_redirects=False,
         )
@@ -447,6 +484,13 @@ async def test_user_page_sections_roles_and_owned_events(admin):
     assert "Event owner" not in html.split(">Roles in events</h2>")[1].split("</section>")[0]
     assert "Grant hosting access" in html and "Make Admin" in html
     assert "Deactivate" in html and 'data-confirm-match="lukas@example.org"' in html
+    assert 'title="Deactivate this user account"' in html
+    assert 'title="Permanently delete this user"' in html
+    grant_button = re.search(
+        r'<button type="submit" class="btn btn-outline ud-btn"[^>]*>Grant hosting access</button>',
+        html,
+    )
+    assert grant_button and "title=" not in grant_button.group(0)
     assert "toggle-owner" not in html
 
 

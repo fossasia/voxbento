@@ -1,4 +1,4 @@
-"""Shared, bounded failed-code budget for HTTP and caption WebSocket access."""
+"""Shared, bounded failed-code budget for listener HTTP, caption and TTS WebSocket access."""
 
 from __future__ import annotations
 

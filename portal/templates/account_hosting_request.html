@@ -40,6 +40,7 @@
   <p class="aa-lead">Tell us about the event you want to host on VoxBento. The VoxBento team reviews each request and replies by email.</p>
 
   <form class="aa-card aa-card--padded aa-form" method="post" action="/account/hosting-request">
+    <input type="hidden" name="csrf_token" value="{{ request.state.admin_csrf_token }}" />
     <div class="aa-row">
       <div class="aa-field">
         <label for="hr-name">Name</label>

@@ -4,16 +4,17 @@ import logging
 from datetime import datetime, timezone
 from typing import Annotated, Any, Literal
 
-from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
+from fastapi import APIRouter, Depends, HTTPException, Path, Query, Request, status
 from pydantic import AliasChoices, BaseModel, ConfigDict, Field, field_validator
 from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from portal.auth import coordinates_room, load_membership_scope, require_oauth_scope
 from portal.booth_identity import make_booth_id, make_mediamtx_path, validate_language_code
+from portal.config import settings
+from portal.database import delete_room as delete_db_room
 from portal.database import get_db_session
 from portal.globals import booths
-from portal.meeting_source import validate_meeting_url
 from portal.models import (
     DBBooth,
     Event,
@@ -25,32 +26,42 @@ from portal.models import (
     RoomTranslationLanguage,
     TranscriptSegment,
     TranscriptTranslation,
+    User,
 )
 from portal.rate_limit import auth_rate_limiter
 from portal.roles import EVENT_OWNER
+from portal.room_setup import engine_catalog, language_name, server_unavailable_reason, voice_languages_for
 from portal.transcription.constants import ALLOWED_MODELS, ProviderEnum
 from portal.transcription.providers.base import get_api_key
 from portal.transcription.worker import active_workers, start_transcription_worker, stop_transcription_worker
-from portal.translations.constants import TranslationProviderEnum
+from portal.translations.constants import TRANSLATION_MODELS, TranslationProviderEnum
+from portal.translations.keys import get_translation_api_key
+from portal.translations.model_languages import language_support_error
+from portal.translations.prompts import MAX_PERSONA_CHARS, MAX_STYLE_CHARS
+from portal.tts.providers.base import TTSProviderEnum
+from portal.tts.worker import invalidate_config as invalidate_tts_config
 from portal.websockets.revocation import revoke_booths_for_deleted_entity
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/v1")
 
+_MAX_DATABASE_ID = 2**31 - 1
+
 # Maps each EventAPIKeysUpdate field name to its corresponding encrypted
 # attribute on the Event model.  Adding a new provider only requires one
 # new entry here.
 _API_KEY_FIELDS: list[tuple[str, str]] = [
-    ("openai_api_key",             "encrypted_openai_api_key"),
-    ("deepgram_api_key",           "encrypted_deepgram_api_key"),
-    ("nvidia_api_key",             "encrypted_nvidia_api_key"),
-    ("elevenlabs_api_key",         "encrypted_elevenlabs_api_key"),
+    ("openai_api_key", "encrypted_openai_api_key"),
+    ("deepgram_api_key", "encrypted_deepgram_api_key"),
+    ("nvidia_api_key", "encrypted_nvidia_api_key"),
+    ("elevenlabs_api_key", "encrypted_elevenlabs_api_key"),
     ("translation_openai_api_key", "encrypted_translation_openai_api_key"),
-    ("openrouter_api_key",         "encrypted_openrouter_api_key"),
-    ("gemini_api_key",             "encrypted_gemini_api_key"),
-    ("anthropic_api_key",          "encrypted_anthropic_api_key"),
-    ("groq_api_key",               "encrypted_groq_api_key"),
+    ("openrouter_api_key", "encrypted_openrouter_api_key"),
+    ("gemini_api_key", "encrypted_gemini_api_key"),
+    ("anthropic_api_key", "encrypted_anthropic_api_key"),
+    ("groq_api_key", "encrypted_groq_api_key"),
+    ("atlascloud_api_key", "encrypted_atlascloud_api_key"),
 ]
 
 
@@ -112,6 +123,7 @@ async def _verify_token_rbac(
     lock_event: bool = False,
     write_lock: bool = False,
     room_id_kind: Literal["auto", "internal", "eventyay"] = "auto",
+    reject_ambiguous_room_id: bool = False,
 ) -> Room | None:
     """Validate OAuth RBAC and optionally lock the event for a mutating request.
 
@@ -142,7 +154,7 @@ async def _verify_token_rbac(
             res = await db.execute(stmt)
             resolved_room = res.scalars().first()
 
-        if not resolved_room and room_id_kind in {"auto", "internal"}:
+        if (not resolved_room or reject_ambiguous_room_id) and room_id_kind in {"auto", "internal"}:
             parsed_id: int | None = None
             if isinstance(room_id, int):
                 parsed_id = room_id
@@ -152,10 +164,18 @@ async def _verify_token_rbac(
                 except ValueError:
                     parsed_id = None
 
+            if parsed_id is not None and not 1 <= parsed_id <= _MAX_DATABASE_ID:
+                parsed_id = None
             if parsed_id is not None:
-                resolved_room = await db.get(Room, parsed_id)
-                if resolved_room and resolved_room.event_id != event.id:
-                    resolved_room = None
+                internal_room = await db.get(Room, parsed_id)
+                if internal_room and internal_room.event_id != event.id:
+                    internal_room = None
+                if resolved_room and internal_room and resolved_room.id != internal_room.id:
+                    raise HTTPException(
+                        status_code=status.HTTP_409_CONFLICT,
+                        detail="Room identifier is ambiguous; use an explicit internal or Eventyay settings route",
+                    )
+                resolved_room = resolved_room or internal_room
 
         if not resolved_room:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Room not found")
@@ -219,6 +239,13 @@ def _extract_room_id(room: Room | Any, room_id: int | str) -> int:
         except ValueError:
             pass
     return getattr(room, "id", room_id)
+
+
+def _validate_lang(language_code: str) -> str:
+    try:
+        return validate_language_code(language_code)
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
 
 
 @router.get("/events/{event_slug}", response_model=EventResponse)
@@ -412,29 +439,20 @@ async def create_event(
         if existing_event.deleted_at is not None:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Event not found")
 
-        # Verify caller is authorized to modify memberships on this existing event
-        is_authorized = False
         if token.event_id == existing_event.id:
-            is_authorized = True
-        elif token.user_id:
-            user_mem = (
-                (
-                    await db.execute(
-                        select(EventMembership).where(
-                            EventMembership.user_id == token.user_id,
-                            EventMembership.event_id == existing_event.id,
-                            EventMembership.role == EVENT_OWNER,
-                        )
-                    )
+            await _verify_token_rbac(db, token, existing_event, manage=True)
+        else:
+            # Outside the token's scope only a current owner passes, e.g. retrying a creation.
+            user = await db.get(User, token.user_id)
+            owner_membership = await db.scalar(
+                select(EventMembership.id).where(
+                    EventMembership.user_id == token.user_id,
+                    EventMembership.event_id == existing_event.id,
+                    EventMembership.role == EVENT_OWNER,
                 )
-                .scalars()
-                .first()
             )
-            if user_mem:
-                is_authorized = True
-
-        if not is_authorized:
-            raise HTTPException(status_code=403, detail="Not authorized to manage memberships for this event.")
+            if user is None or not user.is_active or owner_membership is None:
+                raise HTTPException(status_code=403, detail="Not authorized to manage memberships for this event.")
 
         # Update the display name if the event already exists (e.g. from OAuth auto-provisioning)
         if existing_event.display_name != payload.name:
@@ -444,6 +462,12 @@ async def create_event(
         await _ensure_event_memberships(db, existing_event.id, token.user_id, payload.organizer_emails)
         return {"id": existing_event.id, "slug": existing_event.slug, "name": existing_event.display_name}
     else:
+        # A retained token must not bootstrap new ownership after its grant loses access.
+        authorizing_event = await db.get(Event, token.event_id)
+        if authorizing_event is None:
+            raise HTTPException(status_code=404, detail="Event not found")
+        await _verify_token_rbac(db, token, authorizing_event, manage=True, lock_event=True, write_lock=True)
+
         event = Event(slug=slug, display_name=payload.name)
         db.add(event)
         await db.flush()
@@ -563,9 +587,12 @@ class RoomSettingsUpdate(BaseModel):
         max_length=200,
         validation_alias=AliasChoices("display_name", "name"),
     )
-    jitsi_url: str | None = Field(None, max_length=500)
+    jitsi_url: Any = Field(
+        None,
+        description="Meeting URLs must be changed through the dedicated meeting-source workflow.",
+    )
     audio_delay_ms: int | None = Field(None, ge=0, le=10_000)
-    relay_booth_id: int | None = Field(None, ge=1)
+    relay_booth_id: int | None = Field(None, ge=1, le=_MAX_DATABASE_ID)
 
     floor_transcription_enabled: bool | None = Field(
         None,
@@ -585,8 +612,6 @@ class RoomSettingsUpdate(BaseModel):
         max_length=10,
         validation_alias=AliasChoices("floor_language_code", "source_language"),
     )
-    floor_source: Literal["jitsi_bot", "program_ingest"] | None = None
-    meeting_agent_enabled: bool | None = None
 
     floor_translation_enabled: bool | None = Field(
         None,
@@ -601,31 +626,31 @@ class RoomSettingsUpdate(BaseModel):
         max_length=100,
         validation_alias=AliasChoices("floor_translation_model", "translation_model"),
     )
-    floor_source_language_code: str | None = Field(None, max_length=20)
-    floor_ai_interpreter_persona: str | None = None
-    floor_ai_interpretation_style: str | None = None
+    floor_ai_interpreter_persona: str | None = Field(None, max_length=MAX_PERSONA_CHARS)
+    floor_ai_interpretation_style: str | None = Field(None, max_length=MAX_STYLE_CHARS)
     floor_ai_vocabulary_enabled: bool | None = None
 
     floor_tts_enabled: bool | None = None
-    floor_tts_provider: Literal["deepgram", "supertonic"] | None = None
+    floor_tts_provider: TTSProviderEnum | None = None
     floor_tts_voice: Literal["M1", "M2", "M3", "M4", "M5", "F1", "F2", "F3", "F4", "F5"] | None = None
 
-    @field_validator("floor_language_code", "floor_source_language_code")
+    @field_validator("floor_language_code")
     @classmethod
     def validate_language_code(cls, value):
         """Normalize and validate ISO language codes before persistence."""
 
         if value is None:
             return value
-        return validate_language_code(value)
+        normalised = validate_language_code(value)
+        if normalised == "floor":
+            raise ValueError("'floor' is not a valid source language for a room")
+        return normalised
 
     @field_validator(
-        "jitsi_url",
         "floor_transcription_model",
         "floor_language_code",
         "floor_translation_provider",
         "floor_translation_model",
-        "floor_source_language_code",
         "floor_ai_interpreter_persona",
         "floor_ai_interpretation_style",
         mode="before",
@@ -653,10 +678,7 @@ _NON_NULL_ROOM_SETTINGS = frozenset(
         "floor_transcription_enabled",
         "floor_transcription_provider",
         "floor_transcription_model",
-        "floor_source",
-        "meeting_agent_enabled",
         "floor_translation_enabled",
-        "floor_source_language_code",
         "floor_ai_vocabulary_enabled",
         "floor_tts_enabled",
         "floor_tts_provider",
@@ -664,10 +686,249 @@ _NON_NULL_ROOM_SETTINGS = frozenset(
     }
 )
 
+_TRANSCRIPTION_ROOM_SETTINGS = frozenset(
+    {
+        "floor_transcription_enabled",
+        "floor_transcription_provider",
+        "floor_transcription_model",
+        "floor_language_code",
+    }
+)
+_TRANSLATION_ROOM_SETTINGS = frozenset(
+    {
+        "floor_translation_enabled",
+        "floor_translation_provider",
+        "floor_translation_model",
+        "floor_language_code",
+    }
+)
+_TTS_ROOM_SETTINGS = frozenset(
+    {"floor_tts_enabled", "floor_tts_provider", "floor_tts_voice", "floor_translation_enabled"}
+)
 
-def _apply_floor_settings(room, payload_dict: dict):
-    if "name" in payload_dict and payload_dict["name"] is not None:
-        room.display_name = payload_dict["name"]
+
+def _effective_room_setting(room: Room, updates: dict, field: str):
+    value = updates[field] if field in updates else getattr(room, field)
+    return getattr(value, "value", value)
+
+
+def _validate_transcription_settings(event: Event, room: Room, updates: dict) -> None:
+    if not _TRANSCRIPTION_ROOM_SETTINGS.intersection(updates):
+        return
+
+    enabled = bool(_effective_room_setting(room, updates, "floor_transcription_enabled"))
+    provider_value = _effective_room_setting(room, updates, "floor_transcription_provider")
+    model = _effective_room_setting(room, updates, "floor_transcription_model")
+    language = _effective_room_setting(room, updates, "floor_language_code")
+
+    if not enabled and not {"floor_transcription_provider", "floor_transcription_model"}.intersection(updates):
+        return
+    try:
+        provider = ProviderEnum(provider_value)
+    except (TypeError, ValueError):
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            detail="A valid transcription provider is required for transcription settings",
+        ) from None
+    if model not in ALLOWED_MODELS[provider]:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            detail=f"Invalid transcription model '{model}' for provider '{provider.value}'",
+        )
+    if not enabled:
+        return
+    if provider == ProviderEnum.NONE:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            detail="Transcription cannot be enabled with provider 'none'",
+        )
+    if not language:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            detail="Select a source language before enabling transcription",
+        )
+    unavailable = server_unavailable_reason(provider.value)
+    if unavailable:
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail=unavailable)
+    if provider != ProviderEnum.LOCAL:
+        if not event.transcription_api_enabled:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+                detail="Enable the event transcription API before selecting an external provider",
+            )
+        try:
+            provider_key = get_api_key(event, provider)
+        except ValueError:
+            provider_key = None
+        if not provider_key:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+                detail=f"Configure the {provider.value} API key before enabling this provider",
+            )
+
+
+def _translation_sync_payload(updates: dict) -> dict:
+    field_map = {
+        "floor_translation_enabled": "enable_translation",
+        "floor_translation_provider": "translation_provider",
+        "floor_translation_model": "translation_model",
+        "floor_language_code": "source_language",
+    }
+    return {field_map[field]: getattr(value, "value", value) for field, value in updates.items() if field in field_map}
+
+
+async def _validate_translation_settings(db: AsyncSession, event: Event, room: Room, updates: dict) -> None:
+    translation_changed = bool(_TRANSLATION_ROOM_SETTINGS.intersection(updates))
+    tts_needs_translation = bool(
+        {"floor_tts_enabled", "floor_tts_provider", "floor_tts_voice"}.intersection(updates)
+        and _effective_room_setting(room, updates, "floor_tts_enabled")
+    )
+    if not translation_changed and not tts_needs_translation:
+        return
+
+    if "floor_translation_provider" in updates and "floor_translation_model" not in updates:
+        provider = _effective_room_setting(room, updates, "floor_translation_provider")
+        if provider != room.floor_translation_provider:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+                detail="translation_model is required when changing translation_provider",
+            )
+
+    sync_payload = _translation_sync_payload(updates)
+    if tts_needs_translation and not translation_changed:
+        sync_payload = {
+            "enable_translation": _effective_room_setting(room, updates, "floor_translation_enabled"),
+            "translation_provider": _effective_room_setting(room, updates, "floor_translation_provider"),
+            "translation_model": _effective_room_setting(room, updates, "floor_translation_model"),
+            "source_language": _effective_room_setting(room, updates, "floor_language_code"),
+        }
+    _check_server_translation(sync_payload, room)
+    if "translation_model" in sync_payload and "floor_translation_model" not in updates:
+        updates["floor_translation_model"] = sync_payload["translation_model"]
+
+    enabled = bool(_effective_room_setting(room, updates, "floor_translation_enabled"))
+    provider_value = _effective_room_setting(room, updates, "floor_translation_provider")
+    model = _effective_room_setting(room, updates, "floor_translation_model")
+    try:
+        provider = TranslationProviderEnum(provider_value)
+    except (TypeError, ValueError):
+        provider = None
+    choice_changed = bool({"floor_translation_provider", "floor_translation_model"}.intersection(updates) or enabled)
+    if choice_changed:
+        if provider is None or not model:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+                detail="A translation provider and model are required before enabling translation",
+            )
+        if provider not in {TranslationProviderEnum.LOCAL, TranslationProviderEnum.SELF_HOSTED}:
+            if model not in TRANSLATION_MODELS.get(provider.value, ()):
+                raise HTTPException(
+                    status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+                    detail=f"Invalid translation model '{model}' for provider '{provider.value}'",
+                )
+    if enabled:
+        language = _effective_room_setting(room, updates, "floor_language_code")
+        if not language:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+                detail="Select a source language before enabling translation",
+            )
+        if provider not in {TranslationProviderEnum.LOCAL, TranslationProviderEnum.SELF_HOSTED}:
+            try:
+                provider_key = get_translation_api_key(event, provider.value)
+            except ValueError:
+                provider_key = None
+            if not provider_key:
+                raise HTTPException(
+                    status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+                    detail=f"Configure the {provider.value} translation API key before enabling this provider",
+                )
+        has_target = await db.scalar(
+            select(RoomTranslationLanguage.id)
+            .where(
+                RoomTranslationLanguage.room_id == room.id,
+                RoomTranslationLanguage.enabled.is_(True),
+            )
+            .limit(1)
+        )
+        if has_target is None:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+                detail="Add at least one enabled target language before enabling translation",
+            )
+
+    await _check_translation_languages(db, sync_payload, room, force=tts_needs_translation)
+    if enabled and not _effective_room_setting(room, updates, "floor_transcription_enabled"):
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            detail="Enable floor transcription before enabling translation",
+        )
+
+
+async def _validate_tts_settings(db: AsyncSession, event: Event, room: Room, updates: dict) -> None:
+    if not _TTS_ROOM_SETTINGS.intersection(updates):
+        return
+    if not _effective_room_setting(room, updates, "floor_tts_enabled"):
+        return
+    if not _effective_room_setting(room, updates, "floor_translation_enabled"):
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            detail="Enable floor translation before enabling TTS",
+        )
+
+    provider_value = _effective_room_setting(room, updates, "floor_tts_provider")
+    try:
+        provider = TTSProviderEnum(provider_value)
+    except (TypeError, ValueError):
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            detail="A valid TTS provider is required before enabling TTS",
+        ) from None
+    if provider in {TTSProviderEnum.DEEPGRAM, TTSProviderEnum.ELEVENLABS}:
+        key_provider = ProviderEnum(provider.value)
+        try:
+            provider_key = get_api_key(event, key_provider)
+        except ValueError:
+            provider_key = None
+        if not provider_key:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+                detail=f"{provider.value} TTS is not available for this event",
+            )
+    if engine_catalog(event).find("voice", provider.value) is None:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            detail=f"{provider.value} TTS is not available for this event",
+        )
+
+    spoken_codes = list(
+        await db.scalars(
+            select(RoomTranslationLanguage.language_code).where(
+                RoomTranslationLanguage.room_id == room.id,
+                RoomTranslationLanguage.enabled.is_(True),
+                RoomTranslationLanguage.tts_enabled.is_(True),
+            )
+        )
+    )
+    if not spoken_codes:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            detail="Add at least one AI voice target language before enabling TTS",
+        )
+    supported = set(voice_languages_for(provider.value))
+    unsupported = [language_name(code) for code in spoken_codes if code not in supported]
+    if unsupported:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            detail=(
+                f"{provider.value} TTS can't speak {', '.join(unsupported)}. "
+                "Choose another provider or use AI captions for that language"
+            ),
+        )
+
+
+def _sync_floor_transcription_settings(room: Room, payload_dict: dict) -> None:
+    """Apply floor transcription configuration and source language to the room instance."""
     if "enable_transcription" in payload_dict and payload_dict["enable_transcription"] is not None:
         room.floor_transcription_enabled = payload_dict["enable_transcription"]
     if "transcription_provider" in payload_dict:
@@ -677,6 +938,10 @@ def _apply_floor_settings(room, payload_dict: dict):
         room.floor_transcription_model = payload_dict["transcription_model"] or "tiny"
     if "source_language" in payload_dict:
         room.floor_language_code = payload_dict["source_language"]
+
+
+def _sync_floor_translation_settings(room: Room, payload_dict: dict) -> None:
+    """Apply floor translation configuration to the room instance."""
     if "enable_translation" in payload_dict and payload_dict["enable_translation"] is not None:
         room.floor_translation_enabled = payload_dict["enable_translation"]
     if "translation_provider" in payload_dict:
@@ -684,6 +949,288 @@ def _apply_floor_settings(room, payload_dict: dict):
         room.floor_translation_provider = getattr(val, "value", val)
     if "translation_model" in payload_dict:
         room.floor_translation_model = payload_dict["translation_model"]
+
+
+def _check_server_translation(payload_dict: dict, room: Room | None) -> None:
+    """Reject self-hosted or built-in translation this server can't run, before anything is written.
+
+    An explicit model must be on the server's allow list; when the model is left out, the room keeps
+    an allowed model it already has or gets the default one. An update that turns translation off is
+    never rejected, so it still works after the server or a model is removed.
+    """
+    if not {"translation_provider", "translation_model", "enable_translation"} & payload_dict.keys():
+        return
+    if payload_dict.get("enable_translation") is False:
+        return
+    current_provider = room.floor_translation_provider if room else None
+    provider = payload_dict.get("translation_provider", current_provider)
+    if provider == TranslationProviderEnum.SELF_HOSTED.value:
+        if not settings.self_hosted_llm_enabled:
+            raise HTTPException(status_code=422, detail="Self-hosted translation is not configured on this server")
+        allows, model_or_default, name = (
+            settings.self_hosted_llm_allows,
+            settings.self_hosted_llm_model_or_default,
+            "self-hosted",
+        )
+    elif provider == TranslationProviderEnum.LOCAL.value:
+        if not settings.local_translation_model_list:
+            raise HTTPException(status_code=422, detail="Built-in translation is not offered on this server")
+        allows, model_or_default, name = (
+            settings.local_translation_allows,
+            settings.local_translation_model_or_default,
+            "built-in",
+        )
+    else:
+        return
+    model = payload_dict.get("translation_model")
+    if model is not None:
+        if not allows(model):
+            raise HTTPException(status_code=422, detail=f"translation_model is not allowed for {name} translation")
+        return
+    payload_dict["translation_model"] = model_or_default(room.floor_translation_model if room else None)
+
+
+_TRANSLATION_SETUP_FIELDS = {
+    "translation_provider",
+    "translation_model",
+    "enable_translation",
+    "source_language",
+    "target_languages",
+}
+
+
+async def _check_translation_languages(
+    db: AsyncSession, payload_dict: dict, room: Room | None, *, force: bool = False
+) -> None:
+    """Reject a translation model that cannot handle the room's languages, before anything is written.
+
+    Looks at the room as it will be once the update is applied. Only an update that changes
+    the translation setup is checked, and never one that leaves translation off, so a sync
+    that re-sends a room saved before this rule keeps working until its setup changes.
+    """
+    if not _TRANSLATION_SETUP_FIELDS & payload_dict.keys():
+        return
+
+    saved_targets: list[str] = []
+    if room is not None:
+        rows = await db.scalars(
+            select(RoomTranslationLanguage.language_code).where(
+                RoomTranslationLanguage.room_id == room.id, RoomTranslationLanguage.enabled.is_(True)
+            )
+        )
+        saved_targets = list(rows)
+    before = (
+        bool(room and room.floor_translation_enabled),
+        room.floor_translation_provider if room else None,
+        room.floor_translation_model if room else None,
+        room.floor_language_code if room else None,
+        sorted(saved_targets),
+    )
+
+    def after(field: str, current):
+        """The proposed value from payload_dict, or the current value when omitted or null."""
+        value = payload_dict.get(field)
+        return current if value is None else value
+
+    targets = payload_dict.get("target_languages")
+    proposed = (
+        after("enable_translation", before[0]),
+        payload_dict["translation_provider"] if "translation_provider" in payload_dict else before[1],
+        payload_dict["translation_model"] if "translation_model" in payload_dict else before[2],
+        payload_dict["source_language"] if "source_language" in payload_dict else before[3],
+        before[4] if targets is None else sorted(set(targets)),
+    )
+    if not proposed[0] or (room is not None and proposed == before and not force):
+        return
+    error = language_support_error(proposed[1], proposed[2], (proposed[3], *proposed[4]))
+    if error:
+        raise HTTPException(status_code=422, detail=error)
+
+
+def _apply_room_settings(room: Room, payload_dict: dict) -> None:
+    """Apply display name, floor transcription, and floor translation settings to the room."""
+    if "name" in payload_dict and payload_dict["name"] is not None:
+        room.display_name = payload_dict["name"]
+    _sync_floor_transcription_settings(room, payload_dict)
+    _sync_floor_translation_settings(room, payload_dict)
+
+
+async def _create_or_update_base_room(
+    db: AsyncSession,
+    event: Event,
+    eventyay_room_id: str,
+    payload_dict: dict,
+) -> tuple[Room, str, int]:
+    """Create or update the base room while preserving upsert and concurrency transaction semantics."""
+    room_res = await db.execute(
+        select(Room).where(Room.event_id == event.id, Room.eventyay_room_id == eventyay_room_id)
+    )
+    room = room_res.scalars().first()
+
+    _check_server_translation(payload_dict, room)
+    await _check_translation_languages(db, payload_dict, room)
+
+    if room:
+        _apply_room_settings(room, payload_dict)
+        return room, "room.updated", status.HTTP_200_OK
+
+    # Require name for creation
+    if "name" not in payload_dict or not payload_dict["name"]:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="name is required to create a new room")
+
+    from sqlalchemy.exc import IntegrityError
+
+    try:
+        async with db.begin_nested():
+            room = Room(
+                event_id=event.id,
+                eventyay_room_id=eventyay_room_id,
+                display_name=payload_dict["name"],
+            )
+            _apply_room_settings(room, payload_dict)
+            db.add(room)
+            await db.flush()
+    except IntegrityError:
+        room_res = await db.execute(
+            select(Room).where(Room.event_id == event.id, Room.eventyay_room_id == eventyay_room_id)
+        )
+        room = room_res.scalars().first()
+        if not room:
+            raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Failed to upsert room")
+        _apply_room_settings(room, payload_dict)
+        return room, "room.updated", status.HTTP_200_OK
+
+    return room, "room.created", status.HTTP_201_CREATED
+
+
+async def _delete_removed_languages_and_booths(
+    db: AsyncSession,
+    event: Event,
+    room: Room,
+    eventyay_room_id: str,
+    requested_langs: set[str],
+    existing_booths: dict[str, DBBooth],
+    existing_langs: dict[str, RoomTranslationLanguage],
+    token: OAuthToken,
+) -> None:
+    """Delete unrequested booths and languages, enforcing active-session safety checks."""
+    from portal.booth_identity import make_booth_id
+    from portal.globals import booths
+
+    # Safe Delete Removed Booths & Languages
+    for code, b in existing_booths.items():
+        if code not in requested_langs:
+            # Active Session Guard — use BoothRegistry.get_booth_sync() (not .items())
+            booth_id = make_booth_id(event.slug, room.id, code)
+            active_booth = booths.get_booth_sync(booth_id)
+            if active_booth is not None:
+                has_connected = active_booth.ingest_status == "connected"
+                if has_connected:
+                    raise HTTPException(
+                        status_code=status.HTTP_409_CONFLICT,
+                        detail=f"Cannot remove language '{code}' while it has an active session running.",
+                    )
+            await booths.remove_booth(event.slug, room.id, code)
+            await db.delete(b)
+            db.add(
+                OAuthAuditLog(
+                    token_id=token.id,
+                    client_id=token.client_id,
+                    action="booth.deleted",
+                    request_path=f"/api/v1/events/{event.slug}/rooms/{eventyay_room_id}/booths/{code}",
+                    status_code=status.HTTP_200_OK,
+                )
+            )
+
+    for code, rl in existing_langs.items():
+        if code not in requested_langs:
+            await db.delete(rl)
+
+
+async def _create_missing_languages_and_booths(
+    db: AsyncSession,
+    event: Event,
+    room: Room,
+    eventyay_room_id: str,
+    requested_langs: set[str],
+    existing_booths: dict[str, DBBooth],
+    existing_langs: dict[str, RoomTranslationLanguage],
+    token: OAuthToken,
+) -> None:
+    """Create missing translation languages and booths inside savepoints."""
+    from sqlalchemy.exc import IntegrityError
+
+    # Create Missing Booths & Languages
+    for code in requested_langs:
+        if code not in existing_langs:
+            try:
+                async with db.begin_nested():
+                    db.add(RoomTranslationLanguage(room_id=room.id, language_code=code, language_name=code))
+                    await db.flush()
+            except IntegrityError:
+                pass
+
+        if code not in existing_booths:
+            try:
+                async with db.begin_nested():
+                    new_booth = DBBooth(room_id=room.id, language_code=code, event_id=event.id, language_name=code)
+                    db.add(new_booth)
+                    db.add(
+                        OAuthAuditLog(
+                            token_id=token.id,
+                            client_id=token.client_id,
+                            action="booth.created",
+                            request_path=f"/api/v1/events/{event.slug}/rooms/{eventyay_room_id}/booths/{code}",
+                            status_code=status.HTTP_201_CREATED,
+                        )
+                    )
+                    await db.flush()
+            except IntegrityError:
+                pass
+
+
+async def _sync_target_languages_and_booths(
+    db: AsyncSession,
+    event: Event,
+    room: Room,
+    eventyay_room_id: str,
+    requested_langs: set[str],
+    token: OAuthToken,
+) -> None:
+    """Reconcile requested target languages with the room's persisted booths and translation languages."""
+    lang_res = await db.execute(select(RoomTranslationLanguage).where(RoomTranslationLanguage.room_id == room.id))
+    existing_langs = {rl.language_code: rl for rl in lang_res.scalars().all()}
+
+    booth_res = await db.execute(select(DBBooth).where(DBBooth.room_id == room.id))
+    existing_booths = {b.language_code: b for b in booth_res.scalars().all()}
+
+    await _delete_removed_languages_and_booths(
+        db, event, room, eventyay_room_id, requested_langs, existing_booths, existing_langs, token
+    )
+    await _create_missing_languages_and_booths(
+        db, event, room, eventyay_room_id, requested_langs, existing_booths, existing_langs, token
+    )
+
+
+async def _build_booths_response(db: AsyncSession, event_slug: str, room_id: int) -> list[dict[str, str]]:
+    """Build the canonical booth response list with WHEP and WHIP URLs."""
+    from portal.booth_identity import make_mediamtx_path
+    from portal.config import settings
+
+    final_booth_res = await db.execute(select(DBBooth).where(DBBooth.room_id == room_id))
+    final_booths = final_booth_res.scalars().all()
+
+    returned_booths = []
+    try:
+        for b in final_booths:
+            whip_path = make_mediamtx_path(event_slug, room_id, b.language_code)
+            whep_url = f"{settings.mediamtx_whip_base}/{whip_path}/whep"
+            returned_booths.append({"language": b.language_code, "whip_path": whip_path, "whep_url": whep_url})
+    except Exception:
+        logger.exception("Error generating canonical WHEP URLs")
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Internal server error")
+
+    return returned_booths
 
 
 @router.put("/events/{event_slug}/rooms/{eventyay_room_id}")
@@ -694,122 +1241,19 @@ async def upsert_room(
     db: AsyncSession = Depends(get_db_session),
     token: OAuthToken = Depends(require_oauth_scope("rooms:write")),
 ):
-    from portal.booth_identity import make_mediamtx_path
-    from portal.globals import booths
-
+    """Create or update a room after validating its resulting translation configuration."""
     event = await _get_event_for_request(db, event_slug, write_lock=True)
     if not event:
-        raise HTTPException(status_code=404, detail="Event not found")
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Event not found")
 
     await _verify_token_rbac(db, token, event, manage=True, lock_event=True, write_lock=True)
 
-    room_res = await db.execute(
-        select(Room).where(Room.event_id == event.id, Room.eventyay_room_id == eventyay_room_id)
-    )
-    room = room_res.scalars().first()
-
     payload_dict = payload.model_dump(exclude_unset=True)
-
-    if room:
-        _apply_floor_settings(room, payload_dict)
-        action = "room.updated"
-        status_code_ret = status.HTTP_200_OK
-    else:
-        # Require name for creation
-        if "name" not in payload_dict or not payload_dict["name"]:
-            raise HTTPException(status_code=400, detail="name is required to create a new room")
-
-        from sqlalchemy.exc import IntegrityError
-
-        try:
-            async with db.begin_nested():
-                room = Room(event_id=event.id, eventyay_room_id=eventyay_room_id, display_name=payload_dict["name"])
-                _apply_floor_settings(room, payload_dict)
-                db.add(room)
-                await db.flush()
-        except IntegrityError:
-            room_res = await db.execute(
-                select(Room).where(Room.event_id == event.id, Room.eventyay_room_id == eventyay_room_id)
-            )
-            room = room_res.scalars().first()
-            if not room:
-                raise HTTPException(status_code=500, detail="Failed to upsert room")
-            _apply_floor_settings(room, payload_dict)
-            action = "room.updated"
-            status_code_ret = status.HTTP_200_OK
-        else:
-            action = "room.created"
-            status_code_ret = status.HTTP_201_CREATED
-
-    lang_res = await db.execute(select(RoomTranslationLanguage).where(RoomTranslationLanguage.room_id == room.id))
-    existing_langs = {rl.language_code: rl for rl in lang_res.scalars().all()}
-
-    booth_res = await db.execute(select(DBBooth).where(DBBooth.room_id == room.id))
-    existing_booths = {b.language_code: b for b in booth_res.scalars().all()}
+    room, action, status_code_ret = await _create_or_update_base_room(db, event, eventyay_room_id, payload_dict)
 
     if "target_languages" in payload_dict and payload_dict["target_languages"] is not None:
         requested_langs = set(payload_dict["target_languages"])
-
-        # Safe Delete Removed Booths & Languages
-        for code, b in existing_booths.items():
-            if code not in requested_langs:
-                # Active Session Guard — use BoothRegistry.get_booth_sync() (not .items())
-                from portal.booth_identity import make_booth_id
-
-                booth_id = make_booth_id(event_slug, room.id, code)
-                active_booth = booths.get_booth_sync(booth_id)
-                if active_booth is not None:
-                    has_connected = active_booth.ingest_status == "connected"
-                    if has_connected:
-                        raise HTTPException(
-                            status_code=status.HTTP_409_CONFLICT,
-                            detail=f"Cannot remove language '{code}' while it has an active session running.",
-                        )
-                await booths.remove_booth(event_slug, room.id, code)
-                await db.delete(b)
-                db.add(
-                    OAuthAuditLog(
-                        token_id=token.id,
-                        client_id=token.client_id,
-                        action="booth.deleted",
-                        request_path=f"/api/v1/events/{event_slug}/rooms/{eventyay_room_id}/booths/{code}",
-                        status_code=status.HTTP_200_OK,
-                    )
-                )
-
-        for code, rl in existing_langs.items():
-            if code not in requested_langs:
-                await db.delete(rl)
-
-        # Create Missing Booths & Languages
-        from sqlalchemy.exc import IntegrityError
-
-        for code in requested_langs:
-            if code not in existing_langs:
-                try:
-                    async with db.begin_nested():
-                        db.add(RoomTranslationLanguage(room_id=room.id, language_code=code, language_name=code))
-                        await db.flush()
-                except IntegrityError:
-                    pass
-
-            if code not in existing_booths:
-                try:
-                    async with db.begin_nested():
-                        new_booth = DBBooth(room_id=room.id, language_code=code, event_id=event.id, language_name=code)
-                        db.add(new_booth)
-                        db.add(
-                            OAuthAuditLog(
-                                token_id=token.id,
-                                client_id=token.client_id,
-                                action="booth.created",
-                                request_path=f"/api/v1/events/{event_slug}/rooms/{eventyay_room_id}/booths/{code}",
-                                status_code=status.HTTP_201_CREATED,
-                            )
-                        )
-                        await db.flush()
-                except IntegrityError:
-                    pass
+        await _sync_target_languages_and_booths(db, event, room, eventyay_room_id, requested_langs, token)
 
     # Audit Logging
     audit = OAuthAuditLog(
@@ -823,21 +1267,7 @@ async def upsert_room(
 
     await db.flush()
 
-    # Construct Response with Canonical WHEP URLs
-    final_booth_res = await db.execute(select(DBBooth).where(DBBooth.room_id == room.id))
-    final_booths = final_booth_res.scalars().all()
-
-    returned_booths = []
-    from portal.config import settings
-
-    try:
-        for b in final_booths:
-            whip_path = make_mediamtx_path(event.slug, room.id, b.language_code)
-            whep_url = f"{settings.mediamtx_whip_base}/{whip_path}/whep"
-            returned_booths.append({"language": b.language_code, "whip_path": whip_path, "whep_url": whep_url})
-    except Exception:
-        logger.exception("Error generating canonical WHEP URLs")
-        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Internal server error")
+    returned_booths = await _build_booths_response(db, event.slug, room.id)
 
     return {"status": "success", "room_id": room.id, "booths": returned_booths}
 
@@ -874,7 +1304,7 @@ async def delete_room(
         await booths.remove_booth(event_slug, b["room_id"], b["language_code"])
 
     await revoke_booths_for_deleted_entity(db, level="room", target_id=room.id)
-    await db.delete(room)
+    await delete_db_room(db, room.id)
 
     audit = OAuthAuditLog(
         token_id=token.id,
@@ -895,7 +1325,7 @@ async def _patch_room_settings(
     db: AsyncSession = Depends(get_db_session),
     token: OAuthToken = Depends(require_oauth_scope("rooms:write")),
     *,
-    room_id_kind: Literal["internal", "eventyay"],
+    room_id_kind: Literal["auto", "internal", "eventyay"],
     request_room_id: int | str,
 ):
     """Apply a validated partial update to an explicitly identified room."""
@@ -913,6 +1343,7 @@ async def _patch_room_settings(
         lock_event=True,
         write_lock=True,
         room_id_kind=room_id_kind,
+        reject_ambiguous_room_id=room_id_kind == "auto",
     )
     if room is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Room not found")
@@ -924,57 +1355,32 @@ async def _patch_room_settings(
     null_forbidden = sorted(field for field in updates if field in _NON_NULL_ROOM_SETTINGS and updates[field] is None)
     if null_forbidden:
         raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
             detail=f"These room settings cannot be null: {', '.join(null_forbidden)}",
         )
 
+    if "jitsi_url" in updates:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            detail="Meeting URLs must be changed through the dedicated meeting-source workflow",
+        )
+
     if "relay_booth_id" in updates and updates["relay_booth_id"] is not None:
-        relay_booth = await db.get(DBBooth, updates["relay_booth_id"])
-        if relay_booth is None or relay_booth.event_id != event.id:
+        relay_booth = await db.scalar(
+            select(DBBooth)
+            .join(Room, Room.id == DBBooth.room_id)
+            .where(
+                DBBooth.id == updates["relay_booth_id"],
+                DBBooth.event_id == event.id,
+                Room.event_id == event.id,
+            )
+        )
+        if relay_booth is None:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Relay booth not found")
 
-    if "jitsi_url" in updates and updates["jitsi_url"] is not None:
-        try:
-            updates["jitsi_url"] = validate_meeting_url(updates["jitsi_url"])
-        except ValueError as exc:
-            raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)) from exc
-
-    transcription_provider_changed = "floor_transcription_provider" in updates
-    transcription_model_changed = "floor_transcription_model" in updates
-    transcription_enabled = updates.get("floor_transcription_enabled", room.floor_transcription_enabled)
-    if transcription_provider_changed or transcription_model_changed or updates.get("floor_transcription_enabled") is True:
-        provider_value = updates.get("floor_transcription_provider", room.floor_transcription_provider)
-        model_value = updates.get("floor_transcription_model", room.floor_transcription_model)
-        try:
-            provider = ProviderEnum(getattr(provider_value, "value", provider_value))
-        except (TypeError, ValueError):
-            raise HTTPException(
-                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-                detail="A valid transcription provider is required for transcription settings",
-            ) from None
-        if model_value not in ALLOWED_MODELS[provider]:
-            raise HTTPException(
-                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-                detail=(
-                    f"Invalid transcription model '{model_value}' "
-                    f"for provider '{provider.value}'"
-                ),
-            )
-        if transcription_enabled and provider not in {ProviderEnum.LOCAL, ProviderEnum.NONE}:
-            if not event.transcription_api_enabled:
-                raise HTTPException(
-                    status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-                    detail="Enable the event transcription API before selecting an external provider",
-                )
-            try:
-                provider_key = get_api_key(event, provider)
-            except ValueError:
-                provider_key = None
-            if not provider_key:
-                raise HTTPException(
-                    status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-                    detail=f"Configure the {provider.value} API key before enabling this provider",
-                )
+    _validate_transcription_settings(event, room, updates)
+    await _validate_translation_settings(db, event, room, updates)
+    await _validate_tts_settings(db, event, room, updates)
 
     for field, value in updates.items():
         setattr(room, field, getattr(value, "value", value))
@@ -982,12 +1388,16 @@ async def _patch_room_settings(
     audit = OAuthAuditLog(
         token_id=token.id,
         client_id=token.client_id,
+        event_id=event.id,
         action="room.settings_updated",
         request_path=f"/api/v1/events/{event_slug}/rooms/{request_room_id}/settings",
         status_code=status.HTTP_200_OK,
     )
     db.add(audit)
     await db.flush()
+    await db.commit()
+    if _TTS_ROOM_SETTINGS.intersection(updates):
+        invalidate_tts_config(room.id)
 
     return {
         "status": "success",
@@ -999,12 +1409,33 @@ async def _patch_room_settings(
 @router.patch("/events/{event_slug}/rooms/{room_id}/settings")
 async def patch_room_settings(
     event_slug: str,
-    room_id: int,
+    room_id: Annotated[str, Path(min_length=1, max_length=200)],
     payload: RoomSettingsUpdate,
     db: AsyncSession = Depends(get_db_session),
     token: OAuthToken = Depends(require_oauth_scope("rooms:write")),
 ):
-    """Update a room using its internal primary-key identifier."""
+    """Update an unambiguous legacy room identifier, preserving Eventyay-first lookup."""
+
+    return await _patch_room_settings(
+        event_slug,
+        room_id,
+        payload,
+        db,
+        token,
+        room_id_kind="auto",
+        request_room_id=room_id,
+    )
+
+
+@router.patch("/events/{event_slug}/rooms/internal/{room_id}/settings")
+async def patch_internal_room_settings(
+    event_slug: str,
+    room_id: Annotated[int, Path(ge=1, le=_MAX_DATABASE_ID)],
+    payload: RoomSettingsUpdate,
+    db: AsyncSession = Depends(get_db_session),
+    token: OAuthToken = Depends(require_oauth_scope("rooms:write")),
+):
+    """Update a room using its explicit internal primary-key identifier."""
 
     return await _patch_room_settings(
         event_slug,
@@ -1013,14 +1444,14 @@ async def patch_room_settings(
         db,
         token,
         room_id_kind="internal",
-        request_room_id=room_id,
+        request_room_id=f"internal/{room_id}",
     )
 
 
 @router.patch("/events/{event_slug}/rooms/eventyay/{eventyay_room_id}/settings")
 async def patch_eventyay_room_settings(
     event_slug: str,
-    eventyay_room_id: str,
+    eventyay_room_id: Annotated[str, Path(min_length=1, max_length=200)],
     payload: RoomSettingsUpdate,
     db: AsyncSession = Depends(get_db_session),
     token: OAuthToken = Depends(require_oauth_scope("rooms:write")),
@@ -1082,8 +1513,13 @@ async def get_booth(
 
     room = await _verify_token_rbac(db, token, event, room_id, lock_event=True)
     target_room_id = _extract_room_id(room, room_id)
+    language_code = _validate_lang(language_code)
 
-    result = await db.execute(select(DBBooth).where(DBBooth.room_id == target_room_id, DBBooth.language_code == language_code, DBBooth.event_id == event.id))
+    result = await db.execute(
+        select(DBBooth).where(
+            DBBooth.room_id == target_room_id, DBBooth.language_code == language_code, DBBooth.event_id == event.id
+        )
+    )
     booth = result.scalars().first()
     if not booth:
         raise HTTPException(status_code=404, detail="Booth not found")
@@ -1108,12 +1544,18 @@ async def create_booth(
     if not event:
         raise HTTPException(status_code=404, detail="Event not found")
 
-    room = await _verify_token_rbac(
-        db, token, event, room_id, manage=True, lock_event=True, write_lock=True
-    )
+    room = await _verify_token_rbac(db, token, event, room_id, manage=True, lock_event=True, write_lock=True)
     target_room_id = _extract_room_id(room, room_id)
+    language_code = _validate_lang(language_code)
+    if language_code == "floor":
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="'floor' is not a valid booth language for a room.",
+        )
 
-    result = await db.execute(select(DBBooth).where(DBBooth.room_id == target_room_id, DBBooth.language_code == language_code))
+    result = await db.execute(
+        select(DBBooth).where(DBBooth.room_id == target_room_id, DBBooth.language_code == language_code)
+    )
     if result.scalars().first():
         raise HTTPException(status_code=409, detail="Booth already exists")
 
@@ -1139,12 +1581,15 @@ async def delete_booth_endpoint(
     if not event:
         raise HTTPException(status_code=404, detail="Event not found")
 
-    room = await _verify_token_rbac(
-        db, token, event, room_id, manage=True, lock_event=True, write_lock=True
-    )
+    room = await _verify_token_rbac(db, token, event, room_id, manage=True, lock_event=True, write_lock=True)
     target_room_id = _extract_room_id(room, room_id)
+    language_code = _validate_lang(language_code)
 
-    result = await db.execute(select(DBBooth).where(DBBooth.room_id == target_room_id, DBBooth.language_code == language_code, DBBooth.event_id == event.id))
+    result = await db.execute(
+        select(DBBooth).where(
+            DBBooth.room_id == target_room_id, DBBooth.language_code == language_code, DBBooth.event_id == event.id
+        )
+    )
     booth = result.scalars().first()
     if not booth:
         raise HTTPException(status_code=404, detail="Booth not found")
@@ -1170,6 +1615,7 @@ async def start_transcription(
 
     room = await _verify_token_rbac(db, token, event, room_id, lock_event=True, write_lock=True)
     target_room_id = _extract_room_id(room, room_id)
+    language_code = _validate_lang(language_code)
 
     booth_id = make_booth_id(event_slug, target_room_id, language_code)
 
@@ -1197,6 +1643,7 @@ async def stop_transcription(
 
     room = await _verify_token_rbac(db, token, event, room_id, lock_event=True, write_lock=True)
     target_room_id = _extract_room_id(room, room_id)
+    language_code = _validate_lang(language_code)
 
     booth_id = make_booth_id(event_slug, target_room_id, language_code)
     await stop_transcription_worker(booth_id)
@@ -1267,6 +1714,7 @@ async def export_transcript(
 
     room = await _verify_token_rbac(db, token, event, room_id, lock_event=True)
     target_room_id = _extract_room_id(room, room_id)
+    language_code = _validate_lang(language_code)
 
     # Validate that the booth exists within this event/room
     result = await db.execute(
@@ -1347,6 +1795,7 @@ class EventAPIKeysUpdate(BaseModel):
     gemini_api_key: str | None = None
     anthropic_api_key: str | None = None
     groq_api_key: str | None = None
+    atlascloud_api_key: str | None = None
 
 
 @router.patch("/events/{event_slug}/api_keys", response_model=dict)

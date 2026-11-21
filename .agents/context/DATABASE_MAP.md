@@ -11,6 +11,7 @@
 events (1)
   └── rooms (n)  ─── relay_booth_id → booths.id (nullable FK, SET NULL)
         └── room_memberships (n) ─── user_id → users.id
+        └── meeting_reports (n) ─── event_id → events.id
   └── booths (n)
         └── invite_tokens (n)
         └── booth_memberships (n) ─── user_id → users.id
@@ -127,6 +128,7 @@ Properties: `is_expired` (compares UTC), `is_used` (used_at is not None).
 | `password_hash` | String(200) | bcrypt via `portal.auth.hash_password` |
 | `is_active` | Boolean | Default True; deactivated users cannot login |
 | `is_admin` | Boolean | Default False; grants full admin panel access |
+| `last_sign_in_at` | DateTime(tz) nullable | UTC; most recent qualifying sign-in, or unset if not recorded since tracking began |
 | `created_at` | DateTime(tz) | UTC |
 
 ---
@@ -198,6 +200,51 @@ Unique index on `(segment_id, language_code)`.
 
 ---
 
+### `interpreter_attendance`
+
+One row per visit to an interpreter booth (#1215). Written in batches by `portal/attendance.py`
+(`AttendanceTracker.flush`, every 60 s and at shutdown), never on the WebSocket path.
+
+| Column | Type | Notes |
+|---|---|---|
+| `id` | String(32) PK | Generated in memory when the visit starts; flushes upsert by it |
+| `event_id` | FK → events.id CASCADE | Resolved from the booth's event slug at flush time |
+| `room_id` | Integer nullable | Plain value, no FK, so records outlive a removed room |
+| `language_code` | String(10) | Booth language |
+| `user_id` | FK → users.id SET NULL, nullable | Registered user who joined |
+| `invite_public_id` | String(32) nullable | `invite_tokens.public_id` used to join, for invite-link visitors |
+| `display_name` | String(200) | Name typed on the booth page (fallback when there is no account) |
+| `role` | String(32) | Booth role at join time |
+| `joined_at` | DateTime(tz) | UTC |
+| `left_at` | DateTime(tz) nullable | Unset while open; on startup `close_stale_visits` sets it to `last_seen_at` |
+| `last_seen_at` | DateTime(tz) | Last flush time of an open visit |
+| `interpreting_seconds` | Integer | Seconds as active interpreter with `ingest_connected` and `mic_active` |
+
+Index: `(event_id, joined_at)`, `user_id`.
+
+---
+
+### `booth_live_state`
+
+What a live booth needs to survive a portal restart (TD-03). One row per booth with
+something live, written by `portal/booth_recovery.py` shortly after the in-memory
+`BoothRegistry` changes (never on the WebSocket path) and read back at startup.
+
+| Column | Type | Notes |
+|---|---|---|
+| `booth_id` | String(200) PK | Registry key; not a foreign key, so a row never blocks deleting a booth |
+| `language`, `channel_id`, `room_id` | | Booth identity used to rebuild the registry entry |
+| `broadcast_unlocked` | Boolean | Mission Control's Go Live switch |
+| `active_participant_id` | String(64) nullable | Active interpreter, restored as a disconnected placeholder |
+| `active_session_key` | String(100) nullable | `booth_session_key` of the active interpreter; only that session may reclaim the slot |
+| `active_display_name`, `active_role`, `active_user_id`, `active_invite_public_id` | | Placeholder details (attendance) |
+| `active_mic_active`, `active_ingest_connected` | Boolean | So listeners keep seeing the booth live while the interpreter reconnects |
+| `updated_at` | DateTime(tz) | Refreshed every 60 s for live booths; rows older than `BOOTH_STATE_MAX_AGE_SECONDS` are not restored |
+
+A booth with Go Live off and no active interpreter has no row.
+
+---
+
 ### `room_translation_languages` & `booth_translation_languages`
 
 | Column | Type | Notes |
@@ -248,6 +295,21 @@ Tracks which languages the translation worker should generate for a given room o
 | 029 | `029_add_can_host_to_users.py` | `users.can_host`, `users.hosting_requested_at`, `hosting_invitations` table |
 | 030 | `030_hosting_requests.py` | `hosting_requests` table with partial unique index for open requests |
 | 031 | `031_add_ai_interpretation_settings.py` | `rooms.floor_ai_interpreter_persona`, `rooms.floor_ai_interpretation_style`, `rooms.floor_ai_vocabulary_enabled`, `ai_vocabulary_entries` table |
+| 032 | `032_remove_support_role.py` | Removes the obsolete support role |
+| 033 | `033_add_index_booths_event_id.py` | Index on `booths.event_id` |
+| 034 | `034_email_notifications.py` | Transactional email templates, settings, revisions, and delivery outbox |
+| 035 | `035_per_language_voice.py` | `room_translation_languages.tts_enabled` |
+| 036 | `036_add_sessions_valid_after_to_users.py` | `users.sessions_valid_after` |
+| 037 | `037_add_revoked_at_to_invite_tokens.py` | `invite_tokens.revoked_at` |
+| 038 | `038_add_public_id_to_invite_tokens.py` | `invite_tokens.public_id` |
+| 039 | `039_add_atlascloud_api_key.py` | AtlasCloud API key setting |
+| 040 | `040_add_last_sign_in_at_to_users.py` | Nullable `users.last_sign_in_at` |
+| 041 | `041_add_interpreter_attendance.py` | `interpreter_attendance` table (#1215) |
+| 042 | `042_add_booth_live_state.py` | `booth_live_state` table (TD-03) |
+| 043 | `043_add_live_demo_settings.py` | `live_demo_settings` singleton for the home-page live demo |
+| 046 | `046_live_demo_room_ai.py` | Transitional room-linked demo settings and daily limit |
+| 047 | `047_live_demo_independent_ai.py` | Independent demo providers, models, encrypted keys, persona/style; removes room link |
+| 044 | `044_youtube_connections.py` | `youtube_connections` table (one per event), `rooms.youtube_broadcast_id`, `rooms.youtube_stream_id` (#1087) |
 
 Run migrations: `uv run alembic upgrade head`
 
@@ -306,11 +368,22 @@ Fields: `id`, `event_id`, `room_id` (nullable), `booth_id` (nullable), `source_t
 
 ## Migration 028 — RTMPS relay mode (#749)
 
-Room fields: `program_ingest_mode` (`whip` default | `rtmps_relay`; binds the program
-key to its transport), nullable `program_relay_server` (normalized allow-listed RTMPS
+Room fields: `program_ingest_mode` (`whip` default | `rtmps` (extra RTMPS destination, #1087;
+no migration needed) | `rtmps_relay`; binds the program key to its transport), nullable `program_relay_server` (normalized allow-listed RTMPS
 URL), `program_relay_key_enc` (Fernet ciphertext of the YouTube stream key; write-only,
 never serialize or log) and `program_relay_updated_at`. Helpers live in
 `portal/program_relay.py` (`store_destination`, `clear_destination`, `destination`).
+
+## Migration 044 — Sign in with YouTube (#1087)
+
+Table `youtube_connections` (model `YouTubeConnection`), one row per event (unique
+`event_id`, cascade on event delete): `channel_id` (String(64)), `channel_title`
+(String(200)), `refresh_token_enc` (Text, Fernet ciphertext of the Google refresh token;
+write-only, never serialize or log), `scope` (String(500)), nullable
+`connected_by_user_id` (→ `users.id`, SET NULL), nullable `last_error` (String(300), the
+"sign in again" message), `connected_at` (sign-in time), `created_at`, `updated_at`. Room fields: nullable
+`youtube_broadcast_id` (String(32)) and `youtube_stream_id` (String(64)). Helpers live in
+`portal/youtube_account.py` (`get_connection`, `link_broadcast`, `unlink_event_rooms`).
 
 ## Migration 035 — per-language AI voice (#1005)
 
@@ -340,10 +413,48 @@ No links or email content are shown in the administration history.
 `show_logo` (default true) and an optional https `logo_url` (empty means the
 VoxBento logo served by the site). No row means the defaults.
 
+## Migration 045 — meeting reports (#1080)
+
+Adds `events.meeting_analysis_enabled` (default false),
+`events.meeting_analysis_provider` (default `local`) and
+`events.meeting_analysis_model` (empty means the provider's recommended model),
+and the `meeting_reports` table: `event_id`/`room_id` (CASCADE), `channel_id`
+(`floor` or a booth language code, matching `transcript_segments.language_code`),
+`channel_label`, `language_code`, `provider`, `model`, `status`
+(`pending` → `running` → `done` | `failed`), `error`, `title`, `summary`
+(the overview), `sections_json` (`[{heading, points}]`), `last_segment_id` (the
+last transcript segment the report read), `session_started_at`/`session_ended_at`
+(the session the report covers: a stretch of segments with no gap longer than
+30 minutes), `covered_until` (the last line the report read, earlier than the
+session end when the session was too long), `segment_count`,
+`truncated`, `tokens_used`, `created_at`, `generated_at`. Index
+`(room_id, created_at)` and partial unique index `uq_meeting_reports_room_in_progress`
+(one `pending`/`running` report per room). CRUD: `create_meeting_report`, `list_meeting_reports`,
+`get_meeting_report`. See `docs/meeting-analysis.md`.
+
+## Migration 043 — home-page live demo settings
+
+`live_demo_settings` holds one row (id 1), edited at `/admin/live-demo/`: `enabled`,
+`voice_enabled`, `whisper_model` (`tiny`/`base`/`small`), `max_sessions`,
+`max_session_seconds`, `sessions_per_ip_per_hour`, `max_targets` and `glossary`
+(text, one entry per line: `term`, `term = translation` or `term = fr: translation`,
+validated with the AI glossary rules). No row means the `LIVE_DEMO_*` environment
+defaults with the demo off (an Admin switches it on), and `LIVE_DEMO_ENABLED=false` keeps the demo off whatever the row says.
+`portal/live_demo.py` reads it through a ~10 s cache that saving replaces.
+
+Migration 046 adds `ai_source` and `daily_minutes` (default 120). Migration 047 removes
+its transitional `room_id`, disabling previously room-linked demos without copying customer
+keys. `ai_source` is now `built_in` or `custom`. Independent `speech_choice`,
+`translation_choice`, `voice_provider`, `voice`, `persona`, `style` and three encrypted
+service key fields belong to this singleton. `portal/live_demo_ai.py` resolves these settings.
+
 ## Migrations 036–038 — live booth session revocation
 
 Migration 036 adds nullable `users.sessions_valid_after`; Admin demotion and
 account deactivation advance it so existing booth sockets can be evicted.
+Password recovery advances it in the password/reset-token transaction and
+invalidates outstanding magic links. `redeem_auth_token` conditionally updates
+only unused, unexpired tokens, preventing two requests from redeeming one token.
 SQLite returns this value without timezone information; comparisons treat those
 values as UTC. Migration 037 adds nullable `invite_tokens.revoked_at`.
 Migration 038 adds a unique, non-null `invite_tokens.public_id`, backfilling

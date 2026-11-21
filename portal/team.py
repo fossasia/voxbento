@@ -6,6 +6,7 @@ room and booth pages. Which roles can be given where comes from portal.roles.
 
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 
@@ -53,6 +54,8 @@ from portal.roles import (
 )
 from portal.websockets.manager import manager
 from portal.websockets.revocation import revoke_membership_push
+
+logger = logging.getLogger(__name__)
 
 # What each role means, shown next to the role picker.
 ROLE_HELP = {
@@ -219,11 +222,28 @@ def check_assignment(role: str, place: Place) -> None:
         raise TeamError(error)
 
 
+INVALID_EMAIL = "Enter a valid email address."
+
+
+def clean_email(email: str | None) -> str | None:
+    """Lowercased *email*, or None if it isn't a usable address.
+
+    One "@" with something before it, a dotted domain after it, no spaces, at most 320 characters.
+    """
+    email = (email or "").strip().lower()
+    local, _, domain = email.rpartition("@")
+    if not local or "@" in local or len(email) > 320 or any(c.isspace() for c in email):
+        return None
+    if "." not in domain or domain.startswith(".") or domain.endswith("."):
+        return None
+    return email
+
+
 async def add_member(session: AsyncSession, *, event_id: int, email: str, role: str, place: Place) -> tuple[User, bool]:
     """Give *role* at *place* to the person with *email*; returns (user, newly_added)."""
-    email = (email or "").strip().lower()
-    if "@" not in email or "." not in email.split("@")[-1] or len(email) > 320:
-        raise TeamError("Enter a valid email address.")
+    email = clean_email(email)
+    if email is None:
+        raise TeamError(INVALID_EMAIL)
     check_assignment(role, place)
 
     user = await get_user_by_email(session, email)
@@ -346,6 +366,7 @@ async def create_invite_link(
 
 
 async def revoke_invite_link(session: AsyncSession, *, team: Team, token: str) -> None:
+    """Revoke an invite and close its sockets even if cache invalidation fails."""
     import asyncio
 
     link = next((link for link in team.invite_links if link.token.token == token), None)
@@ -370,8 +391,11 @@ async def revoke_invite_link(session: AsyncSession, *, team: Team, token: str) -
         from portal.auth import invalidate_token_revocation_cache
 
         invalidate_token_revocation_cache(public_id)
-    except Exception:
-        pass
+    except Exception as exc:
+        # Still disconnect active sockets if the cache optimization fails.
+        logger.warning(
+            "Could not invalidate invite revocation cache (%s); continuing socket revocation", type(exc).__name__
+        )
 
     await asyncio.shield(manager.close_token_sessions(public_id, booth_id=booth_id))
 

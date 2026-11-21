@@ -4,6 +4,7 @@ import asyncio
 import hashlib
 import json
 import logging
+from datetime import datetime, timezone
 from unittest.mock import AsyncMock
 
 import httpx
@@ -13,11 +14,13 @@ from sqlalchemy import select
 from fastapi_app import app
 from portal import meeting_source as meeting
 from portal import program_ingest as ingest
-from portal.auth import create_user_token
+from portal.auth import create_user_token, decode_token, generate_admin_csrf_token
 from portal.booth_identity import make_booth_id, make_mediamtx_path
 from portal.config import settings
 from portal.database import configure, create_user, dispose, get_session, init_db
 from portal.models import Event, Room
+from portal.program_ingest import deleted_floor_workers
+from portal.transcription.worker import active_workers
 
 SECRET_URL = "https://meet.example.org/TrackA?jwt=meeting-secret-token"
 
@@ -140,8 +143,13 @@ async def env(monkeypatch):
             await session.flush()
             event_id, room_id = event.id, room.id
         token = create_user_token(user_id=owner.id, email=owner.email, is_admin=True)
+        csrf_session_id = str(decode_token(token)["jti"])
+        csrf_token = generate_admin_csrf_token(csrf_session_id)
         async with httpx.AsyncClient(
-            transport=httpx.ASGITransport(app=app), base_url="http://test", cookies={"user_token": token}
+            transport=httpx.ASGITransport(app=app),
+            base_url="http://test",
+            cookies={"user_token": token, "admin_csrf": csrf_token},
+            headers={"X-CSRF-Token": csrf_token},
         ) as client:
             yield {
                 "client": client,
@@ -586,6 +594,41 @@ async def test_restart_reconciliation_restarts_missing_desired_agent(env):
 
 
 @pytest.mark.anyio
+async def test_restart_reconciliation_does_not_restart_agent_that_left_empty_room(env):
+    async with get_session() as session:
+        room = await session.get(Room, env["room_id"])
+        room.meeting_agent_enabled = True
+
+    env["agents"].rooms[env["key"]] = {
+        "event_slug": "meet-test",
+        "room_id": env["room_id"],
+        "state": "stopped",
+        "stage": "left_empty_room",
+        "exit_code": 0,
+    }
+
+    await meeting.reconcile_once()
+
+    async with get_session() as session:
+        room = await session.get(Room, env["room_id"])
+        assert room.meeting_agent_enabled is False
+
+    assert env["agents"].starts == []
+    assert meeting.health[env["room_id"]].state == "stopped"
+    assert "empty" in meeting.health[env["room_id"]].reason.lower()
+    status = (await env["client"].get(env["url"])).json()
+    assert status["state"] == "stopped"
+    assert "empty" in status["reason"].lower()
+
+    # Later passes keep the reason for this room and drop records nothing explains any more.
+    meeting.health[999_999] = meeting.AgentHealth(reason=meeting.EMPTY_ROOM_REASON)
+    await meeting.reconcile_once()
+    assert meeting.health[env["room_id"]].reason == meeting.EMPTY_ROOM_REASON
+    assert 999_999 not in meeting.health
+    assert env["agents"].starts == []
+
+
+@pytest.mark.anyio
 async def test_malformed_agent_status_is_handled_as_unavailable(env):
     await env["client"].post(env["url"], json={"action": "connect"})
     env["agents"].malformed = True
@@ -713,3 +756,150 @@ async def test_owner_endpoints_reject_cross_origin_and_wrong_event(env):
     wrong = f"/workspace/events/{env['event_id'] + 99}/rooms/{env['room_id']}/meeting-source"
     assert (await env["client"].get(wrong)).status_code in {403, 404}
     assert env["agents"].starts == []
+
+
+@pytest.mark.anyio
+async def test_deleted_event_agent_and_worker_are_stopped(env):
+    response = await env["client"].post(
+        env["url"], json={"action": "connect", "meeting_url": "https://meet.example.org/TrackA"}
+    )
+    assert response.status_code == 200, response.text
+    env["agents"].rooms[env["key"]]["stage"] = "in_meeting"
+    await meeting.reconcile_once()
+    publish(env, 100)
+    await meeting.reconcile_once()
+    env["start"].assert_awaited_once()
+    assert env["agents"].stops == []
+
+    async with get_session() as session:
+        event = await session.get(Event, env["event_id"])
+        event.deleted_at = datetime.now(timezone.utc)
+
+    env["stop"].reset_mock()
+    # With no enabled room left, the stale-agent sweep runs on the idle interval.
+    env["clock"].now += meeting.IDLE_SWEEP_SECS
+    await meeting.reconcile_once()
+    assert env["agents"].stops == [env["key"]]
+    env["stop"].assert_awaited_once_with(env["booth_id"])
+    assert env["room_id"] not in meeting.health
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("delete_path", ["rooms/{room_id}/delete", "delete"])
+async def test_worker_of_a_room_deleted_outright_is_stopped(env, monkeypatch, delete_path):
+    """The admin pages delete the rows, so there is no deleted_at to find the room by (#1311)."""
+    response = await env["client"].post(
+        env["url"], json={"action": "connect", "meeting_url": "https://meet.example.org/TrackA"}
+    )
+    assert response.status_code == 200, response.text
+    env["agents"].rooms[env["key"]]["stage"] = "in_meeting"
+    await meeting.reconcile_once()
+    publish(env, 100)
+    await meeting.reconcile_once()
+    env["start"].assert_awaited_once()
+    monkeypatch.setitem(active_workers, env["booth_id"], object())  # the running worker
+    async with get_session() as session:
+        other_event = Event(slug="still-here", display_name="Still here")
+        session.add(other_event)
+        await session.flush()
+        other_room = Room(event_id=other_event.id, display_name="Track B", floor_source="program_ingest")
+        session.add(other_room)
+        await session.flush()
+        other_booth_id = make_booth_id("still-here", other_room.id, "floor")
+    monkeypatch.setitem(active_workers, other_booth_id, object())  # a room that still exists keeps its worker
+
+    delete_url = f"/admin/events/{env['event_id']}/" + delete_path.format(room_id=env["room_id"])
+    assert (await env["client"].post(delete_url)).status_code == 303
+    env["stop"].reset_mock()
+    env["clock"].now += meeting.IDLE_SWEEP_SECS
+    await meeting.reconcile_once()
+    assert env["agents"].stops == [env["key"]]
+    env["stop"].assert_awaited_once_with(env["booth_id"])
+    assert env["room_id"] not in meeting.health
+
+
+@pytest.mark.anyio
+async def test_worker_of_a_deleted_room_is_stopped_when_another_event_reuses_its_id(env, monkeypatch):
+    """SQLite can hand a deleted room's id to the next room created, here in another event."""
+    response = await env["client"].post(
+        env["url"], json={"action": "connect", "meeting_url": "https://meet.example.org/TrackA"}
+    )
+    assert response.status_code == 200, response.text
+    env["agents"].rooms[env["key"]]["stage"] = "in_meeting"
+    await meeting.reconcile_once()
+    publish(env, 100)
+    await meeting.reconcile_once()
+    monkeypatch.setitem(active_workers, env["booth_id"], object())  # the running worker
+    assert (
+        await env["client"].post(f"/admin/events/{env['event_id']}/rooms/{env['room_id']}/delete")
+    ).status_code == 303
+    async with get_session() as session:
+        other = Event(slug="other-event", display_name="Other")
+        session.add(other)
+        await session.flush()
+        # Still enabled, so the reconciler sees the id as a live room, not a stale one.
+        session.add(Room(id=env["room_id"], event_id=other.id, display_name="Reused", meeting_agent_enabled=True))
+    replacement = make_booth_id("other-event", env["room_id"], "floor")
+    monkeypatch.setitem(active_workers, replacement, object())
+    # Only the old worker counts as deleted; the new room's own reconcile decides about its worker.
+    assert await deleted_floor_workers() == [(env["room_id"], env["booth_id"], True)]
+    env["stop"].reset_mock()
+    env["clock"].now += meeting.IDLE_SWEEP_SECS
+    await meeting.reconcile_once()
+    assert env["booth_id"] in [call.args[0] for call in env["stop"].await_args_list]
+
+
+@pytest.mark.anyio
+async def test_worker_of_a_deleted_room_is_stopped_when_the_same_event_reuses_its_id(env, monkeypatch):
+    """In the same event a reused id gives the same booth id, but a new room without the agent has no worker."""
+    response = await env["client"].post(
+        env["url"], json={"action": "connect", "meeting_url": "https://meet.example.org/TrackA"}
+    )
+    assert response.status_code == 200, response.text
+    env["agents"].rooms[env["key"]]["stage"] = "in_meeting"
+    await meeting.reconcile_once()
+    publish(env, 100)
+    await meeting.reconcile_once()
+    monkeypatch.setitem(active_workers, env["booth_id"], object())  # the running worker
+    assert (
+        await env["client"].post(f"/admin/events/{env['event_id']}/rooms/{env['room_id']}/delete")
+    ).status_code == 303
+    async with get_session() as session:
+        session.add(Room(id=env["room_id"], event_id=env["event_id"], display_name="Replacement"))
+    env["stop"].reset_mock()
+    env["clock"].now += meeting.IDLE_SWEEP_SECS
+    await meeting.reconcile_once()
+    env["stop"].assert_awaited_once_with(env["booth_id"])
+
+
+@pytest.mark.anyio
+async def test_worker_of_a_room_deleted_outright_is_stopped_when_its_health_record_is_gone(env, monkeypatch):
+    response = await env["client"].post(
+        env["url"], json={"action": "connect", "meeting_url": "https://meet.example.org/TrackA"}
+    )
+    assert response.status_code == 200, response.text
+    monkeypatch.setitem(active_workers, env["booth_id"], object())  # the running worker
+    assert (
+        await env["client"].post(f"/admin/events/{env['event_id']}/rooms/{env['room_id']}/delete")
+    ).status_code == 303
+    meeting.health.pop(env["room_id"], None)
+    env["stop"].reset_mock()
+    await meeting.reconcile_once()
+    env["stop"].assert_awaited_once_with(env["booth_id"])
+
+
+@pytest.mark.anyio
+async def test_deleted_event_worker_is_stopped_when_its_health_record_is_gone(env):
+    response = await env["client"].post(
+        env["url"], json={"action": "connect", "meeting_url": "https://meet.example.org/TrackA"}
+    )
+    assert response.status_code == 200, response.text
+    async with get_session() as session:
+        event = await session.get(Event, env["event_id"])
+        event.deleted_at = datetime.now(timezone.utc)
+
+    # disconnect() can drop the room's health record while the reconciler is querying the database.
+    meeting.health.pop(env["room_id"], None)
+    env["stop"].reset_mock()
+    await meeting._stop_deleted_event_workers({env["room_id"]})
+    env["stop"].assert_awaited_once_with(env["booth_id"])

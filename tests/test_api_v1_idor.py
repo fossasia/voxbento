@@ -287,6 +287,25 @@ class TestApiV1IDOR:
             assert resp_post.json()["detail"] == "Room not found"
 
     @pytest.mark.anyio
+    async def test_room_settings_patch_cross_tenant_returns_404_without_mutation(self, seed_data):
+        event_a, room_a, booth_a, event_b, room_b, booth_b, rogue_booth, token_a = seed_data
+
+        from portal.database import get_session
+        from portal.models import Room
+
+        async with _client() as c:
+            response = await c.patch(
+                f"/api/v1/events/{event_a.slug}/rooms/{room_b.id}/settings",
+                json={"name": "Compromised"},
+                headers={"Authorization": f"Bearer {token_a}"},
+            )
+
+        assert response.status_code == 404
+        assert response.json()["detail"] == "Room not found"
+        async with get_session() as s:
+            assert (await s.get(Room, room_b.id)).display_name == "Room B"
+
+    @pytest.mark.anyio
     async def test_booth_cross_tenant_returns_404(self, seed_data):
         event_a, room_a, booth_a, event_b, room_b, booth_b, rogue_booth, token_a = seed_data
 
