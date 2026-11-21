@@ -372,15 +372,8 @@ def restore_terms(translated: str, segment: ProtectedSegment) -> str | None:
     return _SPACED_PLACEHOLDER.sub(target_term, translated)
 
 
-async def resolve_vocabulary_entries(
-    session: AsyncSession,
-    event_id: int,
-    room_id: int | None,
-    booth_id: int | None,
-    target_language: str,
-    transcript_text: str,
-    max_entries: int = 80,
-) -> list[AIVocabularyEntry]:
+def vocabulary_scope_filter(room_id: int | None, booth_id: int | None):
+    """The event-wide, room and booth scopes that apply to one booth (or to the floor when booth_id is None)."""
     # Each scope is matched exactly: an entry pinned to one booth must not be
     # selected for its siblings just because they share a room.
     scope_filters = [
@@ -396,11 +389,32 @@ async def resolve_vocabulary_entries(
                 AIVocabularyEntry.room_id.is_(None) | (AIVocabularyEntry.room_id == room_id)
             )
         scope_filters.append(booth_filter)
+    return or_(*scope_filters)
+
+
+def vocabulary_scope_rank(entry: AIVocabularyEntry, room_id: int | None, booth_id: int | None) -> int:
+    """2 for a booth-pinned entry, 1 for a room entry, 0 for an event-wide one."""
+    if booth_id is not None and entry.booth_id == booth_id:
+        return 2
+    if room_id is not None and entry.booth_id is None and entry.room_id == room_id:
+        return 1
+    return 0
+
+
+async def resolve_vocabulary_entries(
+    session: AsyncSession,
+    event_id: int,
+    room_id: int | None,
+    booth_id: int | None,
+    target_language: str,
+    transcript_text: str,
+    max_entries: int = 80,
+) -> list[AIVocabularyEntry]:
     stream = await session.stream_scalars(
         select(AIVocabularyEntry).where(
             AIVocabularyEntry.event_id == event_id,
             AIVocabularyEntry.target_language.in_(("all", target_language)),
-            or_(*scope_filters),
+            vocabulary_scope_filter(room_id, booth_id),
         )
     )
     candidates: list[AIVocabularyEntry] = []
@@ -413,11 +427,7 @@ async def resolve_vocabulary_entries(
             await asyncio.sleep(0)
 
     def scope_rank(entry: AIVocabularyEntry) -> int:
-        if booth_id is not None and entry.booth_id == booth_id:
-            return 2
-        if room_id is not None and entry.booth_id is None and entry.room_id == room_id:
-            return 1
-        return 0
+        return vocabulary_scope_rank(entry, room_id, booth_id)
 
     # "all" and target-specific rows compete for the same source term; scope then
     # priority decides which translation wins, before any cap is applied.

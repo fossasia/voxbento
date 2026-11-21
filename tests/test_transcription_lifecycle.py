@@ -10,6 +10,7 @@ import pytest
 
 from portal.config import settings
 from portal.transcription.process import FfmpegProcess
+from portal.transcription.providers.base import ProviderConfig
 from portal.transcription.worker import (
     State,
     active_workers,
@@ -209,6 +210,80 @@ async def test_transcription_worker_unexpected_exception(mock_providers):
     await start_transcription_worker("evt", "fr", booth_id, None, "local", "base", None)
     assert booth_id in active_workers
     assert active_workers[booth_id].state == State.STARTING
+
+
+@pytest.mark.anyio
+async def test_glossary_terms_are_looked_up_once_and_reach_every_retry(mock_providers):
+    """The event glossary is read when the worker starts, not on each ffmpeg retry (#1164)."""
+    booth_id = "test_booth_glossary"
+    seen_configs = []
+
+    async def mock_run_stream(process, language, model, config, *args):
+        seen_configs.append(config)
+        raise RuntimeError("force a retry")
+
+    mock_providers["local"].run_stream = mock_run_stream
+    lookup = AsyncMock(return_value=("MediaMTX", "Eventyay"))
+    original = ProviderConfig(api_key=None)
+
+    with patch("portal.transcription.worker.load_vocabulary_terms", lookup):
+        await start_transcription_worker("evt", "fr", booth_id, None, "local", "base", original, room_id=5)
+        await asyncio.sleep(1.4)  # the worker waits one second between retries
+        await stop_transcription_worker(booth_id)
+
+    lookup.assert_awaited_once_with("evt", 5, "fr")
+    assert len(seen_configs) >= 2
+    assert all(config.terms == ("MediaMTX", "Eventyay") for config in seen_configs)
+    # The caller's config is not changed under it.
+    assert original.terms == ()
+
+
+@pytest.mark.anyio
+async def test_without_glossary_terms_the_provider_gets_the_callers_config(mock_providers):
+    booth_id = "test_booth_no_glossary"
+    seen_configs = []
+
+    async def mock_run_stream(process, language, model, config, *args):
+        seen_configs.append(config)
+        await asyncio.sleep(1000)
+
+    mock_providers["local"].run_stream = mock_run_stream
+    original = ProviderConfig(api_key="key")
+
+    with patch("portal.transcription.worker.load_vocabulary_terms", AsyncMock(return_value=())):
+        await start_transcription_worker("evt", "fr", booth_id, None, "local", "base", original, room_id=5)
+        await asyncio.sleep(0.2)
+        await stop_transcription_worker(booth_id)
+
+    assert seen_configs == [original]
+    assert seen_configs[0] is original
+
+
+@pytest.mark.anyio
+async def test_a_failing_glossary_lookup_does_not_stop_the_worker(mock_providers):
+    """A broken glossary read means captions without terms, not a dead caption worker (#1164)."""
+    booth_id = "test_booth_glossary_error"
+    seen_configs = []
+
+    async def mock_run_stream(process, language, model, config, *args):
+        seen_configs.append(config)
+        await asyncio.sleep(1000)
+
+    mock_providers["local"].run_stream = mock_run_stream
+
+    async def broken_lookup(*_args):
+        raise TypeError("a bug in the glossary lookup")
+
+    with patch("portal.transcription.vocabulary._lookup_terms", broken_lookup):
+        await start_transcription_worker(
+            "evt", "fr", booth_id, None, "local", "base", ProviderConfig(api_key=None), room_id=5
+        )
+        await asyncio.sleep(0.3)
+        session = active_workers[booth_id]
+        assert session.state == State.RUNNING
+        await stop_transcription_worker(booth_id)
+
+    assert [config.terms for config in seen_configs] == [()]
 
 
 @pytest.mark.anyio
