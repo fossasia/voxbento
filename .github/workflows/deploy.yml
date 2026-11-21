@@ -132,27 +132,65 @@ jobs:
               if ! sudo grep -qxF "$caddy_import" /etc/caddy/Caddyfile; then
                 # Older deploys owned the whole main file. Move it to the new layout only
                 # if it holds nothing at top level beyond what the repo Caddyfile defines.
-                # Caddy blocks are delimited by braces, not indentation: track brace depth
-                # and list every entry that starts at depth 0 (site addresses, global
-                # options, snippets, top-level imports), with whitespace normalised.
+                # List every entry that starts outside a block (site addresses, global
+                # options, snippets, imports). Tokens follow Caddy's rules: only a token
+                # that is exactly { or } opens or closes a block, quoted tokens (which may
+                # span lines) are opaque, and # starts a comment only at a token's start.
+                # Syntax this cannot follow safely (heredocs, quotes or backslashes inside
+                # a token, unbalanced quotes or braces) prints <<unparsed>>.
                 top_level() {
-                  awk '{
-                    line = $0
-                    sub(/(^|[ \t])#.*/, "", line)
-                    gsub(/[ \t]+/, " ", line); sub(/^ /, "", line); sub(/ $/, "", line)
-                    if (depth == 0 && line != "" && line != "}") print line
-                    depth += gsub(/\{/, "{", line) - gsub(/\}/, "}", line)
-                  }' "$1" | sort -u
+                  awk '
+                      function end_token() {
+                        if (tok == "") return
+                        if (bad) unsafe = 1
+                        if (tok_depth == 0) entry = (entry == "" ? tok : entry " " tok)
+                        if (tok == "{") depth++
+                        else if (tok == "}") depth--
+                        tok = ""; bad = 0
+                      }
+                      function end_line() {
+                        if (entry != "" && entry != "}") print entry
+                        entry = ""
+                      }
+                      {
+                        n = length($0)
+                        for (i = 1; i <= n; i++) {
+                          c = substr($0, i, 1)
+                          if (quote != "") {
+                            tok = tok c
+                            if (quote == "\"" && c == "\\" && i < n) { i++; tok = tok substr($0, i, 1) }
+                            else if (c == quote) quote = ""
+                            continue
+                          }
+                          if (c == " " || c == "\t" || c == "\r") { end_token(); continue }
+                          if (tok == "") {
+                            if (c == "#") break
+                            tok_depth = depth
+                            if (substr($0, i, 2) == "<<") bad = 1
+                          } else if (c == "\"" || c == "`") bad = 1
+                          if (c == "\\") bad = 1
+                          if (c == "\"" || c == "`") quote = c
+                          tok = tok c
+                        }
+                        if (quote == "") { end_token(); end_line() } else tok = tok " "
+                      }
+                      END {
+                        end_token(); end_line()
+                        if (quote != "" || depth != 0) unsafe = 1
+                        if (unsafe) print "<<unparsed>>"
+                      }
+                  ' "$1" | sort -u
                 }
                 sudo cat /etc/caddy/Caddyfile > "$candidate_dir/.main.caddy"
                 top_level "$candidate_dir/.main.caddy" > "$candidate_dir/.main.top"
                 top_level Caddyfile > "$candidate_dir/.site.top"
                 unknown=$(comm -23 "$candidate_dir/.main.top" "$candidate_dir/.site.top")
                 if ! grep -qF 'Caddyfile — voxbento.com production' "$candidate_dir/.main.caddy" \
-                  || [ -n "$unknown" ]; then
+                  || grep -qx '<<unparsed>>' "$candidate_dir/.main.top" || [ -n "$unknown" ]; then
                   echo "ERROR: /etc/caddy/Caddyfile does not contain"
                   echo "  $caddy_import"
-                  echo "and cannot be replaced automatically. Entries not in the VoxBento Caddyfile:"
+                  echo "and cannot be replaced automatically. Entries not in the VoxBento Caddyfile"
+                  echo "(<<unparsed>> marks syntax this check cannot follow safely):"
                   printf '  %s\n' "$unknown"
                   echo "Move any other sites to their own file in /etc/caddy/sites/, put VoxBento's"
                   echo "sites in /etc/caddy/sites/voxbento.caddy, add the import line, then re-run."

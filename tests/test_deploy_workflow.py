@@ -302,6 +302,16 @@ def test_legacy_main_caddyfile_is_replaced_by_sites_import(
     assert backup < main < site < reload
 
 
+def test_legacy_main_with_quoted_braces_still_migrates(
+    deployment: tuple[Path, Path, str, dict[str, str]],
+) -> None:
+    _, temporary, _, env = deployment
+    main = LEGACY_MAIN.replace("reverse_proxy", 'respond /a "{" 200\\n    respond /b `}` 200 # {\\n    reverse_proxy')
+    result = run_deployment(env, "", LEGACY_MAIN=main)
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert "mv -f /etc/caddy/Caddyfile.next /etc/caddy/Caddyfile" in sudo_calls(temporary)
+
+
 @pytest.mark.parametrize(
     ("main", "reported"),
     [
@@ -311,6 +321,18 @@ def test_legacy_main_caddyfile_is_replaced_by_sites_import(
         # Braces, not indentation, delimit Caddy blocks.
         (LEGACY_MAIN + "    app.example.org {\\n        respond 200\\n    }\\n", "app.example.org {"),
         (LEGACY_MAIN + "\\tapp.example.org  {  # other app\\n\\t\\trespond 200\\n\\t}\\n", "app.example.org {"),
+        # A quoted brace is an argument, not a block: the site after it must be found.
+        (
+            LEGACY_MAIN.replace("reverse_proxy", 'respond /brace "{"\\n    reverse_proxy')
+            + "other.example {\\n    respond 200\\n}\\n",
+            "other.example {",
+        ),
+        # Quoted tokens may span lines.
+        (LEGACY_MAIN + 'other.example {\\n    respond "{\\n}\\n" 200\\n}\\n', "other.example {"),
+        # Syntax the check cannot follow safely refuses migration instead of guessing.
+        (LEGACY_MAIN + "a.example {\\n    respond <<EOF\\n    }\\n    EOF 200\\n}\\n", "<<unparsed>>"),
+        (LEGACY_MAIN + 'a.example {\\n    respond "unterminated\\n}\\n', "<<unparsed>>"),
+        (LEGACY_MAIN + "a.example{\\n}\\n", "<<unparsed>>"),
     ],
 )
 def test_main_caddyfile_with_other_entries_stops_before_any_change(
