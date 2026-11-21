@@ -197,8 +197,11 @@ def verify_same_origin(request: Request) -> bool:
 
 
 def get_client_ip(request: Request) -> str:
-    """Extract client IP address from headers or connection."""
-    x_forwarded_for = request.headers.get("x-forwarded-for")
-    if x_forwarded_for:
-        return x_forwarded_for.split(",")[0].strip()
+    """Extract client IP address from the ASGI connection.
+
+    Only the ASGI server's resolved peer (request.client.host) is trusted.
+    Forwarded headers must be processed by a configured trusted proxy chain
+    (e.g. Uvicorn's ProxyHeadersMiddleware via FORWARDED_ALLOW_IPS), never
+    parsed directly from raw request headers.
+    """
     return request.client.host if request.client else "unknown"

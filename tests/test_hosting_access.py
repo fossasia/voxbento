@@ -16,7 +16,7 @@ from sqlalchemy import select
 from starlette.requests import Request
 
 from fastapi_app import app
-from portal import database
+from portal import database, rate_limit
 from portal.auth import (
     create_user_token,
     decode_token,
@@ -698,6 +698,157 @@ async def test_demo_request_hosting_rate_limit_and_user_flag():
             )
             assert res4.status_code == 429
             assert "too many" in res4.json()["detail"].lower()
+
+
+@pytest.mark.anyio
+async def test_rotating_forwarded_headers_cannot_evade_demo_request_ip_limit():
+    """Rotating X-Forwarded-For headers cannot evade the 20 req/hr IP rate limit on /api/request-demo."""
+    rate_limit._rates.clear()
+    async with AsyncClient(
+        transport=ASGITransport(app=app, client=("192.0.2.10", 12345)),
+        base_url="http://test",
+    ) as http:
+        for i in range(20):
+            res = await http.post(
+                "/api/request-demo",
+                json={
+                    "firstName": "Jane",
+                    "lastName": "Doe",
+                    "email": f"ip_test_requester_{i}@example.com",
+                    "companyName": "Acme Corp",
+                },
+                headers={"X-Forwarded-For": f"198.51.100.{i}"},
+            )
+            assert res.status_code == 200
+            assert res.json()["ok"] is True
+
+        # 21st request from the same peer must be rate limited even with a new forged header
+        res21 = await http.post(
+            "/api/request-demo",
+            json={
+                "firstName": "Jane",
+                "lastName": "Doe",
+                "email": "ip_test_requester_21@example.com",
+                "companyName": "Acme Corp",
+            },
+            headers={"X-Forwarded-For": "198.51.100.99"},
+        )
+        assert res21.status_code == 429
+        assert "too many" in res21.json()["detail"].lower()
+
+
+@pytest.mark.anyio
+async def test_rotating_forwarded_headers_cannot_evade_event_create_limit():
+    """Rotating X-Forwarded-For headers cannot evade the 10 req/min limit on event creation.
+
+    Verifies that the rate limit:
+    1. Rejects spoofed X-Forwarded-For headers and blocks a peer once quota is exhausted.
+    2. Is enforced per client IP rather than per account, so switching user tokens on the
+       same peer is still blocked.
+    3. Blocks subsequent requests from the exhausted peer even without forwarding headers.
+    4. Isolates peers, so a separate client peer with its own account is not blocked.
+    """
+    rate_limit._rates.clear()
+    async with get_session() as session:
+        host1 = await create_user(
+            session,
+            email="rate_limit_creator_1@example.com",
+            display_name="Rate Limit Creator 1",
+            password_hash=hash_password("pw123"),
+            can_host=True,
+        )
+        host2 = await create_user(
+            session,
+            email="rate_limit_creator_2@example.com",
+            display_name="Rate Limit Creator 2",
+            password_hash=hash_password("pw123"),
+            can_host=True,
+        )
+        host3 = await create_user(
+            session,
+            email="rate_limit_creator_3@example.com",
+            display_name="Rate Limit Creator 3",
+            password_hash=hash_password("pw123"),
+            can_host=True,
+        )
+        host1_id = host1.id
+        host2_id = host2.id
+        host3_id = host3.id
+
+    token1 = create_user_token(user_id=host1_id, email="rate_limit_creator_1@example.com")
+    token2 = create_user_token(user_id=host2_id, email="rate_limit_creator_2@example.com")
+    token3 = create_user_token(user_id=host3_id, email="rate_limit_creator_3@example.com")
+
+    csrf1 = generate_admin_csrf_token(str(decode_token(token1)["jti"]))
+    csrf2 = generate_admin_csrf_token(str(decode_token(token2)["jti"]))
+    csrf3 = generate_admin_csrf_token(str(decode_token(token3)["jti"]))
+
+    # Peer A consumes its 10 requests using host1 account
+    async with AsyncClient(
+        transport=ASGITransport(app=app, client=("192.0.2.30", 12345)),
+        base_url="http://test",
+    ) as http_peer_a:
+        for i in range(10):
+            resp = await http_peer_a.post(
+                "/workspace/setup",
+                data={
+                    "display_name": f"Event {i}",
+                    "slug": f"unique-event-slug-{i}",
+                    "csrf_token": csrf1,
+                },
+                cookies={"user_token": token1, "admin_csrf": csrf1},
+                headers={"X-Forwarded-For": f"198.51.100.{i}"},
+                follow_redirects=False,
+            )
+            assert resp.status_code == 303
+
+        # 11th request from Peer A uses a second hosting account (token2) and a new forged header;
+        # must still be rate-limited because the limit is per client IP, not per account.
+        resp11 = await http_peer_a.post(
+            "/workspace/setup",
+            data={
+                "display_name": "Event 11",
+                "slug": "unique-event-slug-11",
+                "csrf_token": csrf2,
+            },
+            cookies={"user_token": token2, "admin_csrf": csrf2},
+            headers={"X-Forwarded-For": "198.51.100.99"},
+            follow_redirects=False,
+        )
+        assert resp11.status_code == 429
+        assert "rate limit exceeded" in resp11.text.lower()
+
+        # Subsequent request from Peer A without any forwarding header using token1
+        # must also be rate-limited (429) since Peer A's quota is exhausted.
+        resp12 = await http_peer_a.post(
+            "/workspace/setup",
+            data={
+                "display_name": "Event 12",
+                "slug": "unique-event-slug-12",
+                "csrf_token": csrf1,
+            },
+            cookies={"user_token": token1, "admin_csrf": csrf1},
+            follow_redirects=False,
+        )
+        assert resp12.status_code == 429
+        assert "rate limit exceeded" in resp12.text.lower()
+
+    # Distinct Peer B with its own account (token3) is NOT affected by Peer A reaching its limit
+    async with AsyncClient(
+        transport=ASGITransport(app=app, client=("192.0.2.31", 12345)),
+        base_url="http://test",
+    ) as http_peer_b:
+        resp_peer_b = await http_peer_b.post(
+            "/workspace/setup",
+            data={
+                "display_name": "Peer B Event",
+                "slug": "unique-event-peer-b",
+                "csrf_token": csrf3,
+            },
+            cookies={"user_token": token3, "admin_csrf": csrf3},
+            follow_redirects=False,
+        )
+        assert resp_peer_b.status_code == 303
 
 
 @pytest.mark.anyio
