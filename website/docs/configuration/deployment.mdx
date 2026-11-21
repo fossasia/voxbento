@@ -151,17 +151,36 @@ worktree and validates the server's current `.env` and candidate Caddy configura
 before updating the live checkout or replacing any running container. If a required
 secret is missing or unsafe, the deployment stops and the existing stack remains
 running. Old images are retained until the replacement portal passes `/healthz`,
-then dangling images are pruned. The temporary worktree is removed on exit.
+then this project's dangling images are pruned (images from other apps on the same
+Docker host are left alone). The temporary worktree is removed on exit. Compose files
+named in `COMPOSE_FILE` that are not tracked in Git, such as a host-local override, are
+copied from the deployment directory into the temporary worktree.
 Compose always uses the `voxbento` project name to retain existing volumes and
 networks. The portal runs source and dependencies from its image, with `.env`
 loaded as container environment variables; rebuild the image to apply code changes.
 
+The workflow deploys from `$HOME/voxbento` (override with `VOXBENTO_DIR`). The portal
+binds `127.0.0.1:8000` on the host by default; set `PORTAL_HOST_PORT` in `.env` when
+another app on the server already uses that port. The health check and the Caddy
+upstream use the same value. MediaMTX advertises `MEDIAMTX_PUBLIC_HOSTS` (default:
+`JVB_ADVERTISE_IPS`) as WebRTC host candidates, so the server's public IP lives only in
+`.env`.
+
+The repository `Caddyfile` contains only VoxBento's sites. Deploys install it as
+`/etc/caddy/sites/voxbento.caddy`, and the host's main `/etc/caddy/Caddyfile` must
+contain `import /etc/caddy/sites/*.caddy`, so other apps on the same server keep their
+own files in `/etc/caddy/sites/`. On a host where an earlier deploy owned the whole main
+file, the first deploy keeps a copy as `/etc/caddy/Caddyfile.before-sites` and replaces
+the main file with that import. A main file that VoxBento did not write stops the
+deploy until the import line is added. The whole host configuration is validated
+before Caddy reloads; if it is invalid, the previous files are restored.
+
 Caddy imports optional, host-owned route snippets from
 `/etc/caddy/voxbento-routes/*.caddy` inside the `voxbento.com` site. The candidate
 configuration validates those same snippets before deployment. The workflow installs
-the Caddyfile using an atomic rename before reloading Caddy, so readers see a complete
-file. Keep additional services' routes in this directory instead of using watchers
-that rewrite `/etc/caddy/Caddyfile` during deployment.
+the site file using an atomic rename before reloading Caddy, so readers see a complete
+file. Keep additional routes under `voxbento.com` in this directory instead of using
+watchers that rewrite Caddy files during deployment.
 
 For a host using the earlier Sentinel watcher, migrate once before deploying:
 
