@@ -474,8 +474,31 @@ async def get_auth_status(request: Request):
     return {"authenticated": False}
 
 
+# Per-IP limit for the routes that send an email, on top of the per-email one.
+# Without it one client can rotate addresses and send mail to every one of them.
+EMAIL_REQUESTS_PER_IP = 30
+EMAIL_REQUESTS_IP_WINDOW_SECONDS = 600
+
+
+def limit_email_requests_per_ip(request: Request, action: str) -> None:
+    # Same peer address as limit_registration: forwarded headers are handled by the trusted proxy setup.
+    client_ip = request.client.host if request.client else "unknown"
+    if not check_rate_limit(
+        f"{action}_ip",
+        client_ip,
+        max_requests=EMAIL_REQUESTS_PER_IP,
+        window_seconds=EMAIL_REQUESTS_IP_WINDOW_SECONDS,
+    ):
+        raise HTTPException(
+            status_code=429,
+            detail="Too many requests",
+            headers={"Retry-After": str(EMAIL_REQUESTS_IP_WINDOW_SECONDS)},
+        )
+
+
 @router.post("/api/auth/magic-link")
 async def request_magic_link(request: Request):
+    limit_email_requests_per_ip(request, "magic_link")
     data = await request.json()
     email = data.get("email", "").strip().lower()
     next_url = data.get("next_url", "")
@@ -595,6 +618,7 @@ async def redeem_magic_link(request: Request, token: str, next: str | None = Non
 
 @router.post("/api/auth/forgot-password")
 async def forgot_password_request(request: Request):
+    limit_email_requests_per_ip(request, "forgot_password")
     data = await request.json()
     email = data.get("email", "").strip().lower()
 
