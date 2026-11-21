@@ -1533,6 +1533,8 @@ async def admin_delete_event(request: Request, event_id: int):
 
         for room_id, lang in booth_keys:
             await booths.remove_booth(slug, room_id, lang)
+        booth_ids = {make_booth_id(slug, room_id, lang) for room_id, lang in booth_keys}
+        booths.attendance.discard_event(slug, booth_ids)
     except HTTPException:
         raise
     except SQLAlchemyError as e:

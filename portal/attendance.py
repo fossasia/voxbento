@@ -167,15 +167,23 @@ class AttendanceTracker:
                 res.append(replace(visit))
         return res
 
-    def discard_event(self, event_slug: str) -> None:
-        """Discard all in-memory visits (open, closed, or in-flight save) for a deleted event."""
+    def discard_event(self, event_slug: str, booth_ids: set[str] | None = None) -> None:
+        """Discard in-memory visits (open, closed, or in-flight save) for a deleted event or specific booths."""
         all_visits = list(self._open.values()) + list(self._closed) + self._in_flight
         for visit in all_visits:
-            if visit.event_slug == event_slug:
+            if visit.event_slug == event_slug and (booth_ids is None or visit.booth_id in booth_ids):
                 visit.discarded = True
-        self._open = {k: v for k, v in self._open.items() if v.event_slug != event_slug}
-        self._closed = [v for v in self._closed if v.event_slug != event_slug]
-        self._in_flight = [v for v in self._in_flight if v.event_slug != event_slug]
+
+        def keep(v: Visit) -> bool:
+            if v.event_slug != event_slug:
+                return True
+            if booth_ids is not None and v.booth_id not in booth_ids:
+                return True
+            return False
+
+        self._open = {k: v for k, v in self._open.items() if keep(v)}
+        self._closed = [v for v in self._closed if keep(v)]
+        self._in_flight = [v for v in self._in_flight if keep(v)]
 
     def _set_interpreting(self, visit: Visit, interpreting: bool, now: datetime) -> None:
         if interpreting and visit.interpreting_since is None:

@@ -14,6 +14,7 @@ any database operations.
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import hmac
 import logging
@@ -27,7 +28,7 @@ from sqlalchemy import event as sa_event
 from sqlalchemy import func, or_, select, update
 from sqlalchemy.exc import InvalidRequestError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
-from sqlalchemy.orm import joinedload, selectinload
+from sqlalchemy.orm import Session, joinedload, selectinload
 
 from portal.config import settings
 from portal.models import (
@@ -265,12 +266,44 @@ async def delete_event(session: AsyncSession, event_id: int) -> bool:
     await session.delete(ev)
     await session.flush()
 
-    def _discard_attendance(_s: object) -> None:
-        if sa_event.contains(session.sync_session, "after_rollback", _on_rollback):
+    register_attendance_discard(session.sync_session, slug)
+    return True
+
+
+def register_attendance_discard(sync_session: Session, slug: str) -> None:
+    chain: set[object] = set()
+    tx = sync_session.get_nested_transaction() or sync_session.get_transaction()
+    if tx is None:
+        return
+    root_tx = tx
+    curr = tx
+    while curr is not None:
+        chain.add(curr)
+        if curr.parent is None:
+            root_tx = curr
+        curr = curr.parent
+
+    def _remove(event_name: str, fn: object) -> None:
+        if sa_event.contains(sync_session, event_name, fn):
             try:
-                sa_event.remove(session.sync_session, "after_rollback", _on_rollback)
+                sa_event.remove(sync_session, event_name, fn)
             except InvalidRequestError:
-                logger.debug("Rollback listener already removed for %s", slug)
+                logger.debug("%s listener already removed for %s", event_name, slug)
+
+    def _defer_remove(event_name: str, fn: object) -> None:
+        try:
+            loop = asyncio.get_running_loop()
+            loop.call_soon(_remove, event_name, fn)
+        except RuntimeError:
+            _remove(event_name, fn)
+
+    def _on_commit(_s: object) -> None:
+        if sync_session.in_nested_transaction():
+            return
+        if sync_session.get_transaction() is not root_tx:
+            return
+        _remove("after_soft_rollback", _on_soft_rollback)
+        _defer_remove("after_commit", _on_commit)
         try:
             from portal.globals import booths
 
@@ -278,18 +311,13 @@ async def delete_event(session: AsyncSession, event_id: int) -> bool:
         except Exception:
             logger.exception("Failed to discard attendance for event %s", slug)
 
-    def _on_rollback(_s: object) -> None:
-        if session.sync_session.in_nested_transaction():
-            return
-        if sa_event.contains(session.sync_session, "after_commit", _discard_attendance):
-            try:
-                sa_event.remove(session.sync_session, "after_commit", _discard_attendance)
-            except InvalidRequestError:
-                logger.debug("Commit listener already removed for %s", slug)
+    def _on_soft_rollback(_s: object, previous_transaction: object) -> None:
+        if previous_transaction in chain:
+            _remove("after_commit", _on_commit)
+            _defer_remove("after_soft_rollback", _on_soft_rollback)
 
-    sa_event.listen(session.sync_session, "after_commit", _discard_attendance, once=True)
-    sa_event.listen(session.sync_session, "after_rollback", _on_rollback)
-    return True
+    sa_event.listen(sync_session, "after_commit", _on_commit)
+    sa_event.listen(sync_session, "after_soft_rollback", _on_soft_rollback)
 
 
 # ---------------------------------------------------------------------------

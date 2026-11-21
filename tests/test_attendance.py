@@ -1204,9 +1204,93 @@ async def test_delete_event_nested_savepoint_rollback_still_discards_on_commit(d
                 raise RuntimeError("inner savepoint failure")
         except RuntimeError:
             pass
+        assert len(tracker.pending_visits(slug)) == 1
         await session.commit()
 
     assert len(tracker.pending_visits(slug)) == 0
+
+
+@pytest.mark.anyio
+async def test_delete_event_savepoint_rollback_of_deleting_tx_keeps_attendance(db, clock, monkeypatch):
+    """Rolling back the savepoint where delete_event was called keeps attendance visits pending on outer commit."""
+    slug = f"sp-rb-{uuid4().hex[:8]}"
+    tracker = AttendanceTracker(clock=clock)
+    monkeypatch.setattr(portal_globals.booths, "attendance", tracker)
+
+    async with get_session() as session:
+        ev = await create_event(session, slug=slug, display_name="Event SP Rollback")
+        room = await create_room(session, event_id=ev.id, display_name="Room 1")
+
+    visit = Visit(
+        id=uuid4().hex,
+        booth_id=f"{slug}-{room.id}-de",
+        event_slug=slug,
+        room_id=room.id,
+        language_code="de",
+        participant_id="part-sp-rb",
+        user_id=None,
+        invite_public_id=None,
+        display_name="Ana SP Rollback",
+        role="interpreter",
+        joined_at=clock(),
+        left_at=clock(),
+        interpreting_seconds=45.0,
+    )
+    tracker._closed.append(visit)
+    assert len(tracker.pending_visits(slug)) == 1
+
+    session_factory = db_module._get_session_factory()
+    async with session_factory() as session:
+        try:
+            async with session.begin_nested():
+                await delete_event(session, ev.id)
+                raise RuntimeError("rollback deleting savepoint")
+        except RuntimeError:
+            pass
+        await session.commit()
+
+    assert len(tracker.pending_visits(slug)) == 1
+    assert tracker.pending_visits(slug)[0].discarded is False
+
+
+@pytest.mark.anyio
+async def test_delete_event_released_savepoint_then_outer_rollback_keeps_attendance(db, clock, monkeypatch):
+    """Releasing an unrelated savepoint after delete_event does not trigger discard when outer tx rolls back."""
+    slug = f"sp-rel-{uuid4().hex[:8]}"
+    tracker = AttendanceTracker(clock=clock)
+    monkeypatch.setattr(portal_globals.booths, "attendance", tracker)
+
+    async with get_session() as session:
+        ev = await create_event(session, slug=slug, display_name="Event SP Released")
+        room = await create_room(session, event_id=ev.id, display_name="Room 1")
+
+    visit = Visit(
+        id=uuid4().hex,
+        booth_id=f"{slug}-{room.id}-de",
+        event_slug=slug,
+        room_id=room.id,
+        language_code="de",
+        participant_id="part-sp-rel",
+        user_id=None,
+        invite_public_id=None,
+        display_name="Ana SP Released",
+        role="interpreter",
+        joined_at=clock(),
+        left_at=clock(),
+        interpreting_seconds=45.0,
+    )
+    tracker._closed.append(visit)
+    assert len(tracker.pending_visits(slug)) == 1
+
+    session_factory = db_module._get_session_factory()
+    async with session_factory() as session:
+        await delete_event(session, ev.id)
+        async with session.begin_nested():
+            pass
+        await session.rollback()
+
+    assert len(tracker.pending_visits(slug)) == 1
+    assert tracker.pending_visits(slug)[0].discarded is False
 
 
 def test_pending_visits_includes_in_flight_visits(clock):
@@ -1437,3 +1521,74 @@ async def test_admin_delete_event_preserves_replacement_event_visits_during_clea
     assert len(pending) == 1
     assert pending[0].display_name == "New Interpreter"
 
+
+@pytest.mark.anyio
+async def test_admin_delete_event_discards_removed_booth_visits_only(db, monkeypatch):
+    """admin_delete_event discards visits for snapshotted booths only, keeping replacement booth visits pending."""
+    slug = f"del-only-{uuid4().hex[:8]}"
+    registry = BoothRegistry()
+    monkeypatch.setattr(admin_router, "booths", registry)
+    monkeypatch.setattr(portal_globals, "booths", registry)
+
+    async with get_session() as session:
+        user = await create_user(session, email=f"{slug}@example.com", display_name="Owner")
+        ev = await create_event(session, slug=slug, display_name="Original Event")
+        await set_event_membership(session, event_id=ev.id, user_id=user.id, role=EVENT_OWNER)
+        room = await create_room(session, event_id=ev.id, display_name="Room 1")
+        await create_booth(session, event_id=ev.id, room_id=room.id, language_code="de", language_name="German")
+
+    booth_id = f"{slug}-{room.id}-de"
+    await registry.join_participant(
+        booth_id=booth_id,
+        display_name="Interpreter",
+        role=INTERPRETER,
+        language="de",
+        channel_id=booth_id,
+    )
+
+    original_remove_booth = registry.remove_booth
+    injected = False
+
+    async def _mock_remove_booth(event_slug, room_id, language_code):
+        nonlocal injected
+        if not injected:
+            injected = True
+            # Join a participant into the OLD (snapshotted) booth so a visit opens after commit discard
+            await registry.join_participant(
+                booth_id=booth_id,
+                display_name="Late Old Interpreter",
+                role=INTERPRETER,
+                language="de",
+                channel_id=booth_id,
+            )
+            # Also join a participant in a replacement booth
+            new_booth_id = f"{slug}-99-fr"
+            await registry.join_participant(
+                booth_id=new_booth_id,
+                display_name="Replacement Interpreter",
+                role=INTERPRETER,
+                language="fr",
+                channel_id=new_booth_id,
+            )
+        return await original_remove_booth(event_slug, room_id, language_code)
+
+    monkeypatch.setattr(registry, "remove_booth", _mock_remove_booth)
+
+    scope = {
+        "type": "http",
+        "method": "POST",
+        "path": f"/admin/events/{ev.id}/delete",
+        "headers": [],
+    }
+    req = Request(scope)
+    resp = await admin_delete_event(req, ev.id)
+    assert resp.status_code == 303
+
+    pending = registry.attendance.pending_visits(slug)
+    # No pending visit remains for the old booth
+    old_visits = [v for v in pending if v.booth_id == booth_id]
+    assert len(old_visits) == 0
+    # The replacement participant's visit is still pending
+    replacement_visits = [v for v in pending if v.booth_id == f"{slug}-99-fr"]
+    assert len(replacement_visits) == 1
+    assert replacement_visits[0].display_name == "Replacement Interpreter"
