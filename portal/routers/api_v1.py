@@ -8,6 +8,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 from pydantic import BaseModel, Field, field_validator
 from sqlalchemy import event as sa_event
 from sqlalchemy import select, update
+from sqlalchemy.exc import InvalidRequestError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from portal.auth import coordinates_room, load_membership_scope, require_oauth_scope
@@ -506,20 +507,22 @@ async def delete_event(
     await db.flush()
 
     def _discard_attendance(_s: object) -> None:
-        try:
-            sa_event.remove(db.sync_session, "after_rollback", _on_rollback)
-        except Exception:
-            pass
+        if sa_event.contains(db.sync_session, "after_rollback", _on_rollback):
+            try:
+                sa_event.remove(db.sync_session, "after_rollback", _on_rollback)
+            except InvalidRequestError:
+                logger.debug("Rollback listener already removed for %s", event_slug)
         try:
             booths.attendance.discard_event(event_slug)
         except Exception:
             logger.exception("Failed to discard attendance for event %s", event_slug)
 
     def _on_rollback(_s: object) -> None:
-        try:
-            sa_event.remove(db.sync_session, "after_commit", _discard_attendance)
-        except Exception:
-            pass
+        if sa_event.contains(db.sync_session, "after_commit", _discard_attendance):
+            try:
+                sa_event.remove(db.sync_session, "after_commit", _discard_attendance)
+            except InvalidRequestError:
+                logger.debug("Commit listener already removed for %s", event_slug)
 
     sa_event.listen(db.sync_session, "after_commit", _discard_attendance, once=True)
     sa_event.listen(db.sync_session, "after_rollback", _on_rollback, once=True)

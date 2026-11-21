@@ -1521,10 +1521,16 @@ async def admin_delete_event(request: Request, event_id: int):
     """Delete an event by ID, returning 404 if missing or redirecting with an error alert on database failure."""
     try:
         async with get_session() as session:
+            event = await get_event_by_id(session, event_id)
+            if event is None:
+                raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Event not found.")
+            slug = event.slug
             await revoke_booths_for_deleted_entity(session, level="event", target_id=event_id)
             deleted = await delete_event(session, event_id)
             if not deleted:
                 raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Event not found.")
+        for b in await booths.list_booths_for_event(slug):
+            await booths.remove_booth(slug, b["room_id"], b["language_code"])
     except HTTPException:
         raise
     except SQLAlchemyError as e:

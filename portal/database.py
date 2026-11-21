@@ -25,6 +25,7 @@ from datetime import date, datetime, timedelta, timezone
 import sqlalchemy as sa
 from sqlalchemy import event as sa_event
 from sqlalchemy import func, or_, select, update
+from sqlalchemy.exc import InvalidRequestError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 from sqlalchemy.orm import joinedload, selectinload
 
@@ -265,10 +266,11 @@ async def delete_event(session: AsyncSession, event_id: int) -> bool:
     await session.flush()
 
     def _discard_attendance(_s: object) -> None:
-        try:
-            sa_event.remove(session.sync_session, "after_rollback", _on_rollback)
-        except Exception:
-            pass
+        if sa_event.contains(session.sync_session, "after_rollback", _on_rollback):
+            try:
+                sa_event.remove(session.sync_session, "after_rollback", _on_rollback)
+            except InvalidRequestError:
+                logger.debug("Rollback listener already removed for %s", slug)
         try:
             from portal.globals import booths
 
@@ -277,10 +279,11 @@ async def delete_event(session: AsyncSession, event_id: int) -> bool:
             logger.exception("Failed to discard attendance for event %s", slug)
 
     def _on_rollback(_s: object) -> None:
-        try:
-            sa_event.remove(session.sync_session, "after_commit", _discard_attendance)
-        except Exception:
-            pass
+        if sa_event.contains(session.sync_session, "after_commit", _discard_attendance):
+            try:
+                sa_event.remove(session.sync_session, "after_commit", _discard_attendance)
+            except InvalidRequestError:
+                logger.debug("Commit listener already removed for %s", slug)
 
     sa_event.listen(session.sync_session, "after_commit", _discard_attendance, once=True)
     sa_event.listen(session.sync_session, "after_rollback", _on_rollback, once=True)

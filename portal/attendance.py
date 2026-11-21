@@ -158,11 +158,14 @@ class AttendanceTracker:
 
     def pending_visits(self, event_slug: str) -> list[Visit]:
         """Visits in memory (open or closed awaiting flush) for *event_slug*."""
-        return [
-            replace(visit)
-            for visit in list(self._open.values()) + list(self._closed)
-            if visit.event_slug == event_slug
-        ]
+        candidates = list(self._open.values()) + list(self._closed) + self._in_flight
+        seen: set[str] = set()
+        res: list[Visit] = []
+        for visit in candidates:
+            if visit.event_slug == event_slug and not getattr(visit, "discarded", False) and visit.id not in seen:
+                seen.add(visit.id)
+                res.append(replace(visit))
+        return res
 
     def discard_event(self, event_slug: str) -> None:
         """Discard all in-memory visits (open, closed, or in-flight save) for a deleted event."""
@@ -374,9 +377,8 @@ class AttendanceRow:
 
 def rows_for_event(db_rows: Iterable, pending_visits: Iterable[Visit], now: datetime) -> list[AttendanceRow]:
     """Saved visits, with live visits replacing their (up to a minute old) saved copy."""
-    rows: dict[str, AttendanceRow] = {}
-    for row in db_rows:
-        rows[row.id] = AttendanceRow(
+    rows: dict[str, AttendanceRow] = {
+        row.id: AttendanceRow(
             id=row.id,
             room_id=row.room_id,
             language_code=row.language_code,
@@ -388,7 +390,13 @@ def rows_for_event(db_rows: Iterable, pending_visits: Iterable[Visit], now: date
             left_at=_aware(row.left_at or row.last_seen_at),
             interpreting_seconds=row.interpreting_seconds,
         )
+        for row in db_rows
+        if _aware(row.joined_at) <= now
+    }
     for visit in pending_visits:
+        joined = _aware(visit.joined_at)
+        if joined > now:
+            continue
         end = min(visit.left_at, now) if visit.left_at is not None else now
         left_at = min(_aware(visit.left_at), now) if visit.left_at is not None else None
         rows[visit.id] = AttendanceRow(
@@ -399,7 +407,7 @@ def rows_for_event(db_rows: Iterable, pending_visits: Iterable[Visit], now: date
             invite_public_id=visit.invite_public_id,
             display_name=visit.display_name,
             role=visit.role,
-            joined_at=_aware(visit.joined_at),
+            joined_at=joined,
             left_at=left_at,
             interpreting_seconds=visit.interpreting_total(end),
         )

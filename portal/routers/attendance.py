@@ -37,7 +37,7 @@ _CSV_FORMULA_PREFIXES = ("=", "+", "-", "@", "\t", "\r")
 
 def _csv_text(value: str) -> str:
     """Prefix a leading formula character so spreadsheets treat the cell as text."""
-    return "'" + value if value.lstrip().startswith(_CSV_FORMULA_PREFIXES) else value
+    return f"'{value}" if value.lstrip().startswith(_CSV_FORMULA_PREFIXES) else value
 
 
 @dataclass
@@ -162,7 +162,7 @@ async def event_attendance(request: Request, event_id: int, day: str | None = No
             "days": days,
             "today": data.now.astimezone(chosen.tz).date(),
             "filters": chosen,
-            "here_now": sum(1 for person in people if person.is_here),
+            "here_now": sum(person.is_here for person in people),
             "total_present": sum(person.present_seconds for person in people),
             "total_interpreting": sum(person.interpreting_seconds for person in people),
             **admin_flags,
