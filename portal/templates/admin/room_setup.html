@@ -29,7 +29,6 @@
 <div class="wizard rs" id="room-setup"
      data-mode="{{ 'edit' if is_edit else 'create' }}"
      data-booth-codes='{{ booth_codes | tojson }}'
-     data-live-codes='{{ live_codes | tojson }}'
      data-voice-support='{{ catalog.voice_support | tojson }}'
      data-translation-support='{{ catalog.translation_support | tojson }}'
      data-delivery-labels='{{ delivery_labels | tojson }}'>
@@ -132,7 +131,7 @@
 
         <fieldset class="rs-group" data-rs-delivery>
           <legend class="rs-question">How will listeners get each language?</legend>
-          <p class="rs-hint">{{ delivery_explanations }} You invite interpreters after {{ 'saving' if is_edit else 'creating the room' }}.</p>
+          <p class="rs-hint">{{ delivery_explanations }} Existing interpreter audio sources stay available when you save; remove one explicitly from its booth settings. You invite interpreters after {{ 'saving' if is_edit else 'creating the room' }}.</p>
           <ul class="rs-delivery-list" data-rs-delivery-list>
             {% for code, delivery in plan.languages %}
             <li class="rs-delivery-row" data-rs-delivery-row="{{ code }}" {% if delivery == 'both' %}data-rs-was-both{% endif %}>
