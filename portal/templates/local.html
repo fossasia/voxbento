@@ -119,7 +119,7 @@
                 </a>
                 {% if current_user %}
                 <a href="{{ management_home }}" class="brutal-btn brutal-btn-outline !px-3 !py-2 text-xs">
-                    <span class="hidden sm:inline">Dashboard</span><span class="sm:hidden">Dash</span>
+                    <span class="hidden sm:!inline">Dashboard</span><span class="sm:hidden">Dash</span>
                 </a>
                 {% else %}
                 <a href="/login" class="brutal-btn brutal-btn-outline !px-3 !py-2 text-xs">
@@ -130,12 +130,12 @@
                     <summary aria-label="Toggle navigation menu" class="brutal-btn brutal-btn-outline !px-2 !py-2 text-xs inline-flex items-center justify-center cursor-pointer list-none">
                         <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M4 6h16M4 12h16M4 18h16"></path></svg>
                     </summary>
-                    <nav id="local-mobile-menu" class="absolute right-0 top-full z-50 mt-2 w-56 rounded border-[3px] border-[#0d0f10] bg-[#eef2f6] p-3 text-xs font-bold uppercase tracking-wider shadow-[4px_4px_0_#0d0f10]">
-                        <a href="/" class="block rounded px-3 py-2 hover:bg-white">Web Console</a>
-                        <a href="#features" class="block rounded px-3 py-2 hover:bg-white">Features</a>
-                        <a href="#downloads" class="block rounded px-3 py-2 hover:bg-white">All Platforms</a>
-                        <a href="#downloads" class="block rounded px-3 py-2 hover:bg-white">Download</a>
-                        <a href="{{ github_repo_url }}" target="_blank" rel="noopener noreferrer" class="block rounded px-3 py-2 hover:bg-white">GitHub</a>
+                    <nav id="local-mobile-menu" class="absolute right-0 top-full z-50 mt-2 w-56 rounded border-[3px] border-[var(--vb-color-border-strong)] bg-[var(--vb-color-bg)] p-3 text-xs font-bold uppercase tracking-wider shadow-[var(--vb-shadow-md)]">
+                        <a href="/" class="block rounded px-3 py-2 hover:bg-[var(--vb-color-surface)]">Web Console</a>
+                        <a href="#features" class="block rounded px-3 py-2 hover:bg-[var(--vb-color-surface)]">Features</a>
+                        <a href="#downloads" class="block rounded px-3 py-2 hover:bg-[var(--vb-color-surface)]">All Platforms</a>
+                        <a href="#downloads" class="block rounded px-3 py-2 hover:bg-[var(--vb-color-surface)]">Download</a>
+                        <a href="{{ github_repo_url }}" target="_blank" rel="noopener noreferrer" class="block rounded px-3 py-2 hover:bg-[var(--vb-color-surface)]">GitHub</a>
                     </nav>
                 </details>
             </div>
@@ -554,6 +554,7 @@
                 });
         })();
     </script>
+    <script type="module" src="{{ url_for('static', path='js/local-nav.js') }}?v={{ js_version }}"></script>
     {% include "_auth_sync.html" %}
 </body>
 
