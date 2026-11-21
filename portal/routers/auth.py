@@ -3,7 +3,6 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import logging
-import re
 import secrets
 import urllib.parse
 from datetime import timedelta
@@ -22,11 +21,15 @@ from unilimit.integrations.fastapi import RateLimit
 
 from portal.auth import (
     ADMIN_CSRF_COOKIE,
+    DISPLAY_NAME_MAX,
+    INVALID_DISPLAY_NAME,
     PASSWORD_TOO_LONG_MESSAGE,
+    clean_display_name,
     create_participant_token,
     create_token,
     create_user_token,
     decode_token,
+    display_name_left_blank,
     generate_admin_csrf_token,
     get_current_user,
     hash_password,
@@ -231,6 +234,7 @@ def render_registration(
             "errors": errors or [],
             "email": email,
             "display_name": display_name,
+            "display_name_max": DISPLAY_NAME_MAX,
             "turnstile_enabled": settings.registration_turnstile_enabled,
             "turnstile_site_key": settings.turnstile_site_key,
         },
@@ -255,7 +259,8 @@ async def register_submit(request: Request):
         return render_registration(request, errors=[exc.detail], status_code=exc.status_code, headers=exc.headers)
     form = await request.form()
     email = form.get("email", "").strip().lower()
-    display_name = form.get("display_name", "").strip()
+    raw_display_name = form.get("display_name", "")
+    display_name = clean_display_name(raw_display_name)
     password_raw = form.get("password", "")
     password = password_raw.strip()
     password_confirm = form.get("password_confirm", "")
@@ -263,8 +268,11 @@ async def register_submit(request: Request):
     errors = []
     if not email or "@" not in email:
         errors.append("Valid email is required.")
-    if not display_name:
+    if not str(raw_display_name).strip():
         errors.append("Display name is required.")
+    elif display_name is None:
+        errors.append(INVALID_DISPLAY_NAME)
+    display_name = display_name or str(raw_display_name).strip()
     if password_raw and not password:
         errors.append("Password cannot be blank or only whitespace.")
     elif password_raw and len(password_raw) < 8:
@@ -742,8 +750,6 @@ ACCOUNT_NOTICES = {
     "password_set": "Your password was set. You can now sign in with it or with an email link.",
     "password_removed": "Your password was removed. Sign in with a link sent to your email from now on.",  # nosec B105 # UI notice
 }
-DISPLAY_NAME_MAX = 200
-_CONTROL_CHARS = re.compile(r"[\x00-\x1f\x7f]")
 
 
 @router.get("/account")
@@ -791,9 +797,8 @@ async def update_profile(request: Request):
         return safe_redirect(url="/login", status_code=status.HTTP_303_SEE_OTHER)
 
     form = await request.form()
-    raw = form.get("display_name")
-    display_name = " ".join(raw.split()) if isinstance(raw, str) else ""
-    if not display_name or len(display_name) > DISPLAY_NAME_MAX or _CONTROL_CHARS.search(display_name):
+    display_name = clean_display_name(form.get("display_name"))
+    if display_name is None:
         return safe_redirect(url="/account?error=display_name", status_code=status.HTTP_303_SEE_OTHER)
 
     async with get_session() as session:
@@ -1070,7 +1075,10 @@ async def invite_accept_submit(request: Request, token: str):
                     raise HTTPException(status_code=400, detail="Invalid password.")
             else:
                 raw_confirm = form.get("password_confirm", "")
-                display_name = form.get("display_name", "").strip()
+                raw_display_name = form.get("display_name", "")
+                display_name = clean_display_name(raw_display_name)
+                if not display_name_left_blank(raw_display_name) and display_name is None:
+                    raise HTTPException(status_code=400, detail=INVALID_DISPLAY_NAME)
                 if len(submitted_password) < 8:
                     raise HTTPException(status_code=400, detail="Password must be at least 8 characters.")
                 if password_too_long(submitted_password):
