@@ -1,0 +1,251 @@
+name: Translation Load Benchmark
+
+on:
+  pull_request:
+    branches:
+      - dev
+      - main
+    paths:
+      - "portal/translations/**"
+      - "portal/database.py"
+
+concurrency:
+  group: translation-benchmark-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  benchmark:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7.0.1
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          persist-credentials: false
+
+      - uses: astral-sh/setup-uv@v7
+      - name: Set up Python 3.13
+        uses: actions/setup-python@v7
+        with:
+          python-version: "3.13"
+
+      - name: Sync dependencies
+        run: uv sync --python 3.13 --dev --frozen
+
+      - name: Run benchmark on PR branch
+        shell: bash
+        env:
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          mkdir -p report
+          echo "$PR_NUMBER" > report/pr_number.txt
+          echo "$HEAD_SHA" > report/head_sha.txt
+
+          set +e
+          uv run python tests/translation_load_harness.py \
+            --rooms 3 --languages 1,4 --segments 6 --interval 0.5 --latency 0.1 --markdown \
+            > report/pr_table.md 2>&1
+          PR_STATUS=$?
+          set -e
+          echo "$PR_STATUS" > report/pr_status.txt
+          if [ ! -s report/pr_table.md ]; then
+            echo "Benchmark produced no table output (exit code $PR_STATUS)." > report/pr_table.md
+          fi
+
+      - name: Run benchmark on dev baseline
+        shell: bash
+        run: |
+          git clone --depth 1 --branch dev "https://github.com/${{ github.repository }}.git" dev-baseline || true
+          if [ -f dev-baseline/tests/translation_load_harness.py ]; then
+            (cd dev-baseline && uv sync --python 3.13 --dev --frozen && uv run python tests/translation_load_harness.py \
+              --rooms 3 --languages 1,4 --segments 6 --interval 0.5 --latency 0.1 --markdown \
+              > ../report/dev_table.md) || true
+          fi
+          if [ ! -s report/dev_table.md ]; then
+            echo "Baseline run not available or produced no output." > report/dev_table.md
+          fi
+
+      - name: Build comparison report
+        if: always()
+        shell: bash
+        env:
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          mkdir -p report
+          python -c '
+          import json
+          import os
+          import pathlib
+
+          pathlib.Path("report").mkdir(parents=True, exist_ok=True)
+
+          env_sha = os.environ.get("HEAD_SHA", "")
+          sha_file = pathlib.Path("report/head_sha.txt")
+          sha = sha_file.read_text(encoding="utf-8").strip() if sha_file.exists() else env_sha
+          short_sha = sha[:7] if sha else "PR"
+          if not sha_file.exists() and sha:
+              sha_file.write_text(sha + "\n", encoding="utf-8")
+
+          env_pr = os.environ.get("PR_NUMBER", "")
+          pr_num_file = pathlib.Path("report/pr_number.txt")
+          pr_number_str = pr_num_file.read_text(encoding="utf-8").strip() if pr_num_file.exists() else env_pr
+          pr_number = int(pr_number_str) if pr_number_str.isdigit() else None
+          if not pr_num_file.exists() and pr_number_str:
+              pr_num_file.write_text(pr_number_str + "\n", encoding="utf-8")
+
+          status_file = pathlib.Path("report/pr_status.txt")
+          status_code_str = status_file.read_text(encoding="utf-8").strip() if status_file.exists() else None
+          exit_code = int(status_code_str) if (status_code_str is not None and status_code_str.lstrip("-").isdigit()) else None
+
+          def parse_markdown_table(table_path):
+              p = pathlib.Path(table_path)
+              if not p.exists():
+                  return [], ""
+              text = p.read_text(encoding="utf-8")
+              rows = []
+              summary_lines = []
+              for line in text.splitlines():
+                  s = line.strip()
+                  if not s:
+                      continue
+                  if s.startswith("|") and not s.startswith("|---") and "channel" not in s:
+                      parts = [cell.strip() for cell in s.strip("|").split("|")]
+                      if len(parts) == 11:
+                          try:
+                              row = {
+                                  "channel": parts[0],
+                                  "sent": int(parts[1]),
+                                  "translated": int(parts[2]),
+                                  "dropped": int(parts[3]),
+                                  "failed": int(parts[4]),
+                                  "missing": int(parts[5]),
+                                  "lag_p50": parts[6],
+                                  "lag_p95": parts[7],
+                                  "lag_max": parts[8],
+                                  "infer_p50": parts[9],
+                                  "infer_p95": parts[10],
+                              }
+                              rows.append(row)
+                          except ValueError:
+                              pass
+                  elif not s.startswith("|"):
+                      summary_lines.append(s)
+              return rows, " ".join(summary_lines)
+
+          pr_rows, pr_summary = parse_markdown_table("report/pr_table.md")
+          dev_rows, dev_summary = parse_markdown_table("report/dev_table.md")
+
+          totals_row = next((r for r in pr_rows if r.get("channel") == "all"), None)
+          has_valid_totals = (
+              totals_row is not None
+              and totals_row.get("sent", 0) > 0
+              and totals_row.get("translated") == totals_row.get("sent")
+              and totals_row.get("dropped") == 0
+              and totals_row.get("failed") == 0
+              and totals_row.get("missing") == 0
+          )
+
+          # Require exit code 0 and valid totals row before rendering success
+          if exit_code == 0 and has_valid_totals:
+              status = "success"
+              status_banner = "> [!NOTE]\n> **All signals passed**: 0 dropped, 0 failed, 0 missing translations.\n"
+          elif (exit_code is not None and exit_code != 0) or (totals_row and (totals_row.get("dropped", 0) > 0 or totals_row.get("failed", 0) > 0 or totals_row.get("missing", 0) > 0)):
+              status = "regression"
+              code = exit_code if exit_code is not None else 1
+              status_banner = f"> [!WARNING]\n> **Regression detected**: The load harness exited with status `{code}` (dropped, failed, missing translations or unhandled error).\n"
+          else:
+              status = "incomplete"
+              status_banner = "> [!WARNING]\n> **Benchmark incomplete**: The load harness did not complete or produced no valid benchmark data.\n"
+
+          metrics = {
+              "version": 1,
+              "head_sha": sha,
+              "short_sha": short_sha,
+              "pr_number": pr_number,
+              "status": status,
+              "exit_code": exit_code,
+              "pr": {
+                  "status": status,
+                  "exit_code": exit_code,
+                  "summary": pr_summary,
+                  "rows": pr_rows,
+              },
+              "dev": {
+                  "available": len(dev_rows) > 0,
+                  "summary": dev_summary,
+                  "rows": dev_rows,
+              },
+          }
+
+          pathlib.Path("report/metrics.json").write_text(json.dumps(metrics, indent=2) + "\n", encoding="utf-8")
+
+          pr_file = pathlib.Path("report/pr_table.md")
+          pr_table = pr_file.read_text(encoding="utf-8").strip() if pr_file.exists() else "No data"
+
+          dev_file = pathlib.Path("report/dev_table.md")
+          dev_table = dev_file.read_text(encoding="utf-8").strip() if dev_file.exists() else "No baseline data"
+
+          comment = f"""### 📊 Translation Load Benchmark Report
+
+          {status_banner}
+          Comparison of PR branch against `dev` baseline.
+
+          #### 🚀 PR Branch (`{short_sha}`)
+
+          {pr_table}
+
+          <details>
+          <summary><b>📌 <code>dev</code> Baseline</b></summary>
+
+          {dev_table}
+
+          </details>
+
+          <!-- translation-load-benchmark-report -->
+          """
+
+          pathlib.Path("report/comment.md").write_text(comment.strip() + "\n", encoding="utf-8")
+          '
+
+      - name: Publish to Job Summary
+        if: always()
+        shell: bash
+        run: |
+          if [ -f report/comment.md ]; then
+            cat report/comment.md >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+      - name: Upload report artifact
+        if: always()
+        uses: actions/upload-artifact@v7.0.2
+        with:
+          name: translation-load-report
+          path: report/
+
+      - name: Propagate harness exit status
+        shell: bash
+        run: |
+          python -c '
+          import json
+          import pathlib
+          import sys
+
+          metrics_file = pathlib.Path("report/metrics.json")
+          if not metrics_file.exists():
+              print("Failing job: report/metrics.json not found (benchmark incomplete).")
+              sys.exit(1)
+
+          metrics = json.loads(metrics_file.read_text(encoding="utf-8"))
+          status = metrics.get("status")
+          exit_code = metrics.get("exit_code")
+
+          if status != "success":
+              code = exit_code if (isinstance(exit_code, int) and exit_code != 0) else 1
+              print(f"Failing job: benchmark status is \"{status}\" (exit code {code}).")
+              sys.exit(code)
+          '

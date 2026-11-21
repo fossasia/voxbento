@@ -1,0 +1,261 @@
+name: Post Translation Load Report
+
+on:
+  workflow_run:
+    workflows: ["Translation Load Benchmark"]
+    types: [completed]
+
+concurrency:
+  group: post-translation-load-report-${{ github.event.workflow_run.pull_requests[0].number || github.event.workflow_run.head_repository.full_name }}-${{ github.event.workflow_run.head_branch }}
+  cancel-in-progress: false
+
+permissions:
+  actions: read
+  contents: read
+  pull-requests: write
+  issues: write
+
+jobs:
+  comment:
+    if: github.event.workflow_run.event == 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download benchmark report artifact
+        uses: actions/download-artifact@v7.0.0
+        with:
+          name: translation-load-report
+          run-id: ${{ github.event.workflow_run.id }}
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          path: report
+
+      - name: Post or update PR comment
+        uses: actions/github-script@v9
+        with:
+          script: |
+            const fs = require('fs');
+            const path = require('path');
+
+            const run = context.payload.workflow_run;
+            const headSha = run.head_sha;
+
+            if (!headSha) {
+              core.setFailed('Missing head_sha on workflow_run.');
+              return;
+            }
+
+            // 1. Derive the target PR from trusted GitHub metadata
+            let targetPrNumber = null;
+            const prs = run.pull_requests ?? [];
+            if (prs.length > 0 && prs[0]?.number) {
+              targetPrNumber = prs[0].number;
+            } else {
+              const { data: associatedPrs } = await github.rest.repos.listPullRequestsAssociatedWithCommit({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                commit_sha: headSha,
+              });
+              const found = associatedPrs.find((p) => p.state === 'open') ?? associatedPrs[0];
+              targetPrNumber = found?.number;
+            }
+
+            if (!targetPrNumber) {
+              core.info(`No pull request found associated with head SHA ${headSha}.`);
+              return;
+            }
+
+            // Fetch current, real-time PR state
+            const { data: latestPr } = await github.rest.pulls.get({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              pull_number: targetPrNumber,
+            });
+
+            // 2. Reject stale out-of-order runs: verify headSha is still the PR's current head
+            if (latestPr.head.sha !== headSha) {
+              core.info(`PR #${targetPrNumber} head SHA (${latestPr.head.sha}) has moved past this run (${headSha}). Skipping stale run.`);
+              return;
+            }
+
+            // 3. Verify artifact authenticity against derived target PR
+            const metricsFile = path.join(process.cwd(), 'report', 'metrics.json');
+            const prNumberFile = path.join(process.cwd(), 'report', 'pr_number.txt');
+            const artifactShaFile = path.join(process.cwd(), 'report', 'head_sha.txt');
+
+            if (!fs.existsSync(metricsFile)) {
+              core.warning('metrics.json file not found in artifact.');
+              return;
+            }
+
+            if (fs.existsSync(prNumberFile)) {
+              const artifactPrNumber = parseInt(fs.readFileSync(prNumberFile, 'utf8').trim(), 10);
+              if (artifactPrNumber && artifactPrNumber !== targetPrNumber) {
+                core.setFailed(`Artifact PR number (${artifactPrNumber}) does not match trusted target PR (${targetPrNumber}). Potential forgery rejected.`);
+                return;
+              }
+            }
+
+            if (fs.existsSync(artifactShaFile)) {
+              const artifactSha = fs.readFileSync(artifactShaFile, 'utf8').trim();
+              if (artifactSha && artifactSha !== headSha) {
+                core.setFailed(`Artifact head SHA (${artifactSha}) does not match trusted run head SHA (${headSha}). Potential forgery rejected.`);
+                return;
+              }
+            }
+
+            // 4. Validate bounded structured metrics
+            let metrics;
+            try {
+              metrics = JSON.parse(fs.readFileSync(metricsFile, 'utf8'));
+            } catch (err) {
+              core.setFailed(`Failed to parse metrics.json: ${err.message}`);
+              return;
+            }
+
+            if (!metrics || typeof metrics !== 'object') {
+              core.setFailed('Invalid metrics format: root is not an object.');
+              return;
+            }
+
+            const validStatuses = ['success', 'regression', 'incomplete'];
+            if (!validStatuses.includes(metrics.status)) {
+              core.setFailed(`Invalid status in metrics: ${metrics.status}`);
+              return;
+            }
+
+            if (metrics.head_sha && metrics.head_sha !== headSha) {
+              core.setFailed(`Metrics head SHA (${metrics.head_sha}) does not match run head SHA (${headSha}).`);
+              return;
+            }
+
+            if (metrics.pr_number && metrics.pr_number !== targetPrNumber) {
+              core.setFailed(`Metrics PR number (${metrics.pr_number}) does not match target PR (${targetPrNumber}).`);
+              return;
+            }
+
+            const CHANNEL_REGEX = /^[a-zA-Z0-9, -]{1,50}$/;
+            const METRIC_VAL_REGEX = /^(?:-|[0-9]+(?:\.[0-9]{1,2})?)$/;
+
+            function validateRow(row) {
+              if (!row || typeof row !== 'object') return false;
+              if (typeof row.channel !== 'string' || !CHANNEL_REGEX.test(row.channel)) return false;
+              for (const countKey of ['sent', 'translated', 'dropped', 'failed', 'missing']) {
+                const val = row[countKey];
+                if (typeof val !== 'number' || !Number.isInteger(val) || val < 0 || val > 100000) {
+                  return false;
+                }
+              }
+              for (const statKey of ['lag_p50', 'lag_p95', 'lag_max', 'infer_p50', 'infer_p95']) {
+                const val = String(row[statKey] ?? '');
+                if (!METRIC_VAL_REGEX.test(val)) {
+                  return false;
+                }
+              }
+              return true;
+            }
+
+            function validateRows(rows) {
+              if (!Array.isArray(rows)) return false;
+              if (rows.length > 200) return false;
+              return rows.every(validateRow);
+            }
+
+            const prRows = metrics.pr?.rows;
+            if (prRows && !validateRows(prRows)) {
+              core.setFailed('Metrics PR rows failed schema or boundary validation.');
+              return;
+            }
+
+            const devRows = metrics.dev?.rows;
+            if (devRows && !validateRows(devRows)) {
+              core.setFailed('Metrics dev baseline rows failed schema or boundary validation.');
+              return;
+            }
+
+            // 5. Render comment using fixed template in publisher
+            function renderTable(rows) {
+              if (!rows || rows.length === 0) {
+                return '_No benchmark table data available._\n';
+              }
+              const header = '| channel | sent | translated | dropped | failed | missing | lag p50 | lag p95 | lag max | infer p50 | infer p95 |\n|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|';
+              const lines = rows.map((r) =>
+                `| ${r.channel} | ${r.sent} | ${r.translated} | ${r.dropped} | ${r.failed} | ${r.missing} | ${r.lag_p50} | ${r.lag_p95} | ${r.lag_max} | ${r.infer_p50} | ${r.infer_p95} |`
+              );
+              return `${header}\n${lines.join('\n')}\n`;
+            }
+
+            const totalsRow = Array.isArray(prRows) ? prRows.find((r) => r.channel === 'all') : undefined;
+            const hasValidTotals = totalsRow !== undefined &&
+              totalsRow.sent > 0 &&
+              totalsRow.translated === totalsRow.sent &&
+              totalsRow.dropped === 0 &&
+              totalsRow.failed === 0 &&
+              totalsRow.missing === 0;
+
+            const isSuccess = metrics.exit_code === 0 && hasValidTotals;
+
+            let statusBanner = '';
+            if (isSuccess) {
+              statusBanner = '> [!NOTE]\n> **All signals passed**: 0 dropped, 0 failed, 0 missing translations.\n';
+            } else if (metrics.exit_code !== 0 || (totalsRow && (totalsRow.dropped > 0 || totalsRow.failed > 0 || totalsRow.missing > 0))) {
+              const exitCode = typeof metrics.exit_code === 'number' ? metrics.exit_code : 1;
+              statusBanner = `> [!WARNING]\n> **Regression detected**: The load harness exited with status \`${exitCode}\` (dropped, failed, missing translations or unhandled error).\n`;
+            } else {
+              statusBanner = '> [!WARNING]\n> **Benchmark incomplete**: The load harness did not complete or produced no valid benchmark data.\n';
+            }
+
+            const shortSha = headSha.slice(0, 7);
+            const prSection = (prRows && prRows.length > 0) ? renderTable(prRows) : '_No benchmark table data available._\n';
+
+            let devSection = '';
+            if (metrics.dev?.available && devRows && devRows.length > 0) {
+              devSection = `<details>\n<summary><b>📌 <code>dev</code> Baseline</b></summary>\n\n${renderTable(devRows)}\n</details>\n`;
+            } else {
+              devSection = '<details>\n<summary><b>📌 <code>dev</code> Baseline</b></summary>\n\n_Baseline run not available or produced no output._\n</details>\n';
+            }
+
+            const body = [
+              '### 📊 Translation Load Benchmark Report',
+              '',
+              statusBanner,
+              'Comparison of PR branch against `dev` baseline.',
+              '',
+              `#### 🚀 PR Branch (\`${shortSha}\`)`,
+              '',
+              prSection,
+              devSection,
+              '---',
+              '*Metrics are PR-supplied evidence from the workflow run.*',
+              `[View originating workflow run #${run.run_number}](${run.html_url})`,
+              '',
+              '<!-- translation-load-benchmark-report -->'
+            ].join('\n');
+
+            const { owner, repo } = context.repo;
+            const marker = '<!-- translation-load-benchmark-report -->';
+
+            const { data: comments } = await github.rest.issues.listComments({
+              owner,
+              repo,
+              issue_number: targetPrNumber,
+              per_page: 100,
+            });
+
+            const existingComment = comments.find((c) => c.body && c.body.includes(marker));
+
+            if (existingComment) {
+              core.info(`Updating existing comment #${existingComment.id} on PR #${targetPrNumber}`);
+              await github.rest.issues.updateComment({
+                owner,
+                repo,
+                comment_id: existingComment.id,
+                body,
+              });
+            } else {
+              core.info(`Creating new comment on PR #${targetPrNumber}`);
+              await github.rest.issues.createComment({
+                owner,
+                repo,
+                issue_number: targetPrNumber,
+                body,
+              });
+            }
