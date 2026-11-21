@@ -15,8 +15,10 @@ from portal.auth import require_admin, require_admin_csrf
 from portal.config import settings
 from portal.routers.admin import templates
 from portal.tasks import track_task
-from portal.translations.providers.local import get_download_progress, trigger_download
+from portal.translations.metrics import translation_metrics
+from portal.translations.providers.local import get_download_progress, loaded_model_ids, trigger_download
 from portal.translations.registry import LOCAL_TRANSLATION_MODELS
+from portal.translations.worker import SCHEDULERS
 from portal.utils import safe_redirect
 
 router = APIRouter()
@@ -55,12 +57,52 @@ def model_rows() -> list[ModelRow]:
     return rows
 
 
+@dataclass(frozen=True)
+class EngineRow:
+    provider: str
+    running: int
+    capacity: int
+    waiting: int
+
+
+@dataclass(frozen=True)
+class LoadedModelRow:
+    id: str
+    approx_ram_mb: int | None
+
+
+def engine_rows() -> list[EngineRow]:
+    return [
+        EngineRow(provider, scheduler.running, scheduler.capacity, scheduler.waiting())
+        for provider, scheduler in sorted(SCHEDULERS.items())
+    ]
+
+
+def loaded_model_rows() -> list[LoadedModelRow]:
+    rows = []
+    for model_id in loaded_model_ids():
+        entry = LOCAL_TRANSLATION_MODELS.get(model_id)
+        rows.append(LoadedModelRow(model_id, entry.approx_ram_mb if entry else None))
+    return rows
+
+
 @router.get(PAGE_PATH, dependencies=[Depends(require_admin)])
 async def translation_models_page(request: Request):
+    loaded = loaded_model_rows()
     return templates.TemplateResponse(
         request,
         "admin/translation_models.html",
-        {"models": model_rows()},
+        {
+            "models": model_rows(),
+            "engines": engine_rows(),
+            "model_stats": translation_metrics.by_model(),
+            "loaded_models": loaded,
+            "loaded_ram_mb": sum(row.approx_ram_mb or 0 for row in loaded),
+            "window_minutes": round(translation_metrics.window / 60),
+            "metrics_complete": translation_metrics.complete,
+            "max_outcomes": translation_metrics.max_outcomes,
+            "lag_budget": settings.translation_max_lag_seconds or None,
+        },
         headers={"Cache-Control": "no-store"},
     )
 

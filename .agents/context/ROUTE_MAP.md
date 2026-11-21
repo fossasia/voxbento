@@ -174,7 +174,7 @@ with `?error=invalid_role&role=…` and the page explains why.
 | POST | `/admin/emails/{key}/draft` | — | Admin + same-origin; validates allowed placeholders and saves a draft |
 | POST | `/admin/emails/{key}/publish` | — | Admin + same-origin; publishes the draft and records a revision |
 | POST | `/admin/emails/{key}/test` | — | Admin + same-origin; queues a safe example message to the signed-in Admin |
-| GET | `/admin/translation-models/` | `admin/translation_models.html` | Admin-only (#1191); offered built-in models (`LOCAL_TRANSLATION_MODELS`) then the other registry models, with size, languages, licence and download status (`portal/routers/translation_models.py`) |
+| GET | `/admin/translation-models/` | `admin/translation_models.html` | Admin-only (#1191); offered built-in models (`LOCAL_TRANSLATION_MODELS`) then the other registry models, with size, languages, licence and download status (`portal/routers/translation_models.py`). Its **Translation health** section (#1194) shows each engine's running/waiting calls, per-model counts and p50/p95 start lag and inference time over the last 5 minutes (`portal/translations/metrics.py`), and the built-in models in memory |
 | POST | `/admin/translation-models/download` | — | Admin + CSRF; form `model` must be offered (else `404`); starts the download in the background and redirects `303` to the page |
 | GET | `/admin/live-demo/` | `admin/live_demo.html` | Admin-only settings for the home-page live demo: on/off, voice, AI engines (built-in models or independent provider/model settings and encrypted write-only keys), speech model, limits including demo minutes per day, site glossary; shows visitors using it now, today's minutes, whether models are loaded and why configured services cannot run the demo |
 | POST | `/admin/live-demo/` | — | Admin + same-origin; validates ranges, every glossary line and provider/model choices, saves the `live_demo_settings` row and replaces the cached settings; 400 re-renders with the error |
@@ -316,6 +316,13 @@ the admin CSRF token (`require_admin_csrf`, `X-CSRF-Token`).
   the legacy `running`, `stage` and `bot_reachable` fields with their original
   meaning: `stage` is the raw floor-bot stage (`launching`, `in_meeting`, `dead`, …;
   `unknown` when the service is unreachable); the managed lifecycle is in `state`.
+- `GET /api/rooms/{room_id}/translation-health` (room coordinators and owners, #1194)
+  returns `{state, translated, failed, stale, window_seconds, complete}` for the room's
+  translations over the last 5 minutes. `state` is `idle`, `healthy`, `lagging` (a
+  segment was dropped as stale, or p95 start lag is at least half of
+  `TRANSLATION_MAX_LAG_SECONDS`) or `failing` (at least 2 failures, and at least half
+  of all outcomes). Mission Control polls it for rooms that translate. `complete` is false while the
+  latest 100,000 outcomes no longer cover the whole window.
 
 `POST /oauth/token` accepts an optional `event` slug for the authorization-code
 grant. A mismatch is rejected before code consumption or membership grants.

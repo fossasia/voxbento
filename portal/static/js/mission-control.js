@@ -13,6 +13,8 @@
  * The page passes its data in data-config on #mission-control (no inline script).
  */
 
+import { TRANSLATION_STATES, translationSummary } from './translation-health.js';
+
 const root = document.getElementById('mission-control');
 const config = JSON.parse(root?.dataset.config || '{}');
 const roomsContainer = document.getElementById('rooms-container');
@@ -60,6 +62,7 @@ function init() {
     title.id = `mc-room-title-${room.id}`;
     head.appendChild(title);
     head.appendChild(renderFloorCaptions(room));
+    if (room.translation) head.appendChild(renderTranslationHealth(room));
     section.appendChild(head);
 
     const grid = el('div', 'mc-grid');
@@ -165,6 +168,41 @@ function renderFloorCaptions(room) {
 
   start.addEventListener('click', () => send('start'));
   stop.addEventListener('click', () => send('stop'));
+  refresh();
+  setInterval(refresh, 15000);
+  return box;
+}
+
+function renderTranslationHealth(room) {
+  const box = el('div', 'mc-captions');
+  const label = el('span', 'mc-captions-label', 'Translation');
+  const status = el('span', 'mc-pill', 'Checking…');
+  status.id = `mc-translation-${room.id}`;
+  const reason = el('span', 'mc-captions-reason');
+  box.append(label, status, reason);
+  let checking = false;
+
+  async function refresh() {
+    if (checking) return;
+    checking = true;
+    try {
+      const res = await fetch(`/api/rooms/${room.id}/translation-health`);
+      if (!res.ok) throw new Error(String(res.status));
+      const data = await res.json();
+      const [text, tone] = TRANSLATION_STATES[data.state] || ['Unknown', 'is-busy'];
+      status.textContent = text;
+      status.className = `mc-pill ${tone}`;
+      reason.textContent = translationSummary(data);
+    } catch (err) {
+      status.textContent = 'Unavailable';
+      status.className = 'mc-pill is-problem';
+      reason.textContent = '';
+      console.debug('Translation health failed', err);
+    } finally {
+      checking = false;
+    }
+  }
+
   refresh();
   setInterval(refresh, 15000);
   return box;

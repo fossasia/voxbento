@@ -295,6 +295,7 @@ jobs:
           node tests/test_lang_picker.mjs
           node tests/test_tabs.mjs
           node tests/test_translation_fit.mjs
+          node tests/test_translation_health.mjs
           node tests/test_program_sender_source.mjs
           node tests/test_youtube_connect.mjs
           node tests/test_live_demo_core.mjs

@@ -54,6 +54,15 @@ def _reset_shared_http_client():
     portal.webhooks.worker.enqueue_webhook = original_enqueue
 
 
+@pytest.fixture(autouse=True)
+def _reset_translation_metrics():
+    from portal.translations.metrics import translation_metrics
+
+    translation_metrics.clear()
+    yield
+    translation_metrics.clear()
+
+
 @pytest.fixture(params=["asyncio"])
 def anyio_backend(request):
     return request.param

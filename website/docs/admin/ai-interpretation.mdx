@@ -91,6 +91,23 @@ Rooms never download a model themselves. A room can use a model that is already 
 
 Rooms and booths can only pick a listed model: the room forms fall back to the first listed model, and the booth form and the API v1 room update reject any other. If you take a model off the list, rooms and booths that use it translate nothing until they are saved again, which moves them to a listed model. Turning translation off always works.
 
+### Translation Health
+
+The **Translation health** section at the bottom of the same page shows how translation is doing across all events over the last 5 minutes. Reload the page to update it.
+
+- **Engines now**: for each translation service in use, how many calls are running out of how many it may run at once, and how many segments are waiting for it.
+- **By model**: segments translated, failed and dropped as stale, with the median (p50) and slow (p95) start lag and inference time. Start lag is the time from when a segment arrived until the engine started on it; a segment that cannot start within `TRANSLATION_MAX_LAG_SECONDS` of arriving is dropped as stale so the language catches up with the speaker.
+- **Built-in models in memory**: which built-in models are loaded now and roughly how much memory they take. A model nobody uses for an hour is unloaded.
+
+The section keeps at most the latest 100,000 segments. On a server busy enough to pass that within 5 minutes, this page and the Mission Control status say so and count only those.
+
+Mission Control shows a **Translation** status for each room that translates, with the counts beside it. Over the last 5 minutes, checked in this order:
+
+- **Idle**: no segment was translated, failed or dropped.
+- **Failing**: at least 2 segments failed, and failures are at least half of all segments.
+- **Lagging**: at least one segment was dropped as stale, or, when `TRANSLATION_MAX_LAG_SECONDS` is greater than 0, the slow (p95) start lag is at least half of it.
+- **Healthy**: anything else, including a single failure.
+
 ## Self-hosted Translation Server
 
 Operators can point VoxBento at their own OpenAI-compatible `/v1/chat/completions` server (Ollama, llama.cpp `llama-server`, vLLM, LM Studio). Rooms and booths then get persona, style and glossary support without a cloud API key.
