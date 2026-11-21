@@ -23,6 +23,9 @@
 {% if request.query_params.get('error') == 'duplicate_language' %}
 <div class="alert alert-danger">{{ room.display_name }} already has a booth for that language.</div>
 {% endif %}
+{% if request.query_params.get('error') == 'invalid_language_code' %}
+<div class="alert alert-danger">Use a supported language code. The reserved code "floor" cannot be used for a booth.</div>
+{% endif %}
 
 {% if is_event_owner %}
 <div class="tm-pointer">
