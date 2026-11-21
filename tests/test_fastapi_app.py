@@ -3610,7 +3610,7 @@ def test_ws_mission_control_observer_makes_an_interpreter_live():
         with client.websocket_connect(f"/ws/booth/{booth}", cookies=_ws_auth()) as ws_mc:
             _ws_ready(ws_mc)
             ws_mc.send_text(json.dumps({"type": "booth:set-active", "target_id": pid_b, "expected_active_id": pid_a}))
-            # The observer gets a direct answer, then the broadcast like everyone else.
+            # The observer gets the broadcast like everyone else, then a direct answer.
             state = json.loads(ws_mc.receive_text())
             assert json.loads(ws_mc.receive_text()) == state
             for ws in (ws_a, ws_b):

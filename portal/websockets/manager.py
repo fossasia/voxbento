@@ -947,10 +947,11 @@ async def _handle_set_active(ws: WebSocket, session: Session, data: dict) -> Non
     except (ValueError, PermissionError) as exc:
         await ws.send_text(json.dumps({"type": "booth:error", "message": str(exc)}))
         return
-    # Answer the requester directly as well: the broadcast skips sockets whose
-    # membership check fails, and the requester would then wait with no reply.
-    await ws.send_text(json.dumps({"type": "booth:state", "state": state}))
+    # Broadcast first, so a requester that drops now cannot keep the booth from
+    # hearing about the change. Then answer it directly: the broadcast skips
+    # sockets whose membership check fails, and it would wait with no reply.
     await broadcast_booth_state(session.booth_id, state)
+    await ws.send_text(json.dumps({"type": "booth:state", "state": state}))
 
 
 async def _handle_get_state(ws: WebSocket, session: Session, _data: dict) -> None:
