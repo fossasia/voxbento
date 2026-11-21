@@ -505,8 +505,9 @@ def test_revoked_account_cookie_does_not_override_valid_invite(recovery, channel
     path = tts_path(room) if channel == "tts" else f"/ws/booth/recovery-test-{room.id}-en"
     if revoked_invite:
         with pytest.raises(WebSocketDisconnect) as exc:
-            with client.websocket_connect(path):
-                pass
+            with client.websocket_connect(path) as refused:
+                # Refused sockets are accepted first so the browser can read the code.
+                refused.receive_text()
         assert exc.value.code == 4003
         return
     with client.websocket_connect(path) as socket:
