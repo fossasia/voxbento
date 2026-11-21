@@ -90,9 +90,9 @@ Jitsi Meet Floor Conference
 | `portal/transcription/providers/elevenlabs.py` | `ElevenLabsProvider` — scribe_v2 |
 | `portal/translations/worker.py` | `TranslationWorker`: per-language translation dispatch, timeouts and delivery; `ENGINES` maps each provider to its `TranslationEngine` |
 | `portal/translations/engine.py` | `TranslationEngine` interface (`translate_batch`, `translate_text`), `Language`, `TranslationContext`, `EngineKind`; the worker calls engines only through it |
-| `portal/translations/providers/` | Backends: `LocalProvider` (NLLB, an engine itself) and the prompt-based cloud providers, wrapped by `ProviderEngine` in `base.py` |
+| `portal/translations/providers/` | Backends: `LocalProvider` (NLLB and M2M100, an engine itself) and the prompt-based cloud providers, wrapped by `ProviderEngine` in `base.py` |
 | `portal/translations/constants.py` | Translation providers and the hosted models offered for each; the self-hosted list comes from the registry |
-| `portal/translations/registry.py` | `TranslationModel`: one entry per self-hosted model (engine kind, pinned Hugging Face repo and revision, ISO 639-1 to model language codes, memory, capabilities, licence); `get_translation_model()` |
+| `portal/translations/registry.py` | `TranslationModel`: one entry per self-hosted model (engine kind, pinned Hugging Face repo and revision, ISO 639-1 to model language codes, memory, capabilities, licence, tokenizer type when the repository names none); NLLB-200 600M and M2M100 418M and 1.2B; `get_translation_model()` |
 | `portal/translations/prompts.py` | Contextual prompt construction incorporating room AI persona and style instructions |
 | `portal/translations/vocabulary.py` | AI interpretation vocabulary & glossary resolution, CSV import/export, and matching |
 | `portal/tts/worker.py` | `TTSWorker`, buffers punctuation, chunks text, routes to a TTS provider, pushes raw PCM binary to `tts_manager` |

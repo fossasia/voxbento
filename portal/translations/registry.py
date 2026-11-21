@@ -35,6 +35,8 @@ class TranslationModel:
     supports_multi_target_batch: bool
     #: SPDX identifier of the model's licence.
     licence: str
+    #: The ``transformers`` tokenizer type, for a repository whose files do not name it.
+    tokenizer_type: str | None = None
 
     def engine_code(self, language_code: str) -> str | None:
         """The model's own code for an ISO 639-1 language, or None when it lacks the language."""
@@ -82,9 +84,47 @@ NLLB_200_DISTILLED_600M = TranslationModel(
     licence="CC-BY-NC-4.0",
 )
 
+# The M2M100 languages that have an ISO 639-1 code; the model's own code wraps it, as in "__fr__".
+# Asturian (ast), Cebuano (ceb), Iloko (ilo) and Northern Sotho (ns) have none.
+_M2M100_LANGUAGES = {
+    code: f"__{code}__"
+    for code in (
+        "af am ar az ba be bg bn br bs ca cs cy da de el en es et fa ff fi fr fy ga gd gl gu ha he hi hr ht hu hy id "
+        "ig is it ja jv ka kk km kn ko lb lg ln lo lt lv mg mk ml mn mr ms my ne nl no oc or pa pl ps pt ro ru sd si "
+        "sk sl so sq sr ss su sv sw ta th tl tn tr uk ur uz vi wo xh yi yo zh zu"
+    ).split()
+}
+
+M2M100_418M = TranslationModel(
+    id="m2m100_418M",
+    engine_kind=EngineKind.CT2_SEQ2SEQ,
+    hf_repo="jncraton/m2m100_418M-ct2-int8",
+    hf_revision="7c1b2620a4e58dacecbd8bf89cfd6da7eb9eb7b0",
+    languages=MappingProxyType(_M2M100_LANGUAGES),
+    approx_ram_mb=500,
+    supports_prompt=False,
+    supports_multi_target_batch=True,
+    licence="MIT",
+    # The repository's tokenizer_config.json names no tokenizer class.
+    tokenizer_type="m2m_100",
+)
+
+M2M100_1_2B = TranslationModel(
+    id="m2m100_1.2B",
+    engine_kind=EngineKind.CT2_SEQ2SEQ,
+    hf_repo="jncraton/m2m100_1.2B-ct2-int8",
+    hf_revision="e50078df6be13a88592b70ea42f4d74c2082e448",
+    languages=MappingProxyType(_M2M100_LANGUAGES),
+    approx_ram_mb=1250,
+    supports_prompt=False,
+    supports_multi_target_batch=True,
+    licence="MIT",
+    tokenizer_type="m2m_100",
+)
+
 #: Every self-hosted model, by id. The first one is the default.
 LOCAL_TRANSLATION_MODELS: Mapping[str, TranslationModel] = MappingProxyType(
-    {model.id: model for model in (NLLB_200_DISTILLED_600M,)}
+    {model.id: model for model in (NLLB_200_DISTILLED_600M, M2M100_418M, M2M100_1_2B)}
 )
 
 
