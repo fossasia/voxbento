@@ -141,7 +141,7 @@
         {% for entry in entries %}
         <tr>
           <td><a href="/admin/users/{{ entry.user.id }}/">{{ entry.user.display_name }}</a></td>
-          <td>{{ entry.user.email }}</td>
+          <td class="ha-email-cell">{{ entry.user.email }}</td>
           <td>{{ entry.events_owned }}</td>
           <td>
             {% if entry.pending_invite %}

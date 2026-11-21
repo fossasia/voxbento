@@ -28,14 +28,14 @@ def upgrade() -> None:
         sa.Column("booth_id", sa.Integer(), nullable=False),
         sa.Column("language_code", sa.String(length=20), nullable=False),
         sa.Column("language_name", sa.String(length=100), nullable=False),
-        sa.Column("enabled", sa.Boolean(), server_default="1", nullable=False),
+        sa.Column("enabled", sa.Boolean(), server_default=sa.true(), nullable=False),
         sa.ForeignKeyConstraint(["booth_id"], ["booths.id"], ondelete="CASCADE"),
         sa.PrimaryKeyConstraint("id"),
     )
     op.create_index(
         "ix_translation_booth_language", "booth_translation_languages", ["booth_id", "language_code"], unique=True
     )
-    op.add_column("booths", sa.Column("translation_enabled", sa.Boolean(), server_default="0", nullable=False))
+    op.add_column("booths", sa.Column("translation_enabled", sa.Boolean(), server_default=sa.false(), nullable=False))
     op.add_column("booths", sa.Column("translation_provider", sa.String(length=50), nullable=True))
     op.add_column("booths", sa.Column("translation_model", sa.String(length=100), nullable=True))
     # ### end Alembic commands ###
