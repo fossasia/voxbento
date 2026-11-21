@@ -86,3 +86,90 @@ async def test_transcripts_page_loads_external_module_and_exposes_ids(client):
     assert f'data-room-id="{room_a}"' in r.text
     assert 'onclick="fetchTranscripts()"' not in r.text
     assert "function fetchTranscripts" not in r.text
+
+
+@pytest.mark.anyio
+async def test_api_transcripts_normalizes_language_codes(client):
+    """Language codes are matched case-insensitively and validated, as in the API v1 export."""
+    from portal.database import get_session
+    from portal.models import TranscriptSegment, TranscriptTranslation
+
+    token, ev_a, room_a, _room_b = await _setup()
+    client.cookies.set("user_token", token)
+    async with get_session() as s:
+        segment = TranscriptSegment(room_id=room_a, language_code="en", text="Hello")
+        s.add(segment)
+        await s.flush()
+        s.add(TranscriptTranslation(segment_id=segment.id, language_code="es", text="Hola"))
+        # Saved in another case, and in a language room setup offers but booths do not accept.
+        s.add(TranscriptTranslation(segment_id=segment.id, language_code="SH", text="Zdravo"))
+        await s.commit()
+    base = f"/api/workspace/events/{ev_a}/rooms/{room_a}/transcripts"
+
+    r = await client.get(f"{base}/EN")
+    assert r.status_code == 200
+    assert [t["text"] for t in r.json()] == ["Hello"]
+
+    r = await client.get(f"{base}/en?target_lang=ES")
+    assert r.status_code == 200
+    assert [t["text"] for t in r.json()] == ["Hola"]
+
+    r = await client.get(f"{base}/en?target_lang=sh")
+    assert r.status_code == 200
+    assert [t["text"] for t in r.json()] == ["Zdravo"]
+
+    for bad in (f"{base}/zz", f"{base}/en?target_lang=zz", f"{base}/en?target_lang=floor"):
+        r = await client.get(bad)
+        assert r.status_code == 400, bad
+
+    r = await client.get(f"{base}/en?target_lang=")
+    assert r.status_code == 422
+
+
+@pytest.mark.anyio
+async def test_api_transcripts_returns_one_translation_per_segment(client):
+    """A segment with the same language saved in two cases ("es" and "ES") is listed once."""
+    from portal.database import get_session
+    from portal.models import TranscriptSegment, TranscriptTranslation
+
+    token, ev_a, room_a, _room_b = await _setup()
+    client.cookies.set("user_token", token)
+    async with get_session() as s:
+        segment = TranscriptSegment(room_id=room_a, language_code="en", text="Hello")
+        s.add(segment)
+        await s.flush()
+        s.add(TranscriptTranslation(segment_id=segment.id, language_code="ES", text="Hola (old row)"))
+        s.add(TranscriptTranslation(segment_id=segment.id, language_code="es", text="Hola"))
+        await s.commit()
+
+    r = await client.get(f"/api/workspace/events/{ev_a}/rooms/{room_a}/transcripts/en?target_lang=es")
+
+    assert r.status_code == 200
+    assert [t["text"] for t in r.json()] == ["Hola"]
+
+
+@pytest.mark.anyio
+async def test_api_transcripts_accepts_a_saved_booth_target_language(client):
+    """A target language the booth already has, such as a regional code, stays readable."""
+    from portal.database import create_booth, get_session
+    from portal.models import BoothTranslationLanguage, TranscriptSegment, TranscriptTranslation
+
+    token, ev_a, room_a, _room_b = await _setup()
+    client.cookies.set("user_token", token)
+    async with get_session() as s:
+        booth = await create_booth(s, event_id=ev_a, room_id=room_a, language_code="en", language_name="English")
+        s.add(BoothTranslationLanguage(booth_id=booth.id, language_code="pt-BR", language_name="Portuguese"))
+        segment = TranscriptSegment(room_id=room_a, language_code="en", text="Hello")
+        s.add(segment)
+        await s.flush()
+        s.add(TranscriptTranslation(segment_id=segment.id, language_code="pt-BR", text="Olá"))
+        await s.commit()
+    base = f"/api/workspace/events/{ev_a}/rooms/{room_a}/transcripts/en"
+
+    for code in ("pt-BR", "pt-br"):
+        r = await client.get(f"{base}?target_lang={code}")
+        assert r.status_code == 200, code
+        assert [t["text"] for t in r.json()] == ["Olá"]
+
+    r = await client.get(f"{base}?target_lang=fr-CA")
+    assert r.status_code == 400

@@ -54,6 +54,31 @@ def language_support_error(provider: str | None, model: str | None, language_cod
     )
 
 
+def validate_translation_language(code: str) -> str:
+    """Return a requested translation language lowercased, or raise ``ValueError``.
+
+    Translation languages are the two-letter codes room setup offers from pycountry, which include
+    codes such as ``sh`` that ``validate_language_code`` does not accept for booths.
+    """
+    normalized = code.strip().lower()
+    if len(normalized) != 2 or not normalized.isalpha() or pycountry.languages.get(alpha_2=normalized) is None:
+        raise ValueError(f"'{code}' is not a supported translation language code.")
+    return normalized
+
+
+def resolve_translation_language(code: str, saved_codes: Iterable[str]) -> str:
+    """Return a requested translation language lowercased, or raise ``ValueError``.
+
+    A code the booth already translates into is accepted in any case, so translations saved under a
+    code room setup doesn't offer (such as ``pt-BR`` from an older booth setting) stay readable. Any
+    other code must be one room setup offers.
+    """
+    normalized = code.strip().lower()
+    if normalized and normalized in {saved.strip().lower() for saved in saved_codes}:
+        return normalized
+    return validate_translation_language(code)
+
+
 def _name(code: str) -> str:
     """The English name for an ISO 639-1 code, falling back to the code itself."""
     language = pycountry.languages.get(alpha_2=code.strip().lower())
