@@ -17,7 +17,7 @@ from starlette.exceptions import HTTPException as StarletteHTTPException
 from starlette.middleware.base import BaseHTTPMiddleware
 from unilimit.integrations.fastapi import RateLimitExceeded, setup
 
-from portal import meeting_source, program_ingest
+from portal import meeting_source, program_ingest, youtube_caption_sync
 from portal.auth import (
     ADMIN_CSRF_COOKIE,
     generate_admin_csrf_token,
@@ -113,6 +113,10 @@ async def lifespan(app: FastAPI):
     ingest_task = asyncio.create_task(program_ingest.reconcile_loop()) if settings.program_ingest_enabled else None
     meeting_task = asyncio.create_task(meeting_source.reconcile_loop())
     attendance_task = asyncio.create_task(booths.attendance.run())
+    # Restores saved YouTube caption choices after a restart and keeps them in step (#1087, plan 006).
+    captions_task = (
+        asyncio.create_task(youtube_caption_sync.reconcile_loop()) if settings.youtube_connect_enabled else None
+    )
 
     # Bring back booths that were live before this restart, then keep saving them (TD-03).
     recovery_task = None
@@ -136,9 +140,13 @@ async def lifespan(app: FastAPI):
         tasks_to_cancel.append(ingest_task)
     if recovery_task:
         tasks_to_cancel.append(recovery_task)
+    if captions_task:
+        tasks_to_cancel.append(captions_task)
     for task in tasks_to_cancel:
         task.cancel()
     await asyncio.gather(*tasks_to_cancel, return_exceptions=True)
+    # The coordinator is gone; stop its caption senders so no posting task outlives the app.
+    await youtube_caption_sync.shutdown()
 
     if pg.shared_http_client:
         await pg.shared_http_client.aclose()

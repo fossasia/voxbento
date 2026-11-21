@@ -157,6 +157,9 @@ class Room(Base):
     # The YouTube broadcast this room streams to, and the stream bound to it in YouTube Studio.
     youtube_broadcast_id: Mapped[str | None] = mapped_column(String(32), nullable=True)
     youtube_stream_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    # Which captions go to the broadcast's CC track (plan 006): None = off, "floor" = the spoken language,
+    # otherwise one of the room's translation language codes.
+    youtube_captions_language: Mapped[str | None] = mapped_column(String(20), nullable=True)
     floor_caption_seq: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
 
     # Translation Settings

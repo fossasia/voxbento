@@ -273,11 +273,19 @@ the admin CSRF token (`require_admin_csrf`, `X-CSRF-Token`).
   `{broadcast}` (link or id) links the room and, in relay mode, stores the bound stream's
   ingest address and key as the relay destination; 422 bad link / not on the channel / no
   bound stream, 409 sign in again, 502 YouTube unavailable. The key is never returned.
-  DELETE unlinks and keeps the relay destination.
+  DELETE unlinks, turns YouTube captions off and keeps the relay destination.
+- `PUT /workspace/events/{event_id}/rooms/{room_id}/youtube/captions` (plan 006): `{language}`
+  (`null`, `"floor"` or an enabled translation code). Sets the broadcast up for posted captions
+  (`liveBroadcasts.update`, only before it is live), fetches the caption address and starts
+  `portal/youtube_captions.py`; saves `rooms.youtube_captions_language` only on success.
+  409 no connection / no broadcast / ultra-low latency / ended / already live / sign in again,
+  422 language that would never post, 502 YouTube unavailable. The caption URL is never returned.
+  `portal/youtube_caption_sync.py` restores and stops delivery in the background (every 30 s).
 - `GET .../program-ingest` adds `youtube` (`broadcast_id`, `title`, `life_cycle_status`,
-  `stream_status`, `health`, `latency_preference`, `checked_at`, or `{error}`) when the room
-  has a linked broadcast on a connected channel; cached 60 s per room, five minutes after a
-  quota or rate-limit error.
+  `stream_status`, `health`, `latency_preference`, `checked_at`, `captions` = `{language,
+  state, reason, last_ok_at, choices}`, or `{error}`) when the room has a linked broadcast on
+  a connected channel; cached 60 s per room (captions are live), five minutes after a quota or
+  rate-limit error.
 
 ## Meeting report routes (#1080)
 

@@ -310,6 +310,7 @@ Tracks which languages the translation worker should generate for a given room o
 | 046 | `046_live_demo_room_ai.py` | Transitional room-linked demo settings and daily limit |
 | 047 | `047_live_demo_independent_ai.py` | Independent demo providers, models, encrypted keys, persona/style; removes room link |
 | 044 | `044_youtube_connections.py` | `youtube_connections` table (one per event), `rooms.youtube_broadcast_id`, `rooms.youtube_stream_id` (#1087) |
+| 048 | `048_youtube_captions_language.py` | `rooms.youtube_captions_language` — the room's YouTube CC track language (#1087, plan 006) |
 
 Run migrations: `uv run alembic upgrade head`
 
@@ -384,6 +385,14 @@ write-only, never serialize or log), `scope` (String(500)), nullable
 "sign in again" message), `connected_at` (sign-in time), `created_at`, `updated_at`. Room fields: nullable
 `youtube_broadcast_id` (String(32)) and `youtube_stream_id` (String(64)). Helpers live in
 `portal/youtube_account.py` (`get_connection`, `link_broadcast`, `unlink_event_rooms`).
+
+## Migration 048 — Captions on YouTube (#1087, plan 006)
+
+`rooms.youtube_captions_language` (nullable String(20)): `NULL` = off, `"floor"` = the
+spoken language, otherwise one of the room's `room_translation_languages.language_code`.
+Cleared by unlinking the broadcast, switching channel and disconnecting
+(`unlink_event_rooms`). The caption ingestion URL is a secret and is never stored;
+`portal/youtube_caption_sync.py` fetches it again after a restart.
 
 ## Migration 035 — per-language AI voice (#1005)
 

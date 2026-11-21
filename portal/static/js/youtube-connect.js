@@ -11,6 +11,12 @@ const link = document.getElementById('youtube-broadcast-link');
 const statusLine = document.getElementById('youtube-status-line');
 const unlink = document.getElementById('youtube-unlink');
 const signInAgain = document.getElementById('youtube-signin-again');
+const captionsBox = document.getElementById('youtube-captions');
+const captionsSelect = document.getElementById('youtube-captions-select');
+const captionsStatus = document.getElementById('youtube-captions-status');
+// The saved caption language as last reported by the server ('' = off).
+let captionsLanguage = '';
+let captionChoicesKey = '';
 let connected = false;
 let linkedId = null;
 let pending = false;
@@ -105,9 +111,38 @@ async function loadBroadcasts() {
   }
 }
 
+function captionsStateText(captions) {
+  if (!captions.language) return 'Off. Choose a language to post captions to this broadcast.';
+  switch (captions.state) {
+    case 'posting': {
+      const at = captions.last_ok_at ? new Date(captions.last_ok_at * 1000).toLocaleTimeString() : '';
+      return at ? `Posting captions. Last accepted by YouTube at ${at}.` : 'Posting captions.';
+    }
+    case 'waiting': return 'On. Waiting for speech in the room.';
+    case 'starting': return 'Starting…';
+    case 'failing': return `Not posting: ${captions.reason || 'YouTube refused the captions.'}`;
+    default: return 'Off.';
+  }
+}
+
+// Caption choices come from the server (the spoken language and the room's enabled translations).
+function renderCaptions(captions) {
+  captionsBox.hidden = !captions;
+  if (!captions) return;
+  const key = JSON.stringify(captions.choices || []);
+  if (key !== captionChoicesKey) {
+    captionChoicesKey = key;
+    captionsSelect.replaceChildren(new Option('Off', ''), ...(captions.choices || []).map(choice => new Option(choice.label, choice.value)));
+  }
+  captionsLanguage = captions.language || '';
+  if (!pending) captionsSelect.value = captionsLanguage;
+  captionsStatus.textContent = captionsStateText(captions);
+}
+
 function renderRoomStatus(youtube) {
   linkedId = youtube && !youtube.error ? youtube.broadcast_id : null;
   unlink.hidden = !youtube;
+  renderCaptions(youtube && !youtube.error ? youtube.captions : null);
   if (!youtube) {
     statusLine.textContent = 'No broadcast chosen for this room yet.';
     return;
@@ -223,6 +258,25 @@ form.addEventListener('submit', event => {
       ? `This room now streams to "${data.title}". VoxBento filled in its stream key.`
       : `This room is linked to "${data.title}".`, 'success');
     await loadRoomStatus();
+  });
+});
+
+captionsSelect.addEventListener('change', () => {
+  const language = captionsSelect.value;
+  change(async () => {
+    try {
+      const captions = await readJson(await request(box.dataset.captionsUrl, {
+        method: 'PUT',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({language: language || null}),
+      }));
+      say(language ? 'Captions will be posted to this broadcast\'s CC track.' : 'Captions on YouTube are off.', 'success');
+      renderCaptions(captions);
+    } catch (error) {
+      // Nothing was saved: show the language that is really in effect.
+      captionsSelect.value = captionsLanguage;
+      throw error;
+    }
   });
 });
 

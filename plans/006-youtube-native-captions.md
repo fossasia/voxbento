@@ -6,11 +6,13 @@ Make VoxBento's finished caption text appear in YouTube's own **CC** button.
 Viewers can stay on YouTube to read one caption language. Translated speech and
 other caption languages remain available through VoxBento's listener page.
 
-**Status on 12 November 2026: IN PROGRESS — part 1 merged, part 2 pending.**
+**Status on 22 November 2026: IN REVIEW — part 1 merged, part 2 in review.**
 [#1153](https://github.com/fossasia/voxbento/pull/1153) delivered the text-sending
-engine and the connections that pass it finished captions/translations. It is
-inactive until a caption target is configured. It does not yet give an owner a
-working switch to turn YouTube captions on. Last recorded contributor: @hazelmayank.
+engine and the connections that pass it finished captions/translations. Part 2
+(branch `feat/1087-youtube-captions-controls`) adds the owner's **Captions on YouTube**
+control, migration 048, broadcast set-up, restart recovery and stop/replace/shutdown
+handling (`portal/youtube_caption_sync.py`). Steps 1–6 below are implemented; step 7,
+the rehearsal on a real broadcast, is still pending. Contributors: @hazelmayank (part 1).
 
 ### What to do next, in order
 

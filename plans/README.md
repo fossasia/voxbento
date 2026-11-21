@@ -42,41 +42,26 @@ The shared room setup also belongs to [#751](https://github.com/fossasia/voxbent
 Plan numbers are stable identifiers, not the order in which a user clicks things.
 For example, plan 003 is the browser-tab work; it is not the account-connection work.
 
-## Current status — reviewed 12 November 2026
+## Current status — updated 22 November 2026
 
-**The complete feature is still unfinished. None of the three open implementation
-PRs below is ready to merge at the reviewed heads.** This documentation update does
-not implement their fixes or certify a live deployment.
+**The complete feature is still unfinished.** The code for 003–006 is merged or in
+review; what remains is the guided setup (007, stacked on 006) and the live rehearsals,
+which need a real YouTube channel and the deployment's Google client.
 
 | Plan | Status | Evidence and remaining work |
 |---|---|---|
 | 002 | IN PROGRESS | [Results](002-results.md) merged in [#1133](https://github.com/fossasia/voxbento/pull/1133). Steps 1, 3 and 4 have measurements; step 2 still needs real third-party streaming-tool tests. |
 | 003 | DONE | Tab capture merged in [#1097](https://github.com/fossasia/voxbento/pull/1097); [#1231](https://github.com/fossasia/voxbento/pull/1231) later preserved the saved sync delay when starting/reconnecting. |
 | 004 | IN PROGRESS — rehearsal remaining | Implementation and invariant approval merged in [#1102](https://github.com/fossasia/voxbento/pull/1102); cleanup follow-up merged in [#1152](https://github.com/fossasia/voxbento/pull/1152). The streaming-platform rehearsal is still pending. |
-| 005 | IN PROGRESS — changes requested | Backend [#1107](https://github.com/fossasia/voxbento/pull/1107) and room controls/docs [#1108](https://github.com/fossasia/voxbento/pull/1108) are open. Fix the findings below and finish the live application rehearsal. |
-| 006 | IN PROGRESS — part 1 merged | [#1153](https://github.com/fossasia/voxbento/pull/1153) merged the caption delivery engine and connections from the caption/translation pipeline. It sends nothing until configured. Part 2 still needs the controls, saved choice, startup/recovery and shutdown handling. |
-| 007 | IN PROGRESS — partial proposal, changes requested | [#1125](https://github.com/fossasia/voxbento/pull/1125) combines the source-selection fix for [#1119](https://github.com/fossasia/voxbento/issues/1119) with an incomplete guide. Finish it against 005/006, or separate the narrow fix. |
+| 005 | CODE MERGED — rehearsal remaining | Backend [#1107](https://github.com/fossasia/voxbento/pull/1107) (merged 15 November) and room controls/docs [#1108](https://github.com/fossasia/voxbento/pull/1108) (merged 20 November). The live journey with a real channel (step 4 below) is still pending. |
+| 006 | IN REVIEW — part 2 | [#1153](https://github.com/fossasia/voxbento/pull/1153) merged the delivery engine. Part 2 (owner control, saved choice, YouTube set-up, restart recovery, stop/replace/shutdown handling) is in review on branch `feat/1087-youtube-captions-controls`. The live caption rehearsal (step 6) is still pending. |
+| 007 | IN PROGRESS | [#1125](https://github.com/fossasia/voxbento/pull/1125) and [#1119](https://github.com/fossasia/voxbento/issues/1119) were closed on 16 November: the guide must land with working controls. It is being rebuilt on top of 006 part 2. |
 
-Earlier drafts: #1090 was superseded by #1097; #1091/#1096 were superseded by #1133.
-Do not reopen their old work or recreate the merged foundations. Existing forwarding
-to YouTube came from #804; the browser sender from #756/#947; the shared room-page
-choices from #1039. Deleted-event cleanup landed in #1016 and #1152.
-
-### What is holding the open PRs up?
-
-These are findings on specific reviewed versions, not permanent claims about later
-commits. Recheck the review and current head before starting work.
-
-| PR and reviewed head | Problem in ordinary terms | Required result |
-|---|---|---|
-| [#1107, `534cf342`](https://github.com/fossasia/voxbento/pull/1107#pullrequestreview-5872114981) | Trying to reconnect can cancel a working Google connection if Google briefly fails. A new settings test also fails the current password-like secret checks. | A failed reconnect leaves existing/shared access working; the settings test uses a valid test secret; a real broadcast-to-relay journey is demonstrated. |
-| [#1108, `aef5c43a`](https://github.com/fossasia/voxbento/pull/1108#pullrequestreview-5872115423) | After the owner removes a forwarding destination, a routine status refresh can add it back. The branch also needs updating against current dev and the final backend. | Removing the destination keeps forwarding stopped; carry the backend fixes into this PR, resolve conflicts and demonstrate the real successful flow. |
-| [#1125, `8b6f2b40`](https://github.com/fossasia/voxbento/pull/1125#pullrequestreview-5872115846) | Setup buttons lack the request token current dev requires; the extra-destination route chooses the browser transport; the new key is lost; forwarding instructions leave the owner without usable credentials. | Each button completes the advertised setup, uses the correct protected request/transport, shows the newly created key intentionally, and includes working destination controls. |
-
-The earlier database migration collision is **fixed** in the reviewed 005 branches:
-revision 042 follows 041. Fresh install, upgrade from 041 and downgrade/re-upgrade
-passed. Keep that migration in the backend PR once; choose any later migration
-number from the actual merged head rather than copying the old examples.
+Earlier drafts: #1090 was superseded by #1097; #1091/#1096 were superseded by #1133;
+#1125 was closed in favour of the full plan 007 guide. Do not reopen their old work or
+recreate the merged foundations. Existing forwarding to YouTube came from #804; the
+browser sender from #756/#947; the shared room-page choices from #1039. Deleted-event
+cleanup landed in #1016 and #1152.
 
 ## The three ways sound can reach VoxBento
 
@@ -103,22 +88,15 @@ issue a credential for one and tell the organiser to use it with the other.
    #1133 is already merged. At least one supported platform must have a successful
    verdict; keep untested platforms labelled pending rather than claiming support.
    Paid StreamYard/Restream access was an outstanding constraint in the discussion.
-2. **Finish the account backend (005, #1107).** Fix failed-reconnect revocation,
-   test existing/shared connections, and correct the failing settings fixture.
-   Keep the migration following the current database history. Run the regression
-   checks and request a fresh review of the new head.
-3. **Finish the room controls (005, #1108).** Update the branch with the final
-   backend and current dev. Make an explicit Remove action stay removed; a status
-   refresh must not restart forwarding. Test choosing a broadcast before enabling
-   forwarding as well as choosing one afterwards. Merge the backend before the UI
-   layer, with the migration introduced only once.
+2. ~~**Finish the account backend (005, #1107).**~~ Done: merged 15 November.
+3. ~~**Finish the room controls (005, #1108).**~~ Done: merged 20 November.
 4. **Prove the account connection with a real channel (005).** Use an unlisted test
    broadcast: sign in, choose it, confirm the room is linked, send an encoder stream
    through VoxBento and see YouTube receive it. Show that the private YouTube key
    never appears on the page or in the recording. Test Disconnect and explain the
    shared-account revocation behavior. Record who ran it and the outcome. The spike
    proved API fields exist; it did not prove this application's complete journey.
-5. **Finish the YouTube caption controls (006 part 2).** Reuse the merged delivery
+5. **Finish the YouTube caption controls (006 part 2).** In review. Reuse the merged delivery
    engine. Let the owner turn captions off or choose the original language or one
    enabled translation. Save the choice, check the broadcast's caption settings,
    show whether text is being delivered, and stop delivery when the connection or

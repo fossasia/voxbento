@@ -4,6 +4,7 @@
   data-status-url='{{ management_prefix }}/events/{{ event.id }}/youtube'
   data-broadcasts-url='{{ management_prefix }}/events/{{ event.id }}/youtube/broadcasts'
   data-broadcast-url='{{ management_prefix }}/events/{{ event.id }}/rooms/{{ room.id }}/youtube/broadcast'
+  data-captions-url='{{ management_prefix }}/events/{{ event.id }}/rooms/{{ room.id }}/youtube/captions'
   data-room-status-url='{{ management_prefix }}/events/{{ event.id }}/rooms/{{ room.id }}/program-ingest'>
   <div class='program-section-head'>
     <span class='program-step youtube-connect-mark' aria-hidden='true'>▶</span>
@@ -37,6 +38,14 @@
       </div>
     </form>
     <p id='youtube-status-line' class='program-relay-note' role='status' aria-live='polite'></p>
+    <div id='youtube-captions' class='program-relay-destination youtube-captions' hidden>
+      <label for='youtube-captions-select'>Captions on YouTube</label>
+      <select id='youtube-captions-select' class='input'>
+        <option value=''>Off</option>
+      </select>
+      <p id='youtube-captions-status' class='program-relay-note' role='status' aria-live='polite'></p>
+      <p class='program-relay-note'>YouTube shows one caption track, in the player's CC button. Choose it before the broadcast goes live: YouTube does not let a live broadcast switch to posted captions. Viewers can use YouTube's auto-translate on it; every language and translated speech stay on VoxBento's listener page.</p>
+    </div>
   </div>
 
   <p id='youtube-message' class='alert alert-info' role='status' aria-live='polite' hidden></p>

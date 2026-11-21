@@ -289,9 +289,11 @@ async def room_ids_for_event(session: AsyncSession, event_id: int) -> list[int]:
 
 
 async def unlink_event_rooms(session: AsyncSession, event_id: int) -> list[int]:
-    """Clear the linked broadcast on every room of the event; returns the event's room ids."""
+    """Clear the linked broadcast (and its caption choice) on every room of the event; returns the room ids."""
     await session.execute(
-        update(Room).where(Room.event_id == event_id).values(youtube_broadcast_id=None, youtube_stream_id=None)
+        update(Room)
+        .where(Room.event_id == event_id)
+        .values(youtube_broadcast_id=None, youtube_stream_id=None, youtube_captions_language=None)
     )
     return await room_ids_for_event(session, event_id)
 
@@ -415,18 +417,37 @@ async def _api_get(token: str, resource: str, params: dict) -> dict:
     return body if isinstance(body, dict) else {}
 
 
-async def _connection_get(connection: YouTubeConnection, resource: str, params: dict) -> dict:
+async def _api_put(token: str, resource: str, params: dict, payload: dict) -> dict:
+    response = await _send(
+        "PUT", f"{API_BASE}/{resource}", params=params, json=payload, headers={"Authorization": f"Bearer {token}"}
+    )
+    if response.status_code == 401:
+        raise YouTubeAuthError(REAUTH_MESSAGE)
+    if response.status_code != 200:
+        raise YouTubeAPIError(response.status_code, _reason(response))
+    try:
+        body = response.json()
+    except ValueError:
+        return {}
+    return body if isinstance(body, dict) else {}
+
+
+async def _connection_call(connection: YouTubeConnection, call) -> dict:
+    """Run ``call(access_token)``; on a rejected access token refresh once and retry before asking for a sign-in."""
     token = await access_token(connection)
     try:
-        return await _api_get(token, resource, params)
+        return await call(token)
     except YouTubeAuthError:
-        # Google rejected the access token while the refresh token may still be fine:
-        # refresh once and retry before asking the owner to sign in again.
+        # Google rejected the access token while the refresh token may still be fine.
         _tokens.pop(connection.event_id, None)
     try:
-        return await _api_get(await access_token(connection), resource, params)
+        return await call(await access_token(connection))
     except YouTubeAuthError:
         raise _needs_sign_in(connection) from None
+
+
+async def _connection_get(connection: YouTubeConnection, resource: str, params: dict) -> dict:
+    return await _connection_call(connection, lambda token: _api_get(token, resource, params))
 
 
 async def my_channel(token: str) -> tuple[str, str] | None:
@@ -484,6 +505,69 @@ async def get_broadcast(connection: YouTubeConnection, broadcast_id: str) -> Bro
     body = await _connection_get(connection, "liveBroadcasts", {"part": BROADCAST_PARTS, "id": broadcast_id})
     items = body.get("items") or []
     return _broadcast(items[0]) if items else None
+
+
+ULTRA_LOW_MESSAGE = (
+    "Ultra-low latency YouTube broadcasts cannot show captions. Choose Normal or Low latency in YouTube Studio."
+)
+ENDED_MESSAGE = "This YouTube broadcast has ended. Link a new broadcast to post captions."
+TOO_LATE_MESSAGE = (
+    "Captions must be set up before the broadcast starts. YouTube does not let a live broadcast switch to "
+    "posted captions; in YouTube Studio set Closed captions to 'POST captions to URL' before going live."
+)
+CAPTIONS_REFUSED_MESSAGE = (
+    "YouTube would not switch captions on. In YouTube Studio open the stream settings, set Closed captions "
+    "to 'POST captions to URL', then try again."
+)
+# Snippet fields that liveBroadcasts.update would reset if a PUT of the snippet part left them out.
+_WRITABLE_SNIPPET = ("title", "description", "scheduledStartTime", "scheduledEndTime")
+
+
+async def enable_http_captions(connection: YouTubeConnection, broadcast_id: str) -> None:
+    """Make sure the broadcast accepts captions posted over HTTP (``closedCaptionsHttpPost``).
+
+    The order of checks follows plans/002-results.md: a live broadcast refuses every caption change, even
+    one that changes nothing, so a broadcast already set up that way is accepted as it is. Raises
+    ValueError with an organiser-facing message when the broadcast cannot carry posted captions.
+    """
+    body = await _connection_get(connection, "liveBroadcasts", {"part": BROADCAST_PARTS, "id": broadcast_id})
+    items = body.get("items") or []
+    if not items:
+        raise ValueError("That broadcast is not on the connected channel.")
+    item = items[0]
+    snippet = item.get("snippet") or {}
+    details = dict(item.get("contentDetails") or {})
+    life_cycle = str((item.get("status") or {}).get("lifeCycleStatus", ""))
+    if details.get("latencyPreference") == "ultraLow":
+        raise ValueError(ULTRA_LOW_MESSAGE)
+    if life_cycle in ("complete", "revoked"):
+        raise ValueError(ENDED_MESSAGE)
+    if details.get("closedCaptionsType") == "closedCaptionsHttpPost":
+        return
+    if life_cycle not in ("created", "ready"):
+        raise ValueError(TOO_LATE_MESSAGE)
+    # Send the whole part back: YouTube resets any mutable property an updated part leaves out. The measured
+    # successful update kept boundStreamId and dropped enableClosedCaptions, which follows the type.
+    details.pop("enableClosedCaptions", None)
+    details["closedCaptionsType"] = "closedCaptionsHttpPost"
+    payload = {
+        "id": broadcast_id,
+        "snippet": {key: snippet[key] for key in _WRITABLE_SNIPPET if snippet.get(key) is not None},
+        "contentDetails": details,
+    }
+    try:
+        await _connection_call(
+            connection, lambda token: _api_put(token, "liveBroadcasts", {"part": "id,snippet,contentDetails"}, payload)
+        )
+    except YouTubeAPIError as exc:
+        logger.warning(
+            "youtube event_id=%s action=captions_enable_failed status=%s reason=%s",
+            connection.event_id,
+            exc.status,
+            exc.reason,
+        )
+        raise ValueError(CAPTIONS_REFUSED_MESSAGE) from None
+    logger.info("youtube event_id=%s action=captions_enabled", connection.event_id)
 
 
 async def get_stream(connection: YouTubeConnection, stream_id: str) -> StreamInfo | None:

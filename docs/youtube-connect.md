@@ -54,6 +54,48 @@ Policies, and VoxBento does not try.
    chosen broadcast's key.
 4. The room status (`GET …/program-ingest`) adds a `youtube` block with the
    broadcast's life-cycle status, stream status and health, cached for 60 s per room.
+5. **Captions on YouTube** (`PUT …/rooms/{room_id}/youtube/captions`) posts one caption
+   language to the broadcast's own CC track. See [Captions on YouTube](#captions-on-youtube).
+
+## Captions on YouTube
+
+Once a room is linked to a broadcast, **Captions on YouTube** on the room page chooses
+what goes into the YouTube player's CC button: **Off**, the spoken language, or one of
+the room's enabled translation languages (floor translation must be on). YouTube takes
+one caption track per broadcast; viewers can use YouTube's auto-translate on it, and
+every language plus translated speech stays on VoxBento's listener page. Only final
+captions are posted, never interim text, and only the room's floor captions (not
+interpreter booths).
+
+Turning captions on:
+
+1. VoxBento reads the broadcast. **Ultra-low latency** broadcasts cannot show captions
+   (choose Normal or Low latency in Studio); an **ended** broadcast is refused.
+2. If the broadcast is not yet set to *POST captions to URL*, VoxBento switches it, sending
+   the broadcast's own settings back unchanged apart from the caption type. YouTube only
+   allows this **before the broadcast goes live**. A live broadcast that was already set to
+   *POST captions to URL* in Studio is accepted as it is; one that was not cannot be changed
+   until its next broadcast.
+3. VoxBento reads the stream's private caption address and starts posting. The address
+   carries the stream key, so it stays in the portal's memory: it is never stored, logged
+   or sent to the browser, and VoxBento posts over `https` although YouTube returns `http`.
+
+The choice is saved on the room only when these steps worked; a refusal is shown on the
+page and changes nothing. The status line then reads *Waiting for speech*, *Posting
+captions* (with the time YouTube last accepted one) or *Not posting* with the reason.
+
+Delivery runs without the room page open. A background check every 30 seconds restores a
+saved choice after a portal restart (fetching the caption address again), restarts it when
+the room is linked to another broadcast, and stops it when the choice is cleared, the room
+or event is deleted, floor transcription or the chosen translation language is turned off,
+or the connection needs signing in again. While captions run, VoxBento asks YouTube about
+the broadcast at most every five minutes, so revoked access, an ended broadcast or a stream
+rebound in Studio stops delivery within that time (sooner when the room page's status poll
+finds the error). After YouTube refuses to set a broadcast up, it is asked again after five
+minutes. Unlinking the broadcast, switching channel or **Disconnect** turns captions off.
+
+Captions appear in the player after YouTube's own viewer delay. The end-to-end delay on a
+real broadcast has not been measured yet; the plan 006 rehearsal records it here.
 
 Accepted links: `https://www.youtube.com/watch?v=<id>`, `https://youtube.com/live/<id>`,
 `https://youtu.be/<id>`, `https://studio.youtube.com/video/<id>/livestreaming`
@@ -112,7 +154,8 @@ Create a second OAuth client (or add a redirect URI) for
 | GET | `/youtube/oauth/callback` | not a workspace route; 400 bad/expired state, 403 other user or no ownership |
 | GET | `/workspace/events/{event_id}/youtube/broadcasts` | `{broadcasts: [{id, title, scheduled_start, life_cycle_status, latency_preference}]}`, live first; 409 when access was revoked |
 | PUT | `/workspace/events/{event_id}/rooms/{room_id}/youtube/broadcast` | `{broadcast}` → `{broadcast_id, title, life_cycle_status, stream_bound, destination_configured}`; 422 bad link / not on channel / no bound stream, 409 sign in again, 502 YouTube unavailable |
-| DELETE | `/workspace/events/{event_id}/rooms/{room_id}/youtube/broadcast` | unlinks; a saved relay destination stays until the owner removes it |
+| DELETE | `/workspace/events/{event_id}/rooms/{room_id}/youtube/broadcast` | unlinks and turns captions off; a saved relay destination stays until the owner removes it |
+| PUT | `/workspace/events/{event_id}/rooms/{room_id}/youtube/captions` | `{language}` (`null` off, `"floor"`, or an enabled translation code) → `{language, state, reason, last_ok_at, choices}`; 409 no connection / no broadcast / broadcast cannot carry captions / sign in again, 422 unusable language, 502 YouTube unavailable |
 | DELETE | `/workspace/events/{event_id}/youtube` | forgets the channel and every room's broadcast; Google revocation is best effort and skipped for a shared channel (see [Revoking access](#revoking-access)) |
 
 The workspace routes are event-owner only (`require_event_owner`) and return 404 while the
@@ -130,6 +173,8 @@ which the room page script reads from the page's `csrf-token` meta tag.
   (`connected_at`), the last sign-in-again error and timestamps.
 - `rooms.youtube_broadcast_id`, `rooms.youtube_stream_id`: the room's broadcast and
   the stream bound to it.
+- `rooms.youtube_captions_language` (migration 048): `NULL` (off), `floor` or a
+  translation language code. The caption address itself is never stored.
 
 Access tokens live only in the portal's memory (one portal replica), are refreshed
 when they have under a minute left, and are dropped on reconnect or disconnect. A
@@ -143,7 +188,10 @@ redacts `code=` on `/youtube/oauth/callback` because the path contains `/oauth/`
 
 Listing broadcasts costs two `liveBroadcasts.list` calls (more only for a channel with
 over 50 active or upcoming broadcasts; at most four pages per status); linking costs one
-`liveBroadcasts.list` and one `liveStreams.list`. While a room page is open, each room's
+`liveBroadcasts.list` and one `liveStreams.list`. Turning captions on costs one
+`liveBroadcasts.list`, one `liveBroadcasts.update` when the broadcast is not yet set up, and
+one `liveStreams.list`; a running caption target is re-checked with one `liveBroadcasts.list`
+every five minutes. Posting captions does not use the API quota. While a room page is open, each room's
 status is cached for `YOUTUBE_STATUS_CACHE_SECS` (60 s by default); a refresh costs one
 `liveBroadcasts.list` call, plus one `liveStreams.list` call only when the broadcast is ready
 or (about to go) live. The cache is a duration, not a hard rate limit: signing in again,

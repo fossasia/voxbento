@@ -12,7 +12,7 @@ from fastapi import APIRouter, Depends, Header, HTTPException, Request
 from fastapi.responses import JSONResponse, Response
 from pydantic import BaseModel, Field, ValidationError
 
-from portal import program_relay, youtube_account
+from portal import program_relay, youtube_account, youtube_caption_sync
 from portal.auth import require_admin_csrf, require_event_owner
 from portal.booth_identity import make_mediamtx_path
 from portal.config import settings
@@ -128,6 +128,10 @@ async def ingest_status(event_id: int, room_id: int) -> JSONResponse:
         if not room.floor_language_code or room.floor_transcription_provider == "none":
             warnings.append("Choose a floor source language and transcription provider.")
         youtube = await _youtube_status(session, room)
+        if youtube is not None and "error" not in youtube:
+            # A copy: the YouTube status dict is cached across polls. An error block stays just the error.
+            languages = await youtube_caption_sync.enabled_languages(session, room_id)
+            youtube = {**youtube, "captions": youtube_caption_sync.status(room, languages)}
         return JSONResponse(
             {
                 "available": settings.program_ingest_enabled,
