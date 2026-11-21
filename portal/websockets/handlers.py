@@ -33,6 +33,7 @@ from portal.websockets.manager import (
     _handle_accept_handoff,
     _handle_cancel_handoff,
     _handle_chat,
+    _handle_get_state,
     _handle_initiate_handoff,
     _handle_join,
     _handle_leave,
@@ -53,6 +54,17 @@ _monotonic = time.monotonic
 router = APIRouter()
 
 
+async def _refuse(websocket: WebSocket, code: int, reason: str = "") -> None:
+    """Refuse a booth socket with *code* in a way the browser can read.
+
+    A close before ``accept()`` becomes an HTTP 403 handshake failure that
+    browsers report as 1006, so clients would retry a session that can never
+    succeed instead of telling the user why.
+    """
+    await websocket.accept()
+    await websocket.close(code=code, reason=reason)
+
+
 @router.websocket("/ws/booth/{booth_id}")
 async def ws_booth(websocket: WebSocket, booth_id: str) -> None:
     """Handle WebSocket connections for booth coordination."""
@@ -62,7 +74,7 @@ async def ws_booth(websocket: WebSocket, booth_id: str) -> None:
         return
 
     if is_listener_token(payload):
-        await websocket.close(code=4003)
+        await _refuse(websocket, 4003)
         return
 
     user_id: int | None = None
@@ -91,14 +103,14 @@ async def ws_booth(websocket: WebSocket, booth_id: str) -> None:
         async with get_session() as db_session:
             user = await get_user_by_id(db_session, user_id)
         if user is None or not user.is_active:
-            await websocket.close(code=WS_CLOSE_REVOKED, reason=REASON_ACCOUNT_DEACTIVATED)
+            await _refuse(websocket, WS_CLOSE_REVOKED, REASON_ACCOUNT_DEACTIVATED)
             return
 
     token_epoch = (0, 0)
     if token_id is not None:
         token_epoch = manager.token_revocation_epoch(token_id, booth_id)
         if await is_invite_token_revoked(token_id):
-            await websocket.close(code=WS_CLOSE_REVOKED, reason=REASON_INVITE_REVOKED)
+            await _refuse(websocket, WS_CLOSE_REVOKED, REASON_INVITE_REVOKED)
             return
 
     ws_granted_role = await resolve_booth_role(payload, booth_id)
@@ -198,6 +210,8 @@ async def ws_booth(websocket: WebSocket, booth_id: str) -> None:
                 await _handle_chat(websocket, session, data)
             elif msg_type == "booth:set-active":
                 await _handle_set_active(websocket, session, data)
+            elif msg_type == "booth:get-state":
+                await _handle_get_state(websocket, session, data)
             elif msg_type == "booth:update-state":
                 await _handle_update_state(websocket, session, data)
             elif msg_type == "booth:request-publish-ticket":

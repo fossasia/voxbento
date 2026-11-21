@@ -3610,9 +3610,13 @@ def test_ws_mission_control_observer_makes_an_interpreter_live():
         with client.websocket_connect(f"/ws/booth/{booth}", cookies=_ws_auth()) as ws_mc:
             _ws_ready(ws_mc)
             ws_mc.send_text(json.dumps({"type": "booth:set-active", "target_id": pid_b, "expected_active_id": pid_a}))
+            # The observer gets a direct answer, then the broadcast like everyone else.
             state = json.loads(ws_mc.receive_text())
-            ws_a.receive_text()
-            ws_b.receive_text()
+            assert json.loads(ws_mc.receive_text()) == state
+            for ws in (ws_a, ws_b):
+                seen = json.loads(ws.receive_text())
+                assert seen["type"] == "booth:state"
+                assert seen["state"]["active_interpreter_id"] == pid_b
 
             assert state["type"] == "booth:state"
             assert state["state"]["active_interpreter_id"] == pid_b
@@ -3653,3 +3657,28 @@ def test_ws_set_active_rejects_a_malformed_expected_active_id():
 
     assert msg["type"] == "booth:error"
     assert "expected_active_id" in msg["message"]
+
+
+def test_ws_observer_gets_the_current_state_on_request():
+    booth = _ws_booth("mcgetstate")
+    channel = f"{booth}-audio"
+    with client.websocket_connect(f"/ws/booth/{booth}", cookies=_ws_auth()) as ws_a:
+        _ws_ready(ws_a)
+        pid_a = _join_and_drain(ws_a, "IntA", channel)
+        with client.websocket_connect(f"/ws/booth/{booth}", cookies=_ws_auth()) as ws_mc:
+            _ws_ready(ws_mc)
+            ws_mc.send_text(json.dumps({"type": "booth:get-state"}))
+            msg = json.loads(ws_mc.receive_text())
+
+    assert msg["type"] == "booth:state"
+    assert msg["state"]["active_interpreter_id"] == pid_a
+    assert [p["participant_id"] for p in msg["state"]["participants"]] == [pid_a]
+
+
+def test_ws_get_state_is_refused_without_a_booth_role():
+    # A socket with no credentials stays connected but has no role in the booth.
+    with client.websocket_connect(f"/ws/booth/{_ws_booth('mcnorole')}") as ws:
+        ws.send_text(json.dumps({"type": "booth:get-state"}))
+        msg = json.loads(ws.receive_text())
+
+    assert msg["type"] == "booth:error"

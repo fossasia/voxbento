@@ -45,6 +45,7 @@ You send JSON objects with a `type` field. The table below lists every supported
 | `booth:leave` | Leave the booth. If the active interpreter leaves, an automatic handoff is triggered. | Anyone |
 | `booth:chat` | Send a text message to all booth participants. | `interpreter`, `room_coordinator`, `event_owner` |
 | `booth:set-active` | Make `target_id` the active interpreter and take everyone else off air. Works without `booth:join`, which is how Mission Control does it, when the role the server granted the socket can choose who is live. The optional `expected_active_id` (a participant ID, or `null` for nobody) refuses the change with `booth:error` if someone else changed who is live first. An interpreter who is reconnecting can't be made active. | `room_coordinator`, `event_owner`, `admin`, or the currently active interpreter |
+| `booth:get-state` | Send this socket the booth's current state as `booth:state`. Mission Control asks for it after (re)connecting, since it watches without `booth:join`. | Any role in this booth |
 | `booth:update-state` | Update the `mic_active` and `ingest_connected` flags for the sending interpreter. | `interpreter` |
 
 ## Server → Client Messages

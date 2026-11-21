@@ -139,7 +139,8 @@ Client → Server messages:
 | `booth:join` | `_handle_join` | Adds participant; first interpreter auto-assigned active |
 | `booth:leave` | `_handle_leave` | Removes participant; triggers handoff if active leaves |
 | `booth:chat` | `_handle_chat` | Appends message; broadcasts `booth:chat` + `booth:state` |
-| `booth:set-active` | `_handle_set_active` | Changes active interpreter (room_coordinator/current-active only) |
+| `booth:set-active` | `_handle_set_active` | Changes active interpreter (coordinator roles, or the current active interpreter); works without joining for Mission Control; optional `expected_active_id`; replies to the requester and broadcasts `booth:state` |
+| `booth:get-state` | `_handle_get_state` | Replies `booth:state` to this socket only (any role in the booth); Mission Control asks after (re)connecting |
 | `booth:update-state` | `_handle_update_state` | Updates mic_active / ingest_connected flags |
 | `booth:request-publish-ticket` | `_handle_request_publish_ticket` | Replies `booth:publish-ticket` with a single-use WHIP ticket (active interpreter, broadcast unlocked) |
 | `booth:initiate-handoff` | `_handle_initiate_handoff` | Initiates interpreter handoff |

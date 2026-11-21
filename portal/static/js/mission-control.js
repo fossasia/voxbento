@@ -110,6 +110,10 @@ function init() {
       backoff: createBackoff(),
       closedMessage: '',
       switchingTo: '',
+      switchTimer: null,
+      confirming: false,
+      // Make live waits for a state the server sent on this connection.
+      fresh: false,
     });
     renderCard(b.booth_id);
     connectWs(b.booth_id);
@@ -216,6 +220,8 @@ function connectWs(boothId) {
 
   ws.onopen = () => {
     entry.backoff.reset();
+    // Who is live may have changed while this socket was down.
+    ws.send(JSON.stringify({ type: 'booth:get-state' }));
     renderCard(boothId);
   };
 
@@ -225,12 +231,13 @@ function connectWs(boothId) {
 
     if (data.type === 'booth:state') {
       entry.state = { ...data.state, room_name: data.state.room_name ?? entry.state.room_name };
-      entry.switchingTo = '';
+      entry.fresh = true;
+      clearSwitching(entry);
       renderCard(boothId);
     } else if (data.type === 'booth:error') {
       showToast(data.message || 'The booth refused that change.', 'error');
       if (entry.switchingTo) {
-        entry.switchingTo = '';
+        clearSwitching(entry);
         renderCard(boothId);
       }
     }
@@ -239,7 +246,8 @@ function connectWs(boothId) {
 
   ws.onclose = (e) => {
     entry.ws = null;
-    entry.switchingTo = '';
+    entry.fresh = false;
+    clearSwitching(entry);
     if (finalCloseMessage(e.code)) {
       // Retrying a refused session would only be refused again, every few seconds.
       entry.closedMessage = MC_CLOSE_MESSAGES.get(e.code) || finalCloseMessage(e.code);
@@ -258,9 +266,18 @@ function connectWs(boothId) {
 // Choose who is live — booth:set-active as an observer (#1338)
 // ---------------------------------------------------------------------------
 
+// How long Make live waits for the booth to answer before freeing the buttons.
+const SWITCH_TIMEOUT_MS = 10000;
+
+function clearSwitching(entry) {
+  entry.switchingTo = '';
+  if (entry.switchTimer) clearTimeout(entry.switchTimer);
+  entry.switchTimer = null;
+}
+
 async function makeLive(boothId, targetId) {
   const entry = boothMap.get(boothId);
-  if (!entry || entry.switchingTo) return;
+  if (!entry || entry.switchingTo || entry.confirming || !entry.fresh) return;
   // What the coordinator saw when they clicked. If someone else changes who is
   // live while the dialog is open, the server refuses instead of overriding them.
   const seen = entry.state;
@@ -271,10 +288,17 @@ async function makeLive(boothId, targetId) {
   if (!target) return;
 
   if (current && (current.mic_active || current.ingest_connected || seen.ingest_status === 'connected')) {
-    const ok = await confirmChange(
-      `${current.display_name} is on air in ${seen.language}. Make ${target.display_name} live instead? `
-      + `${current.display_name} goes off air straight away.`,
-    );
+    // One dialog at a time: a second click must not reopen the one already open.
+    entry.confirming = true;
+    let ok = false;
+    try {
+      ok = await confirmChange(
+        `${current.display_name} is on air in ${seen.language}. Make ${target.display_name} live instead? `
+        + `${current.display_name} goes off air straight away.`,
+      );
+    } finally {
+      entry.confirming = false;
+    }
     if (!ok) return;
   }
 
@@ -283,6 +307,16 @@ async function makeLive(boothId, targetId) {
     return;
   }
   entry.switchingTo = targetId;
+  // If no answer comes back, free the buttons and ask the booth for its state.
+  entry.switchTimer = setTimeout(() => {
+    entry.switchTimer = null;
+    if (entry.switchingTo !== targetId) return;
+    entry.switchingTo = '';
+    if (entry.ws && entry.ws.readyState === WebSocket.OPEN) {
+      entry.ws.send(JSON.stringify({ type: 'booth:get-state' }));
+    }
+    renderCard(boothId);
+  }, SWITCH_TIMEOUT_MS);
   entry.ws.send(JSON.stringify({
     type: 'booth:set-active',
     target_id: targetId,
@@ -405,7 +439,7 @@ function renderCard(boothId) {
           make.type = 'button';
           make.id = `mc-make-live-${boothId}-${p.participant_id}`;
           make.setAttribute('aria-label', `Make ${p.display_name} live in ${s.language}`);
-          make.disabled = !isWsOpen || Boolean(entry.switchingTo);
+          make.disabled = !isWsOpen || !entry.fresh || Boolean(entry.switchingTo);
           make.addEventListener('click', () => makeLive(boothId, p.participant_id));
           side.appendChild(make);
         }

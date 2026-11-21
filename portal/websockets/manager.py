@@ -947,7 +947,24 @@ async def _handle_set_active(ws: WebSocket, session: Session, data: dict) -> Non
     except (ValueError, PermissionError) as exc:
         await ws.send_text(json.dumps({"type": "booth:error", "message": str(exc)}))
         return
+    # Answer the requester directly as well: the broadcast skips sockets whose
+    # membership check fails, and the requester would then wait with no reply.
+    await ws.send_text(json.dumps({"type": "booth:state", "state": state}))
     await broadcast_booth_state(session.booth_id, state)
+
+
+async def _handle_get_state(ws: WebSocket, session: Session, _data: dict) -> None:
+    """Send this socket the booth's current state.
+
+    Mission Control watches without joining, so it never gets ``booth:joined``;
+    it asks for this after (re)connecting so a change it missed while offline
+    does not leave it acting on an old view of who is live.
+    """
+    if session.granted_role not in ALL_ROLES:
+        await ws.send_text(json.dumps({"type": "booth:error", "message": "You can't view this booth."}))
+        return
+    state = await booths.snapshot(session.booth_id, session.language, session.channel_id)
+    await ws.send_text(json.dumps({"type": "booth:state", "state": state}))
 
 
 async def _handle_update_state(ws: WebSocket, session: Session, data: dict) -> None:
