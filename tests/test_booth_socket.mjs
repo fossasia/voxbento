@@ -7,6 +7,7 @@ import { micIsActive, watchMicTracks } from '../portal/static/js/mic-activity.js
 
 const source = readFileSync(new URL('../portal/static/js/interpreter-booth.js', import.meta.url), 'utf8')
   .replace(/^import .* from '\.\/booth-reconnect.js'\n/, '')
+  .replace(/^import .* from '\.\/booth-publisher.js'\n/, '')
   .replace(/^import .* from '\.\/mic-activity.js'\n/, '')
   .replace('boot().catch((error) => {', 'Promise.resolve().catch((error) => {')
 
@@ -15,6 +16,15 @@ function harness({ getUserMedia = async () => ({ getAudioTracks: () => [] }) } =
   const sockets = []
   const events = []
   let timerId = 0
+  // Stands in for booth-publisher.js; tests set whether a publish runs and reaches MediaMTX.
+  const publisher = {
+    running: false,
+    publishing: false,
+    status: 'idle',
+    start() { events.push('publish-started') },
+    async stop() {},
+    retryNow() { events.push('publish-retry') },
+  }
   class Socket {
     static OPEN = 1
     constructor() { this.handlers = {}; this.sent = []; sockets.push(this) }
@@ -26,6 +36,7 @@ function harness({ getUserMedia = async () => ({ getAudioTracks: () => [] }) } =
   }
   const context = vm.createContext({
     console, URL, Promise, WebSocket: Socket, createBackoff, finalCloseMessage, micIsActive, watchMicTracks,
+    createBoothPublisher: () => publisher, PublishRefusedError: Error, WhipError: Error,
     document: { getElementById: (id) => id === 'interpreter-portal'
       ? { dataset: { boothId: 'test-1-en', eventSlug: 'test', roomId: '1' } } : null },
     localStorage: { getItem: () => null },
@@ -50,7 +61,7 @@ function harness({ getUserMedia = async () => ({ getAudioTracks: () => [] }) } =
     startMicMeter = () => {};
     globalThis.api = { state, connectWebSocket, reconnectBackoff, watchMicDevice, currentMicActive, ensureMicStream };
   `, context)
-  return { ...context.api, timers, sockets, events }
+  return { ...context.api, timers, sockets, events, publisher }
 }
 
 const h = harness()
@@ -64,6 +75,8 @@ h.sockets[0].message({ type: 'booth:joined', participant_id: 'original', state: 
 } })
 assert.equal(h.state.participantId, 'original')
 h.state.ingestConnected = true
+h.publisher.running = true
+h.publisher.publishing = true
 h.sockets[0].close()
 assert.equal(h.state.joined, false)
 assert.equal(h.timers.size, 1, 'one retry after a disconnect')
@@ -77,6 +90,14 @@ h.sockets[1].message({ type: 'booth:joined', participant_id: 'original', state: 
 } })
 assert.equal(h.sockets[1].sent.at(-1).ingest_connected, true, 'surviving ingest is reported again')
 assert.equal(h.events.filter((e) => e === 'monitor-started').length, 1, 'monitor is not reloaded')
+
+// The publish dropped while the socket was down: rejoining lets it ask for a ticket at once.
+h.publisher.publishing = false
+h.sockets[1].message({ type: 'booth:joined', participant_id: 'original', state: {
+  active_interpreter_id: 'original', broadcast_unlocked: true,
+} })
+assert.ok(h.events.includes('publish-retry'), 'a dropped publish retries as soon as the booth is rejoined')
+h.publisher.publishing = true
 
 h.sockets[0].message({ type: 'booth:joined', participant_id: 'stale', state: {} })
 assert.equal(h.state.participantId, 'original', 'messages from an old socket are ignored')

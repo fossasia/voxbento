@@ -133,3 +133,14 @@ The booth reconnects on its own. The connection badge shows **Reconnecting…** 
 While you are disconnected, the booth may hand the active role to your backup interpreter. When you reconnect you rejoin as yourself: if you are still the active interpreter your broadcast carries on, otherwise your microphone stops so only one interpreter is live.
 
 If your session has expired or your access to the booth was removed, the booth stops retrying and tells you so. Reload the page and sign in again.
+
+## If your audio connection drops
+
+Your audio goes to the media server on its own connection, separate from the booth connection above. If it drops while you are live (a network change, a short outage, a media server restart), the booth sends your audio again by itself:
+
+- The top-left indicator shows **RECONNECTING** and the audio status shows **Ingest reconnecting…**, with the attempt number after the first few tries. Listeners hear silence until it is back.
+- A short blip is given a few seconds to recover by itself before the booth reconnects.
+- The first attempt is immediate. After that the booth waits longer between attempts, up to 15 seconds, and tries again straight away when your network or the booth connection comes back.
+- Mission Control shows the booth as **Not on air** while your audio is not arriving, and **On air** again once it is.
+
+The booth stops trying if you are no longer the active interpreter, if Mission Control stops the broadcast, or if the server refuses your audio. In that last case the audio status shows **Ingest refused** with the reason.
