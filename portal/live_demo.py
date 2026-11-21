@@ -60,6 +60,7 @@ from portal.translations.providers.local import LocalProvider as LocalTranslator
 from portal.translations.providers.local import get_download_progress, get_model_and_tokenizer, trigger_download
 from portal.translations.providers.local import is_model_loaded as translator_loaded
 from portal.translations.registry import NLLB_200_DISTILLED_600M
+from portal.translations.scheduler import StaleTranslationJob
 from portal.translations.vocabulary import (
     VocabularyEntryInput,
     VocabularyOverlapIndex,
@@ -887,7 +888,8 @@ async def _local_translate(text: str, request: DemoRequest, targets: Sequence[De
 
     The demo shares the CTranslate2 translators with the booths, so it waits for a slot in the
     same scheduler (#1188); one slot covers the whole batch, which the model runs one language
-    at a time. When the demo's queue is full, this segment shows no translation.
+    at a time. When the demo's queue is full, or the segment waited longer than the translation
+    lag budget for its slot (#1189), this segment shows no translation.
     """
     model = settings.live_demo_translation_model
     job = scheduler_for(TranslationProviderEnum.LOCAL.value, model).admit(DEMO_SCHEDULER_ROOM, DEMO_SCHEDULER_ROOM)
@@ -905,6 +907,10 @@ async def _local_translate(text: str, request: DemoRequest, targets: Sequence[De
                 ),
                 model=model,
             )
+    except StaleTranslationJob:
+        # Only entering the slot raises it; the engine was never called for this segment.
+        logger.debug("[LiveDemo] Translation waited too long for the engine; skipping a segment")
+        return {target.code: "" for target in targets}
     finally:
         job.close()
     return {target.code: translated or "" for target, translated in zip(targets, rows[0], strict=True)}

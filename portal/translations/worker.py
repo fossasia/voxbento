@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import time
 from dataclasses import dataclass
 
 from portal import youtube_captions
@@ -18,7 +19,7 @@ from portal.translations.providers.base import ProviderEngine
 from portal.translations.providers.gemini import GeminiProvider
 from portal.translations.providers.local import LocalProvider
 from portal.translations.providers.openai import OpenAIProvider
-from portal.translations.scheduler import TranslationJob, TranslationScheduler
+from portal.translations.scheduler import StaleTranslationJob, TranslationJob, TranslationScheduler
 from portal.translations.vocabulary import resolve_vocabulary_entries
 
 logger = logging.getLogger(__name__)
@@ -35,6 +36,11 @@ def _api_concurrency() -> int:
 
 def _self_hosted_concurrency() -> int:
     return settings.self_hosted_llm_concurrency
+
+
+def _lag_budget() -> float | None:
+    """Seconds a segment may wait for the engine before it is dropped as stale; None never drops it."""
+    return settings.translation_max_lag_seconds or None
 
 
 #: The engine behind each translation provider a room or booth can select.
@@ -88,7 +94,7 @@ def scheduler_for(provider: str, model: str = "", event_id: int | None = None) -
     """The scheduler shared by every room translating with ``provider`` (and its model or event).
 
     When the engine's limit changes (its setting did), the same scheduler takes the new limit,
-    so calls already running still count against it.
+    so calls already running still count against it. The lag budget follows its setting too.
     """
     engine = ENGINES.get(provider)
     capacity = engine.max_concurrency if engine is not None else TranslationEngine.max_concurrency
@@ -101,6 +107,7 @@ def scheduler_for(provider: str, model: str = "", event_id: int | None = None) -
         scheduler = SCHEDULERS[key] = TranslationScheduler(capacity)
     elif scheduler.capacity != capacity:
         scheduler.set_capacity(capacity)
+    scheduler.lag_budget = _lag_budget()
     return scheduler
 
 
@@ -124,6 +131,24 @@ def _inference_timeout(provider: str, model: str) -> float | None:
             type(exc).__name__,
         )
     return 60.0
+
+
+#: Who a translation is for: someone listening to it (speech or text), or only YouTube's caption track.
+LISTENERS = "listeners"
+YOUTUBE_ONLY = "youtube"
+
+
+def _audience(room_id: int, lang_code: str, booth_id_str: str, target_booth_id: str) -> str | None:
+    """Who a translation into ``lang_code`` is for right now, or None when nobody takes it."""
+    from portal.websockets.manager import listener_manager, tts_manager
+
+    if tts_manager.has_listeners(room_id, lang_code, booth_id_str) or listener_manager.has_listeners(target_booth_id):
+        return LISTENERS
+    # A language posted to YouTube's caption track is translated even with no listeners. Only the
+    # floor's translations are posted there, so a booth's segments keep the listener rule.
+    if booth_id_str.endswith("-floor") and youtube_captions.wants(room_id, lang_code):
+        return YOUTUBE_ONLY
+    return None
 
 
 @dataclass
@@ -231,9 +256,13 @@ class TranslationWorker:
         booth_id_str: str,
         uuid_segment_id: str = "",
         seq: int = 0,
+        *,
+        arrived_at: float | None = None,
     ) -> list:
         """Run the translation tasks of a resolved job: one per language with listeners."""
-        tasks = self._build_language_tasks(job, segment_id, text, booth_id_str, uuid_segment_id, seq)
+        tasks = self._build_language_tasks(
+            job, segment_id, text, booth_id_str, uuid_segment_id, seq, arrived_at=arrived_at
+        )
         if tasks:
             logger.debug("[%s] Spawning %d translation tasks for active listeners", booth_id_str, len(tasks))
             await asyncio.gather(*tasks)
@@ -247,6 +276,8 @@ class TranslationWorker:
 
         from portal.models import TranscriptSegment
 
+        # The lag budget counts from here, so resolving the job below counts against it (#1189).
+        arrived_at = time.monotonic()
         async with get_session() as session:
             segment = await session.scalar(select(TranscriptSegment).where(TranscriptSegment.id == segment_id))
             if not segment:
@@ -266,7 +297,9 @@ class TranslationWorker:
         if job is None:
             return
         sentence = self._accumulate_sentence(text)
-        await self._process_completed_sentence(job, segment_id, sentence, booth_id_str, uuid_segment_id, seq)
+        await self._process_completed_sentence(
+            job, segment_id, sentence, booth_id_str, uuid_segment_id, seq, arrived_at=arrived_at
+        )
 
     async def _resolve_translation_job(
         self, session, room_id: int, segment, booth_id_str: str
@@ -374,10 +407,10 @@ class TranslationWorker:
         booth_id_str: str,
         uuid_segment_id: str,
         seq: int,
+        *,
+        arrived_at: float | None = None,
     ) -> list:
         """Construct the async translation and broadcast tasks for a resolved job."""
-        from portal.websockets.manager import listener_manager, tts_manager
-
         tasks = []
         for lang in job.enabled_langs:
             target_booth_id = f"{job.event.slug}-{job.room.id}-{lang.language_code}"
@@ -395,14 +428,8 @@ class TranslationWorker:
                     )
                 )
             else:
-                has_tts = tts_manager.has_listeners(job.room.id, lang.language_code, booth_id_str)
-                has_text = listener_manager.has_listeners(target_booth_id)
-                # A language posted to YouTube's caption track is translated even with no listeners. Only the
-                # floor's translations are posted there, so a booth's segments keep the listener rule.
-                youtube_only = not has_tts and not has_text
-                if youtube_only and not (
-                    booth_id_str.endswith("-floor") and youtube_captions.wants(job.room.id, lang.language_code)
-                ):
+                audience = _audience(job.room.id, lang.language_code, booth_id_str, target_booth_id)
+                if audience is None:
                     continue
 
                 tasks.append(
@@ -423,7 +450,9 @@ class TranslationWorker:
                         seq,
                         target_booth_id,
                         job.source_booth_id,
-                        synthesize_audio=not youtube_only,
+                        synthesize_audio=audience == LISTENERS,
+                        recheck_audience=True,
+                        arrived_at=arrived_at,
                     )
                 )
 
@@ -452,17 +481,22 @@ class TranslationWorker:
         target_booth_id: str | None = None,
         source_booth_id: int | None = None,
         synthesize_audio: bool = True,
+        recheck_audience: bool = False,
+        arrived_at: float | None = None,
     ):
         """Translate and deliver a segment, keeping advisory status failures outside inference.
 
         ``synthesize_audio`` is False when nobody listens to this language (it is only translated for the
-        YouTube caption track), so no speech is generated for it.
+        YouTube caption track), so no speech is generated for it. With ``recheck_audience``, who takes
+        the translation is checked again when the segment gets its engine slot (#1189): the last
+        listener may have left while it waited. ``arrived_at`` (``time.monotonic()``) is when the
+        segment arrived; the lag budget counts from it, or from now when it is not given.
         """
         from portal.websockets.manager import tts_manager
 
         queue_key = f"{booth_id_str}:{lang_code}"
         # Rooms take turns for the engine, and so do the languages within a room.
-        job = scheduler_for(provider, model, event.id).admit(room.id, queue_key)
+        job = scheduler_for(provider, model, event.id).admit(room.id, queue_key, arrived_at=arrived_at)
 
         if job is None:
             logger.warning(f"[{booth_id_str}] Queue full for {lang_code}. Dropping segment {seq}.")
@@ -496,13 +530,20 @@ class TranslationWorker:
 
             # The slot covers the engine call only; saving and broadcasting happen after it is free.
             translated_text = None
+            nobody_listens = False
             async with job:
                 # Enforce a strict timeout on inference (12s for cloud, 60s for local). Checked once
                 # the segment has its turn, so a download that started while it waited still counts.
                 # A download runs in its own thread and holds no slot, so nothing queues behind it.
                 timeout_val = _inference_timeout(provider, model)
                 downloading = timeout_val is None
-                if not downloading:
+                if not downloading and recheck_audience and target_booth_id:
+                    # Checked again now that the segment has its turn: the last listener may have
+                    # left while it waited, and then no inference runs for it (#1189).
+                    audience = _audience(room.id, lang_code, booth_id_str, target_booth_id)
+                    nobody_listens = audience is None
+                    synthesize_audio = audience == LISTENERS
+                if not downloading and not nobody_listens:
                     translated_text = await self._infer_holding_slot(
                         job,
                         timeout_val,
@@ -522,6 +563,10 @@ class TranslationWorker:
             if downloading:
                 # Told after the slot is free, so the next segment does not wait for this broadcast.
                 await self._drop_while_downloading(room.id, lang_code, booth_id_str, model, uuid_segment_id, seq, text)
+                return
+
+            if nobody_listens:
+                logger.info("[%s] Nobody listens to %s any more. Skipping segment %s.", booth_id_str, lang_code, seq)
                 return
 
             if translated_text is None:
@@ -545,9 +590,19 @@ class TranslationWorker:
                 local_session.add(translation)
                 await local_session.flush()
 
-            # Broadcast Stage 1 (Text Ready) immediately with empty audio
+            # Broadcast Stage 1 (Text Ready) immediately with empty audio. It says whether speech
+            # follows, so a listener who joined after the audience check does not wait for one.
             await tts_manager.broadcast_bundle(
-                room.id, lang_code, booth_id_str, b"", uuid_segment_id, seq, text, translated_text, None
+                room.id,
+                lang_code,
+                booth_id_str,
+                b"",
+                uuid_segment_id,
+                seq,
+                text,
+                translated_text,
+                None,
+                audio_pending=synthesize_audio,
             )
             if target_booth_id:
                 from portal.websockets.manager import listener_manager
@@ -601,6 +656,8 @@ class TranslationWorker:
                 room.id, lang_code, booth_id_str, audio_bytes, uuid_segment_id, seq, text, translated_text, error
             )
 
+        except StaleTranslationJob as stale:
+            await self._drop_stale(room.id, lang_code, booth_id_str, uuid_segment_id, seq, text, stale.waited)
         except Exception as e:
             logger.error(
                 f"[{booth_id_str}] Translation failed for {lang_code}: {e} (api_key is None? {api_key is None})"
@@ -668,6 +725,27 @@ class TranslationWorker:
         )
         await tts_manager.broadcast_bundle(
             room_id, lang_code, booth_id_str, b"", uuid_segment_id, seq, text, "", "model_downloading"
+        )
+
+    async def _drop_stale(
+        self, room_id: int, lang_code: str, booth_id_str: str, uuid_segment_id: str, seq: int, text: str, waited: float
+    ) -> None:
+        """Drop a segment that could not start within the lag budget, so its language catches up.
+
+        Not a failure: the engine is busy, and the next segment is translated instead. Listeners
+        skip it without a message.
+        """
+        from portal.websockets.manager import tts_manager
+
+        logger.warning(
+            "[%s] Segment %s for %s waited %.1f s for the engine. Dropping it as stale.",
+            booth_id_str,
+            seq,
+            lang_code,
+            waited,
+        )
+        await tts_manager.broadcast_bundle(
+            room_id, lang_code, booth_id_str, b"", uuid_segment_id, seq, text, "", "stale"
         )
 
     async def _call_llm(

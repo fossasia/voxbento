@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import threading
+import time
 from contextlib import asynccontextmanager
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
@@ -15,7 +16,7 @@ from portal.translations import worker as worker_module
 from portal.translations.engine import EngineKind, TranslationEngine
 from portal.translations.providers.base import ProviderEngine
 from portal.translations.providers.local import CT2_INTER_THREADS, LocalProvider, _in_thread
-from portal.translations.scheduler import PER_CHANNEL, QUEUE_LIMIT, TranslationScheduler
+from portal.translations.scheduler import PER_CHANNEL, QUEUE_LIMIT, StaleTranslationJob, TranslationScheduler
 from portal.translations.worker import TranslationWorker
 
 pytestmark = pytest.mark.anyio
@@ -733,3 +734,259 @@ async def test_the_live_demo_waits_for_the_local_models_slot(monkeypatch):
     assert await asyncio.wait_for(demo, timeout=5) == {"fr": "Hello (fr)"}
     assert calls == [model]
     assert worker_module.scheduler_for("local", model).idle()
+
+
+# ── Stale segments and listeners who left (#1189) ──
+
+
+async def test_a_job_that_cannot_start_within_the_lag_budget_is_dropped_without_a_slot():
+    scheduler = TranslationScheduler(1, lag_budget=0.05)
+    recorder = Recorder(scheduler)
+    busy = recorder.start("room-1", "room-1:fr")
+    await settle()
+
+    late = scheduler.admit("room-2", "room-2:de")
+    with pytest.raises(StaleTranslationJob) as dropped:
+        async with late:
+            pytest.fail("a stale job must not start")
+    late.close()
+
+    assert dropped.value.waited >= 0.05
+    assert scheduler.running == 1
+    assert scheduler.waiting() == 0
+    assert scheduler.admitted("room-2", "room-2:de") == 0
+
+    # The busy job still finishes, and the next one gets its slot.
+    scheduler.lag_budget = None
+    after = recorder.start("room-2", "room-2:de")
+    await recorder.finish_all([busy, after])
+    assert recorder.order == [("room-1", "room-1:fr"), ("room-2", "room-2:de")]
+    assert scheduler.running == 0
+
+
+async def test_a_job_already_past_the_lag_budget_is_dropped_even_with_a_free_slot():
+    """The budget counts from admission, so time spent before asking for a slot counts too."""
+    scheduler = TranslationScheduler(1, lag_budget=0.01)
+    job = scheduler.admit("room", "room:fr")
+    await asyncio.sleep(0.02)
+
+    with pytest.raises(StaleTranslationJob):
+        async with job:
+            pytest.fail("a stale job must not start")
+    job.close()
+
+    assert scheduler.running == 0
+    assert scheduler.admitted("room", "room:fr") == 0
+
+
+async def test_a_job_handed_its_slot_after_the_deadline_is_dropped_even_if_its_timeout_has_not_fired():
+    """A late event loop can wake the waiter with its slot before the timeout callback runs."""
+    scheduler = TranslationScheduler(1, lag_budget=0.05)
+    busy = scheduler.admit("room-1", "room-1:fr")
+    release = asyncio.Event()
+
+    async def hold() -> None:
+        try:
+            async with busy:
+                await release.wait()
+                # Blocks the loop past the waiter's deadline, then frees the slot in the same step,
+                # so the waiter is woken with the slot before its timeout callback gets to run.
+                time.sleep(0.1)
+        finally:
+            busy.close()
+
+    late = scheduler.admit("room-2", "room-2:de")
+    started = False
+
+    async def wait() -> None:
+        nonlocal started
+        try:
+            async with late:
+                started = True
+        finally:
+            late.close()
+
+    holder = asyncio.create_task(hold())
+    await settle()
+    waiter = asyncio.create_task(wait())
+    await settle()
+    release.set()
+
+    with pytest.raises(StaleTranslationJob):
+        await waiter
+    await holder
+    assert not started
+    assert scheduler.running == 0
+    assert scheduler.admitted("room-2", "room-2:de") == 0
+
+
+async def test_the_lag_budget_counts_from_the_segment_arriving_not_from_admission():
+    scheduler = TranslationScheduler(1, lag_budget=0.5)
+    # The segment arrived a second ago (its job was resolved meanwhile) and is admitted only now.
+    job = scheduler.admit("room", "room:fr", arrived_at=time.monotonic() - 1.0)
+
+    with pytest.raises(StaleTranslationJob) as dropped:
+        async with job:
+            pytest.fail("a stale job must not start")
+    job.close()
+
+    assert dropped.value.waited >= 1.0
+    assert scheduler.running == 0
+    assert scheduler.admitted("room", "room:fr") == 0
+
+
+async def test_a_job_that_starts_within_the_lag_budget_runs():
+    scheduler = TranslationScheduler(1, lag_budget=5.0)
+    recorder = Recorder(scheduler)
+    tasks = [recorder.start("room", "room:fr"), recorder.start("room", "room:de")]
+
+    await recorder.finish_all(tasks)
+    assert len(recorder.order) == 2
+
+
+class HeldEngine(SlowEngine):
+    """Answers (with nothing to say) only when released, so a test decides when its slot frees up."""
+
+    def __init__(self) -> None:
+        super().__init__(max_concurrency=1)
+        self.release = asyncio.Event()
+
+    async def translate_batch(self, source, targets, texts, context, *, model, api_key=None):
+        self.calls.extend(target.code for target in targets)
+        await self.release.wait()
+        return [["" for _ in targets] for _ in texts]
+
+
+async def test_the_worker_drops_a_segment_that_waited_too_long_as_stale(monkeypatch):
+    engine = HeldEngine()
+    monkeypatch.setitem(worker_module.ENGINES, "held", engine)
+    monkeypatch.setattr(settings, "translation_max_lag_seconds", 0.05)
+    bundle = AsyncMock()
+    monkeypatch.setattr("portal.websockets.manager.tts_manager.broadcast_bundle", bundle)
+    worker = TranslationWorker(MagicMock())
+
+    def translate(room_id: int, lang: str):
+        return worker._translate_and_broadcast(
+            SimpleNamespace(id=1), fake_room(room_id), "held", "m", None, lang, lang, "en", "English",
+            1, "Hello", f"event-{room_id}-floor", "uuid", 1,
+        )
+
+    first = asyncio.create_task(translate(1, "fr"))
+    await settle()
+    # The engine is busy with the first segment for longer than the second may wait.
+    await translate(2, "de")
+
+    assert engine.calls == ["fr"]
+    assert bundle.await_count == 1
+    # Reported as stale, not as a failure.
+    assert bundle.await_args.args[2] == "event-2-floor"
+    assert bundle.await_args.args[8] == "stale"
+
+    engine.release.set()
+    await first
+    assert worker_module.scheduler_for("held", "m", 1).running == 0
+    assert worker_module.scheduler_for("held", "m", 1).admitted(2, "event-2-floor:de") == 0
+
+
+@pytest.mark.parametrize("left", [True, False])
+async def test_a_segment_is_skipped_when_its_last_listener_left_while_it_waited(monkeypatch, left):
+    engine = HeldEngine()
+    monkeypatch.setitem(worker_module.ENGINES, "held", engine)
+    monkeypatch.setattr("portal.websockets.manager.tts_manager.broadcast_bundle", AsyncMock())
+    listening = {"fr": True, "de": True}
+    monkeypatch.setattr(
+        "portal.websockets.manager.tts_manager.has_listeners", lambda room_id, lang, booth_id: listening[lang]
+    )
+    monkeypatch.setattr("portal.websockets.manager.listener_manager.has_listeners", lambda booth_id: False)
+    monkeypatch.setattr(worker_module.youtube_captions, "wants", lambda room_id, lang: False)
+    job = worker_module._ResolvedTranslation(
+        event=SimpleNamespace(id=1, slug="event"),
+        room=fake_room(1),
+        provider="held",
+        model="m",
+        api_key=None,
+        enabled_langs=[
+            SimpleNamespace(language_code="fr", language_name="French"),
+            SimpleNamespace(language_code="de", language_name="German"),
+        ],
+        source_lang_code="en",
+        source_lang_name="English",
+    )
+    worker = TranslationWorker(MagicMock())
+
+    tasks = [
+        asyncio.create_task(task)
+        for task in worker._build_language_tasks(job, 1, "Hello", "event-1-floor", "uuid", 1)
+    ]
+    await settle()
+    # German waits for the engine's only slot while French is translated.
+    assert engine.calls == ["fr"]
+    if left:
+        listening["de"] = False
+
+    engine.release.set()
+    await asyncio.gather(*tasks)
+
+    # German's inference runs only if someone still listens when its turn comes.
+    assert engine.calls == (["fr"] if left else ["fr", "de"])
+    assert worker_module.scheduler_for("held", "m", 1).running == 0
+
+
+async def test_the_worker_counts_the_lag_budget_from_when_the_segment_arrived(monkeypatch):
+    """Time spent resolving the job before it reaches the scheduler counts against the budget."""
+    engine = HeldEngine()
+    monkeypatch.setitem(worker_module.ENGINES, "held", engine)
+    monkeypatch.setattr(settings, "translation_max_lag_seconds", 0.5)
+    bundle = AsyncMock()
+    monkeypatch.setattr("portal.websockets.manager.tts_manager.broadcast_bundle", bundle)
+    monkeypatch.setattr("portal.websockets.manager.tts_manager.has_listeners", lambda room_id, lang, booth_id: True)
+    monkeypatch.setattr("portal.websockets.manager.listener_manager.has_listeners", lambda booth_id: False)
+    job = worker_module._ResolvedTranslation(
+        event=SimpleNamespace(id=1, slug="event"),
+        room=fake_room(1),
+        provider="held",
+        model="m",
+        api_key=None,
+        enabled_langs=[SimpleNamespace(language_code="fr", language_name="French")],
+        source_lang_code="en",
+        source_lang_name="English",
+    )
+
+    # The engine is free, but the segment arrived a second ago.
+    tasks = TranslationWorker(MagicMock())._build_language_tasks(
+        job, 1, "Hello", "event-1-floor", "uuid", 1, arrived_at=time.monotonic() - 1.0
+    )
+    await asyncio.gather(*tasks)
+
+    assert engine.calls == []
+    assert bundle.await_args.args[8] == "stale"
+    assert worker_module.scheduler_for("held", "m", 1).admitted(1, "event-1-floor:fr") == 0
+
+
+async def test_the_live_demo_skips_a_segment_that_waited_too_long_for_the_model(monkeypatch):
+    from portal import live_demo
+
+    model = settings.live_demo_translation_model
+    monkeypatch.setattr(settings, "translation_max_lag_seconds", 0.05)
+    calls = []
+
+    class FakeTranslator:
+        async def translate_batch(self, source, targets, texts, context, *, model, api_key=None):
+            calls.append(model)
+            return [[f"{texts[0]} ({target.code})" for target in targets]]
+
+    monkeypatch.setattr(live_demo, "_translator", lambda: FakeTranslator())
+    request = SimpleNamespace(source=SimpleNamespace(code="en", name="English"), glossary=())
+    targets = [SimpleNamespace(code="fr", name="French")]
+
+    # A booth call holds the model's only slot for longer than the demo segment may wait.
+    booth = worker_module.scheduler_for("local", model).admit("room", "room:fr")
+    await booth.__aenter__()
+    try:
+        assert await asyncio.wait_for(live_demo._local_translate("Hello", request, targets), timeout=5) == {"fr": ""}
+    finally:
+        booth.close()
+
+    assert calls == []
+    assert worker_module.scheduler_for("local", model).idle()
+
