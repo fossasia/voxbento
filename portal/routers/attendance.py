@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import csv
 import io
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import date, datetime, timezone, tzinfo
 from urllib.parse import unquote
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
@@ -37,7 +37,7 @@ _CSV_FORMULA_PREFIXES = ("=", "+", "-", "@", "\t", "\r")
 
 def _csv_text(value: str) -> str:
     """Prefix a leading formula character so spreadsheets treat the cell as text."""
-    return "'" + value if value.lstrip().startswith(_CSV_FORMULA_PREFIXES) else value
+    return f"'{value}" if value.lstrip().startswith(_CSV_FORMULA_PREFIXES) else value
 
 
 @dataclass
@@ -55,12 +55,13 @@ async def _load(event_id: int) -> _EventAttendance:
         event = await session.get(Event, event_id)
         if event is None or event.deleted_at is not None:
             raise HTTPException(status_code=404, detail="Event not found.")
+        now = booths.attendance.clock()
+        pending = [replace(visit) for visit in booths.attendance.pending_visits(event.slug)]
         result = await session.execute(
             select(InterpreterAttendance).where(InterpreterAttendance.event_id == event_id)
         )
         db_rows = list(result.scalars())
-        now = datetime.now(tz=timezone.utc)
-        rows = rows_for_event(db_rows, booths.attendance.open_visits(event.slug), now)
+        rows = rows_for_event(db_rows, pending, now)
 
         user_ids = {row.user_id for row in rows if row.user_id is not None}
         users: dict[int, tuple[str, str]] = {}
@@ -161,7 +162,7 @@ async def event_attendance(request: Request, event_id: int, day: str | None = No
             "days": days,
             "today": data.now.astimezone(chosen.tz).date(),
             "filters": chosen,
-            "here_now": sum(1 for person in people if person.is_here),
+            "here_now": sum(person.is_here for person in people),
             "total_present": sum(person.present_seconds for person in people),
             "total_interpreting": sum(person.interpreting_seconds for person in people),
             **admin_flags,

@@ -13,7 +13,7 @@ from portal.auth import coordinates_room, load_membership_scope, require_oauth_s
 from portal.booth_identity import make_booth_id, make_mediamtx_path, validate_language_code
 from portal.config import settings
 from portal.database import delete_room as delete_db_room
-from portal.database import get_db_session
+from portal.database import get_db_session, register_attendance_discard
 from portal.globals import booths
 from portal.models import (
     DBBooth,
@@ -503,6 +503,8 @@ async def delete_event(
     )
     db.add(audit)
     await db.flush()
+
+    register_attendance_discard(db.sync_session, event_slug)
     return None
 
 

@@ -3,19 +3,27 @@
 from __future__ import annotations
 
 import os
+from contextlib import asynccontextmanager
 from datetime import datetime, timedelta, timezone
+from uuid import uuid4
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 import pytest
 from httpx import ASGITransport, AsyncClient
 from sqlalchemy import select
+from starlette.requests import Request
 
 from fastapi_app import app
+from portal import attendance as attendance_module
+from portal import database as db_module
 from portal import globals as portal_globals
 from portal.attendance import (
     AttendanceRow,
     AttendanceTracker,
+    Visit,
     close_stale_visits,
     format_duration,
+    rows_for_event,
     summarize,
 )
 from portal.auth import create_user_token
@@ -26,13 +34,18 @@ from portal.database import (
     create_event,
     create_room,
     create_user,
+    delete_event,
     dispose,
     get_session,
     init_db,
     set_event_membership,
 )
-from portal.models import InterpreterAttendance
+from portal.models import Event, InterpreterAttendance
 from portal.roles import EVENT_OWNER, INTERPRETER, ROOM_COORDINATOR
+from portal.routers import admin as admin_router
+from portal.routers import attendance as att_router
+from portal.routers.admin import admin_delete_event
+from portal.routers.attendance import _load
 from portal.workspace_routing import workspace_to_admin_path
 
 os.environ["BOOTH_ACCESS_TOKEN"] = ""
@@ -456,7 +469,17 @@ async def test_day_tabs_and_booth_filter_narrow_the_page_and_the_csv(event_setup
                     last_seen_at=start + timedelta(hours=1), interpreting_seconds=1800,
                 )
             )
-    monkeypatch.setattr(portal_globals.booths, "attendance", AttendanceTracker())
+    report_now = datetime(2026, 11, 12, 12, 0, tzinfo=timezone.utc)
+    monkeypatch.setattr(portal_globals.booths, "attendance", AttendanceTracker(clock=lambda: report_now))
+    try:
+        ZoneInfo("Asia/Kolkata")
+    except ZoneInfoNotFoundError:
+        def _kolkata_zone_info(name: str):
+            if name == "Asia/Kolkata":
+                return timezone(timedelta(hours=5, minutes=30))
+            raise ZoneInfoNotFoundError(f"No time zone found with key {name}")
+
+        monkeypatch.setattr(att_router, "ZoneInfo", _kolkata_zone_info)
     owner = cookies(event_setup["owner"], "owner@example.com")
     base = f"/workspace/events/{event_setup['event']}/attendance/"
     async with client() as http:
@@ -580,3 +603,997 @@ async def test_shutdown_during_recovery_still_saves_visits(event_setup, clock, m
     async with get_session() as session:
         saved = list((await session.execute(select(InterpreterAttendance))).scalars())
     assert [row.display_name for row in saved] == ["Ana"]
+
+
+# ── Pending visits & closed unflushed regression tests ────────────────────────
+
+
+@pytest.mark.anyio
+async def test_pending_visits_includes_open_and_closed_unflushed(registry, clock):
+    alice = await join(registry, "Alice")
+    bob = await join(registry, "Bob")
+    clock.advance(60)
+    await registry.leave_participant(BOOTH, alice.participant_id, LANG, CHANNEL)
+
+    open_visits = registry.attendance.open_visits("conf")
+    assert len(open_visits) == 1
+    assert open_visits[0].participant_id == bob.participant_id
+
+    pending = registry.attendance.pending_visits("conf")
+    assert len(pending) == 2
+    pending_pids = {v.participant_id for v in pending}
+    assert pending_pids == {alice.participant_id, bob.participant_id}
+
+    # Different event slug should return nothing
+    assert registry.attendance.pending_visits("other") == []
+
+
+def test_rows_for_event_short_visit_closed_before_first_flush(clock):
+    tracker = AttendanceTracker(clock=clock)
+
+    visit = Visit(
+        id="v-short-1",
+        booth_id=BOOTH,
+        event_slug="conf",
+        room_id=1,
+        language_code="de",
+        participant_id="p-short-1",
+        user_id=None,
+        invite_public_id=None,
+        display_name="Short Visit Interpreter",
+        role=INTERPRETER,
+        joined_at=T0,
+        left_at=T0 + timedelta(seconds=45),
+        interpreting_seconds=45.0,
+    )
+    tracker._closed.append(visit)
+
+    # Clock moves far ahead (e.g. 10 minutes later)
+    now = T0 + timedelta(minutes=10)
+    rows = rows_for_event([], tracker.pending_visits("conf"), now)
+
+    assert len(rows) == 1
+    assert rows[0].id == "v-short-1"
+    assert rows[0].left_at == T0 + timedelta(seconds=45)
+    assert rows[0].interpreting_seconds == 45.0
+
+    people = summarize(rows, now)
+    assert len(people) == 1
+    person = people[0]
+    assert not person.is_here
+    assert person.last_left == T0 + timedelta(seconds=45)
+    assert person.visits[0].is_open is False
+    assert person.visits[0].present_seconds == 45
+    assert person.visits[0].interpreting_seconds == 45
+
+
+@pytest.mark.anyio
+async def test_rows_for_event_previously_flushed_visit_closes_before_next_flush(event_setup, clock):
+    booth_id = f"conf-{event_setup['room']}-de"
+    registry = BoothRegistry(attendance=AttendanceTracker(clock=clock))
+    ana, _ = await registry.join_participant(
+        booth_id=booth_id,
+        display_name="Ana",
+        role=INTERPRETER,
+        language=LANG,
+        channel_id=CHANNEL,
+        user_id=event_setup["ana"],
+    )
+    await registry.update_participant_state(
+        booth_id, ana.participant_id, LANG, CHANNEL, mic_active=True, ingest_connected=True
+    )
+    clock.advance(60)
+    # First flush: saved while open
+    assert await registry.attendance.flush() == 1
+
+    # Continues interpreting for 30s, then leaves
+    clock.advance(30)
+    await registry.leave_participant(booth_id, ana.participant_id, LANG, CHANNEL)
+
+    # Next flush has NOT run yet. Clock advances another 5 minutes.
+    clock.advance(300)
+    now = clock()
+
+    async with get_session() as session:
+        db_rows = list((await session.execute(select(InterpreterAttendance))).scalars())
+    assert len(db_rows) == 1
+    # DB row is stale: saved at T0+60s, left_at is None, last_seen_at is T0+60s
+    assert db_rows[0].left_at is None
+    assert db_rows[0].last_seen_at.replace(tzinfo=timezone.utc) == T0 + timedelta(seconds=60)
+    assert db_rows[0].interpreting_seconds == 60
+
+    pending = registry.attendance.pending_visits("conf")
+    assert len(pending) == 1
+    assert pending[0].left_at == T0 + timedelta(seconds=90)
+
+    rows = rows_for_event(db_rows, pending, now)
+    # Deduplication: exactly 1 row returned
+    assert len(rows) == 1
+    # In-memory closed visit overwrites stale DB row and stale last_seen_at
+    assert rows[0].left_at == T0 + timedelta(seconds=90)
+    assert rows[0].interpreting_seconds == 90
+
+    people = summarize(rows, now)
+    assert len(people) == 1
+    assert not people[0].is_here
+    assert people[0].last_left == T0 + timedelta(seconds=90)
+    assert people[0].present_seconds == 90
+    assert people[0].interpreting_seconds == 90
+
+
+@pytest.mark.anyio
+async def test_no_visit_lost_or_duplicated_across_flush_lifecycle(event_setup, clock):
+    booth_id = f"conf-{event_setup['room']}-de"
+    registry = BoothRegistry(attendance=AttendanceTracker(clock=clock))
+    ana, _ = await registry.join_participant(
+        booth_id=booth_id,
+        display_name="Ana",
+        role=INTERPRETER,
+        language=LANG,
+        channel_id=CHANNEL,
+        user_id=event_setup["ana"],
+    )
+    await registry.update_participant_state(
+        booth_id, ana.participant_id, LANG, CHANNEL, mic_active=True, ingest_connected=True
+    )
+
+    # 1. Open, unflushed
+    clock.advance(60)
+    async with get_session() as session:
+        db_rows = list((await session.execute(select(InterpreterAttendance))).scalars())
+    rows = rows_for_event(db_rows, registry.attendance.pending_visits("conf"), clock())
+    assert len(rows) == 1
+    assert rows[0].left_at is None
+    assert rows[0].interpreting_seconds == 60
+
+    # 2. Open, flushed
+    assert await registry.attendance.flush() == 1
+    async with get_session() as session:
+        db_rows = list((await session.execute(select(InterpreterAttendance))).scalars())
+    rows = rows_for_event(db_rows, registry.attendance.pending_visits("conf"), clock())
+    assert len(rows) == 1
+    assert rows[0].left_at is None
+    assert rows[0].interpreting_seconds == 60
+
+    # 3. Closed, unflushed
+    clock.advance(30)
+    await registry.leave_participant(booth_id, ana.participant_id, LANG, CHANNEL)
+    async with get_session() as session:
+        db_rows = list((await session.execute(select(InterpreterAttendance))).scalars())
+    rows = rows_for_event(db_rows, registry.attendance.pending_visits("conf"), clock())
+    assert len(rows) == 1
+    assert rows[0].left_at == T0 + timedelta(seconds=90)
+    assert rows[0].interpreting_seconds == 90
+
+    # 4. Closed, flushed
+    assert await registry.attendance.flush() == 1
+    async with get_session() as session:
+        db_rows = list((await session.execute(select(InterpreterAttendance))).scalars())
+    rows = rows_for_event(db_rows, registry.attendance.pending_visits("conf"), clock())
+    assert len(rows) == 1
+    assert rows[0].left_at == T0 + timedelta(seconds=90)
+    assert rows[0].interpreting_seconds == 90
+
+
+@pytest.mark.anyio
+async def test_load_snapshots_memory_before_db_query(event_setup, clock, monkeypatch):
+    """_load() snapshots pending visits before querying DB so a flush mid-query cannot drop visits."""
+    booth_id = f"conf-{event_setup['room']}-de"
+    registry = BoothRegistry(attendance=AttendanceTracker(clock=clock))
+    monkeypatch.setattr(portal_globals.booths, "attendance", registry.attendance)
+
+    ana, _ = await registry.join_participant(
+        booth_id=booth_id,
+        display_name="Ana",
+        role=INTERPRETER,
+        language=LANG,
+        channel_id=CHANNEL,
+        user_id=event_setup["ana"],
+    )
+    await registry.update_participant_state(
+        booth_id, ana.participant_id, LANG, CHANNEL, mic_active=True, ingest_connected=True
+    )
+    clock.advance(60)
+    await registry.leave_participant(booth_id, ana.participant_id, LANG, CHANNEL)
+
+    # Before _load: visit is in memory (_closed), DB has 0 rows for this visit
+    assert len(registry.attendance._closed) == 1
+    async with db_module.get_session() as session:
+        db_count = len(list((await session.execute(select(InterpreterAttendance))).scalars()))
+    assert db_count == 0
+
+    hook_ran = False
+
+    # Wrap session so that when _load queries InterpreterAttendance, a flush runs
+    # right after the DB query executes its snapshot (returning 0 rows):
+    @asynccontextmanager
+    async def hooked_session():
+        async with db_module.get_session() as session:
+            orig_execute = session.execute
+
+            async def mock_execute(statement, *args, **kwargs):
+                nonlocal hook_ran
+                if "interpreter_attendance" in str(statement).lower():
+                    # Query DB first (DB returns 0 rows since flush hasn't committed yet)
+                    result = await orig_execute(statement, *args, **kwargs)
+                    # Flush commits right now, persisting the visit to DB and clearing _closed:
+                    written = await registry.attendance.flush()
+                    assert written == 1
+                    assert len(registry.attendance._closed) == 0
+                    hook_ran = True
+                    return result
+                return await orig_execute(statement, *args, **kwargs)
+
+            session.execute = mock_execute
+            yield session
+
+    monkeypatch.setattr(att_router, "get_session", hooked_session)
+
+    # Call the actual _load() function!
+    data = await _load(event_setup["event"])
+
+    # If _load snapshotted memory first: data.rows has 1 row with accurate left_at and interpreting_seconds.
+    # If _load queried DB first: data.rows would be 0 (dropped visit).
+    assert hook_ran
+    assert len(data.rows) == 1
+    assert data.rows[0].left_at == T0 + timedelta(seconds=60)
+    assert data.rows[0].interpreting_seconds == 60
+
+
+@pytest.mark.anyio
+async def test_flush_preserves_visits_closed_concurrently_during_persistence(event_setup, clock, monkeypatch):
+    """A visit closed while flush() is awaiting database persistence remains in _closed for the next flush."""
+    booth_id = f"conf-{event_setup['room']}-de"
+    registry = BoothRegistry(attendance=AttendanceTracker(clock=clock))
+
+    alice, _ = await registry.join_participant(
+        booth_id=booth_id,
+        display_name="Alice",
+        role=INTERPRETER,
+        language=LANG,
+        channel_id=CHANNEL,
+        user_id=event_setup["ana"],
+    )
+    clock.advance(60)
+    await registry.leave_participant(booth_id, alice.participant_id, LANG, CHANNEL)
+    assert len(registry.attendance._closed) == 1
+
+    real_save_visits = attendance_module.save_visits
+
+    async def save_with_concurrent_close(visits, now):
+        # While the first batch is being saved to DB, Bob joins and leaves:
+        bob, _ = await registry.join_participant(
+            booth_id=booth_id,
+            display_name="Bob",
+            role=INTERPRETER,
+            language=LANG,
+            channel_id=CHANNEL,
+        )
+        clock.advance(30)
+        await registry.leave_participant(booth_id, bob.participant_id, LANG, CHANNEL)
+        return await real_save_visits(visits, now)
+
+    monkeypatch.setattr(attendance_module, "save_visits", save_with_concurrent_close)
+
+    # First flush saves Alice:
+    written = await registry.attendance.flush()
+    assert written == 1
+
+    # Alice was saved and cleared from _closed, but Bob (closed during flush) remains in _closed:
+    assert len(registry.attendance._closed) == 1
+    assert registry.attendance._closed[0].display_name == "Bob"
+
+    # Restore real save_visits:
+    monkeypatch.setattr(attendance_module, "save_visits", real_save_visits)
+
+    # Second flush saves Bob:
+    written_second = await registry.attendance.flush()
+    assert written_second == 1
+    assert registry.attendance._closed == []
+
+    # Both visits are saved in database:
+    async with get_session() as session:
+        db_rows = list((await session.execute(select(InterpreterAttendance))).scalars())
+    assert {r.display_name for r in db_rows} == {"Alice", "Bob"}
+
+
+@pytest.mark.anyio
+async def test_closed_unflushed_visit_in_html_view_and_csv_export(event_setup, monkeypatch):
+    clock = Clock()
+    clock.now = datetime.now(tz=timezone.utc) - timedelta(minutes=15)
+    registry = BoothRegistry(attendance=AttendanceTracker(clock=clock))
+    monkeypatch.setattr(portal_globals.booths, "attendance", registry.attendance)
+    booth_id = f"conf-{event_setup['room']}-de"
+
+    # Join, interpret for 3 minutes, then leave. Do NOT flush to DB.
+    ana, _ = await registry.join_participant(
+        booth_id=booth_id,
+        display_name="Ana",
+        role=INTERPRETER,
+        language=LANG,
+        channel_id=CHANNEL,
+        user_id=event_setup["ana"],
+    )
+    await registry.update_participant_state(
+        booth_id, ana.participant_id, LANG, CHANNEL, mic_active=True, ingest_connected=True
+    )
+    clock.advance(180)
+    leave_time = clock()
+    await registry.leave_participant(booth_id, ana.participant_id, LANG, CHANNEL)
+
+    # Verify visit is in _closed and DB is empty
+    assert len(registry.attendance._closed) == 1
+    async with get_session() as session:
+        db_count = len(list((await session.execute(select(InterpreterAttendance))).scalars()))
+    assert db_count == 0
+
+    owner = cookies(event_setup["owner"], "owner@example.com")
+    async with client() as http:
+        page = await http.get(f"/workspace/events/{event_setup['event']}/attendance/", cookies=owner)
+        export = await http.get(f"/workspace/events/{event_setup['event']}/attendance/export", cookies=owner)
+
+    # 1. HTML view verification
+    assert page.status_code == 200
+    assert "Ana Interpreter" in page.text
+    assert "ana@example.com" in page.text
+    assert "3m" in page.text
+    # Should not show "● In booth now" for a closed visit
+    assert "● In booth now" not in page.text
+
+    # 2. CSV export verification
+    assert export.status_code == 200
+    lines = export.text.lstrip("\ufeff").splitlines()
+    assert lines[0].startswith("Interpreter,")
+    ana_line = next(line for line in lines if "Ana Interpreter" in line)
+    # Check that Left (UTC) matches exact leave timestamp and duration is 3.0 minutes
+    parts = ana_line.split(",")
+    # parts: [Interpreter, Detail, Booth, Joined, Left, Minutes in booth, Minutes interpreting]
+    assert len(parts) >= 7
+    left_utc = parts[4]
+    expected_left_utc = f"{leave_time.astimezone(timezone.utc):%Y-%m-%d %H:%M:%S}"
+    assert left_utc == expected_left_utc
+    assert parts[5] == "3.0"
+    assert parts[6] == "3.0"
+
+
+@pytest.mark.anyio
+async def test_load_snapshots_prevent_interpreting_time_extending_past_captured_now(event_setup, clock, monkeypatch):
+    """If interpreting state changes during _load's DB query, report duration does not exceed captured now."""
+    booth_id = f"conf-{event_setup['room']}-de"
+    registry = BoothRegistry(attendance=AttendanceTracker(clock=clock))
+    monkeypatch.setattr(portal_globals.booths, "attendance", registry.attendance)
+
+    ana, _ = await registry.join_participant(
+        booth_id=booth_id,
+        display_name="Ana",
+        role=INTERPRETER,
+        language=LANG,
+        channel_id=CHANNEL,
+        user_id=event_setup["ana"],
+    )
+    await registry.update_participant_state(
+        booth_id, ana.participant_id, LANG, CHANNEL, mic_active=True, ingest_connected=True
+    )
+    clock.advance(60)
+
+    # Hook session.execute to advance clock and mutate live visit while _load awaits DB:
+    @asynccontextmanager
+    async def hooked_session():
+        async with db_module.get_session() as session:
+            orig_execute = session.execute
+
+            async def mock_execute(statement, *args, **kwargs):
+                if "interpreter_attendance" in str(statement).lower():
+                    result = await orig_execute(statement, *args, **kwargs)
+                    # Advance clock by 30s and stop interpreting mid-query:
+                    clock.advance(30)
+                    await registry.update_participant_state(
+                        booth_id, ana.participant_id, LANG, CHANNEL, mic_active=False, ingest_connected=True
+                    )
+                    return result
+                return await orig_execute(statement, *args, **kwargs)
+
+            session.execute = mock_execute
+            yield session
+
+    monkeypatch.setattr(att_router, "get_session", hooked_session)
+
+    data = await _load(event_setup["event"])
+    assert len(data.rows) == 1
+    # Interpreting seconds should reflect the snapshot before await (60s), not the later 90s:
+    assert data.rows[0].interpreting_seconds == 60
+    people = summarize(data.rows, data.now, users=data.users, invite_labels=data.invite_labels)
+    assert people[0].visits[0].interpreting_seconds == 60
+    assert people[0].visits[0].present_seconds == 60
+
+
+@pytest.mark.anyio
+async def test_reused_event_slug_does_not_leak_old_visits_into_new_event(db, clock, monkeypatch):
+    """When an event is deleted and its slug reused, visits from the deleted event are not included."""
+    slug = f"reuse-{uuid4().hex[:8]}"
+    registry = BoothRegistry(attendance=AttendanceTracker(clock=clock))
+    monkeypatch.setattr(portal_globals.booths, "attendance", registry.attendance)
+
+    async with get_session() as session:
+        ev1 = await create_event(session, slug=slug, display_name="Event One")
+        room1 = await create_room(session, event_id=ev1.id, display_name="Room 1")
+        booth_id = f"{slug}-{room1.id}-de"
+
+    # Interpreter joins booth in Event 1:
+    ana, _ = await registry.join_participant(
+        booth_id=booth_id,
+        display_name="Ana Former",
+        role=INTERPRETER,
+        language=LANG,
+        channel_id=f"{slug}-1-de",
+    )
+    clock.advance(60)
+    await registry.leave_participant(booth_id, ana.participant_id, LANG, f"{slug}-1-de")
+
+    # Pending visits has the visit from Event 1:
+    assert len(registry.attendance.pending_visits(slug)) == 1
+
+    # Delete Event 1:
+    async with get_session() as session:
+        assert await delete_event(session, ev1.id) is True
+
+    # Memory was purged for deleted event:
+    assert registry.attendance.pending_visits(slug) == []
+
+    # Create Event 2 reusing the same slug:
+    clock.advance(60)
+    async with get_session() as session:
+        ev2 = await create_event(session, slug=slug, display_name="Event Two")
+
+    # Load attendance for Event 2:
+    data = await _load(ev2.id)
+    assert len(data.rows) == 0
+
+
+@pytest.mark.anyio
+async def test_reused_event_slug_in_flight_flush_does_not_save_discarded_visits(db, clock, monkeypatch):
+    """An in-flight flush does not write visits into a new event reusing the same slug."""
+    slug = f"inflight-{uuid4().hex[:8]}"
+    tracker = AttendanceTracker(clock=clock)
+    monkeypatch.setattr(portal_globals.booths, "attendance", tracker)
+
+    async with get_session() as session:
+        ev1 = await create_event(session, slug=slug, display_name="Event 1")
+        room1 = await create_room(session, event_id=ev1.id, display_name="Room 1")
+
+    visit = Visit(
+        id=uuid4().hex,
+        booth_id=f"{slug}-{room1.id}-de",
+        event_slug=slug,
+        room_id=room1.id,
+        language_code="de",
+        participant_id="part-1",
+        user_id=None,
+        invite_public_id=None,
+        display_name="Ana Inflight",
+        role="interpreter",
+        joined_at=clock(),
+        left_at=clock(),
+        interpreting_seconds=30.0,
+    )
+    tracker._closed.append(visit)
+
+    # Hook get_session so that during the Event lookup inside save_visits, ev1 is deleted
+    # and ev2 is recreated with the same slug. The event query will find ev2, but visit.discarded
+    # must prevent writing the old visit under ev2.
+    orig_get_session = attendance_module.get_session
+
+    hook_ran = False
+
+    @asynccontextmanager
+    async def hooked_session():
+        async with orig_get_session() as session:
+            orig_execute = session.execute
+
+            async def mock_execute(statement, *args, **kwargs):
+                nonlocal hook_ran
+                stmt_str = str(statement).lower()
+                if "events.slug in" in stmt_str or "events.slug" in stmt_str:
+                    # Concurrently delete ev1 and recreate ev2 with the same slug mid-query:
+                    async with orig_get_session() as s2:
+                        await delete_event(s2, ev1.id)
+                        await create_event(s2, slug=slug, display_name="Event 2")
+                    hook_ran = True
+                return await orig_execute(statement, *args, **kwargs)
+
+            session.execute = mock_execute
+            yield session
+
+    monkeypatch.setattr(attendance_module, "get_session", hooked_session)
+
+    await tracker.flush()
+
+    assert hook_ran
+    assert visit.discarded
+
+    # Verify no visits were saved for ev2:
+    async with get_session() as session:
+        current_ev = (await session.execute(select(Event).where(Event.slug == slug))).scalar_one()
+        assert current_ev.display_name == "Event 2"
+        ev2_rows = (
+            await session.execute(
+                select(InterpreterAttendance).join(Event).where(Event.slug == slug)
+            )
+        ).scalars().all()
+        assert len(ev2_rows) == 0
+
+
+@pytest.mark.anyio
+async def test_delete_event_rollback_does_not_discard_attendance(db, clock, monkeypatch):
+    """If delete_event rolls back, its pending attendance visits are not discarded on a later commit."""
+    slug = f"rollback-{uuid4().hex[:8]}"
+    tracker = AttendanceTracker(clock=clock)
+    monkeypatch.setattr(portal_globals.booths, "attendance", tracker)
+
+    async with get_session() as session:
+        ev = await create_event(session, slug=slug, display_name="Event Rollback")
+        room = await create_room(session, event_id=ev.id, display_name="Room 1")
+
+    visit = Visit(
+        id=uuid4().hex,
+        booth_id=f"{slug}-{room.id}-de",
+        event_slug=slug,
+        room_id=room.id,
+        language_code="de",
+        participant_id="part-rb",
+        user_id=None,
+        invite_public_id=None,
+        display_name="Ana Rollback",
+        role="interpreter",
+        joined_at=clock(),
+        left_at=clock(),
+        interpreting_seconds=45.0,
+    )
+    tracker._closed.append(visit)
+    assert len(tracker.pending_visits(slug)) == 1
+
+    # Call delete_event on a session, then roll back:
+    session_factory = db_module._get_session_factory()
+    async with session_factory() as session:
+        await delete_event(session, ev.id)
+        await session.rollback()
+
+        # Same session commits an unrelated change later:
+        await create_event(session, slug=f"other-{uuid4().hex[:8]}", display_name="Other")
+        await session.commit()
+
+    # The pending visits for the rolled-back event must still be present:
+    assert len(tracker.pending_visits(slug)) == 1
+    assert tracker.pending_visits(slug)[0].discarded is False
+
+
+@pytest.mark.anyio
+async def test_delete_event_nested_savepoint_rollback_still_discards_on_commit(db, clock, monkeypatch):
+    """A nested savepoint rollback within delete_event transaction does not cancel discard on outer commit."""
+    slug = f"nested-{uuid4().hex[:8]}"
+    tracker = AttendanceTracker(clock=clock)
+    monkeypatch.setattr(portal_globals.booths, "attendance", tracker)
+
+    async with get_session() as session:
+        ev = await create_event(session, slug=slug, display_name="Event Nested")
+        room = await create_room(session, event_id=ev.id, display_name="Room 1")
+
+    visit = Visit(
+        id=uuid4().hex,
+        booth_id=f"{slug}-{room.id}-de",
+        event_slug=slug,
+        room_id=room.id,
+        language_code="de",
+        participant_id="part-nested",
+        user_id=None,
+        invite_public_id=None,
+        display_name="Ana Nested",
+        role="interpreter",
+        joined_at=clock(),
+        left_at=clock(),
+        interpreting_seconds=45.0,
+    )
+    tracker._closed.append(visit)
+    assert len(tracker.pending_visits(slug)) == 1
+
+    session_factory = db_module._get_session_factory()
+    async with session_factory() as session:
+        await delete_event(session, ev.id)
+        try:
+            async with session.begin_nested():
+                raise RuntimeError("inner savepoint failure")
+        except RuntimeError:
+            pass
+        assert len(tracker.pending_visits(slug)) == 1
+        await session.commit()
+
+    assert len(tracker.pending_visits(slug)) == 0
+
+
+@pytest.mark.anyio
+async def test_delete_event_savepoint_rollback_of_deleting_tx_keeps_attendance(db, clock, monkeypatch):
+    """Rolling back the savepoint where delete_event was called keeps attendance visits pending on outer commit."""
+    slug = f"sp-rb-{uuid4().hex[:8]}"
+    tracker = AttendanceTracker(clock=clock)
+    monkeypatch.setattr(portal_globals.booths, "attendance", tracker)
+
+    async with get_session() as session:
+        ev = await create_event(session, slug=slug, display_name="Event SP Rollback")
+        room = await create_room(session, event_id=ev.id, display_name="Room 1")
+
+    visit = Visit(
+        id=uuid4().hex,
+        booth_id=f"{slug}-{room.id}-de",
+        event_slug=slug,
+        room_id=room.id,
+        language_code="de",
+        participant_id="part-sp-rb",
+        user_id=None,
+        invite_public_id=None,
+        display_name="Ana SP Rollback",
+        role="interpreter",
+        joined_at=clock(),
+        left_at=clock(),
+        interpreting_seconds=45.0,
+    )
+    tracker._closed.append(visit)
+    assert len(tracker.pending_visits(slug)) == 1
+
+    class _ForcedRollback(Exception):
+        pass
+
+    session_factory = db_module._get_session_factory()
+    async with session_factory() as session:
+        try:
+            async with session.begin_nested():
+                deleted = await delete_event(session, ev.id)
+                assert deleted is True
+                raise _ForcedRollback("rollback deleting savepoint")
+        except _ForcedRollback:
+            pass
+        await session.commit()
+
+    assert len(tracker.pending_visits(slug)) == 1
+    assert tracker.pending_visits(slug)[0].discarded is False
+
+
+@pytest.mark.anyio
+async def test_delete_event_released_savepoint_then_outer_rollback_keeps_attendance(db, clock, monkeypatch):
+    """Releasing an unrelated savepoint after delete_event does not trigger discard when outer tx rolls back."""
+    slug = f"sp-rel-{uuid4().hex[:8]}"
+    tracker = AttendanceTracker(clock=clock)
+    monkeypatch.setattr(portal_globals.booths, "attendance", tracker)
+
+    async with get_session() as session:
+        ev = await create_event(session, slug=slug, display_name="Event SP Released")
+        room = await create_room(session, event_id=ev.id, display_name="Room 1")
+
+    visit = Visit(
+        id=uuid4().hex,
+        booth_id=f"{slug}-{room.id}-de",
+        event_slug=slug,
+        room_id=room.id,
+        language_code="de",
+        participant_id="part-sp-rel",
+        user_id=None,
+        invite_public_id=None,
+        display_name="Ana SP Released",
+        role="interpreter",
+        joined_at=clock(),
+        left_at=clock(),
+        interpreting_seconds=45.0,
+    )
+    tracker._closed.append(visit)
+    assert len(tracker.pending_visits(slug)) == 1
+
+    session_factory = db_module._get_session_factory()
+    async with session_factory() as session:
+        deleted = await delete_event(session, ev.id)
+        assert deleted is True
+        async with session.begin_nested():
+            pass
+        await session.rollback()
+
+    assert len(tracker.pending_visits(slug)) == 1
+    assert tracker.pending_visits(slug)[0].discarded is False
+
+
+def test_pending_visits_includes_in_flight_visits(clock):
+    """Visits in flight during a flush are included in pending_visits even if evicted from queue."""
+    tracker = AttendanceTracker(clock=clock)
+    v1 = Visit(
+        id="v1",
+        booth_id="ev-1-de",
+        event_slug="ev",
+        room_id=1,
+        language_code="de",
+        participant_id="part-1",
+        user_id=10,
+        invite_public_id=None,
+        display_name="Alice",
+        role=INTERPRETER,
+        joined_at=datetime(2026, 11, 10, 10, 0, tzinfo=timezone.utc),
+        left_at=datetime(2026, 11, 10, 11, 0, tzinfo=timezone.utc),
+        interpreting_seconds=1800,
+    )
+    tracker._in_flight = [v1]
+    assert len(tracker._closed) == 0
+    pending = tracker.pending_visits("ev")
+    assert len(pending) == 1
+    assert pending[0].id == "v1"
+
+
+def test_rows_for_event_excludes_future_database_rows():
+    """Database rows with joined_at after now are excluded from rows_for_event."""
+    now = datetime(2026, 11, 10, 12, 0, tzinfo=timezone.utc)
+    future_row = AttendanceRow(
+        id="future",
+        room_id=1,
+        language_code="de",
+        user_id=1,
+        invite_public_id=None,
+        display_name="Future",
+        role=INTERPRETER,
+        joined_at=datetime(2026, 11, 10, 12, 5, tzinfo=timezone.utc),
+        left_at=datetime(2026, 11, 10, 12, 30, tzinfo=timezone.utc),
+        interpreting_seconds=600,
+    )
+    past_row = AttendanceRow(
+        id="past",
+        room_id=1,
+        language_code="de",
+        user_id=2,
+        invite_public_id=None,
+        display_name="Past",
+        role=INTERPRETER,
+        joined_at=datetime(2026, 11, 10, 11, 0, tzinfo=timezone.utc),
+        left_at=datetime(2026, 11, 10, 11, 45, tzinfo=timezone.utc),
+        interpreting_seconds=1200,
+    )
+    result = rows_for_event([future_row, past_row], [], now)
+    assert len(result) == 1
+    assert result[0].id == "past"
+
+
+def test_rows_for_event_caps_saved_visit_left_at_at_now():
+    """Saved database rows with left_at extending beyond now are bounded by now."""
+    now = datetime(2026, 11, 10, 12, 0, tzinfo=timezone.utc)
+    spanning_row = AttendanceRow(
+        id="spanning",
+        room_id=1,
+        language_code="de",
+        user_id=1,
+        invite_public_id=None,
+        display_name="Alice",
+        role=INTERPRETER,
+        joined_at=datetime(2026, 11, 10, 11, 0, tzinfo=timezone.utc),
+        left_at=datetime(2026, 11, 10, 12, 10, tzinfo=timezone.utc),
+        interpreting_seconds=4200,
+    )
+    result = rows_for_event([spanning_row], [], now)
+    assert len(result) == 1
+    assert result[0].left_at == now
+
+
+@pytest.mark.anyio
+async def test_admin_delete_event_removes_booths_from_registry(db, monkeypatch):
+    """admin_delete_event removes the event's booths from the registry after successful commit."""
+    slug = f"delbooths-{uuid4().hex[:8]}"
+    registry = BoothRegistry()
+    monkeypatch.setattr(admin_router, "booths", registry)
+    monkeypatch.setattr(portal_globals, "booths", registry)
+
+    async with get_session() as session:
+        user = await create_user(session, email=f"{slug}@example.com", display_name="Owner")
+        ev = await create_event(session, slug=slug, display_name="Event Delete")
+        await set_event_membership(session, event_id=ev.id, user_id=user.id, role=EVENT_OWNER)
+        room = await create_room(session, event_id=ev.id, display_name="Room 1")
+        await create_booth(session, event_id=ev.id, room_id=room.id, language_code="de", language_name="German")
+
+    booth_id = f"{slug}-{room.id}-de"
+    await registry.join_participant(
+        booth_id=booth_id,
+        display_name="Interpreter",
+        role=INTERPRETER,
+        language="de",
+        channel_id=booth_id,
+    )
+    assert len(await registry.list_booths_for_event(slug)) == 1
+
+    scope = {
+        "type": "http",
+        "method": "POST",
+        "path": f"/admin/events/{ev.id}/delete",
+        "headers": [],
+    }
+    req = Request(scope)
+
+    resp = await admin_delete_event(req, ev.id)
+    assert resp.status_code == 303
+    assert len(await registry.list_booths_for_event(slug)) == 0
+
+
+@pytest.mark.anyio
+async def test_admin_delete_event_preserves_replacement_event_booths(db, monkeypatch):
+    """admin_delete_event only removes booths snapshotted before delete, preserving replacement booths."""
+    slug = f"reused-{uuid4().hex[:8]}"
+    registry = BoothRegistry()
+    monkeypatch.setattr(admin_router, "booths", registry)
+    monkeypatch.setattr(portal_globals, "booths", registry)
+
+    async with get_session() as session:
+        user = await create_user(session, email=f"{slug}@example.com", display_name="Owner")
+        ev = await create_event(session, slug=slug, display_name="Original Event")
+        await set_event_membership(session, event_id=ev.id, user_id=user.id, role=EVENT_OWNER)
+        room = await create_room(session, event_id=ev.id, display_name="Room 1")
+        await create_booth(session, event_id=ev.id, room_id=room.id, language_code="de", language_name="German")
+
+    booth_id = f"{slug}-{room.id}-de"
+    await registry.join_participant(
+        booth_id=booth_id,
+        display_name="Interpreter",
+        role=INTERPRETER,
+        language="de",
+        channel_id=booth_id,
+    )
+
+    original_delete_event = admin_router.delete_event
+
+    async def _mock_delete_event(session, event_id):
+        res = await original_delete_event(session, event_id)
+        # Register a booth for a replacement event under the same slug before cleanup finishes:
+        new_booth_id = f"{slug}-99-fr"
+        await registry.join_participant(
+            booth_id=new_booth_id,
+            display_name="New Interpreter",
+            role=INTERPRETER,
+            language="fr",
+            channel_id=new_booth_id,
+        )
+        return res
+
+    monkeypatch.setattr(admin_router, "delete_event", _mock_delete_event)
+
+    scope = {
+        "type": "http",
+        "method": "POST",
+        "path": f"/admin/events/{ev.id}/delete",
+        "headers": [],
+    }
+    req = Request(scope)
+    resp = await admin_delete_event(req, ev.id)
+    assert resp.status_code == 303
+
+    remaining = await registry.list_booths_for_event(slug)
+    assert len(remaining) == 1
+    assert remaining[0]["language_code"] == "fr"
+
+
+@pytest.mark.anyio
+async def test_admin_delete_event_preserves_replacement_event_visits_during_cleanup(db, monkeypatch):
+    """admin_delete_event cleanup loop preserves visits in booths registered after commit."""
+    slug = f"reused-v-{uuid4().hex[:8]}"
+    registry = BoothRegistry()
+    monkeypatch.setattr(admin_router, "booths", registry)
+    monkeypatch.setattr(portal_globals, "booths", registry)
+
+    async with get_session() as session:
+        user = await create_user(session, email=f"{slug}@example.com", display_name="Owner")
+        ev = await create_event(session, slug=slug, display_name="Original Event")
+        await set_event_membership(session, event_id=ev.id, user_id=user.id, role=EVENT_OWNER)
+        room = await create_room(session, event_id=ev.id, display_name="Room 1")
+        await create_booth(session, event_id=ev.id, room_id=room.id, language_code="de", language_name="German")
+
+    booth_id = f"{slug}-{room.id}-de"
+    await registry.join_participant(
+        booth_id=booth_id,
+        display_name="Interpreter",
+        role=INTERPRETER,
+        language="de",
+        channel_id=booth_id,
+    )
+
+    original_remove_booth = registry.remove_booth
+    injected = False
+
+    async def _mock_remove_booth(event_slug, room_id, language_code):
+        nonlocal injected
+        if not injected:
+            injected = True
+            new_booth_id = f"{slug}-99-fr"
+            await registry.join_participant(
+                booth_id=new_booth_id,
+                display_name="New Interpreter",
+                role=INTERPRETER,
+                language="fr",
+                channel_id=new_booth_id,
+            )
+        return await original_remove_booth(event_slug, room_id, language_code)
+
+    monkeypatch.setattr(registry, "remove_booth", _mock_remove_booth)
+
+    scope = {
+        "type": "http",
+        "method": "POST",
+        "path": f"/admin/events/{ev.id}/delete",
+        "headers": [],
+    }
+    req = Request(scope)
+    resp = await admin_delete_event(req, ev.id)
+    assert resp.status_code == 303
+
+    pending = registry.attendance.pending_visits(slug)
+    assert len(pending) == 1
+    assert pending[0].display_name == "New Interpreter"
+
+
+@pytest.mark.anyio
+async def test_admin_delete_event_discards_removed_booth_visits_only(db, monkeypatch):
+    """admin_delete_event discards visits for snapshotted booths only, keeping replacement booth visits pending."""
+    slug = f"del-only-{uuid4().hex[:8]}"
+    registry = BoothRegistry()
+    monkeypatch.setattr(admin_router, "booths", registry)
+    monkeypatch.setattr(portal_globals, "booths", registry)
+
+    async with get_session() as session:
+        user = await create_user(session, email=f"{slug}@example.com", display_name="Owner")
+        ev = await create_event(session, slug=slug, display_name="Original Event")
+        await set_event_membership(session, event_id=ev.id, user_id=user.id, role=EVENT_OWNER)
+        room = await create_room(session, event_id=ev.id, display_name="Room 1")
+        await create_booth(session, event_id=ev.id, room_id=room.id, language_code="de", language_name="German")
+
+    booth_id = f"{slug}-{room.id}-de"
+    await registry.join_participant(
+        booth_id=booth_id,
+        display_name="Interpreter",
+        role=INTERPRETER,
+        language="de",
+        channel_id=booth_id,
+    )
+
+    original_remove_booth = registry.remove_booth
+    injected = False
+
+    async def _mock_remove_booth(event_slug, room_id, language_code):
+        nonlocal injected
+        if not injected:
+            injected = True
+            # Join a participant into the OLD (snapshotted) booth so a visit opens after commit discard
+            await registry.join_participant(
+                booth_id=booth_id,
+                display_name="Late Old Interpreter",
+                role=INTERPRETER,
+                language="de",
+                channel_id=booth_id,
+            )
+            # Also join a participant in a replacement booth
+            new_booth_id = f"{slug}-99-fr"
+            await registry.join_participant(
+                booth_id=new_booth_id,
+                display_name="Replacement Interpreter",
+                role=INTERPRETER,
+                language="fr",
+                channel_id=new_booth_id,
+            )
+        return await original_remove_booth(event_slug, room_id, language_code)
+
+    monkeypatch.setattr(registry, "remove_booth", _mock_remove_booth)
+
+    scope = {
+        "type": "http",
+        "method": "POST",
+        "path": f"/admin/events/{ev.id}/delete",
+        "headers": [],
+    }
+    req = Request(scope)
+    resp = await admin_delete_event(req, ev.id)
+    assert resp.status_code == 303
+
+    pending = registry.attendance.pending_visits(slug)
+    # No pending visit remains for the old booth
+    old_visits = [v for v in pending if v.booth_id == booth_id]
+    assert len(old_visits) == 0
+    # The replacement participant's visit is still pending
+    replacement_visits = [v for v in pending if v.booth_id == f"{slug}-99-fr"]
+    assert len(replacement_visits) == 1
+    assert replacement_visits[0].display_name == "Replacement Interpreter"
