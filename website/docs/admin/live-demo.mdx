@@ -1,0 +1,85 @@
+---
+title: "Home-Page Live Demo — Voxbento Admin"
+sidebarTitle: "Live Demo"
+description: "Switch the home page's live speech demo on or off, set its limits, and give it a site-wide glossary."
+---
+
+The home page has a **Your voice** demo: a visitor presses the microphone, speaks, and
+sees live captions, translations into up to three languages, and hears one of them read
+aloud. Choose the server's own models (Whisper, NLLB and Supertonic) or configure the
+demo's own hosted services and API keys.
+
+Admins manage it at **Admin → Live demo** (`/admin/live-demo/`).
+
+## Turning it on and off
+
+The demo is off until an Admin turns it on: tick **Show the live demo on the home page** and save. Untick it and save to close it. The home page then
+shows only the recorded demo, and new tries are refused; tries already running finish
+normally. Tick it again when the server has room.
+
+A server that should never run it can set `LIVE_DEMO_ENABLED=false`; the page then says
+the demo is off on this server, whatever is saved.
+
+## AI engines
+
+The demo runs on one of two sources, chosen under **AI engines**:
+
+- **This server's built-in models.** Whisper, NLLB and Supertonic on the server's CPU. Free
+  and needs no keys; pick the Whisper size here.
+- **Choose services for this demo.** Select caption and translation provider/model pairs,
+  a voice provider, an optional voice ID, interpreter persona and style. These settings
+  belong to the demo and require no event or room. Both modes use the site glossary.
+
+Enter the demo's API keys in the corresponding password fields. They are encrypted at
+rest and never displayed again. Blank preserves a saved key; **Remove saved key** deletes
+it. Changing providers clears the old key, so enter the new provider's key when switching.
+Local models need no key. Missing or unreadable keys keep the demo unavailable and show
+an explanation to Admins. NVIDIA speech also requires the server's `NVIDIA_FUNCTION_ID`
+and the optional `nvidia-riva-client` dependency. Hosted services bill the demo's keys, independently of events.
+
+After Stop, OpenAI realtime and ElevenLabs speech allow up to three seconds for delayed
+final transcripts before closing the connection. A slower response can miss that deadline.
+
+**Demo minutes per day** limits accepted audio, not currency; pricing depends on the chosen
+services and number of target languages. The UTC-day usage counter resets on portal restart.
+Migration 045 disables any older room-linked demo and removes its link. Configure the demo's
+own services and credentials, then enable it again. Customer keys are never copied.
+
+## Limits
+
+| Setting | What it does |
+| --- | --- |
+| Visitors at once | Tries running at the same time. Others are asked to try again in a minute. |
+| Time limit per try | Longest single try, in seconds. |
+| Tries per visitor per hour | Counted per network address. |
+| Languages per try | How many languages a visitor can translate into. Each one adds a translation for every sentence. |
+| Demo minutes per day | Visitor audio accepted per UTC day, across everyone. Once used up, the demo rests until the next day and a try in progress ends. |
+| Speech recognition model | Built-in models only. Tiny is fastest, Small most accurate. Base suits most CPUs. |
+| Speak the translations aloud | Turn off to save CPU; captions and translations keep working. |
+
+## Site glossary
+
+The site glossary is used in every try. Speech recognition listens for its terms, and the
+translations keep them or use the translation you set. Write one entry per line:
+
+```text
+# Kept exactly as written, in every language
+VoxBento
+Eventyay
+
+# The same translation in every language
+keynote = plenary session
+
+# Only in French (two-letter language code)
+keynote = fr: séance plénière
+```
+
+A language-specific line wins over an every-language line for the same term. Visitors can
+add their own names and translations in the demo; theirs win over the site glossary for
+their try. Glossary terms are highlighted in the captions.
+
+## Loading the models
+
+The first try after a restart loads the models, and the very first one downloads about
+1 GB. Press **Load models now** after deploying or changing the speech model so the first
+visitor doesn't wait.

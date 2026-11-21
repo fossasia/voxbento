@@ -31,6 +31,7 @@ const sidebars: SidebarsConfig = {
             'admin/transcription',
             'admin/ai-interpretation',
             'admin/program-ingest',
+            'admin/live-demo',
           ],
         },
         {

@@ -4,6 +4,8 @@ import enum
 from abc import ABC, abstractmethod
 from collections.abc import AsyncIterator, Awaitable, Callable
 
+from portal.tts.constants import ELEVENLABS_DEFAULT_VOICE_ID
+
 # Callback invoked with each PCM (s16le, 24000 Hz, mono) audio chunk produced by
 # a provider. Wired by the worker to ConnectionManager.broadcast_audio.
 AudioCallback = Callable[[bytes], Awaitable[None]]
@@ -12,6 +14,7 @@ AudioCallback = Callable[[bytes], Awaitable[None]]
 class TTSProviderEnum(str, enum.Enum):
     DEEPGRAM = "deepgram"
     SUPERTONIC = "supertonic"
+    ELEVENLABS = "elevenlabs"
 
 
 class TTSProvider(ABC):
@@ -36,7 +39,13 @@ class TTSProvider(ABC):
         raise NotImplementedError
 
 
-def get_tts_provider(provider: str, *, deepgram_api_key: str | None = None) -> TTSProvider:
+def get_tts_provider(
+    provider: str,
+    *,
+    deepgram_api_key: str | None = None,
+    elevenlabs_api_key: str | None = None,
+    elevenlabs_voice_id: str = "",
+) -> TTSProvider:
     """Factory returning a TTS provider instance for the given provider name.
 
     Falls back to Deepgram for unknown provider values to preserve existing
@@ -48,6 +57,13 @@ def get_tts_provider(provider: str, *, deepgram_api_key: str | None = None) -> T
         from portal.tts.providers.supertonic import SupertonicTTSProvider
 
         return SupertonicTTSProvider()
+
+    if provider == TTSProviderEnum.ELEVENLABS.value:
+        from portal.tts.providers.elevenlabs import ElevenLabsTTSProvider
+
+        return ElevenLabsTTSProvider(
+            api_key=elevenlabs_api_key or "", voice_id=elevenlabs_voice_id or ELEVENLABS_DEFAULT_VOICE_ID
+        )
 
     from portal.tts.providers.deepgram import DeepgramTTSProvider
 

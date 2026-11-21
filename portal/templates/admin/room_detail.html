@@ -73,6 +73,7 @@
 <div class="alert alert-warning" role="status">{{ kept_live_languages | join(', ') }} {{ 'booth is' if kept_live_languages|length == 1 else 'booths are' }} live right now, so {{ 'it was' if kept_live_languages|length == 1 else 'they were' }} kept. Change the languages again after the session to remove {{ 'it' if kept_live_languages|length == 1 else 'them' }}.</div>
 {% endif %}
 
+<div class="room-overview-cols">
 <div class="room-card">
   <div class="room-card-head">
     <div>
@@ -126,6 +127,7 @@
   </div>
 </div>
 
+<div class="room-overview-side">
 {% if event.listener_join_code and room_overlay_channels %}
 <details class="room-card">
   <summary>All caption overlay URLs (OBS / vMix)</summary>
@@ -139,6 +141,14 @@
   {% endfor %}
 </details>
 {% endif %}
+
+<div class="room-card room-card--row">
+  <div>
+    <h2>Meeting reports</h2>
+    <p class="room-card-sub">Meeting notes written by AI from this room's transcripts, grouped by the topics that came up.</p>
+  </div>
+  <a href="{{ management_prefix }}/events/{{ event.id }}/rooms/{{ room.id }}/analysis/" class="btn btn-outline">View reports</a>
+</div>
 
 {% if is_event_owner %}
 <div class="room-card room-card--row">
@@ -158,6 +168,8 @@
   <a href="{{ management_prefix }}/events/{{ event.id }}/team/" class="btn btn-outline">Open Team</a>
 </div>
 {% endif %}
+</div>
+</div>
 </section>
 
 {% if is_event_owner %}
@@ -259,11 +271,6 @@
           </select>
         </div>
       </details>
-      <div id="nllb_download_progress_container" class="download-progress" hidden>
-        <span id="nllb_download_speed" class="download-speed">-- MB/s</span>
-        <div class="progress-track"><div id="nllb_download_bar" class="progress-fill"></div></div>
-        <span id="nllb_download_percent" class="download-percent">0%</span>
-      </div>
 
       <details class="room-more" data-translation-instructions {% if room.floor_ai_interpreter_persona or room.floor_ai_interpretation_style %}open{% endif %}>
         <summary>Instructions for the AI translator <span class="rs-label-note">optional</span></summary>
@@ -304,6 +311,7 @@
             {% endfor %}
           </select>
           <span class="hint" id="tts_provider_help_deepgram">Deepgram picks a voice for each language.</span>
+          <span class="hint" id="tts_provider_help_elevenlabs" hidden>One ElevenLabs voice speaks every language, Thai included.</span>
         </div>
         <div class="field" id="tts_voice_group">
           <label for="floor_tts_voice">Voice</label>
@@ -385,7 +393,7 @@
                   <form method="post" action="{{ management_prefix }}/events/{{ event.id }}/rooms/{{ room.id }}/ai-vocabulary/delete">
                     <input type="hidden" name="csrf_token" value="{{ request.state.admin_csrf_token }}" />
                     <input type="hidden" name="entry_id" value="{{ entry.id }}">
-                    <button type="submit" class="btn btn-sm btn-outline">Delete</button>
+                    <button type="submit" class="btn btn-sm btn-outline" title="Delete this glossary entry">Delete</button>
                   </form>
                 </td>
               </tr>
@@ -396,7 +404,7 @@
       <form method="post" action="{{ management_prefix }}/events/{{ event.id }}/rooms/{{ room.id }}/ai-vocabulary/delete" class="ai-vocabulary-clear">
         <input type="hidden" name="csrf_token" value="{{ request.state.admin_csrf_token }}" />
         <input type="hidden" name="entry_id" value="all">
-        <button type="submit" class="btn btn-sm btn-outline">Delete the whole glossary</button>
+        <button type="submit" class="btn btn-sm btn-outline" title="Delete the entire glossary">Delete the whole glossary</button>
       </form>
     {% else %}
       <p class="ai-vocabulary-empty">No glossary yet.</p>
@@ -455,37 +463,13 @@
     <form method="post" action="{{ management_prefix }}/events/{{ event.id }}/rooms/{{ room.id }}/delete" class="inline-delete"
           data-confirm="Delete room '{{ room.display_name }}'? All booths in this room will be removed.">
       <input type="hidden" name="csrf_token" value="{{ request.state.admin_csrf_token }}" />
-      <button type="submit" class="btn btn-danger">Delete room</button>
+      <button type="submit" class="btn btn-danger" title="Permanently delete this room">Delete room</button>
       <span class="danger-text">This removes its booths and their invite links. It can't be undone.</span>
     </form>
   </div>
 </section>
 {% endif %}
 
-</div>
-
-<div id="nllb_download_modal" class="model-modal-overlay" hidden>
-  <div class="model-modal">
-    <h3>Download the built-in translator?</h3>
-    <p>The built-in translator runs on this server. The first time, it has to download a large file, which can take several minutes. Translation starts once it's ready.</p>
-    <div class="model-modal-actions">
-      <button type="button" class="btn btn-secondary" id="nllb_cancel_btn">Cancel</button>
-      <button type="button" class="btn btn-primary" id="nllb_proceed_btn">Download and save</button>
-    </div>
-  </div>
-</div>
-
-<div id="nllb_success_modal" class="model-modal-overlay" hidden>
-  <div class="model-modal model-modal--success">
-    <div class="model-modal-icon">
-      ✓
-    </div>
-    <h3>Translator ready</h3>
-    <p>The built-in translator is downloaded and ready.</p>
-    <div class="model-modal-actions">
-      <button type="button" class="btn btn-primary btn-modal-dismiss" id="nllb_success_got_it_btn">Got it</button>
-    </div>
-  </div>
 </div>
 
 <div id="supertonic_download_modal" class="model-modal-overlay" hidden>
