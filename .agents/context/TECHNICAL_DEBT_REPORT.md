@@ -77,7 +77,7 @@
 
 ### TD-11: [RESOLVED] No WebSocket reconnection handling on the server
 **File:** `portal/booth_state.py`, `portal/websockets/manager.py`
-**Resolution:** A dropped booth socket marks the participant `connected: false` and keeps their place, including the active slot, for `BOOTH_RECONNECT_GRACE_SECONDS`. A reconnect from the same session (`booth_session_key`) with the same `participant_id` reclaims it; any other session gets a fresh ID. A socket that still holds the participant is closed with 4009, which the client treats as final. Revoked access removes the participant at once.
+**Resolution:** A dropped booth socket marks the participant `connected: false` and keeps their place, including the active slot, for `BOOTH_RECONNECT_GRACE_SECONDS`. A reconnect from the same session (`booth_session_key`) with the same `participant_id` reclaims it; any other session gets a fresh ID. A socket that still holds the participant is closed with 4009, which the client treats as final. Revoked access removes the participant at once and kicks the WHIP session they opened in MediaMTX; a participant whose grace runs out is kicked the same way (#1285). Session records are kept in memory only, so after a portal restart revocation cannot kick a session opened before the restart.
 
 ---
 

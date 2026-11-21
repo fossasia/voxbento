@@ -11,6 +11,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from portal.auth import coordinates_room, load_membership_scope, require_oauth_scope
 from portal.booth_identity import make_booth_id, make_mediamtx_path, validate_language_code
+from portal.booth_publish import stop_booth_publish, take_booth_publishers
 from portal.config import settings
 from portal.database import delete_room as delete_db_room
 from portal.database import get_db_session
@@ -735,29 +736,27 @@ async def _delete_removed_languages_and_booths(
     from portal.globals import booths
 
     # Safe Delete Removed Booths & Languages
-    for code, b in existing_booths.items():
-        if code not in requested_langs:
-            # Active Session Guard — use BoothRegistry.get_booth_sync() (not .items())
-            booth_id = make_booth_id(event.slug, room.id, code)
-            active_booth = booths.get_booth_sync(booth_id)
-            if active_booth is not None:
-                has_connected = active_booth.ingest_status == "connected"
-                if has_connected:
-                    raise HTTPException(
-                        status_code=status.HTTP_409_CONFLICT,
-                        detail=f"Cannot remove language '{code}' while it has an active session running.",
-                    )
-            await booths.remove_booth(event.slug, room.id, code)
-            await db.delete(b)
-            db.add(
-                OAuthAuditLog(
-                    token_id=token.id,
-                    client_id=token.client_id,
-                    action="booth.deleted",
-                    request_path=f"/api/v1/events/{event.slug}/rooms/{eventyay_room_id}/booths/{code}",
-                    status_code=status.HTTP_200_OK,
-                )
+    removed_booths = [(code, b) for code, b in existing_booths.items() if code not in requested_langs]
+    # Active Session Guard — checked and removed in one locked step, before any cleanup
+    live_code = await booths.remove_idle_booths(event.slug, room.id, [code for code, _ in removed_booths])
+    if live_code is not None:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=f"Cannot remove language '{live_code}' while it has an active session running.",
+        )
+    for code, b in removed_booths:
+        booth_id = make_booth_id(event.slug, room.id, code)
+        await stop_booth_publish(booth_id, take_booth_publishers(booth_id))
+        await db.delete(b)
+        db.add(
+            OAuthAuditLog(
+                token_id=token.id,
+                client_id=token.client_id,
+                action="booth.deleted",
+                request_path=f"/api/v1/events/{event.slug}/rooms/{eventyay_room_id}/booths/{code}",
+                status_code=status.HTTP_200_OK,
             )
+        )
 
     for code, rl in existing_langs.items():
         if code not in requested_langs:

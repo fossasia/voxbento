@@ -1,7 +1,11 @@
-"""Interpreter booth WHIP publishing requires a single-use ticket (#783)."""
+"""Interpreter booth WHIP publishing requires a single-use ticket (#783).
+
+The session a ticket opens is ended by the portal when its interpreter leaves the booth (#1285).
+"""
 
 from __future__ import annotations
 
+import asyncio
 import json
 from uuid import uuid4
 
@@ -13,7 +17,17 @@ from portal import booth_publish
 from portal import program_ingest as ingest
 from portal.config import settings
 from portal.globals import booths
-from portal.websockets.manager import Session, _handle_join, _handle_request_publish_ticket
+from portal.websockets import manager as manager_module
+from portal.websockets.manager import (
+    Session,
+    _handle_join,
+    _handle_leave,
+    _handle_request_publish_ticket,
+    _handle_set_broadcast_unlocked,
+    manager,
+    release_participant,
+    schedule_participant_expiry,
+)
 
 EVENT = "ticket-test"
 ROOM = 7
@@ -41,7 +55,13 @@ async def booth(monkeypatch):
     joined = []
     for name in ("Active", "Backup"):
         participant, _ = await booths.join_participant(
-            booth_id=BOOTH_ID, display_name=name, role="interpreter", language="English", channel_id=PATH, room_id=ROOM
+            booth_id=BOOTH_ID,
+            display_name=name,
+            role="interpreter",
+            language="English",
+            channel_id=PATH,
+            room_id=ROOM,
+            connection_id=f"{name}-socket",
         )
         joined.append(participant.participant_id)
     booths.get_booth_sync(BOOTH_ID).broadcast_unlocked = True
@@ -54,9 +74,9 @@ async def booth(monkeypatch):
     ingest.failures.clear()
 
 
-def session_for(participant_id: str | None) -> Session:
+def session_for(participant_id: str | None, **fields) -> Session:
     """A booth WS session bound to *participant_id*, as after ``booth:join``."""
-    return Session(booth_id=BOOTH_ID, participant_id=participant_id, language="English", channel_id=PATH)
+    return Session(booth_id=BOOTH_ID, participant_id=participant_id, language="English", channel_id=PATH, **fields)
 
 
 async def request_ticket(participant_id: str | None, **session_overrides) -> dict:
@@ -237,3 +257,360 @@ async def test_reconnected_socket_rejoins_with_its_previous_id(booth):
     # The backup took over while the socket was down; rejoining does not take the booth back.
     assert joined["state"]["active_interpreter_id"] == backup
     assert "ticket" not in await request_ticket(active)
+
+
+# ── Ending the WHIP session when its interpreter leaves (#1285) ──────────────
+
+
+@pytest.fixture
+async def media(booth, monkeypatch):
+    """The booth with a fake MediaMTX control API: ``paths`` it serves and ``kicks`` it received."""
+    paths: dict[str, dict] = {}
+    kicks: list[str] = []
+    failure: list[Exception] = []
+
+    def control(request: httpx.Request) -> httpx.Response:
+        if failure:
+            raise failure[0]
+        url = request.url.path
+        if "/paths/get/" in url:
+            name = url.split("/paths/get/")[1]
+            return httpx.Response(200, json=paths[name]) if name in paths else httpx.Response(404)
+        session_id = url.rsplit("/", 1)[-1]
+        assert request.method == "POST" and url == f"/v3/webrtcsessions/kick/{session_id}"
+        kicks.append(session_id)
+        live = paths.get(PATH)
+        if not live or live["source"]["id"] != session_id:
+            return httpx.Response(404)
+        del paths[PATH]
+        return httpx.Response(200, json={})
+
+    async def broadcast(_booth_id, _state):
+        return None
+
+    monkeypatch.setattr(manager_module, "broadcast_booth_state", broadcast)
+    async with httpx.AsyncClient(transport=httpx.MockTransport(control)) as media_client:
+        monkeypatch.setattr(ingest, "get_http_client", lambda: media_client)
+        yield *booth, paths, kicks, failure
+
+
+async def go_live(client, participant_id: str, paths: dict) -> str:
+    """Publish as *participant_id* and return the MediaMTX session it opened."""
+    session_id = str(uuid4())
+    reply = await request_ticket(participant_id)
+    assert await publish(client, token=reply["ticket"], id=session_id) == 204
+    paths[PATH] = {"name": PATH, "ready": True, "source": {"type": "webRTCSession", "id": session_id}}
+    return session_id
+
+
+def participant_ids() -> list[str]:
+    return list(booths.get_booth_sync(BOOTH_ID).participants)
+
+
+def socket_session(participant_id: str) -> Session:
+    """The session of the socket that currently holds *participant_id*."""
+    record = booths.get_booth_sync(BOOTH_ID).participants[participant_id]
+    return session_for(participant_id, connection_id=record.connection_id)
+
+
+@pytest.mark.anyio
+async def test_revoked_live_interpreter_has_their_session_kicked(media):
+    """Closing a revoked socket ends the audio it was sending, without the browser's help."""
+    client, (active, backup), paths, kicks, _ = media
+    session_id = await go_live(client, active, paths)
+
+    await release_participant(socket_session(active), immediate=True)
+
+    # The backup is promoted but is not live: the kicked session is the revoked interpreter's.
+    assert booths.get_booth_sync(BOOTH_ID).active_interpreter_id == backup
+    assert kicks == [session_id]
+    assert PATH not in paths
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("identity", ["invite", "user"])
+async def test_revoking_access_kicks_a_publisher_whose_socket_had_dropped(media, identity):
+    """Invite revocation and membership removal reach an interpreter kept for the reconnect grace."""
+    client, _, paths, kicks, _ = media
+    for participant_id in participant_ids():
+        await booths.leave_participant(BOOTH_ID, participant_id, "English", PATH)
+    who = {"invite_public_id": "inv-live"} if identity == "invite" else {"user_id": 71}
+    live, _ = await booths.join_participant(
+        BOOTH_ID, "Live", "interpreter", "English", PATH, room_id=ROOM, connection_id="live-socket", **who
+    )
+    session_id = await go_live(client, live.participant_id, paths)
+    await booths.disconnect_participant(BOOTH_ID, live.participant_id, "live-socket")
+    assert kicks == []
+
+    if identity == "invite":
+        await manager.close_token_sessions("inv-live", booth_id=BOOTH_ID)
+    else:
+        await manager.close_user_sessions(71, booth_id=BOOTH_ID)
+
+    assert participant_ids() == []
+    assert kicks == [session_id]
+
+
+@pytest.mark.anyio
+async def test_newer_publisher_survives_the_previous_one_being_revoked(media):
+    """After a handoff the path belongs to the new interpreter; only the old session id is kicked."""
+    client, (active, backup), paths, kicks, _ = media
+    older = await go_live(client, active, paths)
+    await booths.set_active_interpreter(BOOTH_ID, active, backup, "English", PATH)
+    newer = await go_live(client, backup, paths)
+
+    await release_participant(socket_session(active), immediate=True)
+
+    assert active not in participant_ids()
+    assert kicks == [older]
+    assert paths[PATH]["source"]["id"] == newer
+
+
+@pytest.mark.anyio
+async def test_retry_that_failed_does_not_hide_the_live_session(media):
+    """A second authorized publish that never went live still leaves the first one kickable."""
+    client, (active, _), paths, kicks, _ = media
+    live = await go_live(client, active, paths)
+    reply = await request_ticket(active)
+    assert await publish(client, token=reply["ticket"], id=str(uuid4())) == 204
+
+    await release_participant(socket_session(active), immediate=True)
+
+    assert live in kicks
+    assert PATH not in paths
+
+
+@pytest.mark.anyio
+async def test_dropped_socket_keeps_its_audio_until_the_grace_runs_out(media, monkeypatch):
+    """A socket that merely drops keeps publishing; only running out of grace ends the session."""
+    client, (active, _), paths, kicks, _ = media
+    monkeypatch.setattr(settings, "booth_reconnect_grace_seconds", 30.0)
+    scheduled = []
+    monkeypatch.setattr(manager_module, "schedule_participant_expiry", lambda *args: scheduled.append(args))
+    session_id = await go_live(client, active, paths)
+
+    await release_participant(socket_session(active), immediate=False)
+
+    assert active in participant_ids()
+    assert kicks == []
+    assert scheduled == [(BOOTH_ID, active, "Active-socket", 30.0)]
+
+    expiries = []
+    monkeypatch.setattr(manager_module, "track_task", expiries.append)
+    schedule_participant_expiry(BOOTH_ID, active, "Active-socket", 0)
+    await asyncio.wait_for(expiries[0], timeout=10)
+    assert active not in participant_ids()
+    assert kicks == [session_id]
+
+
+@pytest.mark.anyio
+async def test_leaving_the_booth_ends_the_session(media):
+    """An interpreter who leaves is no longer in the booth, so their audio stops with them."""
+    client, (active, _), paths, kicks, _ = media
+    session_id = await go_live(client, active, paths)
+    await _handle_leave(socket_session(active))
+    assert kicks == [session_id]
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("recorded", [True, False])
+async def test_stop_kicks_the_booth_path_source(media, recorded):
+    """Mission Control's Stop ends the path's publisher, recorded or not (e.g. after a portal restart)."""
+    client, (active, _), paths, kicks, _ = media
+    session_id = await go_live(client, active, paths)
+    if not recorded:
+        booth_publish._publishers.clear()
+
+    ws = MockWebSocket()
+    await _handle_set_broadcast_unlocked(ws, session_for(None, granted_role="room_coordinator"), {"unlocked": False})
+
+    assert ws.sent == []
+    assert booths.get_booth_sync(BOOTH_ID).broadcast_unlocked is False
+    assert kicks == [session_id]
+    assert PATH not in paths
+
+
+@pytest.mark.anyio
+async def test_deleting_a_booth_kicks_its_path_source(media):
+    """Closing a deleted booth's sessions ends its publisher even with no socket left to close."""
+    client, (active, _), paths, kicks, _ = media
+    session_id = await go_live(client, active, paths)
+    await manager.close_booth_sessions(BOOTH_ID)
+    assert kicks == [session_id]
+
+
+@pytest.mark.anyio
+async def test_session_that_already_ended_counts_as_kicked(media, caplog):
+    """MediaMTX answering 404 for a session that is gone is not an error."""
+    client, (active, _), paths, kicks, _ = media
+    session_id = await go_live(client, active, paths)
+    del paths[PATH]
+
+    with caplog.at_level("WARNING", logger="portal.booth_publish"):
+        await release_participant(socket_session(active), immediate=True)
+
+    assert kicks == [session_id]
+    assert caplog.records == []
+
+
+@pytest.mark.anyio
+async def test_unreachable_mediamtx_does_not_block_revocation_or_stop(media, caplog):
+    """The kick is best effort: the booth still changes, and the log names no session."""
+    client, (active, backup), paths, kicks, failure = media
+    session_id = await go_live(client, active, paths)
+    failure.append(httpx.ConnectError("media down"))
+
+    with caplog.at_level("WARNING", logger="portal.booth_publish"):
+        await release_participant(socket_session(active), immediate=True)
+        ws = MockWebSocket()
+        await _handle_set_broadcast_unlocked(
+            ws, session_for(None, granted_role="room_coordinator"), {"unlocked": False}
+        )
+
+    assert participant_ids() == [backup]
+    assert booths.get_booth_sync(BOOTH_ID).broadcast_unlocked is False
+    assert ws.sent == []
+    assert kicks == []
+    assert caplog.records and all(r.levelname == "WARNING" for r in caplog.records)
+    assert session_id not in caplog.text
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("session_id", ["", "not-a-uuid"])
+async def test_hook_without_a_session_id_is_refused(booth, session_id):
+    """A publish the portal could not end later is never allowed."""
+    client, (active, _) = booth
+    reply = await request_ticket(active)
+    assert await publish(client, token=reply["ticket"], id=session_id) == 401
+    assert booth_publish._publishers == {}
+
+
+@pytest.mark.anyio
+async def test_failed_kick_is_retried_by_stop(media):
+    """A kick that failed while MediaMTX was down is kept, so a later Stop still ends that session."""
+    client, (active, _), paths, kicks, failure = media
+    session_id = await go_live(client, active, paths)
+    failure.append(httpx.ConnectError("media down"))
+    await release_participant(socket_session(active), immediate=True)
+    failure.clear()
+
+    ws = MockWebSocket()
+    await _handle_set_broadcast_unlocked(ws, session_for(None, granted_role="room_coordinator"), {"unlocked": False})
+
+    assert kicks == [session_id]
+    assert PATH not in paths
+
+
+@pytest.mark.anyio
+async def test_stop_does_not_kick_a_publisher_that_started_after_unlock(media, monkeypatch):
+    """A Stop still talking to MediaMTX when the booth is unlocked again leaves the new source alone."""
+    client, (active, _), paths, kicks, _ = media
+    newer = str(uuid4())
+    real_end = booth_publish.end_publishers
+
+    async def unlock_meanwhile(publishers, **kwargs):
+        await real_end(publishers, **kwargs)
+        booths.get_booth_sync(BOOTH_ID).broadcast_unlocked = True
+        paths[PATH] = {"name": PATH, "ready": True, "source": {"type": "webRTCSession", "id": newer}}
+
+    monkeypatch.setattr(booth_publish, "end_publishers", unlock_meanwhile)
+    ws = MockWebSocket()
+    await _handle_set_broadcast_unlocked(ws, session_for(None, granted_role="room_coordinator"), {"unlocked": False})
+
+    assert kicks == []
+    assert paths[PATH]["source"]["id"] == newer
+
+
+@pytest.mark.anyio
+async def test_stalled_broadcast_does_not_hold_up_the_kick(media, monkeypatch):
+    """The session is ended before the booth state is broadcast, so a stuck recipient cannot delay it."""
+    client, (active, _), paths, kicks, _ = media
+    session_id = await go_live(client, active, paths)
+    stuck = asyncio.Event()
+
+    async def stalled(_booth_id, _state):
+        await stuck.wait()
+
+    monkeypatch.setattr(manager_module, "broadcast_booth_state", stalled)
+    release = asyncio.create_task(release_participant(socket_session(active), immediate=True))
+    for _ in range(500):
+        if kicks:
+            break
+        await asyncio.sleep(0.01)
+    assert kicks == [session_id]
+    assert not release.done()
+    stuck.set()
+    await release
+
+
+@pytest.mark.anyio
+async def test_live_session_evicted_by_failed_retries_is_still_ended(media, monkeypatch):
+    """Retries that fill the per-booth cap cannot leave the live session out of reach."""
+    client, (active, _), paths, kicks, _ = media
+    monkeypatch.setattr(booth_publish, "MAX_SESSIONS_PER_BOOTH", 2)
+    live = await go_live(client, active, paths)
+    for _ in range(3):
+        reply = await request_ticket(active)
+        assert await publish(client, token=reply["ticket"], id=str(uuid4())) == 204
+    assert live not in booth_publish._publishers[BOOTH_ID]
+
+    await release_participant(socket_session(active), immediate=True)
+
+    assert kicks[-1] == live
+    assert PATH not in paths
+
+
+@pytest.mark.anyio
+async def test_stop_spares_an_evicted_session_that_started_after_unlock(media, monkeypatch):
+    """A new session pushed out of the records while Stop's kick is pending is not treated as unowned."""
+    client, (active, _), paths, kicks, _ = media
+    monkeypatch.setattr(booth_publish, "MAX_SESSIONS_PER_BOOTH", 1)
+    old = await go_live(client, active, paths)
+    newer = str(uuid4())
+    real_kick = booth_publish._kick_session
+
+    async def unlock_meanwhile(path, source_type, session_id):
+        await real_kick(path, source_type, session_id)
+        if session_id == old:
+            booths.get_booth_sync(BOOTH_ID).broadcast_unlocked = True
+            paths[PATH] = {"name": PATH, "ready": True, "source": {"type": "webRTCSession", "id": newer}}
+
+    monkeypatch.setattr(booth_publish, "_kick_session", unlock_meanwhile)
+    ws = MockWebSocket()
+    await _handle_set_broadcast_unlocked(ws, session_for(None, granted_role="room_coordinator"), {"unlocked": False})
+
+    assert kicks == [old]
+    assert paths[PATH]["source"]["id"] == newer
+
+
+@pytest.mark.anyio
+async def test_removing_booths_is_refused_whole_when_one_is_live():
+    """A room update that drops a live booth removes none of the requested booths."""
+    from portal.booth_state import BoothRegistry
+
+    registry = BoothRegistry()
+    for code in ("de", "fr"):
+        await registry.set_broadcast_unlocked(f"{EVENT}-{ROOM}-{code}", True, code, f"{EVENT}/{ROOM}/{code}")
+    registry.get_booth_sync(f"{EVENT}-{ROOM}-fr").ingest_status = "connected"
+
+    assert await registry.remove_idle_booths(EVENT, ROOM, ["de", "fr"]) == "fr"
+    assert registry.get_booth_sync(f"{EVENT}-{ROOM}-de") is not None
+
+    registry.get_booth_sync(f"{EVENT}-{ROOM}-fr").ingest_status = "disconnected"
+    assert await registry.remove_idle_booths(EVENT, ROOM, ["de", "fr"]) is None
+    assert registry.get_booth_sync(f"{EVENT}-{ROOM}-de") is None
+    assert registry.get_booth_sync(f"{EVENT}-{ROOM}-fr") is None
+
+
+@pytest.mark.anyio
+async def test_deleting_a_booth_refuses_a_ticket_issued_during_reconnect_grace(media):
+    """A participant kept for the reconnect grace cannot start a new session once the booth is deleted."""
+    client, (active, _), _, _, _ = media
+    reply = await request_ticket(active)
+    await booths.disconnect_participant(BOOTH_ID, active, "Active-socket")
+    assert active in participant_ids()
+
+    await manager.close_booth_sessions(BOOTH_ID)
+
+    assert active in participant_ids()  # the grace itself is unchanged
+    assert await publish(client, token=reply["ticket"], id=str(uuid4())) == 401
