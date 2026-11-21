@@ -33,6 +33,10 @@ LANGUAGE_MAX_LENGTH = 100
 CHANNEL_ID_MAX_LENGTH = 200
 PARTICIPANT_ID_MAX_LENGTH = 64
 
+# Default for ``expected_active_id``: reassign whoever is live now. ``None`` can't
+# serve, because it means "nobody is live".
+ANY_ACTIVE = object()
+
 
 def utc_now_iso() -> str:
     return datetime.now(tz=timezone.utc).isoformat()
@@ -612,6 +616,7 @@ class BoothRegistry:
         target_id: str,
         language: str,
         channel_id: str,
+        expected_active_id: str | None | object = ANY_ACTIVE,
     ) -> dict:
         """Make *target_id* the active interpreter and take everyone else off air.
 
@@ -620,35 +625,70 @@ class BoothRegistry:
         interpreter cannot name themselves here: that would take the mic from
         whoever is live, so they have to use the handoff flow instead.
 
-        Raises ``ValueError`` if either participant is missing or the target
-        cannot go live, and ``PermissionError`` if the requester may not
+        Raises ``ValueError`` if either participant is missing, the target
+        cannot go live or is reconnecting, or the live interpreter is no longer
+        *expected_active_id*; ``PermissionError`` if the requester may not
         reassign.
         """
         async with self._lock:
             booth = self._get_or_create_booth(booth_id, language, channel_id)
             requester = booth.participants.get(requester_id)
-            target = booth.participants.get(target_id)
-            if requester is None or target is None:
+            if requester is None or target_id not in booth.participants:
                 raise ValueError("Requester or target participant does not exist in this booth.")
-            if not can_go_live(target.role):
-                raise ValueError("Only people who can go live can be set active.")
             requester_can_reassign = can_set_active(requester.role)
             requester_is_active = booth.active_interpreter_id == requester_id
             if not requester_can_reassign and not requester_is_active:
                 raise PermissionError(
                     "Only room coordinators, event owners, Admins or the active interpreter can reassign another interpreter."
                 )
-            booth.active_interpreter_id = target_id
-            # A direct reassignment supersedes any handoff in progress.
-            booth.handoff_state = "idle"
-            booth.handoff_initiator_id = None
-            for p in booth.participants.values():
-                p.ingest_connected = p.participant_id == target_id and p.ingest_connected
-                p.mic_active = p.participant_id == target_id and p.mic_active
-                p.updated_at = utc_now_iso()
-            booth.refresh_ingest_status()
-            self._changed(booth)
-            return booth.as_public_dict()
+            return self._make_active(booth, target_id, expected_active_id)
+
+    async def observer_set_active(
+        self,
+        booth_id: str,
+        requester_role: str | None,
+        target_id: str,
+        expected_active_id: str | None | object = ANY_ACTIVE,
+    ) -> dict:
+        """Make *target_id* live for someone watching the booth without joining it.
+
+        Mission Control watches booths without ``booth:join`` so coordinators
+        never appear as participants (#192). *requester_role* is the role the
+        server granted that socket, never a value from the client.
+
+        Raises ``PermissionError`` if the role may not choose who is live and
+        ``ValueError`` for the same target and staleness problems as
+        :meth:`set_active_interpreter`.
+        """
+        if not can_set_active(requester_role):
+            raise PermissionError("Only room coordinators, event owners and Admins can choose who is live.")
+        async with self._lock:
+            booth = self._booths.get(booth_id)
+            if booth is None or target_id not in booth.participants:
+                raise ValueError("That interpreter is no longer in this booth.")
+            return self._make_active(booth, target_id, expected_active_id)
+
+    def _make_active(self, booth: Booth, target_id: str, expected_active_id: str | None | object) -> dict:
+        """Put *target_id* live and everyone else off air. Call with ``self._lock`` held."""
+        target = booth.participants[target_id]
+        if not can_go_live(target.role):
+            raise ValueError("Only people who can go live can be set active.")
+        if not target.connected:
+            raise ValueError(f"{target.display_name} is reconnecting. Try again once they are back.")
+        if expected_active_id is not ANY_ACTIVE and booth.active_interpreter_id != expected_active_id:
+            # Someone else changed who is live since the requester last saw the booth.
+            raise ValueError("Who is live in this booth just changed. Check the booth and try again.")
+        booth.active_interpreter_id = target_id
+        # A direct reassignment supersedes any handoff in progress.
+        booth.handoff_state = "idle"
+        booth.handoff_initiator_id = None
+        for p in booth.participants.values():
+            p.ingest_connected = p.participant_id == target_id and p.ingest_connected
+            p.mic_active = p.participant_id == target_id and p.mic_active
+            p.updated_at = utc_now_iso()
+        booth.refresh_ingest_status()
+        self._changed(booth)
+        return booth.as_public_dict()
 
     async def initiate_handoff(
         self,

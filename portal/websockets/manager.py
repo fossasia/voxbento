@@ -19,6 +19,7 @@ import portal.webhooks.worker as _wh_worker
 from portal.auth import WSAuthError, can_perform_role
 from portal.booth_identity import booth_id_to_mediamtx_path, parse_booth_id
 from portal.booth_publish import TICKET_TTL_SECS, issue_ticket
+from portal.booth_state import ANY_ACTIVE
 from portal.config import settings
 from portal.globals import booths
 from portal.roles import ALL_ROLES, INTERPRETER, can_set_active
@@ -908,17 +909,41 @@ async def _handle_chat(ws: WebSocket, session: Session, data: dict) -> None:
 
 
 async def _handle_set_active(ws: WebSocket, session: Session, data: dict) -> None:
-    if not session.participant_id:
-        await ws.send_text(json.dumps({"type": "booth:error", "message": "Join the booth first."}))
-        return
+    """Choose who is live, from inside the booth or from Mission Control.
+
+    Mission Control watches without joining, so a socket that has not joined is
+    allowed when the role the server granted it can set active. An optional
+    ``expected_active_id`` (a participant ID, or null for nobody) refuses the
+    change if someone else changed who is live first.
+    """
     target_id = data.get("target_id")
-    if not target_id:
+    if not target_id or not isinstance(target_id, str):
         await ws.send_text(json.dumps({"type": "booth:error", "message": "Missing target_id."}))
         return
-    try:
-        state = await booths.set_active_interpreter(
-            session.booth_id, session.participant_id, target_id, session.language, session.channel_id
+    expected_active_id = data.get("expected_active_id", ANY_ACTIVE)
+    if (
+        expected_active_id is not ANY_ACTIVE
+        and expected_active_id is not None
+        and not isinstance(expected_active_id, str)
+    ):
+        await ws.send_text(
+            json.dumps({"type": "booth:error", "message": "expected_active_id must be a string or null."})
         )
+        return
+    try:
+        if session.participant_id:
+            state = await booths.set_active_interpreter(
+                session.booth_id,
+                session.participant_id,
+                target_id,
+                session.language,
+                session.channel_id,
+                expected_active_id,
+            )
+        else:
+            state = await booths.observer_set_active(
+                session.booth_id, session.granted_role, target_id, expected_active_id
+            )
     except (ValueError, PermissionError) as exc:
         await ws.send_text(json.dumps({"type": "booth:error", "message": str(exc)}))
         return

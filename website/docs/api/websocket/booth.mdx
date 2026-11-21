@@ -44,7 +44,7 @@ You send JSON objects with a `type` field. The table below lists every supported
 | `booth:join` | Join the booth. The first interpreter to join is automatically assigned as the active interpreter. `role`, `display_name`, `language`, `channel_id` and the optional `participant_id` must be strings, with `display_name` and `channel_id` up to 200 characters, `language` up to 100 and `participant_id` up to 64. An optional `room_id` must be an integer. | Anyone with a valid token |
 | `booth:leave` | Leave the booth. If the active interpreter leaves, an automatic handoff is triggered. | Anyone |
 | `booth:chat` | Send a text message to all booth participants. | `interpreter`, `room_coordinator`, `event_owner` |
-| `booth:set-active` | Promote a specific interpreter to the active role. | `room_coordinator`, `event_owner`, or the currently active interpreter |
+| `booth:set-active` | Make `target_id` the active interpreter and take everyone else off air. Works without `booth:join`, which is how Mission Control does it, when the role the server granted the socket can choose who is live. The optional `expected_active_id` (a participant ID, or `null` for nobody) refuses the change with `booth:error` if someone else changed who is live first. An interpreter who is reconnecting can't be made active. | `room_coordinator`, `event_owner`, `admin`, or the currently active interpreter |
 | `booth:update-state` | Update the `mic_active` and `ingest_connected` flags for the sending interpreter. | `interpreter` |
 
 ## Server → Client Messages
@@ -97,7 +97,8 @@ The examples below show the exact JSON structure for the most common messages.
 ```json
 {
   "type": "booth:set-active",
-  "target_id": "3f2a9c1e7b4d4e0f9a6b2c8d1e5f7a90"
+  "target_id": "3f2a9c1e7b4d4e0f9a6b2c8d1e5f7a90",
+  "expected_active_id": "8c1d5e2f9a3b4c7d0e6f1a2b3c4d5e6f"
 }
 ```
 

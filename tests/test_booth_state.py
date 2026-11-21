@@ -935,3 +935,139 @@ def test_booth_session_key_tells_users_and_invite_visits_apart():
     assert booth_session_key(decode_token(create_token())) is None
     assert booth_session_key({"sub": "x", "kind": "listener"}) is None
     assert booth_session_key(None) is None
+
+
+# ── Choosing who is live from Mission Control (#1338) ─────────────────────────
+
+
+async def _two_interpreters_a_on_air(registry):
+    interpreter_a = await join(registry, "Interpreter A")
+    interpreter_b = await join(registry, "Interpreter B")
+    await registry.update_participant_state(
+        "hall-1-fr", interpreter_a.participant_id, "French", "hall-1-fr-audio", mic_active=True, ingest_connected=True
+    )
+    return interpreter_a, interpreter_b
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("role", ["room_coordinator", "event_owner", "admin"])
+async def test_observer_who_can_set_active_makes_an_interpreter_live(role):
+    registry = BoothRegistry()
+    interpreter_a, interpreter_b = await _two_interpreters_a_on_air(registry)
+    await registry.initiate_handoff("hall-1-fr", interpreter_b.participant_id, "French", "hall-1-fr-audio")
+    registry._dirty.clear()
+
+    state = await registry.observer_set_active(
+        "hall-1-fr", role, interpreter_b.participant_id, interpreter_a.participant_id
+    )
+
+    participants = {p["participant_id"]: p for p in state["participants"]}
+    assert state["active_interpreter_id"] == interpreter_b.participant_id
+    assert state["handoff_state"] == "idle"
+    assert state["ingest_status"] == "disconnected"
+    assert participants[interpreter_a.participant_id]["mic_active"] is False
+    # The observer stays out of the booth.
+    assert set(participants) == {interpreter_a.participant_id, interpreter_b.participant_id}
+    # Saved for restart recovery like any other change of who is live.
+    assert "hall-1-fr" in registry._dirty
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("role", ["interpreter", None, "listener"])
+async def test_observer_who_cannot_set_active_is_refused(role):
+    registry = BoothRegistry()
+    interpreter_a, interpreter_b = await _two_interpreters_a_on_air(registry)
+
+    with pytest.raises(PermissionError):
+        await registry.observer_set_active("hall-1-fr", role, interpreter_b.participant_id)
+
+    state = await registry.snapshot("hall-1-fr", "French", "hall-1-fr-audio")
+    assert state["active_interpreter_id"] == interpreter_a.participant_id
+    assert state["ingest_status"] == "connected"
+
+
+@pytest.mark.anyio
+async def test_observer_set_active_refuses_a_stale_view():
+    """Two coordinators: the second one's click was based on who used to be live."""
+    registry = BoothRegistry()
+    interpreter_a, interpreter_b = await _two_interpreters_a_on_air(registry)
+    interpreter_c = await join(registry, "Interpreter C")
+    await registry.observer_set_active(
+        "hall-1-fr", "room_coordinator", interpreter_b.participant_id, interpreter_a.participant_id
+    )
+
+    with pytest.raises(ValueError, match="just changed"):
+        await registry.observer_set_active(
+            "hall-1-fr", "room_coordinator", interpreter_c.participant_id, interpreter_a.participant_id
+        )
+
+    state = await registry.snapshot("hall-1-fr", "French", "hall-1-fr-audio")
+    assert state["active_interpreter_id"] == interpreter_b.participant_id
+
+
+@pytest.mark.anyio
+async def test_observer_set_active_expects_nobody_live():
+    registry = BoothRegistry()
+    coordinator = await join(registry, "Coordinator", role="room_coordinator")
+    interpreter = await join(registry, "Interpreter A")
+    # Coordinators never take the live slot, so a lone interpreter is live already;
+    # take them off to get a booth with nobody live.
+    registry._booths["hall-1-fr"].active_interpreter_id = None
+
+    state = await registry.observer_set_active("hall-1-fr", "room_coordinator", interpreter.participant_id, None)
+
+    assert state["active_interpreter_id"] == interpreter.participant_id
+    assert coordinator.participant_id in {p["participant_id"] for p in state["participants"]}
+
+
+@pytest.mark.anyio
+async def test_set_active_refuses_a_reconnecting_interpreter():
+    registry = BoothRegistry()
+    interpreter_a = await join(registry, "Interpreter A")
+    interpreter_b, _ = await registry.join_participant(
+        booth_id="hall-1-fr",
+        display_name="Interpreter B",
+        role="interpreter",
+        language="French",
+        channel_id="hall-1-fr-audio",
+        connection_id="socket-b",
+    )
+    coordinator = await join(registry, "Coordinator", role="room_coordinator")
+    await registry.disconnect_participant("hall-1-fr", interpreter_b.participant_id, "socket-b")
+
+    with pytest.raises(ValueError, match="reconnecting"):
+        await registry.observer_set_active("hall-1-fr", "room_coordinator", interpreter_b.participant_id)
+    with pytest.raises(ValueError, match="reconnecting"):
+        await registry.set_active_interpreter(
+            "hall-1-fr", coordinator.participant_id, interpreter_b.participant_id, "French", "hall-1-fr-audio"
+        )
+
+    state = await registry.snapshot("hall-1-fr", "French", "hall-1-fr-audio")
+    assert state["active_interpreter_id"] == interpreter_a.participant_id
+
+
+@pytest.mark.anyio
+async def test_observer_set_active_on_unknown_booth_creates_nothing():
+    registry = BoothRegistry()
+
+    with pytest.raises(ValueError):
+        await registry.observer_set_active("hall-9-fr", "room_coordinator", "nobody")
+
+    assert registry.get_booth_sync("hall-9-fr") is None
+
+
+@pytest.mark.anyio
+async def test_in_booth_set_active_also_honours_expected_active_id():
+    registry = BoothRegistry()
+    interpreter_a, interpreter_b = await _two_interpreters_a_on_air(registry)
+    coordinator = await join(registry, "Coordinator", role="room_coordinator")
+
+    with pytest.raises(ValueError, match="just changed"):
+        await registry.set_active_interpreter(
+            "hall-1-fr",
+            coordinator.participant_id,
+            interpreter_b.participant_id,
+            "French",
+            "hall-1-fr-audio",
+            interpreter_b.participant_id,
+        )

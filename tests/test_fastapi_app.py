@@ -3568,3 +3568,88 @@ def test_unhandled_exception_response_has_security_headers():
     assert res.status_code == 500
     assert res.headers["x-content-type-options"] == "nosniff"
     assert res.headers["content-security-policy"] == "frame-ancestors 'self'"
+
+
+# ── Mission Control chooses who is live without joining (#1338) ───────────────
+
+
+def _join_and_drain(ws, name, channel):
+    ws.send_text(
+        json.dumps(
+            {
+                "type": "booth:join",
+                "display_name": name,
+                "role": "interpreter",
+                "language": "French",
+                "channel_id": channel,
+            }
+        )
+    )
+    while True:
+        msg = json.loads(ws.receive_text())
+        if msg["type"] == "booth:joined":
+            pid = msg["participant_id"]
+            break
+    assert json.loads(ws.receive_text())["type"] == "booth:state"
+    return pid
+
+
+def test_ws_mission_control_observer_makes_an_interpreter_live():
+    booth = _ws_booth("mcobserver")
+    channel = f"{booth}-audio"
+    with (
+        client.websocket_connect(f"/ws/booth/{booth}", cookies=_ws_auth()) as ws_a,
+        client.websocket_connect(f"/ws/booth/{booth}", cookies=_ws_auth()) as ws_b,
+    ):
+        _ws_ready(ws_a, ws_b)
+        pid_a = _join_and_drain(ws_a, "IntA", channel)
+        pid_b = _join_and_drain(ws_b, "IntB", channel)
+        ws_a.receive_text()  # IntB's join, as seen by IntA
+
+        # Mission Control: an Admin's socket that never sends booth:join.
+        with client.websocket_connect(f"/ws/booth/{booth}", cookies=_ws_auth()) as ws_mc:
+            _ws_ready(ws_mc)
+            ws_mc.send_text(json.dumps({"type": "booth:set-active", "target_id": pid_b, "expected_active_id": pid_a}))
+            state = json.loads(ws_mc.receive_text())
+            ws_a.receive_text()
+            ws_b.receive_text()
+
+            assert state["type"] == "booth:state"
+            assert state["state"]["active_interpreter_id"] == pid_b
+            assert {p["participant_id"] for p in state["state"]["participants"]} == {pid_a, pid_b}
+
+            # A second click based on the old view is refused, not applied.
+            ws_mc.send_text(json.dumps({"type": "booth:set-active", "target_id": pid_a, "expected_active_id": pid_a}))
+            refused = json.loads(ws_mc.receive_text())
+            assert refused["type"] == "booth:error"
+            assert "just changed" in refused["message"]
+
+
+def test_ws_observer_interpreter_cannot_choose_who_is_live():
+    booth = _ws_booth("mcinterp")
+    channel = f"{booth}-audio"
+    with client.websocket_connect(f"/ws/booth/{booth}", cookies=_ws_auth()) as ws_a:
+        _ws_ready(ws_a)
+        _join_and_drain(ws_a, "IntA", channel)
+        with client.websocket_connect(f"/ws/booth/{booth}", cookies=_ws_auth()) as ws_b:
+            _ws_ready(ws_b)
+            pid_b = _join_and_drain(ws_b, "IntB", channel)
+            ws_a.receive_text()
+
+            cookie = _interpreter_cookie(event_slug="mcinterp", language_code="fr")
+            with client.websocket_connect(f"/ws/booth/{booth}", cookies=cookie) as ws_obs:
+                _ws_ready(ws_obs)
+                ws_obs.send_text(json.dumps({"type": "booth:set-active", "target_id": pid_b}))
+                msg = json.loads(ws_obs.receive_text())
+
+    assert msg["type"] == "booth:error"
+    assert "choose who is live" in msg["message"]
+
+
+def test_ws_set_active_rejects_a_malformed_expected_active_id():
+    with client.websocket_connect("/ws/booth/mc-bad-expected", cookies=_ws_auth()) as ws:
+        ws.send_text(json.dumps({"type": "booth:set-active", "target_id": "x", "expected_active_id": 7}))
+        msg = json.loads(ws.receive_text())
+
+    assert msg["type"] == "booth:error"
+    assert "expected_active_id" in msg["message"]

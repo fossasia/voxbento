@@ -23,6 +23,17 @@
   </div>
 </div>
 
+<dialog class="ul-dialog" data-users-confirm aria-labelledby="mc-confirm-title">
+  <form method="dialog">
+    <h2 class="ul-dialog-title" id="mc-confirm-title">Change who is live?</h2>
+    <p class="ul-dialog-text" data-confirm-text></p>
+    <div class="ul-dialog-actions">
+      <button type="submit" value="cancel" class="btn btn-outline">Cancel</button>
+      <button type="submit" value="confirm" class="btn btn-danger" data-confirm-ok>Make live</button>
+    </div>
+  </form>
+</dialog>
+
 <script src="{{ url_for('static', path='js/whep-listener.js') }}?v={{ js_version }}"></script>
 <script type="module" src="{{ url_for('static', path='js/mission-control.js') }}?v={{ js_version }}"></script>
 {% endblock %}
