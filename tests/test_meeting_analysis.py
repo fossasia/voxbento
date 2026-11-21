@@ -999,6 +999,11 @@ def test_sessions_split_on_a_long_gap_newest_first():
     assert sessions[1].ended_at == start + timedelta(minutes=29)
 
 
+def test_channel_rejects_empty_sessions():
+    with pytest.raises(ValueError):
+        analysis_router.Channel("floor", "Floor audio", "en", [])
+
+
 @pytest.mark.anyio
 async def test_a_report_covers_only_the_latest_session_by_default(world, monkeypatch):
     await _enable(world)
