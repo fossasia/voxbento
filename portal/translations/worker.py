@@ -592,5 +592,6 @@ class TranslationWorker:
             api_key=api_key,
         )
         if not translated:
-            logger.warning(f"Provider {provider} returned empty translation for text: '{text}'")
+            # This fires at WARNING, so it runs in production: never the speech itself.
+            logger.warning("Provider %s returned empty translation for %d chars", provider, len(text))
         return translated
