@@ -194,6 +194,40 @@ def parse_vocabulary_csv(file_content: str) -> tuple[list[VocabularyEntryInput],
     return entries, warnings
 
 
+def add_room_vocabulary_entries(
+    session: AsyncSession,
+    event_id: int,
+    room_id: int,
+    entries: Iterable[VocabularyEntryInput],
+    accepted: VocabularyOverlapIndex,
+    warnings: list[str],
+) -> tuple[int, set[str]]:
+    """Add the entries that don't overlap ``accepted``; returns how many were added and their languages."""
+    added = 0
+    languages: set[str] = set()
+    for entry in entries:
+        if accepted.conflicts(entry):
+            warnings.append(f"Existing duplicate: '{entry.source_term}' for target language '{entry.target_language}'")
+            continue
+        accepted.add(entry)
+        languages.add(entry.target_language)
+        session.add(
+            AIVocabularyEntry(
+                event_id=event_id,
+                room_id=room_id,
+                source_term=entry.source_term,
+                target_language=entry.target_language,
+                target_term=entry.target_term,
+                description=entry.description,
+                case_sensitive=entry.case_sensitive,
+                match_type=entry.match_type,
+                priority=entry.priority,
+            )
+        )
+        added += 1
+    return added, languages
+
+
 def _term_matches(entry: AIVocabularyEntry, transcript_text: str) -> bool:
     if entry.priority >= HIGH_PRIORITY_THRESHOLD:
         return True

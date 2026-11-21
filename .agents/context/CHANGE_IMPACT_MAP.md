@@ -177,7 +177,8 @@ Session secrets from the browser sender never authorize RTMPS. Tests: `tests/tes
 4. `portal/translations/worker.py` — translation dispatch and glossary resolution before taking worker slots; it reaches every backend through `TranslationEngine` (`portal/translations/engine.py`), so a new backend implements that interface and registers in `ENGINES`; a new self-hosted model is one `TranslationModel` entry in `portal/translations/registry.py` (pinned revision, ISO 639-1 language map, licence)
 5. `portal/routers/admin.py` — room AI interpretation settings & vocabulary CSV routes (`.../ai-vocabulary/upload`, `.../export`, `.../delete`)
 6. `portal/templates/admin/room_detail.html` — AI interpretation persona, style, and glossary management UI
-7. `tests/test_ai_interpretation.py` & `tests/test_translation_pipeline.py` — regression tests
+7. `portal/translations/source_documents.py`, `portal/translations/term_suggestions.py` & `portal/templates/admin/room_glossary_suggestions.html` — glossary suggestions from uploaded talk material
+8. `tests/test_ai_interpretation.py`, `tests/test_translation_pipeline.py` & `tests/test_glossary_term_suggestions.py` — regression tests
 
 ---
 
