@@ -1203,3 +1203,24 @@ label {
 .portal-footer .footer-links a:hover {
   text-decoration: underline;
 }
+
+@media (prefers-reduced-motion: reduce) {
+  .live-badge.on .live-dot,
+  .live-badge.standby .live-dot,
+  .header-btn--handover.state-flash-yellow {
+    animation: none !important;
+  }
+
+  .header-btn--handover.state-flash-yellow {
+    background: #fbbf24;
+    box-shadow: 0 0 0 2px rgb(217 119 6 / 0.5);
+  }
+
+  .booth-layout,
+  .booth-layout *,
+  .booth-layout *::before,
+  .booth-layout *::after {
+    transition-duration: 0.01ms !important;
+  }
+}
+
