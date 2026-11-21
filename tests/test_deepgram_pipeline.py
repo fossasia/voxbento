@@ -429,3 +429,25 @@ async def test_tts_stops_on_a_deepgram_error(monkeypatch):
     )
     assert time.monotonic() - started < 0.4
     assert audio == []
+
+
+@pytest.mark.anyio
+async def test_terms_given_in_the_config_are_used_without_a_room_lookup(monkeypatch):
+    async def must_not_look_up(room_id):
+        raise AssertionError("the room's glossary must not be read when terms are given")
+
+    monkeypatch.setattr(stt, "load_keyterms", must_not_look_up)
+    urls: list[str] = []
+
+    def connect(url, **kwargs):
+        urls.append(url)
+        return _FakeListenSocket([])
+
+    monkeypatch.setattr(stt.websockets, "connect", connect)
+
+    async def broadcast(booth_id, message):
+        pass
+
+    config = stt.ProviderConfig("key", keyterms=("VoxBento", "Eventyay"))
+    await stt.DeepgramProvider().run_stream(_FakeProcess(), "en", "nova-3", config, broadcast, "demo")
+    assert _query(urls[0])["keyterm"] == ["VoxBento", "Eventyay"]
