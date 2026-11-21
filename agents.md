@@ -88,6 +88,8 @@ VoxBento is a production-grade **browser-first interpretation booth console** fo
 | `portal/outage_log.py` | `OutageLog` — reconcile loops log a repeating failure once per outage, not per tick |
 | `portal/booth_recovery.py` | Saves each booth's Go Live switch and active interpreter to `booth_live_state` and restores them at startup (TD-03) |
 | `portal/attendance.py` | `AttendanceTracker` — interpreter visits and interpreting time from booth state, batched writes to `interpreter_attendance` (#1215) |
+| `portal/job_queue.py` | Optional Redis scheduling of webhook, email and analysis IDs; transaction-aware enqueue, periodic DB reconciliation and polling fallback. Workers stay in the single portal replica. See `docs/job-queues.md`. |
+| `portal/meeting_analysis/worker.py` | Report execution, atomic claims, pending-report recovery and stale-running-report retirement; lifecycle managed by the app lifespan |
 | `portal/live_demo.py` | Home-page live demo (`/ws/demo/live`): local Whisper → NLLB → Supertonic pipeline, site + visitor glossary, admission limits, and the admin-edited `live_demo_settings` row (`/admin/live-demo/`) |
 | `portal/live_demo_ai.py` | Independent live demo speech, translation and voice settings and encrypted keys; no event or room dependency |
 | `portal/user_admin.py` | Administrative access rules, user flags (`can_host`, `is_admin`, `is_active`, `email_verified`) |
@@ -97,7 +99,7 @@ VoxBento is a production-grade **browser-first interpretation booth console** fo
 | `portal/static/js/whep-listener.js` | WHEP playback client — RTCPeerConnection, auto-reconnect with exponential back-off |
 | `portal/static/js/admin.js` | Admin panel JS helpers |
 | `mediamtx.yml` | MediaMTX config — WHIP/WHEP paths, RTSP, Control API, `overridePublisher` |
-| `docker-compose.yml` | portal + mediamtx + jitsi-web/prosody/jicofo/jvb |
+| `docker-compose.yml` | portal + mediamtx + jitsi-web/prosody/jicofo/jvb; optional Redis under the `queues` profile |
 | `alembic/versions/` | 44 migrations (001–044); run `uv run alembic upgrade head` |
 
 ---

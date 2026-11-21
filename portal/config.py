@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import ipaddress
 import re
+from typing import Literal
 from urllib.parse import urlparse
 
 from pydantic import Field, field_validator
@@ -114,6 +115,29 @@ class Settings(BaseSettings):
 
     # Database — SQLite for dev, PostgreSQL for prod
     database_url: str = "sqlite+aiosqlite:///./interpretation.db"
+
+    job_queue_backend: Literal["db", "redis"] = "db"
+    redis_url: str = Field(default="redis://localhost:6379/0", repr=False)
+    job_queue_prefix: str = "voxbento:jobs"
+    job_queue_reconcile_seconds: float = Field(default=60.0, ge=1, le=3600)
+
+    @field_validator("redis_url")
+    @classmethod
+    def validate_redis_url(cls, value: str) -> str:
+        parsed = urlparse(value)
+        if (
+            parsed.scheme not in {"redis", "rediss"}
+            or not parsed.hostname
+            or parsed.port == 0
+            or parsed.query
+            or parsed.fragment
+            or (parsed.path not in {"", "/"} and not parsed.path.removeprefix("/").isascii())
+            or (parsed.path not in {"", "/"} and not parsed.path.removeprefix("/").isdecimal())
+        ):
+            raise ValueError(
+                "REDIS_URL must be a redis:// or rediss:// host URL with an optional numeric database path"
+            )
+        return value
 
     # Booth recovery (portal/booth_recovery.py). A participant whose booth socket
     # drops keeps their place, including the active slot, for this long so a

@@ -935,6 +935,7 @@ async def test_a_retired_job_makes_no_more_requests_after_a_replacement_starts(w
                 async with get_session() as s:
                     report = await s.get(MeetingReport, report_id)
                     report.created_at = utc_now() - timedelta(hours=1)
+                    report.started_at = report.created_at
                 async with get_session() as s:
                     await worker.mark_interrupted_reports(s, world["room"])
                 replacement.append(await _report(world))

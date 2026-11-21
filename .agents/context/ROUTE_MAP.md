@@ -283,7 +283,8 @@ the admin CSRF token (`require_admin_csrf`, `X-CSRF-Token`).
 
 - `GET /workspace/events/{event_id}/rooms/{room_id}/analysis/`: owners and room
   coordinators; lists the room's reports (no-store). Also marks reports left
-  in progress for 30 minutes as failed.
+  running for 30 minutes as failed (`started_at`, with `created_at` fallback for
+  older rows). Pending reports remain recoverable queued work; see `docs/job-queues.md`.
 - `POST /workspace/events/{event_id}/rooms/{room_id}/analysis/`: event owners,
   origin-checked. Form `session` (`{channel}:{first segment id}`, one of the
   channel's sessions as listed on the page), or `channel` alone for its latest

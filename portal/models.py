@@ -980,6 +980,7 @@ class WebhookSubscription(Base):
 
 class WebhookDelivery(Base):
     __tablename__ = "webhook_deliveries"
+    __table_args__ = (Index("ix_webhook_deliveries_due", "status", "next_attempt_at"),)
 
     id: Mapped[int] = mapped_column(primary_key=True)
     subscription_id: Mapped[int] = mapped_column(ForeignKey("webhook_subscriptions.id", ondelete="CASCADE"))
@@ -1118,6 +1119,7 @@ class EmailDelivery(Base):
 class MeetingReport(Base):
     __tablename__ = "meeting_reports"
     __table_args__ = (
+        Index("ix_meeting_reports_status", "status", "id"),
         Index("ix_meeting_reports_room_created", "room_id", "created_at"),
         Index(
             "uq_meeting_reports_room_in_progress",
@@ -1137,6 +1139,7 @@ class MeetingReport(Base):
     provider: Mapped[str] = mapped_column(String(50))
     model: Mapped[str] = mapped_column(String(100))
     status: Mapped[str] = mapped_column(String(20), default="pending")
+    started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True, default=None)
     error: Mapped[str | None] = mapped_column(String(500), nullable=True, default=None)
     title: Mapped[str] = mapped_column(String(200), default="")
     summary: Mapped[str] = mapped_column(Text, default="")

@@ -2,12 +2,15 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import time
 from dataclasses import dataclass
 
-from sqlalchemy import select, update
+from sqlalchemy import func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from portal.config import settings
 from portal.database import get_session
+from portal.job_queue import Job, job_queue
 from portal.meeting_analysis.constants import (
     IN_PROGRESS,
     JOB_TIMEOUT,
@@ -34,6 +37,8 @@ from portal.tasks import track_task
 from portal.translations.keys import get_translation_api_key
 
 logger = logging.getLogger(__name__)
+_analysis_tasks: dict[int, asyncio.Task] = {}
+_schedule_tasks: set[asyncio.Task] = set()
 
 PARSE_ATTEMPTS = 2
 FAILED_UNEXPECTEDLY = "Something went wrong while writing the report. Try again."
@@ -85,9 +90,15 @@ def session_filter(report: MeetingReport, *, covered_only: bool = False) -> list
 
 async def _prepare(report_id: int) -> _Job | None:
     async with get_session() as session:
-        report = await session.get(MeetingReport, report_id)
-        if report is None or report.status != STATUS_PENDING:
+        claimed = await session.scalar(
+            update(MeetingReport)
+            .where(MeetingReport.id == report_id, MeetingReport.status == STATUS_PENDING)
+            .values(status=STATUS_RUNNING, started_at=utc_now())
+            .returning(MeetingReport.id)
+        )
+        if claimed is None:
             return None
+        report = await session.get(MeetingReport, report_id)
         event = await session.get(Event, report.event_id)
         room = await session.get(Room, report.room_id)
         if event is None or room is None:
@@ -203,16 +214,68 @@ async def _run(report_id: int) -> None:
 
 
 def start_analysis(report_id: int) -> None:
-    track_task(asyncio.create_task(run_analysis(report_id), name=f"meeting-report-{report_id}"))
+    if settings.job_queue_backend == "redis":
+        task = asyncio.create_task(schedule_analysis(report_id), name=f"schedule-report-{report_id}")
+        _schedule_tasks.add(task)
+        task.add_done_callback(_schedule_tasks.discard)
+        track_task(task)
+    else:
+        launch_analysis(report_id)
 
 
-async def mark_interrupted_reports(session: AsyncSession, room_id: int) -> None:
-    await session.execute(
-        update(MeetingReport)
-        .where(
-            MeetingReport.room_id == room_id,
-            MeetingReport.status.in_(IN_PROGRESS),
-            MeetingReport.created_at < utc_now() - STALE_AFTER,
-        )
-        .values(status=STATUS_FAILED, error=INTERRUPTED)
-    )
+async def schedule_analysis(report_id: int) -> None:
+    if not await job_queue.schedule([Job("analysis", report_id, utc_now())]):
+        launch_analysis(report_id)
+
+
+def launch_analysis(report_id: int) -> None:
+    if report_id in _analysis_tasks:
+        return
+    task = asyncio.create_task(run_analysis(report_id), name=f"meeting-report-{report_id}")
+    _analysis_tasks[report_id] = task
+    task.add_done_callback(lambda done: _analysis_tasks.pop(report_id, None))
+    track_task(task)
+
+
+async def analysis_worker_loop() -> None:
+    """Recover unstarted reports, with DB polling when Redis is disabled or unavailable."""
+    last_maintenance = float("-inf")
+    try:
+        while True:
+            try:
+                if time.monotonic() - last_maintenance >= settings.job_queue_reconcile_seconds:
+                    async with get_session() as session:
+                        await mark_interrupted_reports(session)
+                    last_maintenance = time.monotonic()
+                ids = await job_queue.ready("analysis")
+                if ids is None:
+                    async with get_session() as session:
+                        ids = list(
+                            await session.scalars(
+                                select(MeetingReport.id)
+                                .where(MeetingReport.status == STATUS_PENDING)
+                                .order_by(MeetingReport.id)
+                                .limit(100)
+                            )
+                        )
+                for report_id in ids:
+                    launch_analysis(report_id)
+                await asyncio.sleep(1 if settings.job_queue_backend == "redis" else 10)
+            except Exception:
+                logger.exception("Meeting analysis queue worker error")
+                await asyncio.sleep(10)
+    finally:
+        tasks = [*_analysis_tasks.values(), *_schedule_tasks]
+        for task in tasks:
+            task.cancel()
+        await asyncio.gather(*tasks, return_exceptions=True)
+
+
+async def mark_interrupted_reports(session: AsyncSession, room_id: int | None = None) -> None:
+    conditions = [
+        MeetingReport.status == STATUS_RUNNING,
+        func.coalesce(MeetingReport.started_at, MeetingReport.created_at) < utc_now() - STALE_AFTER,
+    ]
+    if room_id is not None:
+        conditions.append(MeetingReport.room_id == room_id)
+    await session.execute(update(MeetingReport).where(*conditions).values(status=STATUS_FAILED, error=INTERRUPTED))

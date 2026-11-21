@@ -15,6 +15,7 @@ from sqlalchemy import select, update
 from sqlalchemy.exc import SQLAlchemyError
 
 from portal.database import get_session
+from portal.job_queue import defer_job, job_queue
 from portal.models import OAuthAuditLog, WebhookDelivery, WebhookSubscription
 from portal.routers.webhooks import validate_ssrf
 
@@ -43,6 +44,8 @@ async def enqueue_webhook(event_type: str, payload: dict) -> None:
             if deliveries:
                 db.add_all(deliveries)
                 await db.flush()
+                for delivery in deliveries:
+                    defer_job(db, "webhook", delivery.id, delivery.next_attempt_at)
     except Exception as e:
         logger.error(f"Failed to enqueue webhook: {e}", exc_info=True)
 
@@ -168,6 +171,31 @@ async def process_delivery(client: httpx.AsyncClient, db, delivery: WebhookDeliv
             delivery.next_attempt_at = datetime.now(timezone.utc) + timedelta(seconds=backoff_seconds)
 
 
+async def process_due_webhooks(client: httpx.AsyncClient, delivery_id: int | None = None) -> int:
+    """Claim due rows by ID or by DB polling; keep dispatch in the existing transaction."""
+    async with get_session() as db:
+        eligible = (
+            WebhookDelivery.status.in_(["pending", "failed"]),
+            WebhookDelivery.next_attempt_at <= datetime.now(timezone.utc),
+        )
+        candidates = select(WebhookDelivery.id).where(*eligible).order_by(WebhookDelivery.id).limit(10)
+        if delivery_id is not None:
+            candidates = candidates.where(WebhookDelivery.id == delivery_id)
+        result = await db.execute(
+            update(WebhookDelivery)
+            .where(WebhookDelivery.id.in_(candidates), *eligible)
+            .values(status="delivering")
+            .returning(WebhookDelivery)
+        )
+        deliveries = result.scalars().all()
+        for delivery in deliveries:
+            await process_delivery(client, db, delivery)
+            if delivery.status == "failed":
+                defer_job(db, "webhook", delivery.id, delivery.next_attempt_at)
+        await db.flush()
+    return len(deliveries)
+
+
 async def webhook_worker_loop():
     """Background polling worker for webhooks."""
     # Delivery connects to the IP vetted by validate_ssrf. Pooled connections are keyed by
@@ -178,34 +206,13 @@ async def webhook_worker_loop():
     async with httpx.AsyncClient(timeout=5.0, transport=transport) as client:
         while True:
             try:
-                claimed = False
-                async with get_session() as db:
-                    now = datetime.now(timezone.utc)
-
-                    subquery = (
-                        select(WebhookDelivery.id)
-                        .where(WebhookDelivery.status.in_(["pending", "failed"]))
-                        .where(WebhookDelivery.next_attempt_at <= now)
-                        .limit(10)
-                    )
-
-                    stmt = (
-                        update(WebhookDelivery)
-                        .where(WebhookDelivery.id.in_(subquery))
-                        .values(status="delivering")
-                        .returning(WebhookDelivery)
-                    )
-
-                    result = await db.execute(stmt)
-                    claimed_deliveries = result.scalars().all()
-
-                    if claimed_deliveries:
-                        claimed = True
-                        for delivery in claimed_deliveries:
-                            await process_delivery(client, db, delivery)
-                        await db.flush()
-
-                # Sleep OUTSIDE the database session to release the SQLite lock
+                ids = await job_queue.ready("webhook")
+                if ids is None:
+                    claimed = await process_due_webhooks(client)
+                else:
+                    claimed = 0
+                    for delivery_id in ids:
+                        claimed += await process_due_webhooks(client, delivery_id)
                 if not claimed:
                     await asyncio.sleep(1)
             except asyncio.CancelledError:

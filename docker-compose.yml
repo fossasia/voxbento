@@ -45,6 +45,8 @@ services:
       # Override with a PostgreSQL URL for production deployments:
       #   DATABASE_URL=postgresql+asyncpg://user:pass@db:5432/interpretation
       DATABASE_URL: "${DATABASE_URL:-sqlite+aiosqlite:////data/interpretation.db}"
+      JOB_QUEUE_BACKEND: "${JOB_QUEUE_BACKEND:-db}"
+      REDIS_URL: "${REDIS_URL:-redis://redis:6379/0}"
     volumes:
       # Source and dependencies come from the image, never the live checkout.
       # Persist database across container restarts
@@ -63,6 +65,20 @@ services:
       timeout: 5s
       retries: 3
       start_period: 10s
+
+  # Optional scheduling only; the portal starts and falls back to DB polling without it.
+  redis:
+    image: redis:7.4-alpine
+    profiles: ["queues"]
+    command: ["redis-server", "--appendonly", "yes"]
+    volumes:
+      - redis-jobs:/data
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 3s
+      retries: 3
 
   # ── Floor Bot Service ─────────────────────────────────────────
   floor-bot:
@@ -207,6 +223,7 @@ services:
     restart: unless-stopped
 
 volumes:
+  redis-jobs:
   portal-data:
   supertonic-cache:
   jitsi-web-config-rootless:

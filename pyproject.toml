@@ -29,6 +29,7 @@ dependencies = [
     "ctranslate2>=4.5.0",
     "transformers>=4.40.0",
     "unilimit>=0.1.0",
+    "redis>=5.0,<8",
 ]
 
 [project.optional-dependencies]
@@ -40,6 +41,7 @@ dev = [
     "pytest==9.2.0",
     "anyio>=4.0.0",
     "ruff>=0.9.0",
+    "fakeredis[lua]>=2.31,<3",
 ]
 
 [tool.pytest.ini_options]

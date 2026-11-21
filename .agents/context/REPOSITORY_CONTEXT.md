@@ -45,6 +45,7 @@ Attendees receive sub-second audio via WHEP. All coordination flows through Fast
 | `portal/config.py` | `Settings` (pydantic-settings); reads `.env` or env vars |
 | `portal/models.py` | SQLAlchemy declarative models (events, rooms, booths, tokens, users, memberships, hosting requests, AI vocabulary) |
 | `portal/database.py` | Async engine, session factory, all CRUD helpers |
+| `portal/job_queue.py` | Optional Redis scheduling of webhook, email and analysis IDs; post-commit enqueue, reconciliation and DB fallback. See `docs/job-queues.md`; one portal replica remains required. |
 | `portal/auth.py` | JWT creation/validation, user auth, role resolution |
 | `portal/booth_state.py` | In-memory booth registry (`BoothRegistry`), participant state, reconnect grace |
 | `portal/booth_recovery.py` | Saves and restores live booth state (`booth_live_state`) across restarts |

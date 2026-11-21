@@ -18,12 +18,13 @@ from fastapi_mail.errors import ConnectionErrors
 from jinja2 import FileSystemLoader, TemplateSyntaxError, meta, nodes, select_autoescape
 from jinja2.sandbox import SandboxedEnvironment
 from markupsafe import Markup
-from sqlalchemy import or_, select
+from sqlalchemy import or_, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from portal.config import settings
 from portal.crypto import decrypt_val, encrypt_val
 from portal.database import get_session
+from portal.job_queue import defer_job, job_queue
 from portal.models import AuthToken, EmailDelivery, EmailSettings, EmailTemplate, EmailTemplateRevision, utc_now
 
 logger = logging.getLogger(__name__)
@@ -341,6 +342,7 @@ async def queue_notification(
     )
     session.add(delivery)
     await session.flush()
+    defer_job(session, "email", delivery.id, delivery.scheduled_at)
     return delivery
 
 
@@ -351,7 +353,8 @@ async def preview_notification(session: AsyncSession, key: str, context: Mapping
     return await _wrap(session, rendered_subject, rendered_html, preview=True)
 
 
-async def _claim_delivery() -> int | None:
+async def recover_email_deliveries() -> None:
+    """Recover expired leases and expire queued mail, including when Redis is idle."""
     now = utc_now()
     async with get_session() as session:
         await session.execute(
@@ -364,24 +367,37 @@ async def _claim_delivery() -> int | None:
             .where(EmailDelivery.status == "pending", EmailDelivery.expires_at.is_not(None), EmailDelivery.expires_at <= now)
             .values(status="expired", last_error="Expired before it could be sent.")
         )
-        delivery = await session.scalar(
-            select(EmailDelivery)
-            .where(
-                EmailDelivery.status == "pending",
-                EmailDelivery.scheduled_at <= now,
-                or_(EmailDelivery.expires_at.is_(None), EmailDelivery.expires_at > now),
-            )
+
+
+async def _claim_delivery(delivery_id: int | None = None) -> int | None:
+    if delivery_id is None:
+        await recover_email_deliveries()
+    now = utc_now()
+    eligible = (
+        EmailDelivery.status == "pending",
+        EmailDelivery.scheduled_at <= now,
+        or_(EmailDelivery.expires_at.is_(None), EmailDelivery.expires_at > now),
+    )
+    async with get_session() as session:
+        candidate = (
+            select(EmailDelivery.id)
+            .where(*eligible)
             .order_by(EmailDelivery.scheduled_at, EmailDelivery.id)
-            .with_for_update(skip_locked=True)
             .limit(1)
         )
-        if delivery is None:
-            return None
-        delivery.status = "sending"
-        delivery.attempt_count += 1
-        delivery.claimed_at = now
-        delivery.claim_until = now + _claim_duration
-        return delivery.id
+        if delivery_id is not None:
+            candidate = candidate.where(EmailDelivery.id == delivery_id)
+        return await session.scalar(
+            update(EmailDelivery)
+            .where(EmailDelivery.id.in_(candidate), *eligible)
+            .values(
+                status="sending",
+                attempt_count=EmailDelivery.attempt_count + 1,
+                claimed_at=now,
+                claim_until=now + _claim_duration,
+            )
+            .returning(EmailDelivery.id)
+        )
 
 
 async def _send_delivery(delivery_id: int) -> None:
@@ -465,6 +481,7 @@ async def _record_failure(delivery_id: int, error: str) -> None:
         delivery.status = "pending"
         delay = min(300, 15 * (2 ** (delivery.attempt_count - 1)))
         delivery.scheduled_at = utc_now() + timedelta(seconds=delay)
+        defer_job(session, "email", delivery.id, delivery.scheduled_at)
 
 
 async def purge_old_content() -> int:
@@ -505,8 +522,17 @@ async def notification_worker_loop() -> None:
                     await purge_old_content()
                 except Exception:  # noqa: BLE001 - erasing old content must never block sending
                     logger.exception("Email content purge failed")
-            processed = await process_due_deliveries()
-            await asyncio.sleep(1 if processed else 10)
+            ids = await job_queue.ready("email", limit=20)
+            if ids is None:
+                processed = await process_due_deliveries()
+            else:
+                processed = 0
+                for delivery_id in ids:
+                    claimed = await _claim_delivery(delivery_id)
+                    if claimed is not None:
+                        await _send_delivery(claimed)
+                        processed += 1
+            await asyncio.sleep(1 if ids is not None or processed else 10)
         except asyncio.CancelledError:
             raise
         except Exception:  # noqa: BLE001 - the worker must keep running; rows are retried

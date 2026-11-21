@@ -101,6 +101,8 @@ async def lifespan(app: FastAPI):
     # Reference via module attribute so test-time monkey-patching of
     # portal.webhooks.worker.webhook_worker_loop is respected.
     import portal.websockets.reaper as _reaper_mod
+    from portal.job_queue import job_queue
+    from portal.meeting_analysis.worker import analysis_worker_loop
     from portal.websockets.manager import manager
 
     manager.set_membership_checker(_reaper_mod.check_booth_memberships)
@@ -109,6 +111,7 @@ async def lifespan(app: FastAPI):
 
     webhook_task = asyncio.create_task(_webhook_worker_mod.webhook_worker_loop())
     notification_task = asyncio.create_task(_notifications_mod.notification_worker_loop())
+    analysis_task = asyncio.create_task(analysis_worker_loop())
     rate_limit_cleanup_task = asyncio.create_task(_rate_limit_cleanup_loop())
     ingest_task = asyncio.create_task(program_ingest.reconcile_loop()) if settings.program_ingest_enabled else None
     meeting_task = asyncio.create_task(meeting_source.reconcile_loop())
@@ -131,7 +134,15 @@ async def lifespan(app: FastAPI):
     logging.getLogger("uvicorn.access").addFilter(_HealthCheckFilter())
     yield
 
-    tasks_to_cancel = [reaper_task, webhook_task, notification_task, rate_limit_cleanup_task, meeting_task, attendance_task]
+    tasks_to_cancel = [
+        reaper_task,
+        webhook_task,
+        notification_task,
+        analysis_task,
+        rate_limit_cleanup_task,
+        meeting_task,
+        attendance_task,
+    ]
     if ingest_task:
         tasks_to_cancel.append(ingest_task)
     if recovery_task:
@@ -139,6 +150,7 @@ async def lifespan(app: FastAPI):
     for task in tasks_to_cancel:
         task.cancel()
     await asyncio.gather(*tasks_to_cancel, return_exceptions=True)
+    await job_queue.close()
 
     if pg.shared_http_client:
         await pg.shared_http_client.aclose()

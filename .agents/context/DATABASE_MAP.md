@@ -262,6 +262,14 @@ Tracks which languages the translation worker should generate for a given room o
 
 ## Alembic Migration Chain
 
+Migration 048 adds `meeting_reports.started_at` (nullable UTC execution start;
+older running reports fall back to `created_at` for stale detection), an index on
+`meeting_reports(status, id)`, and `webhook_deliveries(status, next_attempt_at)`.
+Pending analysis rows are recoverable queued work, not stale executions. Optional
+Redis stores only job IDs and due timestamps; these database rows remain durable
+and authoritative. `get_session()` publishes staged jobs after the outer commit,
+respecting savepoint rollback. See `docs/job-queues.md`.
+
 | ID | File | What it adds |
 |---|---|---|
 | 001 | `001_initial_schema.py` | `events`, `rooms`, `booths`, `invite_tokens` |

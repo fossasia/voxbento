@@ -28,6 +28,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_asyn
 from sqlalchemy.orm import joinedload, selectinload
 
 from portal.config import settings
+from portal.job_queue import publish_committed_jobs
 from portal.models import (
     HOSTING_REQUEST_OPEN,
     AuthToken,
@@ -134,6 +135,8 @@ async def get_session() -> AsyncGenerator[AsyncSession]:
     async with factory() as session:
         async with session.begin():
             yield session
+        # A Redis failure must never undo or misreport the transaction's durable work.
+        await publish_committed_jobs(session)
 
 
 async def get_db_session() -> AsyncGenerator[AsyncSession]:
