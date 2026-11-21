@@ -518,6 +518,8 @@ async def delete_event(
             logger.exception("Failed to discard attendance for event %s", event_slug)
 
     def _on_rollback(_s: object) -> None:
+        if db.sync_session.in_nested_transaction():
+            return
         if sa_event.contains(db.sync_session, "after_commit", _discard_attendance):
             try:
                 sa_event.remove(db.sync_session, "after_commit", _discard_attendance)
@@ -525,7 +527,7 @@ async def delete_event(
                 logger.debug("Commit listener already removed for %s", event_slug)
 
     sa_event.listen(db.sync_session, "after_commit", _discard_attendance, once=True)
-    sa_event.listen(db.sync_session, "after_rollback", _on_rollback, once=True)
+    sa_event.listen(db.sync_session, "after_rollback", _on_rollback)
     return None
 
 

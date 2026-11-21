@@ -189,6 +189,8 @@ class AttendanceTracker:
         visit.left_at = now
         self._closed.append(visit)
         if len(self._closed) > MAX_PENDING_CLOSED:
+            evicted = len(self._closed) - MAX_PENDING_CLOSED
+            logger.warning("Evicting %d unpersisted attendance visits due to buffer limit", evicted)
             del self._closed[: len(self._closed) - MAX_PENDING_CLOSED]
 
     # ── Persistence (background) ──────────────────────────────────────────────

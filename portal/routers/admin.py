@@ -1525,12 +1525,14 @@ async def admin_delete_event(request: Request, event_id: int):
             if event is None:
                 raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Event not found.")
             slug = event.slug
+            booth_keys = [(b["room_id"], b["language_code"]) for b in await booths.list_booths_for_event(slug)]
             await revoke_booths_for_deleted_entity(session, level="event", target_id=event_id)
             deleted = await delete_event(session, event_id)
             if not deleted:
                 raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Event not found.")
-        for b in await booths.list_booths_for_event(slug):
-            await booths.remove_booth(slug, b["room_id"], b["language_code"])
+
+        for room_id, lang in booth_keys:
+            await booths.remove_booth(slug, room_id, lang)
     except HTTPException:
         raise
     except SQLAlchemyError as e:
