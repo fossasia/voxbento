@@ -7,12 +7,16 @@ streams, show the right instructions, and tell them whether the sound, captions
 and YouTube connection are working. They should not have to understand the
 underlying connection protocols to choose a route.
 
-**Status on 12 November 2026: IN PROGRESS — partial proposal, changes requested.**
-[#1125](https://github.com/fossasia/voxbento/pull/1125), reviewed at `8b6f2b40`, includes
-both a narrow source-selection fix for [#1119](https://github.com/fossasia/voxbento/issues/1119)
-and an incomplete guide. It is not merged. Its narrow fix is useful, but the added
-setup does not work end to end. Last recorded contributor: @samc4e. Coordinate with
-[#751](https://github.com/fossasia/voxbento/issues/751) and reuse the existing room controls.
+**Status on 22 November 2026: IN REVIEW.** Branch `feat/1087-youtube-guided-setup`
+(stacked on plan 006 part 2) adds **Room audio → From a YouTube stream**. Instead of new
+buttons, `portal/static/js/youtube-source.js` moves the existing Sign in with YouTube block
+and streaming-software card into the guide while it is open, and maps the routes onto that
+card's modes (extra destination → `rtmps`, forwarding → `rtmps_relay`); the browser-tab
+route opens the sender on the tab source. `room_audio_choice()` opens the guide from saved
+state only. Steps 1–6 below are implemented; step 7, the walk-through of all three routes on
+a real deployment, is still pending. [#1125](https://github.com/fossasia/voxbento/pull/1125)
+and [#1119](https://github.com/fossasia/voxbento/issues/1119) were closed on 16 November in
+favour of this. Coordinate with [#751](https://github.com/fossasia/voxbento/issues/751).
 
 ### What to do next, in order
 

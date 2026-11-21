@@ -1,0 +1,58 @@
+---
+title: "Captions and Translation for YouTube Streams — Voxbento Admin"
+sidebarTitle: "YouTube Streams"
+description: "Add live captions, translations and translated speech to an event that streams on YouTube, choosing the route that fits how you stream."
+---
+
+If your event streams on YouTube, open the room page, go to **Room audio** and choose
+**From a YouTube stream**. VoxBento then adds live captions, translations and translated
+speech. The guide asks two things and shows only the setup that fits.
+
+## Step 1: Which broadcast?
+
+**Sign in with YouTube** with the channel that streams the event and choose the room's
+broadcast from the list (or paste its link). VoxBento can then:
+
+- fill in the broadcast's YouTube stream key itself when it forwards your stream, so nobody
+  copies keys out of YouTube Studio;
+- show whether YouTube is receiving the stream;
+- put one caption language into YouTube's own **CC** button (see below).
+
+Not your channel, or the server has no Google sign-in set up? Skip to step 2: captions,
+translations and speech still work on VoxBento's listener page.
+
+## Step 2: How does your video reach YouTube?
+
+| Your setup | Choose | What you do | If VoxBento goes down |
+|---|---|---|---|
+| StreamYard, Restream, Zoom or Teams live streaming, vMix, or OBS with a multi-output plugin | **My streaming tool can send to two places** | Keep YouTube as a destination and add VoxBento as a *Custom RTMP* destination with the server and stream key the room page creates. | YouTube keeps going. |
+| OBS, vMix, Wirecast or a hardware encoder with one output | **One encoder, and VoxBento forwards to YouTube** | Point the encoder at VoxBento's server and stream key. VoxBento passes the stream to YouTube unchanged, using the stream key filled in from step 1 or pasted by hand. | **Your YouTube stream stops too.** Do a test run with an unlisted broadcast first. |
+| YouTube Studio's webcam or phone streaming, or a stream someone else runs | **I can't change how it streams** | Play the stream in a Chrome or Edge tab, open the sender, choose **A browser tab** and share that tab with its audio. Keep both tabs open. | YouTube keeps playing; captions pause until the sender is started again. |
+
+The first two routes use the same server, stream key and health panel as **From streaming
+software**; the guide shows them for you. The stream key is shown once, when you create it.
+A route the server operator has not switched on is shown greyed out with what to ask for.
+
+## Captions in YouTube's CC button
+
+With a broadcast chosen in step 1, **Captions on YouTube** sends finished captions in one
+language (the spoken language or one of the room's translation languages) to the
+broadcast's caption track. Set it **before the broadcast goes live**: YouTube does not let a
+live broadcast switch to posted captions, unless *POST captions to URL* was already chosen
+for it in YouTube Studio. Ultra-low latency broadcasts cannot show captions. YouTube carries
+one caption track; viewers can use YouTube's auto-translate on it.
+
+## Share the listener page
+
+Every language and the translated speech are on VoxBento's listener page. Put its link in
+the broadcast description so viewers who need another language can follow along.
+
+## Why VoxBento can't just take a YouTube link
+
+YouTube's developer policies do not allow downloading a stream or separating its audio, and
+automated pulling from YouTube is blocked. So the sound has to come to VoxBento from your
+streaming tool or from a browser tab that is playing the stream. VoxBento only reads your
+broadcasts' details and posts caption text; it never downloads your video.
+
+For the operator setup of Google sign-in and the stream relay, see
+`docs/youtube-connect.md` and [Program Ingest & Relay](./program-ingest.mdx).

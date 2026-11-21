@@ -1119,10 +1119,79 @@ async def test_ai_settings_tab_explains_a_room_without_ai(admin_cookie, event_ro
         ({"meeting_agent_enabled": True}, room_setup.AUDIO_MEETING),
         ({"floor_source": "program_ingest", "program_key_hash": "k"}, room_setup.AUDIO_ENCODER),
         ({"floor_source": "program_ingest", "program_session_secret_hash": "s"}, room_setup.AUDIO_DESK),
+        # Forwarding to YouTube opens the YouTube guide, which holds the forwarding controls (#1087).
+        ({"floor_source": "program_ingest", "program_ingest_mode": "rtmps_relay", "program_key_hash": "k"}, "youtube"),
+        ({"floor_source": "program_ingest", "program_ingest_mode": "rtmps_relay"}, "youtube"),
+        # A linked broadcast heard through streaming software or the browser sender.
+        (
+            {
+                "floor_source": "program_ingest",
+                "program_ingest_mode": "rtmps",
+                "program_key_hash": "k",
+                "youtube_broadcast_id": "Broadcast01",
+            },
+            "youtube",
+        ),
+        (
+            {"floor_source": "program_ingest", "program_session_secret_hash": "s", "youtube_broadcast_id": "B"},
+            "youtube",
+        ),
+        # A linked broadcast with no source yet.
+        ({"youtube_broadcast_id": "Broadcast01"}, "youtube"),
+        # Without a broadcast, an extra destination is still streaming software.
+        ({"floor_source": "program_ingest", "program_ingest_mode": "rtmps", "program_key_hash": "k"}, "encoder"),
+        # The meeting wins over a broadcast that is merely linked.
+        ({"meeting_agent_enabled": True, "youtube_broadcast_id": "Broadcast01"}, room_setup.AUDIO_MEETING),
+        # A relay mode left behind after switching back to the meeting does not reopen YouTube.
+        ({"program_ingest_mode": "rtmps_relay"}, ""),
     ],
 )
 def test_room_audio_tab_opens_on_the_source_in_use(fields, choice):
-    room = Room(event_id=1, display_name="Hall", floor_source="jitsi_bot", meeting_agent_enabled=False)
+    room = Room(
+        event_id=1,
+        display_name="Hall",
+        floor_source="jitsi_bot",
+        program_ingest_mode="whip",
+        meeting_agent_enabled=False,
+    )
     for key, value in fields.items():
         setattr(room, key, value)
     assert room_setup.room_audio_choice(room) == choice
+
+
+@pytest.mark.parametrize(
+    ("fields", "route"),
+    [
+        ({}, ""),
+        ({"floor_source": "program_ingest", "program_ingest_mode": "rtmps_relay"}, room_setup.YOUTUBE_ROUTE_FORWARD),
+        ({"floor_source": "program_ingest", "program_ingest_mode": "rtmps", "program_key_hash": "k"}, "multi"),
+        ({"floor_source": "program_ingest", "program_session_secret_hash": "s"}, room_setup.YOUTUBE_ROUTE_TAB),
+        ({"floor_source": "program_ingest", "program_ingest_mode": "whip", "program_key_hash": "k"}, ""),
+        ({"floor_source": "jitsi_bot", "program_ingest_mode": "rtmps_relay"}, ""),
+    ],
+)
+def test_youtube_guide_opens_on_the_route_in_use(fields, route):
+    room = Room(event_id=1, display_name="Hall", floor_source="jitsi_bot", program_ingest_mode="whip")
+    for key, value in fields.items():
+        setattr(room, key, value)
+    assert room_setup.youtube_route(room) == route
+
+
+@pytest.mark.anyio
+async def test_room_page_offers_the_youtube_guide_over_the_existing_controls(admin_cookie, event_room):
+    event, _ = event_room
+    room_id = await _create_ai_room(admin_cookie, event)
+    async with _client() as c:
+        page = await c.get(f"/admin/events/{event.id}/rooms/{room_id}/", cookies=admin_cookie)
+    html = page.text
+    assert 'value="youtube"' in html
+    assert 'data-audio-panel="youtube"' in html
+    assert "From a YouTube stream" in html
+    assert "/static/js/youtube-source.js" in html
+    # The guide reuses the streaming-software card and the YouTube block: each exists exactly once.
+    assert html.count("id='program-ingest'") == 1
+    assert html.count("id='youtube-source'") == 1
+    # The forwarding route states the outage trade-off, and the tab route links the sender on the tab source.
+    assert "a VoxBento outage also interrupts your YouTube stream" in html
+    assert f"/rooms/{room_id}/sender/?source=tab" in html
+    assert "<script>" not in html.split("id='youtube-source'")[1].split("</section>")[0]

@@ -1,0 +1,93 @@
+{# "From a YouTube stream" (#1087, plan 007). A guide over the existing controls, not a copy of them:
+   youtube-source.js moves the YouTube account block and the streaming-software card in here while
+   this choice is open, and puts them back when another way of hearing the room is chosen. #}
+<section id='youtube-source' class='token-form-card token-form-card--spaced program-ingest-card youtube-source'
+  data-initial-route='{{ youtube_route }}'>
+  <div class='program-ingest-head'>
+    <div>
+      <p class='program-ingest-eyebrow'>Live source</p>
+      <h3>From a YouTube stream</h3>
+      <p class='program-ingest-lede'>VoxBento makes captions, translations and translated speech from your stream's sound. It never downloads anything from YouTube: the sound reaches VoxBento from your streaming tool or from a browser tab.</p>
+    </div>
+  </div>
+
+  <div class='program-setup-step'>
+    <div class='program-section-head'>
+      <span class='program-step' aria-hidden='true'>1</span>
+      <div>
+        <h4>Which broadcast?</h4>
+        {% if youtube_connect_enabled %}
+        <p>Sign in with the YouTube channel and choose the broadcast. VoxBento can then fill in its stream key and put captions in YouTube's CC button. Not your channel, or can't sign in? Go straight to step 2.</p>
+        {% else %}
+        <p>Google sign-in is not set up on this server, so VoxBento cannot read your broadcasts or post captions into YouTube's player. Captions, translations and speech still work on VoxBento's listener page: go to step 2.</p>
+        {% endif %}
+      </div>
+    </div>
+    {% if youtube_connect_enabled %}<div data-youtube-account-slot></div>{% endif %}
+  </div>
+
+  <fieldset class='program-mode-picker program-mode-picker--three youtube-routes'>
+    <legend><span class='program-step' aria-hidden='true'>2</span> How does your video reach YouTube?</legend>
+    <label class='program-mode-option'>
+      <input type='radio' name='youtube-route' value='multi'>
+      <span>
+        <strong>My streaming tool can send to two places</strong>
+        <small>StreamYard, Restream, Zoom or Teams live streaming, vMix, or OBS with a multi-output plugin. Keep YouTube as it is and add VoxBento as a second destination. If VoxBento goes down, YouTube keeps going.</small>
+        <small class='program-mode-note' data-route-unavailable='multi' hidden>Not switched on for this server yet. Ask the server operator to run <code>scripts/setup-youtube-relay.sh --ingest-only</code>.</small>
+      </span>
+    </label>
+    <label class='program-mode-option'>
+      <input type='radio' name='youtube-route' value='forward'>
+      <span>
+        <strong>One encoder, and VoxBento forwards to YouTube</strong>
+        <small>OBS, vMix, Wirecast or a hardware encoder sends one stream to VoxBento, which passes it to YouTube unchanged. While this is on, a VoxBento outage also interrupts your YouTube stream.</small>
+        <small class='program-mode-note' data-route-unavailable='forward' hidden>Not switched on for this server yet. Ask the server operator to run <code>scripts/setup-youtube-relay.sh</code>.</small>
+      </span>
+    </label>
+    <label class='program-mode-option'>
+      <input type='radio' name='youtube-route' value='tab'>
+      <span>
+        <strong>I can't change how it streams</strong>
+        <small>YouTube Studio's webcam or phone streaming, or a stream someone else runs. Play it in a browser tab and VoxBento listens to that tab.</small>
+      </span>
+    </label>
+  </fieldset>
+
+  <p class='program-relay-note' data-route-panel='' role='note'>Choose how your video reaches YouTube to see what to set up.</p>
+
+  {# The streaming-software card (server, stream key, forwarding destination, health) is moved in here. #}
+  <div data-route-panel='multi forward' hidden>
+    <div data-youtube-ingest-slot></div>
+  </div>
+
+  <div class='program-setup-step' data-route-panel='tab' hidden>
+    <div class='program-section-head'>
+      <span class='program-step' aria-hidden='true'>3</span>
+      <div>
+        <h4>Share the playing tab with VoxBento</h4>
+        <p>Use Chrome or Edge on a computer that stays on for the whole session.</p>
+      </div>
+    </div>
+    <ol class='program-settings-list'>
+      <li>Open the YouTube stream in a browser tab and start playing it.</li>
+      <li>Open the sender. It starts on <strong>A browser tab</strong>; click <strong>Start sending</strong>, pick the YouTube tab and keep <strong>Also share tab audio</strong> ticked.</li>
+      <li>Keep both tabs open. Captions follow the stream as YouTube plays it, so they arrive after YouTube's own viewer delay.</li>
+    </ol>
+    <div class='program-sender-actions'>
+      <a class='btn btn-primary' href='{{ management_prefix }}/events/{{ event.id }}/rooms/{{ room.id }}/sender/?source=tab' target='_blank' rel='noopener'>Open sender</a>
+    </div>
+    <p class='program-relay-note'>The sender tab shows whether sound is reaching VoxBento. Choosing this route switches the room to the sender once you start it there.</p>
+  </div>
+
+  <div class='program-setup-step youtube-source-listen'>
+    <div class='program-section-head'>
+      <span class='program-step' aria-hidden='true'>✓</span>
+      <div>
+        <h4>Share the listener page</h4>
+        <p>YouTube's CC button carries one caption language. Every language and translated speech are on VoxBento's listener page: put its link in the broadcast description.</p>
+      </div>
+    </div>
+    <a class='btn btn-outline' href='/listener/{{ event.slug }}' target='_blank' rel='noopener'>Listener page ↗</a>
+  </div>
+</section>
+<script type='module' src='/static/js/youtube-source.js?v={{ asset_version }}'></script>

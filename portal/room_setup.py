@@ -22,6 +22,7 @@ from starlette.datastructures import FormData
 from portal.config import settings
 from portal.database import create_booth, delete_booth, list_booths_for_room
 from portal.models import DBBooth, Event, Room, RoomTranslationLanguage
+from portal.program_relay import RELAY_MODE, RTMPS_MODE
 from portal.roles import INTERPRETER
 from portal.transcription.constants import ALLOWED_MODELS, ProviderEnum
 from portal.translations.model_languages import supported_languages, unsupported_languages
@@ -681,18 +682,46 @@ def summarize(room: Room, snapshot: RoomSnapshot) -> RoomSummary:
 
 # ── Room audio ───────────────────────────────────────────────────────────
 
+AUDIO_YOUTUBE = "youtube"
 AUDIO_MEETING = "meeting"
 AUDIO_ENCODER = "encoder"
 AUDIO_DESK = "desk"
 
+# How video reaches YouTube, in the "From a YouTube stream" guide (#1087, plan 007).
+YOUTUBE_ROUTE_MULTI = "multi"  # the streaming tool also sends VoxBento an RTMPS copy; YouTube is independent
+YOUTUBE_ROUTE_FORWARD = "forward"  # the encoder sends to VoxBento, which forwards to YouTube
+YOUTUBE_ROUTE_TAB = "tab"  # a browser tab plays the stream and the sender shares its sound
+
 
 def room_audio_choice(room: Room) -> str:
-    """Which way VoxBento hears the room today, so the Room audio tab opens on it ('' if none yet)."""
+    """Which way VoxBento hears the room today, so the Room audio tab opens on it ('' if none yet).
+
+    Only saved room state counts. A room forwarding to YouTube, or hearing a YouTube-linked room through
+    streaming software or the browser sender, opens on the YouTube guide, which holds those same controls.
+    """
     if room.floor_source == "program_ingest":
+        source_set_up = bool(room.program_key_hash or room.program_session_secret_hash)
+        if room.program_ingest_mode == RELAY_MODE or (room.youtube_broadcast_id and source_set_up):
+            return AUDIO_YOUTUBE
         if room.program_key_hash:
             return AUDIO_ENCODER
         if room.program_session_secret_hash:
             return AUDIO_DESK
     if room.meeting_agent_enabled:
         return AUDIO_MEETING
+    if room.youtube_broadcast_id:
+        return AUDIO_YOUTUBE
+    return ""
+
+
+def youtube_route(room: Room) -> str:
+    """The YouTube guide's route that matches the room's saved source ('' until one is set up)."""
+    if room.floor_source != "program_ingest":
+        return ""
+    if room.program_ingest_mode == RELAY_MODE:
+        return YOUTUBE_ROUTE_FORWARD
+    if room.program_key_hash and room.program_ingest_mode == RTMPS_MODE:
+        return YOUTUBE_ROUTE_MULTI
+    if room.program_session_secret_hash and not room.program_key_hash:
+        return YOUTUBE_ROUTE_TAB
     return ""

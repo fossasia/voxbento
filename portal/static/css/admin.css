@@ -1910,7 +1910,7 @@ code { font-family: var(--font-mono); font-size: 0.85em; background: var(--color
 .room-lang .room-booth-links { justify-content: flex-end; font-size: 0.875rem; }
 .room-caption-line { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; font-size: 0.92rem; }
 .room-caption-label { color: var(--color-text-secondary); }
-.audio-choices { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px; }
+.audio-choices { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }
 .audio-choice { position: relative; display: block; cursor: pointer; }
 .audio-choice input { position: absolute; inset: 0; opacity: 0; margin: 0; cursor: pointer; }
 .audio-choice span { display: flex; flex-direction: column; gap: 4px; height: 100%; padding: 14px 16px; border: 1.5px solid var(--color-border-strong); border-radius: var(--radius-md); background: var(--color-surface); }

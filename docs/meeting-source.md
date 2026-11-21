@@ -1,5 +1,8 @@
 # Meeting source (managed Jitsi floor agent)
 
+Streaming on YouTube? Use **Room audio → From a YouTube stream** instead of sharing YouTube
+into the meeting.
+
 An event owner can make a room's online meeting the floor source from the room
 page. VoxBento starts a managed agent that joins the meeting as a muted,
 listen-only participant (**VoxBento FloorBot**), publishes the meeting audio to

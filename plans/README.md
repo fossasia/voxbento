@@ -55,7 +55,7 @@ which need a real YouTube channel and the deployment's Google client.
 | 004 | IN PROGRESS — rehearsal remaining | Implementation and invariant approval merged in [#1102](https://github.com/fossasia/voxbento/pull/1102); cleanup follow-up merged in [#1152](https://github.com/fossasia/voxbento/pull/1152). The streaming-platform rehearsal is still pending. |
 | 005 | CODE MERGED — rehearsal remaining | Backend [#1107](https://github.com/fossasia/voxbento/pull/1107) (merged 15 November) and room controls/docs [#1108](https://github.com/fossasia/voxbento/pull/1108) (merged 20 November). The live journey with a real channel (step 4 below) is still pending. |
 | 006 | IN REVIEW — part 2 | [#1153](https://github.com/fossasia/voxbento/pull/1153) merged the delivery engine. Part 2 (owner control, saved choice, YouTube set-up, restart recovery, stop/replace/shutdown handling) is in review on branch `feat/1087-youtube-captions-controls`. The live caption rehearsal (step 6) is still pending. |
-| 007 | IN PROGRESS | [#1125](https://github.com/fossasia/voxbento/pull/1125) and [#1119](https://github.com/fossasia/voxbento/issues/1119) were closed on 16 November: the guide must land with working controls. It is being rebuilt on top of 006 part 2. |
+| 007 | IN REVIEW | **Room audio → From a YouTube stream** on branch `feat/1087-youtube-guided-setup`, stacked on 006 part 2. It reuses the existing streaming-software card and YouTube block instead of copying them, so every button keeps its CSRF token, one-time key and relay outage warning. [#1125](https://github.com/fossasia/voxbento/pull/1125) and [#1119](https://github.com/fossasia/voxbento/issues/1119) were closed on 16 November in favour of this. The three-route walk-through (step 7 of the plan) is still pending. |
 
 Earlier drafts: #1090 was superseded by #1097; #1091/#1096 were superseded by #1133;
 #1125 was closed in favour of the full plan 007 guide. Do not reopen their old work or
@@ -107,7 +107,7 @@ issue a credential for one and tell the organiser to use it with the other.
    the delay. Show clear guidance for unsupported broadcast settings. YouTube
    caption setup must happen before going live unless that broadcast already had
    HTTP-post captions enabled. Verify that failures do not slow VoxBento captions.
-7. **Finish the single guided room-page flow (007/#751).** Ask how the organiser
+7. **Finish the single guided room-page flow (007/#751).** In review. Ask how the organiser
    streams, show just that route, and reuse the existing mode/key/destination
    controls. Fix or separate #1125. Test all three routes, source-switch warnings,
    permission failures, reloads and keyboard navigation. Include the listener link
