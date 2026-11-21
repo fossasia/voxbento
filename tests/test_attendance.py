@@ -469,7 +469,8 @@ async def test_day_tabs_and_booth_filter_narrow_the_page_and_the_csv(event_setup
                     last_seen_at=start + timedelta(hours=1), interpreting_seconds=1800,
                 )
             )
-    monkeypatch.setattr(portal_globals.booths, "attendance", AttendanceTracker())
+    report_now = datetime(2026, 11, 12, 12, 0, tzinfo=timezone.utc)
+    monkeypatch.setattr(portal_globals.booths, "attendance", AttendanceTracker(clock=lambda: report_now))
     try:
         ZoneInfo("Asia/Kolkata")
     except ZoneInfoNotFoundError:
@@ -1219,6 +1220,26 @@ def test_rows_for_event_excludes_future_database_rows():
     result = rows_for_event([future_row, past_row], [], now)
     assert len(result) == 1
     assert result[0].id == "past"
+
+
+def test_rows_for_event_caps_saved_visit_left_at_at_now():
+    """Saved database rows with left_at extending beyond now are bounded by now."""
+    now = datetime(2026, 11, 10, 12, 0, tzinfo=timezone.utc)
+    spanning_row = AttendanceRow(
+        id="spanning",
+        room_id=1,
+        language_code="de",
+        user_id=1,
+        invite_public_id=None,
+        display_name="Alice",
+        role=INTERPRETER,
+        joined_at=datetime(2026, 11, 10, 11, 0, tzinfo=timezone.utc),
+        left_at=datetime(2026, 11, 10, 12, 10, tzinfo=timezone.utc),
+        interpreting_seconds=4200,
+    )
+    result = rows_for_event([spanning_row], [], now)
+    assert len(result) == 1
+    assert result[0].left_at == now
 
 
 @pytest.mark.anyio

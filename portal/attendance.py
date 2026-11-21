@@ -245,9 +245,26 @@ async def save_visits(visits: Iterable[Visit], now: datetime) -> int:
     slugs = {visit.event_slug for visit in visits}
     written = 0
     async with get_session() as session:
-        result = await session.execute(
-            select(Event.slug, Event.id).where(Event.slug.in_(slugs), Event.deleted_at.is_(None))
-        )
+        is_sqlite = session.get_bind().dialect.name == "sqlite"
+        # Execute a no-op UPDATE to acquire SQLite's writer lock before event IDs are read.
+        if is_sqlite:
+            await session.execute(
+                update(Event)
+                .where(Event.slug.in_(slugs), Event.deleted_at.is_(None))
+                .values(deleted_at=Event.deleted_at)
+                .execution_options(synchronize_session=False)
+            )
+            event_stmt = select(Event.slug, Event.id).where(
+                Event.slug.in_(slugs), Event.deleted_at.is_(None)
+            )
+        else:
+            event_stmt = (
+                select(Event.slug, Event.id)
+                .where(Event.slug.in_(slugs), Event.deleted_at.is_(None))
+                .with_for_update()
+            )
+
+        result = await session.execute(event_stmt)
         event_ids = dict(result.all())
         # A user deleted since joining must not fail the whole batch on the foreign key. The
         # visit is kept without the account; if the deletion races this check, this flush
@@ -387,7 +404,7 @@ def rows_for_event(db_rows: Iterable, pending_visits: Iterable[Visit], now: date
             display_name=row.display_name,
             role=row.role,
             joined_at=_aware(row.joined_at),
-            left_at=_aware(row.left_at or row.last_seen_at),
+            left_at=min(_aware(row.left_at or row.last_seen_at), now) if (row.left_at or row.last_seen_at) else None,
             interpreting_seconds=row.interpreting_seconds,
         )
         for row in db_rows
