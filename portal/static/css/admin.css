@@ -1221,6 +1221,13 @@ code { font-family: var(--font-mono); font-size: 0.85em; background: var(--color
 .program-copy-field { display: flex; gap: 8px; min-width: 0; }
 .program-copy-field .input { width: 100%; min-width: 0; height: 40px; padding: 8px 11px; border: 1px solid var(--color-border-strong); border-radius: 8px; background: var(--color-surface-2); color: var(--color-text); font-family: var(--font-mono); font-size: 0.78rem; }
 .program-copy-field .btn { flex: 0 0 auto; }
+.program-srt-backup-row { margin-top: 12px; }
+.program-srt-backup-header { display: flex; align-items: center; justify-content: space-between; margin-bottom: 4px; }
+.program-srt-backup-header > label:first-child { margin-bottom: 0; }
+.program-backup-toggle-label { display: flex; align-items: center; gap: 6px; font-size: 0.85rem; cursor: pointer; margin-bottom: 0; }
+.program-backup-secret-row { margin-top: 12px; }
+.program-backup-secret-label-wrap { width: 100%; margin-bottom: 4px; }
+.program-backup-secret-label { font-size: 0.85rem; font-weight: 600; }
 .program-primary-action { display: flex; align-items: center; gap: 12px; margin-top: 14px; }
 .program-primary-action p { color: var(--color-text-secondary); font-size: 0.75rem; }
 .program-ingest-card button:disabled { border-color: var(--color-border); background: #edf0f5; box-shadow: none; color: var(--color-muted); cursor: not-allowed; opacity: 1; transform: none; }

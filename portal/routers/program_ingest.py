@@ -6,6 +6,7 @@ import ipaddress
 import json
 import logging
 from typing import Literal
+from urllib.parse import urlsplit
 
 import httpx
 from fastapi import APIRouter, Depends, Header, HTTPException, Request
@@ -14,16 +15,23 @@ from pydantic import BaseModel, Field, ValidationError
 
 from portal import program_relay, youtube_account
 from portal.auth import require_admin_csrf, require_event_owner
-from portal.booth_identity import make_mediamtx_path
+from portal.booth_identity import make_backup_floor_path, make_mediamtx_path
 from portal.config import settings
+from portal.crypto import decrypt_val
 from portal.database import get_event_by_id, get_room_by_id, get_session
 from portal.program_ingest import (
     MediaAuth,
+    apply_srt_passphrase_to_mediamtx,
     authorize_publish,
     close_sender_session,
     configure_source,
+    generate_backup_srt_passphrase,
     health,
+    kick,
+    media_path,
     open_sender_session,
+    promote_primary_feed,
+    reserved_backup_source,
     room_lock,
 )
 
@@ -32,10 +40,11 @@ logger = logging.getLogger(__name__)
 
 
 class IngestChange(BaseModel):
-    action: Literal["enable", "rotate", "revoke", "disable", "sync"]
+    action: Literal["enable", "rotate", "revoke", "disable", "sync", "promote_primary", "toggle_backup"]
     sync_offset_ms: int = Field(default=0, ge=0, le=120000)
     # Only read on "enable": the transport the new credential is bound to.
-    mode: Literal["whip", "rtmps", "rtmps_relay"] = "whip"
+    mode: Literal["whip", "rtmps", "rtmps_relay", "srt"] = "whip"
+    backup_enabled: bool | None = None
 
 
 class RelayDestination(BaseModel):
@@ -54,6 +63,22 @@ def _rtmps_server(event_slug: str, room_id: int) -> str:
     # OBS joins "Server" and "Stream Key" with "/", so the key carries the floor path segment.
     base = settings.program_rtmps_public_base.rstrip("/")
     return f"{base}/{event_slug}/{room_id}" if base else ""
+
+
+def _format_srt_host(host: str) -> str:
+    """Bracket IPv6 literals for RFC 3986 URI authority compliance."""
+    if ":" in host and not (host.startswith("[") and host.endswith("]")):
+        return f"[{host}]"
+    return host
+
+
+def _srt_host() -> str:
+    if settings.program_srt_public_host:
+        return _format_srt_host(settings.program_srt_public_host)
+    hostname = urlsplit(settings.public_base_url).hostname
+    if hostname:
+        return _format_srt_host(hostname)
+    return _format_srt_host(settings.jitsi_domain)
 
 
 def _check_origin(request: Request) -> None:
@@ -127,6 +152,82 @@ async def ingest_status(event_id: int, room_id: int) -> JSONResponse:
             warnings.append("Enable floor transcription to generate captions.")
         if not room.floor_language_code or room.floor_transcription_provider == "none":
             warnings.append("Choose a floor source language and transcription provider.")
+
+        # Operator alerts attributing issues to encoder, gateway, youtube, or language_provider (#750)
+        alerts: list[dict[str, str]] = []
+        if not settings.program_ingest_enabled:
+            alerts.append(
+                {
+                    "target": "gateway",
+                    "level": "error",
+                    "message": "Program contribution ingest is disabled on the gateway server.",
+                    "action": "Enable PROGRAM_INGEST_ENABLED in the server environment.",
+                }
+            )
+        if relay_mode and settings.program_relay_enabled and program_relay.list_outage.failures > 0:
+            alerts.append(
+                {
+                    "target": "gateway",
+                    "level": "error",
+                    "message": "YouTube relay service on the gateway is unreachable.",
+                    "action": "Check the program-relay container.",
+                }
+            )
+        if enabled and current:
+            if current.state in ("rejected_codec", "rejected_limits"):
+                alerts.append(
+                    {
+                        "target": "encoder",
+                        "level": "error",
+                        "message": current.reason,
+                        "action": "Adjust encoder output settings (H.264/AAC, <=12 Mbps).",
+                    }
+                )
+            elif current.state == "disconnected":
+                alerts.append(
+                    {
+                        "target": "encoder",
+                        "level": "warning",
+                        "message": "Contribution encoder disconnected unexpectedly.",
+                        "action": "Check encoder network connection and restart stream.",
+                    }
+                )
+        if relay_mode and relay and relay.state in ("unconfigured", "degraded", "failed"):
+            alerts.append(
+                {
+                    "target": "youtube",
+                    "level": "warning" if relay.state == "unconfigured" else "error",
+                    "message": relay.reason,
+                    "action": "Verify YouTube stream key in room settings or YouTube Studio.",
+                }
+            )
+        if enabled and current and current.processing_state == "degraded":
+            alerts.append(
+                {
+                    "target": "language_provider",
+                    "level": "error",
+                    "message": current.processing_reason,
+                    "action": "Check AI transcription provider API credentials and quota.",
+                }
+            )
+
+        # Operational metrics without exposing secrets (#750)
+        audio_present = bool(
+            current
+            and current.codecs
+            and any(c.upper() in {"AAC", "OPUS", "MPEG-4 AUDIO"} or "AAC" in c.upper() for c in current.codecs)
+        )
+        bytes_val = current.last_bytes if current and current.last_bytes >= 0 else 0
+        metrics = {
+            "bytes_received": bytes_val,
+            "packets_received": bytes_val // 1316 if bytes_val > 0 else 0,
+            "audio_present": audio_present,
+            "reconnect_count": current.reconnect_count if current else 0,
+            "ingest_continuity": bool(current and current.ingest_state in ("connected", "receiving", "processing")),
+            "egress_continuity": bool(relay and relay.state == "live"),
+            "processing_progress": current.processing_state if current else "idle",
+        }
+
         youtube = await _youtube_status(session, room)
         return JSONResponse(
             {
@@ -135,8 +236,10 @@ async def ingest_status(event_id: int, room_id: int) -> JSONResponse:
                 "state": (current.state if current else "waiting") if enabled else "disabled",
                 "reason": current.reason if enabled and current else "",
                 "endpoint": f"{settings.public_base_url.rstrip('/')}/{make_mediamtx_path(event.slug, room_id, 'floor')}/whip",
-                "credential_present": bool(room.program_key_hash),
-                "expires_at": room.program_key_expires_at.isoformat() if room.program_key_expires_at else None,
+                "credential_present": bool(room.program_key_hash or room.program_srt_passphrase_enc),
+                "expires_at": (room.program_srt_passphrase_expires_at or room.program_key_expires_at).isoformat()
+                if (room.program_srt_passphrase_expires_at or room.program_key_expires_at)
+                else None,
                 "last_connected_at": room.program_connected_at.isoformat() if room.program_connected_at else None,
                 "last_disconnected_at": room.program_disconnected_at.isoformat()
                 if room.program_disconnected_at
@@ -144,9 +247,21 @@ async def ingest_status(event_id: int, room_id: int) -> JSONResponse:
                 "codecs": current.codecs if current else [],
                 "sync_offset_ms": room.program_sync_offset_ms,
                 "warnings": warnings,
+                "alerts": alerts,
+                "metrics": metrics,
                 "mode": room.program_ingest_mode,
                 "relay_available": settings.program_ingest_enabled and settings.program_relay_enabled,
                 "rtmps_available": settings.rtmps_ingest_enabled,
+                "srt_available": settings.srt_ingest_enabled,
+                "srt_server": f"srt://{_srt_host()}:{settings.program_srt_public_port}?streamid=#!::r={make_mediamtx_path(event.slug, room_id, 'floor')},m=publish"
+                if settings.srt_ingest_enabled
+                else "",
+                "srt_backup_server": f"srt://{_srt_host()}:{settings.program_srt_public_port}?streamid=#!::r={make_backup_floor_path(event.slug, room_id)},m=publish"
+                if settings.srt_ingest_enabled
+                else "",
+                "backup_enabled": room.program_backup_enabled,
+                "backup_connected": bool(current.backup_connected if current else room.program_backup_connected_at),
+                "active_feed": room.program_active_feed,
                 # The reconciler's last call to the relay service failed: the operator must start it.
                 "relay_service_down": settings.program_relay_enabled and program_relay.list_outage.failures > 0,
                 "rtmps_server": _rtmps_server(event.slug, room_id) if settings.rtmps_ingest_enabled else "",
@@ -189,6 +304,48 @@ async def ingest_change(request: Request, event_id: int, room_id: int, change: I
         raise HTTPException(409, "YouTube relay mode must first be enabled by the server operator")
     if change.action == "enable" and change.mode == program_relay.RTMPS_MODE and not settings.rtmps_ingest_enabled:
         raise HTTPException(409, "RTMPS ingest must first be enabled by the server operator")
+    if change.action == "enable" and change.mode == program_relay.SRT_MODE and not settings.srt_ingest_enabled:
+        raise HTTPException(409, "SRT ingest must first be enabled by the server operator")
+    if change.action == "promote_primary":
+        async with room_lock(room_id):
+            async with get_session() as session:
+                room = await get_room_by_id(session, room_id)
+                event = await get_event_by_id(session, event_id)
+                if not room or room.event_id != event_id or not event:
+                    raise HTTPException(404, "Room not found")
+                await promote_primary_feed(room, session)
+                await session.commit()
+                return JSONResponse({"active_feed": "primary"})
+    if change.action == "toggle_backup":
+        async with room_lock(room_id):
+            async with get_session() as session:
+                room = await get_room_by_id(session, room_id)
+                event = await get_event_by_id(session, event_id)
+                if not room or room.event_id != event_id or not event:
+                    raise HTTPException(404, "Room not found")
+                room.program_backup_enabled = (
+                    change.backup_enabled if change.backup_enabled is not None else not room.program_backup_enabled
+                )
+                backup_secret = None
+                if room.program_backup_enabled and room.program_ingest_mode == program_relay.SRT_MODE:
+                    backup_secret = await generate_backup_srt_passphrase(room, session)
+                    backup_path = make_backup_floor_path(event.slug, room.id)
+                    await apply_srt_passphrase_to_mediamtx(backup_path, backup_secret)
+                elif not room.program_backup_enabled:
+                    backup_path = make_backup_floor_path(event.slug, room.id)
+                    current_backup = await media_path(backup_path)
+                    await kick(backup_path, current_backup.source if current_backup else None)
+                    await kick(backup_path, reserved_backup_source(room))
+                    await apply_srt_passphrase_to_mediamtx(backup_path, "")
+                    room.program_backup_connected_at = None
+                    room.program_backup_key_enc = None
+                    room.program_backup_key_expires_at = None
+                    room.program_active_feed = "primary"
+                await session.commit()
+                resp = {"backup_enabled": room.program_backup_enabled}
+                if backup_secret:
+                    resp["backup_passphrase"] = backup_secret
+                return JSONResponse(resp)
     secret = None
     rtmps_mode = False
     cleanup_pending = False
@@ -207,11 +364,17 @@ async def ingest_change(request: Request, event_id: int, room_id: int, change: I
                 # never roll the old credential back into validity.
                 room.program_key_hash = None
                 room.program_key_expires_at = None
+                room.program_srt_passphrase_enc = None
+                room.program_srt_passphrase_expires_at = None
+                room.program_backup_key_enc = None
+                room.program_backup_key_expires_at = None
                 room.program_session_secret_hash = None
                 room.program_session_secret_expires_at = None
                 # Clear the reservation too, so a failed cleanup kick cannot leave the
                 # session permitted by reconcile's live-session check.
                 room.program_session_id = None
+                room.program_backup_connected_at = None
+                room.program_active_feed = "primary"
             else:
                 try:
                     secret = await configure_source(
@@ -241,6 +404,12 @@ async def ingest_change(request: Request, event_id: int, room_id: int, change: I
     body = {"secret": secret}
     if secret and rtmps_mode:
         body["stream_key"] = f"floor?key={secret}"
+    elif secret and room.program_ingest_mode == program_relay.SRT_MODE:
+        body["passphrase"] = secret
+        body["streamid"] = f"#!::r={make_mediamtx_path(event.slug, room_id, 'floor')},m=publish"
+        if room.program_backup_enabled and room.program_backup_key_enc:
+            body["backup_passphrase"] = decrypt_val(room.program_backup_key_enc)
+            body["backup_streamid"] = f"#!::r={make_backup_floor_path(event.slug, room_id)},m=publish"
     if cleanup_pending:
         body["cleanup_pending"] = True
     return JSONResponse(

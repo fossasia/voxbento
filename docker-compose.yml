@@ -34,6 +34,7 @@ services:
       FLOOR_BOT_BASE: "http://floor-bot:8080"
       MEDIAMTX_AUTH_HOOK_SECRET: "${MEDIAMTX_AUTH_HOOK_SECRET:-}"
       PROGRAM_INGEST_ENABLED: "${PROGRAM_INGEST_ENABLED:-false}"
+      SRT_INGEST_ENABLED: "${SRT_INGEST_ENABLED:-false}"
       PUBLIC_BASE_URL: "${PUBLIC_BASE_URL:-https://voxbento.com}"
       # X-Forwarded-For is read only through Caddy's Docker gateway, then Cloudflare's
       # edge (same ranges as the Caddyfile); otherwise every visitor is the gateway IP.

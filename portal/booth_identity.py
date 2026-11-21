@@ -251,7 +251,7 @@ def validate_language_code(code: str) -> str:
     """
     normalised = code.strip().lower()
     if normalised == "floor":
-        return normalised
+        return "floor"
     if not _LANGUAGE_CODE_RE.match(normalised):
         raise ValueError(
             f"Language code must be exactly two lowercase ASCII letters (ISO 639-1) or 'floor'. Got: '{code}'."
@@ -322,6 +322,16 @@ def make_mediamtx_path(event_slug: str, room_id: int | None, language_code: str)
     room = _room_id_or_none(room_id)
     code = validate_language_code(language_code)
     return f"{slug}/{room}/{code}"
+
+
+def make_backup_floor_path(event_slug: str, room_id: int) -> str:
+    """Build a MediaMTX stream path for backup contribution feed.
+
+    Format: ``{event_slug}/{room_id}/floor_backup`` (e.g. ``pycon2026/14/floor_backup``).
+    """
+    slug = validate_event_slug(event_slug)
+    room = validate_room_id(room_id)
+    return f"{slug}/{room}/floor_backup"
 
 
 def booth_id_to_mediamtx_path(booth_id: str) -> str:

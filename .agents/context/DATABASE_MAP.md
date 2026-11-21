@@ -310,6 +310,8 @@ Tracks which languages the translation worker should generate for a given room o
 | 046 | `046_live_demo_room_ai.py` | Transitional room-linked demo settings and daily limit |
 | 047 | `047_live_demo_independent_ai.py` | Independent demo providers, models, encrypted keys, persona/style; removes room link |
 | 044 | `044_youtube_connections.py` | `youtube_connections` table (one per event), `rooms.youtube_broadcast_id`, `rooms.youtube_stream_id` (#1087) |
+| 045 | `045_meeting_analysis.py` | `meeting_reports` table, `events.meeting_analysis_enabled`, `events.meeting_analysis_provider`, `events.meeting_analysis_model` (#1080) |
+| 048 | `048_add_srt_and_backup_contribution.py` | `rooms.program_srt_passphrase_enc`, `rooms.program_srt_passphrase_expires_at`, `rooms.program_backup_enabled`, `rooms.program_backup_key_enc`, `rooms.program_backup_key_expires_at`, `rooms.program_active_feed`, `rooms.program_backup_connected_at` (#750) |
 
 Run migrations: `uv run alembic upgrade head`
 
@@ -373,6 +375,17 @@ no migration needed) | `rtmps_relay`; binds the program key to its transport), n
 URL), `program_relay_key_enc` (Fernet ciphertext of the YouTube stream key; write-only,
 never serialize or log) and `program_relay_updated_at`. Helpers live in
 `portal/program_relay.py` (`store_destination`, `clear_destination`, `destination`).
+
+## Migration 048 — SRT contribution ingest and backup takeover (#750)
+
+Room fields:
+- `program_srt_passphrase_enc` (Text, nullable): Fernet-encrypted random 256-bit passphrase for SRT contribution ingest on MediaMTX UDP 8890; write-only, never logged.
+- `program_srt_passphrase_expires_at` (DateTime with tz, nullable): expiration timestamp (30 days from creation).
+- `program_backup_enabled` (Boolean, default false): enables redundant secondary contribution feed (`floor_backup`).
+- `program_backup_key_enc` (Text, nullable): Fernet-encrypted independent passphrase for the backup contribution feed.
+- `program_backup_key_expires_at` (DateTime with tz, nullable): expiration timestamp for backup key.
+- `program_active_feed` (String(10), default 'primary'): active feed routed to transcription and relay (`primary` or `backup`).
+- `program_backup_connected_at` (DateTime with tz, nullable): timestamp when backup encoder connected.
 
 ## Migration 044 — Sign in with YouTube (#1087)
 

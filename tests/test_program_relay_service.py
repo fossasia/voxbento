@@ -200,10 +200,10 @@ def test_rejected_destination_is_classified_and_redacted(relay_service, caplog):
     caplog.set_level(logging.INFO)
     rejecting = f"rtmps://a.rtmps.youtube.com/live2/reject-{KEY}"
     assert client.put("/relays/7", json=body(destination=rejecting)).status_code == 200
-    assert wait_for(lambda: manager.relays["7"].restarts >= 2)
+    assert wait_for(lambda: manager.relays["7"].state == "failed")
     view = client.get("/relays").json()["relays"]["7"]
-    assert view["state"] == "retrying"
-    assert view["reason"] == "Destination rejected the stream key."
+    assert view["state"] == "failed"
+    assert view["reason"] == "Destination rejected the stream key — update the YouTube stream key."
     assert KEY not in caplog.text and "reject-" not in caplog.text
     assert service.redact(f"error {rejecting}", [rejecting]) == "error [redacted]"
 
@@ -266,8 +266,8 @@ def test_destination_that_stops_consuming_is_detected_and_reconnected(relay_serv
 def test_rejected_destination_classified_from_any_stderr_line(relay_service):
     client, manager = relay_service
     assert client.put("/relays/7", json=body(destination=DESTINATION.replace(KEY, f"reject-{KEY}"))).status_code == 200
-    assert wait_for(lambda: manager.relays["7"].restarts >= 1)
-    assert manager.relays["7"].reason == "Destination rejected the stream key."
+    assert wait_for(lambda: manager.relays["7"].state == "failed")
+    assert manager.relays["7"].reason == "Destination rejected the stream key — update the YouTube stream key."
 
 
 def test_stop_during_process_startup_leaves_no_process(relay_service):
