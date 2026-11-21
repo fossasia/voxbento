@@ -72,18 +72,31 @@ jobs:
       - name: Build comparison report
         if: always()
         shell: bash
+        env:
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
         run: |
+          mkdir -p report
           python -c '
           import json
+          import os
           import pathlib
 
-          sha_file = pathlib.Path("report/head_sha.txt")
-          sha = sha_file.read_text(encoding="utf-8").strip() if sha_file.exists() else ""
-          short_sha = sha[:7] if sha else "PR"
+          pathlib.Path("report").mkdir(parents=True, exist_ok=True)
 
+          env_sha = os.environ.get("HEAD_SHA", "")
+          sha_file = pathlib.Path("report/head_sha.txt")
+          sha = sha_file.read_text(encoding="utf-8").strip() if sha_file.exists() else env_sha
+          short_sha = sha[:7] if sha else "PR"
+          if not sha_file.exists() and sha:
+              sha_file.write_text(sha + "\n", encoding="utf-8")
+
+          env_pr = os.environ.get("PR_NUMBER", "")
           pr_num_file = pathlib.Path("report/pr_number.txt")
-          pr_number_str = pr_num_file.read_text(encoding="utf-8").strip() if pr_num_file.exists() else ""
+          pr_number_str = pr_num_file.read_text(encoding="utf-8").strip() if pr_num_file.exists() else env_pr
           pr_number = int(pr_number_str) if pr_number_str.isdigit() else None
+          if not pr_num_file.exists() and pr_number_str:
+              pr_num_file.write_text(pr_number_str + "\n", encoding="utf-8")
 
           status_file = pathlib.Path("report/pr_status.txt")
           status_code_str = status_file.read_text(encoding="utf-8").strip() if status_file.exists() else None
@@ -127,13 +140,24 @@ jobs:
           pr_rows, pr_summary = parse_markdown_table("report/pr_table.md")
           dev_rows, dev_summary = parse_markdown_table("report/dev_table.md")
 
-          # Require explicit successful harness result before rendering a pass
-          if exit_code == 0 and len(pr_rows) > 0:
+          totals_row = next((r for r in pr_rows if r.get("channel") == "all"), None)
+          has_valid_totals = (
+              totals_row is not None
+              and totals_row.get("sent", 0) > 0
+              and totals_row.get("translated") == totals_row.get("sent")
+              and totals_row.get("dropped") == 0
+              and totals_row.get("failed") == 0
+              and totals_row.get("missing") == 0
+          )
+
+          # Require exit code 0 and valid totals row before rendering success
+          if exit_code == 0 and has_valid_totals:
               status = "success"
               status_banner = "> [!NOTE]\n> **All signals passed**: 0 dropped, 0 failed, 0 missing translations.\n"
-          elif exit_code is not None and exit_code != 0 and len(pr_rows) > 0:
+          elif (exit_code is not None and exit_code != 0) or (totals_row and (totals_row.get("dropped", 0) > 0 or totals_row.get("failed", 0) > 0 or totals_row.get("missing", 0) > 0)):
               status = "regression"
-              status_banner = f"> [!WARNING]\n> **Regression detected**: The load harness exited with status `{exit_code}` (dropped, failed, missing translations or unhandled error).\n"
+              code = exit_code if exit_code is not None else 1
+              status_banner = f"> [!WARNING]\n> **Regression detected**: The load harness exited with status `{code}` (dropped, failed, missing translations or unhandled error).\n"
           else:
               status = "incomplete"
               status_banner = "> [!WARNING]\n> **Benchmark incomplete**: The load harness did not complete or produced no valid benchmark data.\n"

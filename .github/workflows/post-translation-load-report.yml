@@ -183,10 +183,20 @@ jobs:
               return `${header}\n${lines.join('\n')}\n`;
             }
 
+            const totalsRow = Array.isArray(prRows) ? prRows.find((r) => r.channel === 'all') : undefined;
+            const hasValidTotals = totalsRow !== undefined &&
+              totalsRow.sent > 0 &&
+              totalsRow.translated === totalsRow.sent &&
+              totalsRow.dropped === 0 &&
+              totalsRow.failed === 0 &&
+              totalsRow.missing === 0;
+
+            const isSuccess = metrics.exit_code === 0 && hasValidTotals;
+
             let statusBanner = '';
-            if (metrics.status === 'success') {
+            if (isSuccess) {
               statusBanner = '> [!NOTE]\n> **All signals passed**: 0 dropped, 0 failed, 0 missing translations.\n';
-            } else if (metrics.status === 'regression') {
+            } else if (metrics.exit_code !== 0 || (totalsRow && (totalsRow.dropped > 0 || totalsRow.failed > 0 || totalsRow.missing > 0))) {
               const exitCode = typeof metrics.exit_code === 'number' ? metrics.exit_code : 1;
               statusBanner = `> [!WARNING]\n> **Regression detected**: The load harness exited with status \`${exitCode}\` (dropped, failed, missing translations or unhandled error).\n`;
             } else {
