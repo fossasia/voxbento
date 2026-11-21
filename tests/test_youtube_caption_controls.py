@@ -69,7 +69,7 @@ async def add_language(room_id: int, code: str, name: str, enabled: bool = True)
 
 
 @pytest.fixture
-async def captions_env(yt_env):
+async def captions_env(yt_env):  # noqa: F811 - the imported fixture
     """Connected, both rooms with floor captions and French translation, room 0 linked to a ready broadcast."""
     await connect(yt_env)
     for room in yt_env["rooms"]:
@@ -184,7 +184,10 @@ async def test_captions_need_a_linked_broadcast(captions_env):
 @pytest.mark.parametrize(
     ("broadcast", "message"),
     [
-        ({"contentDetails": {"latencyPreference": "ultraLow", "closedCaptionsType": "closedCaptionsHttpPost"}}, "Ultra-low"),
+        (
+            {"contentDetails": {"latencyPreference": "ultraLow", "closedCaptionsType": "closedCaptionsHttpPost"}},
+            "Ultra-low",
+        ),
         ({"status": {"lifeCycleStatus": "complete"}}, "has ended"),
         ({"status": {"lifeCycleStatus": "live"}}, "before the broadcast starts"),
     ],
@@ -227,7 +230,9 @@ async def test_youtube_refusing_the_update_gives_the_studio_instructions(caption
 @pytest.mark.anyio
 async def test_caption_changes_need_owner_access_and_a_csrf_token(captions_env):
     client, room = captions_env["client"], captions_env["rooms"][0]
-    forged = await client.put(captions_url(captions_env, room), json={"language": "floor"}, headers={"X-CSRF-Token": "x"})
+    forged = await client.put(
+        captions_url(captions_env, room), json={"language": "floor"}, headers={"X-CSRF-Token": "x"}
+    )
     assert forged.status_code == 403
     client.cookies.set("user_token", captions_env["stranger_token"])
     assert (await turn_on(captions_env, room)).status_code in (403, 404)
@@ -262,7 +267,7 @@ async def test_unlinking_the_broadcast_stops_captions_and_clears_the_choice(capt
 
 @pytest.mark.anyio
 async def test_disconnecting_stops_every_room_and_leaves_other_events_alone(captions_env):
-    client, (room, other) = captions_env["client"], captions_env["rooms"]
+    client, room = captions_env["client"], captions_env["rooms"][0]
     await turn_on(captions_env, room)
     # A room of another event keeps posting.
     yc.targets[9999] = yc.CaptionTarget(language="floor", url="https://upload.youtube.com/closedcaption?cid=other")
