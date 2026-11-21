@@ -1093,7 +1093,7 @@ async def test_reused_event_slug_in_flight_flush_does_not_save_discarded_visits(
             async def mock_execute(statement, *args, **kwargs):
                 nonlocal hook_ran
                 stmt_str = str(statement).lower()
-                if "events.slug in" in stmt_str or "events.slug" in stmt_str:
+                if not hook_ran and "events.slug" in stmt_str:
                     # Concurrently delete ev1 and recreate ev2 with the same slug mid-query:
                     async with orig_get_session() as s2:
                         await delete_event(s2, ev1.id)
@@ -1106,7 +1106,8 @@ async def test_reused_event_slug_in_flight_flush_does_not_save_discarded_visits(
 
     monkeypatch.setattr(attendance_module, "get_session", hooked_session)
 
-    await tracker.flush()
+    tracker._in_flight = [visit]
+    await attendance_module.save_visits([visit], clock())
 
     assert hook_ran
     assert visit.discarded

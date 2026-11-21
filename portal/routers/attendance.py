@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import csv
 import io
-from dataclasses import dataclass, replace
+from dataclasses import dataclass
 from datetime import date, datetime, timezone, tzinfo
 from urllib.parse import unquote
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
@@ -56,7 +56,7 @@ async def _load(event_id: int) -> _EventAttendance:
         if event is None or event.deleted_at is not None:
             raise HTTPException(status_code=404, detail="Event not found.")
         now = booths.attendance.clock()
-        pending = [replace(visit) for visit in booths.attendance.pending_visits(event.slug)]
+        pending = booths.attendance.pending_visits(event.slug)
         result = await session.execute(
             select(InterpreterAttendance).where(InterpreterAttendance.event_id == event_id)
         )
