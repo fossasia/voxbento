@@ -77,12 +77,10 @@ async def main() -> None:
                 await page.context.add_cookies([{"name": "user_token", "value": user_token, "url": origin}])
                 await page.reload(wait_until="load")
                 account_labels = page.locator('#navbar a[href="/account"] span')
-                for width, expected in ((360, ("none", "inline")), (768, ("inline", "none"))):
+                for width, expected in ((360, (False, True)), (768, (True, False))):
                     await page.set_viewport_size({"width": width, "height": 800})
-                    displays = await account_labels.evaluate_all(
-                        "elements => elements.map(element => getComputedStyle(element).display)"
-                    )
-                    assert displays == list(expected), {"width": width, "displays": displays}
+                    visibility = [await account_labels.nth(index).is_visible() for index in range(2)]
+                    assert visibility == list(expected), {"width": width, "visibility": visibility}
 
                 await page.set_viewport_size({"width": 360, "height": 800})
                 details = page.locator("#navbar details")
