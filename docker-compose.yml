@@ -9,7 +9,9 @@ services:
       - path: .env
         required: false
     ports:
-      - "127.0.0.1:8000:8000"
+      # Host port only; containers always reach the portal at portal:8000.
+      # Change it when another app on the host already uses 8000.
+      - "127.0.0.1:${PORTAL_HOST_PORT:-8000}:8000"
     environment:
       HOST: "0.0.0.0"
       PORT: "8000"
@@ -85,6 +87,9 @@ services:
       - ./mediamtx.yml:/mediamtx.yml:ro
     environment:
       MTX_AUTHHTTPADDRESS: "http://portal:8000/internal/media-auth?key=${MEDIAMTX_AUTH_HOOK_SECRET:-}"
+      # ICE host candidates browsers use to reach UDP 8189. Replaces the list in mediamtx.yml.
+      # Defaults to the public IPs Jitsi already advertises (JVB_ADVERTISE_IPS).
+      MTX_WEBRTCADDITIONALHOSTS: "127.0.0.1,${MEDIAMTX_PUBLIC_HOSTS:-${JVB_ADVERTISE_IPS:-127.0.0.1}}"
     ports:
       - "127.0.0.1:8888:8888" # HTTPS proxy only
       - "127.0.0.1:8889:8889" # HTTPS proxy only
