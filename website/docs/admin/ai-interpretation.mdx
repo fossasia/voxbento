@@ -87,9 +87,9 @@ The built-in translator runs on the VoxBento server. The registry offers two mod
 | Model | Licence | Memory | Notes |
 |---|---|---|---|
 | `nllb-200-distilled-600M` | CC-BY-NC-4.0 (non-commercial) | ~600 MB | The default. About 200 languages. |
-| `madlad400-3b-mt` | Apache-2.0 | ~3.2 GB | MADLAD-400 3B: 163 languages with an ISO 639-1 code, Thai included. Slower than NLLB on CPU. It detects the spoken language itself and needs only the target. |
+| `madlad400-3b-mt` | Apache-2.0 | ~3.2 GB | MADLAD-400 3B: 164 languages with an ISO 639-1 code, Thai included. Slower than NLLB on CPU. It detects the spoken language itself and needs only the target. |
 
-Its models are large, so the operator decides which ones events may use, and only Admins can download them. Its models are large, so the operator decides which ones events may use, and only Admins can download them. An event owner's request never puts a model on the server.
+Its models are large, so the operator decides which ones events may use, and only Admins can download them. An event owner's request never puts a model on the server.
 
 1. List the models in `LOCAL_TRANSLATION_MODELS` and restart the portal. The default is `nllb-200-distilled-600M`. The first listed model is the default for new rooms. A name that isn't in the registry is loaded as your own build, from a Hugging Face repository or a folder on the server. Leave the variable empty to turn built-in translation off.
 2. Open **Translation models** in the Admin header (`/admin/translation-models/`). It lists the registry models and your own listed ones, with their size in memory, languages, licence and download status. Press **Download** next to an offered model to fetch it ahead of the event.

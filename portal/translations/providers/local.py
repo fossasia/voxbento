@@ -377,12 +377,17 @@ class LocalProvider(TranslationProvider, TranslationEngine):
 
         target_lang_token = _engine_code(model, target_lang_code, target_lang_name)
         source_lang_token = _engine_code(model, source_lang_code, source_lang_name)
+        entry = get_translation_model(model)
+        # A target-tag model (MADLAD-400) detects the spoken language itself and is told only the
+        # target, so a source language it has no tag for, or none at all, does not stop it.
+        needs_source = entry is None or entry.language_tagging is not LanguageTagging.TARGET_TAG
         if not target_lang_token:
             logger.error("[NLLB] Model %r does not translate into %r (%s)", model, target_lang_code, target_lang_name)
             return None
-        if not source_lang_token:
+        if not source_lang_token and needs_source:
             logger.error("[NLLB] Model %r does not translate from %r (%s)", model, source_lang_code, source_lang_name)
             return None
+        source_lang_token = source_lang_token or ""
 
         logger.debug(
             f"[NLLB] Language tokens resolved: source_token='{source_lang_token}' target_token='{target_lang_token}'"

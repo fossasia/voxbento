@@ -33,10 +33,15 @@ def test_nllb_still_marks_both_languages_with_tokens():
 
 
 def test_madlad_tags_are_real_iso_codes_in_its_target_tag_form():
-    assert len(MADLAD_400_3B.languages) == 163
+    aliases = {"tl": "<2fil>"}
+    assert len(MADLAD_400_3B.languages) == 163 + len(aliases)
     for code, tag in MADLAD_400_3B.languages.items():
         assert pycountry.languages.get(alpha_2=code), code
-        assert tag == f"<2{code}>"
+        assert tag == aliases.get(code, f"<2{code}>")
+
+
+def test_tagalog_reaches_madlads_filipino_tag():
+    assert _engine_code(MADLAD, "tl", "Tagalog") == "<2fil>"
 
 
 @pytest.mark.parametrize(("code", "tag"), [("th", "<2th>"), ("en", "<2en>"), ("zh", "<2zh>"), ("he", "<2he>")])
@@ -123,3 +128,47 @@ async def test_madlad_translates_english_to_thai_through_the_engine(monkeypatch)
 
     assert rows == [["สวัสดี"]]
     assert calls == [("Hello", "<2en>", "<2th>", MADLAD)]
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize(("source_code", "source_name"), [("", ""), ("ae", "Avestan"), ("", "Klingon")])
+async def test_madlad_translates_without_knowing_the_source_language(monkeypatch, source_code, source_name):
+    """MADLAD detects the spoken language, so an unknown or missing source does not stop it."""
+    calls = []
+
+    def fake_inference(self, text, source_token, target_token, model_size):
+        calls.append((source_token, target_token))
+        return "สวัสดี"
+
+    monkeypatch.setattr(local.settings, "local_translation_models", MADLAD)
+    monkeypatch.setattr(LocalProvider, "_run_inference", fake_inference)
+
+    result = await LocalProvider().translate(
+        provider_name="local",
+        text="Hello",
+        target_lang_name="Thai",
+        target_lang_code="th",
+        source_lang_name=source_name,
+        source_lang_code=source_code,
+        model=MADLAD,
+        api_key=None,
+    )
+
+    assert result == "สวัสดี"
+    assert calls == [("", "<2th>")]
+
+
+@pytest.mark.anyio
+async def test_nllb_still_needs_a_source_language_it_knows(monkeypatch):
+    monkeypatch.setattr(LocalProvider, "_run_inference", lambda *args: "x")
+    result = await LocalProvider().translate(
+        provider_name="local",
+        text="Hello",
+        target_lang_name="Thai",
+        target_lang_code="th",
+        source_lang_name="Klingon",
+        source_lang_code="",
+        model=NLLB_200_DISTILLED_600M.id,
+        api_key=None,
+    )
+    assert result is None

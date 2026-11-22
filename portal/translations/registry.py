@@ -96,7 +96,8 @@ NLLB_200_DISTILLED_600M = TranslationModel(
 )
 
 # MADLAD-400 marks the target language with a "<2xx>" tag in front of the source text. These are
-# its tags that are ISO 639-1 codes; it has several hundred more, for languages without one.
+# its tags that are ISO 639-1 codes; it has several hundred more, for languages without one. VoxBento
+# names languages by ISO 639-1 code everywhere (booths, rooms, listeners), so only these are reachable.
 _MADLAD_400_LANGUAGES = {
     code: f"<2{code}>"
     for code in (
@@ -108,6 +109,8 @@ _MADLAD_400_LANGUAGES = {
         "yo zh zu"
     ).split()
 }
+# Tagalog has no MADLAD-400 tag of its own: MADLAD tags it "fil" (Filipino, its standard form).
+_MADLAD_400_LANGUAGES["tl"] = "<2fil>"
 
 MADLAD_400_3B = TranslationModel(
     id="madlad400-3b-mt",

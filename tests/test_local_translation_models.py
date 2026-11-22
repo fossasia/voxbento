@@ -114,7 +114,7 @@ def test_new_rooms_get_the_first_offered_model(monkeypatch):
 def test_not_offered_when_the_list_is_empty(none_offered):
     catalog = engine_catalog(_event())
     assert catalog.find("translation", "local") is None
-    assert "NLLB (built in) needs LOCAL_TRANSLATION_MODELS" in catalog.unavailable
+    assert "Built-in translator needs LOCAL_TRANSLATION_MODELS" in catalog.unavailable
     assert blank_plan(catalog).translation_engine != "local"
 
 
