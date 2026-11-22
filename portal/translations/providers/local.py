@@ -31,7 +31,7 @@ from portal.translations.engine import (
 )
 from portal.translations.model_languages import fixed_language_model
 from portal.translations.providers.base import TranslationProvider
-from portal.translations.registry import get_translation_model
+from portal.translations.registry import LanguageTagging, get_translation_model
 from portal.translations.vocabulary import protect_terms, restore_terms
 
 logger = logging.getLogger(__name__)
@@ -278,6 +278,19 @@ async def _in_thread(func, /, *args):
         raise
 
 
+def _translate_with_target_tag(model, tokenizer, text: str, target_tag: str) -> str:
+    """Translate with a model that reads a ``<2xx>`` target tag in front of the text (MADLAD-400).
+
+    The model detects the source language itself, so only the target is named.
+    """
+    source = tokenizer.convert_ids_to_tokens(tokenizer.encode(f"{target_tag} {text}"))
+    results = model.translate_batch([source], beam_size=1, max_decoding_length=256)
+    if not results or not results[0].hypotheses:
+        return ""
+    target = tokenizer.convert_tokens_to_ids(results[0].hypotheses[0])
+    return tokenizer.decode(target, skip_special_tokens=True).strip()
+
+
 class LocalProvider(TranslationProvider, TranslationEngine):
     """NLLB through CTranslate2, in the portal process."""
 
@@ -364,12 +377,17 @@ class LocalProvider(TranslationProvider, TranslationEngine):
 
         target_lang_token = _engine_code(model, target_lang_code, target_lang_name)
         source_lang_token = _engine_code(model, source_lang_code, source_lang_name)
+        entry = get_translation_model(model)
+        # A target-tag model (MADLAD-400) detects the spoken language itself and is told only the
+        # target, so a source language it has no tag for, or none at all, does not stop it.
+        needs_source = entry is None or entry.language_tagging is not LanguageTagging.TARGET_TAG
         if not target_lang_token:
             logger.error("[NLLB] Model %r does not translate into %r (%s)", model, target_lang_code, target_lang_name)
             return None
-        if not source_lang_token:
+        if not source_lang_token and needs_source:
             logger.error("[NLLB] Model %r does not translate from %r (%s)", model, source_lang_code, source_lang_name)
             return None
+        source_lang_token = source_lang_token or ""
 
         logger.debug(
             f"[NLLB] Language tokens resolved: source_token='{source_lang_token}' target_token='{target_lang_token}'"
@@ -392,6 +410,10 @@ class LocalProvider(TranslationProvider, TranslationEngine):
         increment_model_ref(model_size)
         try:
             model, tokenizer = get_model_and_tokenizer(model_size)
+            entry = get_translation_model(model_size)
+            if entry is not None and entry.language_tagging is LanguageTagging.TARGET_TAG:
+                return _translate_with_target_tag(model, tokenizer, text.strip(), target_lang_token)
+
             source = tokenizer.convert_ids_to_tokens(tokenizer.encode(text.strip()))
             if not source:
                 return ""
