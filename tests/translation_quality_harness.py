@@ -21,7 +21,9 @@ Ollama through the self-hosted endpoint (#1171):
 
 A candidate is ``provider:model``; everything after the first colon is the model name, as
 the provider spells it. ``local`` models are downloaded from their pinned revision when
-missing. ``--out`` keeps every source, reference and output as JSON Lines, so a speaker of
+missing. Hosted providers take their key from ``<PROVIDER>_API_KEY`` in the environment
+(``GEMINI_API_KEY``, ``OPENAI_API_KEY`` ...); the run stops before translating if one is
+missing. The glossary probes are English sentences, so they run only with ``--source en``. ``--out`` keeps every source, reference and output as JSON Lines, so a speaker of
 the language can read them.
 
 FLORES-200 (CC BY-SA 4.0) is downloaded once into ``--data-dir`` and checked against a
@@ -73,7 +75,9 @@ LOCAL_TIMEOUT = 60.0
 EXTRA_TEXT_RATIO = 2.5
 
 #: Names that a glossary keeps as they are, as an event's glossary would for its own names.
-#: Each probe sentence uses one; the translation must contain it unchanged.
+#: Each probe sentence uses one; the translation must contain it unchanged. The sentences are
+#: English, so the probes run only when the source language is English.
+GLOSSARY_SOURCE = "en"
 GLOSSARY_PROBES: tuple[tuple[str, str], ...] = (
     ("VoxBento", "Welcome to the VoxBento session on live interpretation."),
     ("FOSSASIA", "The FOSSASIA Summit brings developers together every year."),
@@ -96,8 +100,10 @@ def _char_ngrams(text: str, n: int) -> Counter[str]:
 def corpus_chrf(hypotheses: Sequence[str], references: Sequence[str], *, order: int = 6, beta: float = 2.0) -> float:
     """Corpus-level chrF (Popović, 2015), as ``sacrebleu``'s default ``CHRF()`` computes it.
 
-    Matches and n-gram counts are summed over every sentence. Precision and recall are
-    averaged over the n-gram orders that occur in both sides, then combined into one F-score.
+    Matches and n-gram counts are summed over every sentence. As in sacrebleu, a sentence whose
+    reference has no n-grams of an order adds none of its hypothesis n-grams of that order
+    either. Precision and recall are averaged over the n-gram orders that occur in both sides,
+    then combined into one F-score.
     """
     if len(hypotheses) != len(references):
         raise ValueError("hypotheses and references must have the same length")
@@ -105,16 +111,17 @@ def corpus_chrf(hypotheses: Sequence[str], references: Sequence[str], *, order: 
     for hypothesis, reference in zip(hypotheses, references, strict=True):
         for n in range(1, order + 1):
             hyp, ref = _char_ngrams(hypothesis, n), _char_ngrams(reference, n)
-            stats[n - 1][0] += sum(hyp.values())
+            stats[n - 1][0] += sum(hyp.values()) if ref else 0
             stats[n - 1][1] += sum(ref.values())
             stats[n - 1][2] += sum((hyp & ref).values())
-    eps = 1e-16  # sacrebleu's stand-in for a ratio over zero n-grams
     precision = recall = 0.0
     effective = 0
     for hyp_count, ref_count, matches in stats:
-        precision += matches / hyp_count if hyp_count else eps
-        recall += matches / ref_count if ref_count else eps
-        effective += bool(hyp_count and ref_count)
+        # An order missing from either side is left out of the averages, as sacrebleu does.
+        if hyp_count and ref_count:
+            precision += matches / hyp_count
+            recall += matches / ref_count
+            effective += 1
     if not effective:
         return 0.0
     precision, recall = precision / effective, recall / effective
@@ -150,9 +157,14 @@ def flores_code(language_code: str) -> str:
 
 
 def ensure_flores(data_dir: Path, *, url: str = FLORES_URL, sha256: str = FLORES_SHA256) -> Path:
-    """The extracted ``devtest`` folder, downloading and checking the archive the first time."""
+    """The extracted ``devtest`` folder, downloading and checking the archive the first time.
+
+    The folder counts as ready only once a marker is written after extraction finishes, so an
+    interrupted extraction is redone instead of reused.
+    """
     devtest = data_dir / "flores200_dataset" / "devtest"
-    if devtest.is_dir():
+    marker = data_dir / "flores200_dataset.extracted"
+    if marker.is_file() and marker.read_text(encoding="utf-8").strip() == sha256:
         return devtest
     data_dir.mkdir(parents=True, exist_ok=True)
     archive = data_dir / "flores200_dataset.tar.gz"
@@ -168,6 +180,7 @@ def ensure_flores(data_dir: Path, *, url: str = FLORES_URL, sha256: str = FLORES
     with tarfile.open(archive) as tar:
         members = [m for m in tar.getmembers() if m.isfile() and "/devtest/" in m.name and ".." not in m.name]
         tar.extractall(data_dir, members=members, filter="data")
+    marker.write_text(sha256, encoding="utf-8")
     return devtest
 
 
@@ -208,6 +221,34 @@ class Candidate:
 
 #: Translates one text: (source, target, text, context) -> translation or None.
 Translate = Callable[[Language, Language, str, TranslationContext], Awaitable[str | None]]
+
+
+#: Providers whose key the worker takes from the event; here it comes from ``<PROVIDER>_API_KEY``.
+KEYED_PROVIDERS = ("openai", "openrouter", "gemini", "anthropic", "groq")
+
+
+def candidate_api_keys(candidates: Sequence[Candidate], self_hosted_api_key: str | None) -> dict[str, str | None]:
+    """The key each candidate's provider is called with, refusing a run that lacks one.
+
+    Local models need none. The self-hosted server's key is the operator's
+    (``SELF_HOSTED_LLM_API_KEY``, or ``--self-hosted-api-key``) and may be absent. A hosted
+    provider reads ``<PROVIDER>_API_KEY`` from the environment, for example ``GEMINI_API_KEY``,
+    so keys stay out of the shell history.
+    """
+    keys: dict[str, str | None] = {}
+    missing = []
+    for provider in dict.fromkeys(c.provider for c in candidates):
+        if provider == "self_hosted":
+            keys[provider] = self_hosted_api_key or None
+        elif provider in KEYED_PROVIDERS:
+            keys[provider] = os.environ.get(f"{provider.upper()}_API_KEY") or None
+            if not keys[provider]:
+                missing.append(f"{provider.upper()}_API_KEY")
+        else:
+            keys[provider] = None
+    if missing:
+        raise SystemExit(f"Set {', '.join(missing)} in the environment to compare those candidates")
+    return keys
 
 
 def engine_translate(candidate: Candidate, api_key: str | None) -> Translate:
@@ -359,10 +400,16 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--target", type=_language, required=True, help="ISO 639-1 target language, e.g. th")
     parser.add_argument("--sentences", type=int, default=100, help="FLORES-200 devtest sentences to translate")
     parser.add_argument("--self-hosted-url", help="OpenAI-compatible base URL for self_hosted candidates")
-    parser.add_argument("--self-hosted-api-key", default=os.environ.get("SELF_HOSTED_LLM_API_KEY"))
+    parser.add_argument(
+        "--self-hosted-api-key",
+        default=settings.self_hosted_llm_api_key or None,
+        help="overrides SELF_HOSTED_LLM_API_KEY, the key the worker uses",
+    )
     parser.add_argument("--data-dir", type=Path, default=DEFAULT_DATA_DIR)
     parser.add_argument("--out", type=Path, help="write every output as JSON Lines here")
-    parser.add_argument("--no-glossary", action="store_true", help="skip the glossary probes")
+    parser.add_argument(
+        "--no-glossary", action="store_true", help="skip the glossary probes (always skipped unless --source en)"
+    )
     args = parser.parse_args(argv)
     if not 1 <= args.sentences <= 1012:
         parser.error("--sentences must be between 1 and 1012")
@@ -370,11 +417,16 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
 
 
 async def run(args: argparse.Namespace) -> list[Result]:
+    keys = candidate_api_keys(args.candidate, args.self_hosted_api_key)
+    # The glossary probes are English sentences, so they only measure an English source.
+    glossary = not args.no_glossary and args.source.code == GLOSSARY_SOURCE
+    if not args.no_glossary and not glossary:
+        print(f"Skipping the glossary probes: they are written in English, not {args.source.name}.", file=sys.stderr)
     pairs = load_pairs(ensure_flores(args.data_dir), args.source.code, args.target.code, args.sentences)
     prepare_settings(args.candidate, args.self_hosted_url)
     results = []
     for candidate in args.candidate:
-        api_key = args.self_hosted_api_key if candidate.provider == "self_hosted" else None
+        api_key = keys[candidate.provider]
         results.append(
             await evaluate(
                 candidate.label,
@@ -383,7 +435,7 @@ async def run(args: argparse.Namespace) -> list[Result]:
                 args.source,
                 args.target,
                 timeout=candidate.timeout,
-                glossary=not args.no_glossary,
+                glossary=glossary,
                 progress=lambda line: print(line, file=sys.stderr),
             )
         )

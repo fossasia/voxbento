@@ -14,6 +14,7 @@ from translation_quality_harness import (
     GLOSSARY_PROBES,
     Candidate,
     Result,
+    candidate_api_keys,
     corpus_chrf,
     engine_translate,
     ensure_flores,
@@ -21,8 +22,10 @@ from translation_quality_harness import (
     has_extra_text,
     load_pairs,
     main,
+    parse_args,
     percentile,
     render,
+    run,
 )
 
 from portal.translations.engine import Language, TranslationContext
@@ -41,6 +44,9 @@ THAI = Language("th", "Thai")
         (["the cat sat on a mat"], ["the cat sat on the mat"], 65.9797),
         (["ตอนนี้เรามีหนูอายุ 4 เดือน", "สวัสดี"], ["ขณะนี้เรามีหนูอายุ 4 เดือน", "สวัสดีครับ"], 77.6875),
         (["", "abc"], ["xyz", "abc"], 55.5556),
+        # A reference too short for the higher orders: its hypothesis n-grams of those orders do not count.
+        (["abcX", "abcd"], ["abc", "abcd"], 96.9626),
+        (["abcdefgh", "ab"], ["abcdefgx", "abcdefg"], 51.9886),
     ],
 )
 def test_chrf_matches_sacrebleu(hypotheses, references, expected):
@@ -119,6 +125,19 @@ def test_flores_is_fetched_checked_and_read_once(tmp_path):
     assert load_pairs(devtest, "en", "th", 1) == [("Hello.", "สวัสดี")]
     archive.unlink()  # Already extracted: no second download.
     assert ensure_flores(data_dir, url=archive.as_uri(), sha256=digest) == devtest
+
+
+def test_an_interrupted_extraction_is_redone(tmp_path):
+    archive = tmp_path / "source.tar.gz"
+    digest = _flores_archive(archive, ["Hello."], ["สวัสดี"])
+    data_dir = tmp_path / "data"
+    # A run stopped after creating the folder but before extracting every language file.
+    (data_dir / "flores200_dataset" / "devtest").mkdir(parents=True)
+    (data_dir / "flores200_dataset" / "devtest" / "eng_Latn.devtest").write_text("Hello.\n", encoding="utf-8")
+
+    devtest = ensure_flores(data_dir, url=archive.as_uri(), sha256=digest)
+
+    assert load_pairs(devtest, "en", "th", 1) == [("Hello.", "สวัสดี")]
 
 
 def test_a_flores_archive_with_the_wrong_checksum_is_deleted(tmp_path):
@@ -247,3 +266,61 @@ def test_main_runs_end_to_end_through_the_worker_engines(tmp_path, monkeypatch, 
     records = [json.loads(line) for line in out.read_text(encoding="utf-8").splitlines()]
     assert [(r["source"], r["output"]) for r in records] == [("Hello.", "สวัสดี"), ("Thank you.", "Thank you.")]
     assert all(r["candidate"] == "echo:any" for r in records)
+
+
+def test_hosted_candidates_need_their_key_before_anything_runs(monkeypatch):
+    monkeypatch.delenv("GEMINI_API_KEY", raising=False)
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-test")
+    candidates = [Candidate.parse("gemini:gemini-2.5-flash"), Candidate.parse("openai:gpt-4o-mini")]
+    with pytest.raises(SystemExit, match="GEMINI_API_KEY"):
+        candidate_api_keys(candidates, None)
+    monkeypatch.setenv("GEMINI_API_KEY", "g-test")
+    assert candidate_api_keys(candidates, None) == {"gemini": "g-test", "openai": "sk-test"}
+
+
+def test_local_and_self_hosted_candidates_need_no_key():
+    candidates = [Candidate.parse("local:nllb-200-distilled-600M"), Candidate.parse("self_hosted:hy-mt")]
+    assert candidate_api_keys(candidates, None) == {"local": None, "self_hosted": None}
+    assert candidate_api_keys(candidates, "operator-key")["self_hosted"] == "operator-key"
+
+
+def test_the_self_hosted_key_defaults_to_the_workers_setting(monkeypatch):
+    from portal.config import settings
+
+    monkeypatch.setattr(settings, "self_hosted_llm_api_key", "operator-key")
+    args = parse_args(["--candidate", "self_hosted:m", "--target", "th"])
+    assert args.self_hosted_api_key == "operator-key"
+    args = parse_args(["--candidate", "self_hosted:m", "--target", "th", "--self-hosted-api-key", "other"])
+    assert args.self_hosted_api_key == "other"
+
+
+def test_glossary_probes_run_only_for_an_english_source(tmp_path, monkeypatch, capsys):
+    from portal.translations import worker
+    from portal.translations.engine import EngineKind, TranslationEngine
+
+    class Echo(TranslationEngine):
+        kind = EngineKind.MT_API
+
+        async def translate_batch(self, source, targets, texts, context, *, model, api_key=None):
+            return [[text for _ in targets] for text in texts]
+
+    monkeypatch.setitem(worker.ENGINES, "echo", Echo())
+    archive = tmp_path / "flores.tar.gz"
+    with tarfile.open(archive, "w:gz") as tar:
+        for name in ("deu_Latn", "tha_Thai", "eng_Latn"):
+            data = b"Hallo.\n"
+            info = tarfile.TarInfo(f"./flores200_dataset/devtest/{name}.devtest")
+            info.size = len(data)
+            tar.addfile(info, io.BytesIO(data))
+    digest = hashlib.sha256(archive.read_bytes()).hexdigest()
+    monkeypatch.setattr(
+        "translation_quality_harness.ensure_flores",
+        lambda data_dir: ensure_flores(data_dir, url=archive.as_uri(), sha256=digest),
+    )
+    base = ["--candidate", "echo:any", "--target", "th", "--sentences", "1", "--data-dir", str(tmp_path / "d")]
+
+    [german] = asyncio.run(run(parse_args([*base, "--source", "de"])))
+    assert german.glossary_total == 0
+    assert "Skipping the glossary probes" in capsys.readouterr().err
+    [english] = asyncio.run(run(parse_args(base)))
+    assert english.glossary_total == len(GLOSSARY_PROBES)
