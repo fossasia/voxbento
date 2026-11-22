@@ -131,6 +131,17 @@ async def test_a_broadcast_already_set_up_is_not_updated_again(captions_env):
 
 
 @pytest.mark.anyio
+async def test_setting_captions_up_keeps_the_broadcast_category(captions_env):
+    room = captions_env["rooms"][0]
+    item = next(b for b in captions_env["google"]["broadcasts"]["upcoming"] if b["id"] == UPCOMING_ID)
+    item["snippet"] = {**item["snippet"], "categoryId": "27", "description": "Day one keynote"}
+    assert (await turn_on(captions_env, room)).status_code == 200
+    [put] = puts(captions_env)
+    assert put["body"]["snippet"]["categoryId"] == "27"
+    assert put["body"]["snippet"]["description"] == "Day one keynote"
+
+
+@pytest.mark.anyio
 async def test_a_translation_can_be_chosen_and_off_stops_delivery(captions_env):
     room = captions_env["rooms"][0]
     assert (await turn_on(captions_env, room, "fr")).status_code == 200
@@ -225,6 +236,18 @@ async def test_youtube_refusing_the_update_gives_the_studio_instructions(caption
     assert "POST captions to URL" in response.json()["detail"]
     assert room.id not in yc.targets
     assert CAPTIONS_URL not in caplog.text and "SECRET" not in caplog.text
+
+
+@pytest.mark.anyio
+async def test_a_broadcast_bound_to_another_stream_is_refused_until_linked_again(captions_env):
+    room = captions_env["rooms"][0]
+    item = next(b for b in captions_env["google"]["broadcasts"]["upcoming"] if b["id"] == UPCOMING_ID)
+    item["contentDetails"] = {**item["contentDetails"], "boundStreamId": "another-stream"}
+    response = await turn_on(captions_env, room)
+    assert response.status_code == 409
+    assert response.json()["detail"] == yt.REBOUND_MESSAGE
+    assert puts(captions_env) == []
+    assert room.id not in yc.targets
 
 
 @pytest.mark.anyio
@@ -328,6 +351,25 @@ async def test_reconcile_stops_a_room_whose_event_was_deleted(captions_env):
 
 
 @pytest.mark.anyio
+async def test_a_soft_deleted_event_stops_delivery_and_never_restarts_it(captions_env):
+    from datetime import UTC, datetime
+
+    room = captions_env["rooms"][0]
+    await turn_on(captions_env, room)
+    async with get_session() as session:
+        await session.execute(
+            update(Event).where(Event.id == captions_env["event"].id).values(deleted_at=datetime.now(UTC))
+        )
+    await sync.reconcile_once(now=1000.0)
+    assert room.id not in yc.targets
+    # The saved choice is still there, as after a restart: nothing starts again.
+    assert (await stored_room(room.id)).youtube_captions_language == "floor"
+    await sync.reconcile_once(now=1000.0 + sync.RETRY_AFTER_REFUSAL_SECS)
+    await sync.reconcile_room(room.id, now=2000.0)
+    assert room.id not in yc.targets
+
+
+@pytest.mark.anyio
 async def test_a_disabled_translation_stops_delivery_within_one_tick(captions_env):
     room = captions_env["rooms"][0]
     await turn_on(captions_env, room, "fr")
@@ -377,6 +419,23 @@ async def test_an_ended_broadcast_stops_delivery_at_the_next_verification(captio
 
 
 @pytest.mark.anyio
+async def test_a_rebound_broadcast_stops_delivery_and_stays_stopped(captions_env):
+    room = captions_env["rooms"][0]
+    await turn_on(captions_env, room)
+    item = next(b for b in captions_env["google"]["broadcasts"]["upcoming"] if b["id"] == UPCOMING_ID)
+    item["contentDetails"] = {**item["contentDetails"], "boundStreamId": "another-stream"}
+    verify_at = sync._running[room.id].verified_at + sync.VERIFY_INTERVAL_SECS
+    await sync.reconcile_once(now=verify_at)
+    assert room.id not in yc.targets
+    assert yc.health[room.id].reason == yt.REBOUND_MESSAGE
+    # The next ticks do not post to the old stream again.
+    await sync.reconcile_once(now=verify_at + sync.RECONCILE_INTERVAL_SECS)
+    await sync.reconcile_once(now=verify_at + sync.RETRY_AFTER_REFUSAL_SECS)
+    assert room.id not in yc.targets
+    assert yc.health[room.id].reason == yt.REBOUND_MESSAGE
+
+
+@pytest.mark.anyio
 async def test_a_refused_start_is_not_retried_every_tick(captions_env):
     room = captions_env["rooms"][0]
     await turn_on(captions_env, room)
@@ -402,6 +461,24 @@ async def test_shutdown_leaves_no_sender_running(captions_env):
     await sync.shutdown()
     assert task.done()
     assert yc.targets == {} and yc._tasks == {}
+
+
+@pytest.mark.anyio
+async def test_shutdown_cancels_a_kick_still_talking_to_youtube(captions_env, monkeypatch):
+    room = captions_env["rooms"][0]
+    await set_room(room.id, youtube_captions_language="floor")
+    entered = asyncio.Event()
+
+    async def slow_enable(room, connection):
+        entered.set()
+        await asyncio.sleep(3600)
+
+    monkeypatch.setattr(sync, "enable", slow_enable)
+    sync.kick(room.id)
+    await asyncio.wait_for(entered.wait(), 5)
+    await sync.shutdown()
+    assert sync._kicks == set()
+    assert yc.targets == {}
 
 
 @pytest.mark.anyio

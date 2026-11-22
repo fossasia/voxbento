@@ -519,16 +519,22 @@ CAPTIONS_REFUSED_MESSAGE = (
     "YouTube would not switch captions on. In YouTube Studio open the stream settings, set Closed captions "
     "to 'POST captions to URL', then try again."
 )
+REBOUND_MESSAGE = (
+    "The broadcast was bound to another stream in YouTube Studio. Choose this broadcast again for the room "
+    "to use its current stream."
+)
 # Snippet fields that liveBroadcasts.update would reset if a PUT of the snippet part left them out.
-_WRITABLE_SNIPPET = ("title", "description", "scheduledStartTime", "scheduledEndTime")
+_WRITABLE_SNIPPET = ("title", "description", "categoryId", "scheduledStartTime", "scheduledEndTime")
 
 
-async def enable_http_captions(connection: YouTubeConnection, broadcast_id: str) -> None:
+async def enable_http_captions(connection: YouTubeConnection, broadcast_id: str, stream_id: str | None = None) -> None:
     """Make sure the broadcast accepts captions posted over HTTP (``closedCaptionsHttpPost``).
 
     The order of checks follows plans/002-results.md: a live broadcast refuses every caption change, even
     one that changes nothing, so a broadcast already set up that way is accepted as it is. Raises
-    ValueError with an organiser-facing message when the broadcast cannot carry posted captions.
+    ValueError with an organiser-facing message when the broadcast cannot carry posted captions, or when it
+    is now bound to a stream other than ``stream_id`` (the room's saved stream), whose caption URL would go
+    nowhere.
     """
     body = await _connection_get(connection, "liveBroadcasts", {"part": BROADCAST_PARTS, "id": broadcast_id})
     items = body.get("items") or []
@@ -538,6 +544,9 @@ async def enable_http_captions(connection: YouTubeConnection, broadcast_id: str)
     snippet = item.get("snippet") or {}
     details = dict(item.get("contentDetails") or {})
     life_cycle = str((item.get("status") or {}).get("lifeCycleStatus", ""))
+    bound = details.get("boundStreamId")
+    if stream_id and bound and bound != stream_id:
+        raise ValueError(REBOUND_MESSAGE)
     if details.get("latencyPreference") == "ultraLow":
         raise ValueError(ULTRA_LOW_MESSAGE)
     if life_cycle in ("complete", "revoked"):

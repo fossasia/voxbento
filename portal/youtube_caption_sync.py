@@ -26,7 +26,7 @@ from sqlalchemy.exc import SQLAlchemyError
 from portal import youtube_account as yt
 from portal import youtube_captions
 from portal.database import get_session
-from portal.models import Room, RoomTranslationLanguage, YouTubeConnection
+from portal.models import Event, Room, RoomTranslationLanguage, YouTubeConnection
 from portal.program_ingest import room_lock
 from portal.tasks import track_task
 
@@ -56,6 +56,8 @@ class _Running:
 _running: dict[int, _Running] = {}
 # room_id -> monotonic time before which a failed start is not retried.
 _retry_at: dict[int, float] = {}
+# Reconciles started by ``kick``; shutdown cancels them so none can start a sender after its sweep.
+_kicks: set[asyncio.Task] = set()
 
 
 def _now() -> float:
@@ -140,8 +142,9 @@ async def start(room: Room, connection: YouTubeConnection, language: str) -> Non
 
 
 async def enable(room: Room, connection: YouTubeConnection) -> None:
-    # A separate name so tests can count YouTube set-up calls without a real broadcast.
-    await yt.enable_http_captions(connection, room.youtube_broadcast_id)
+    # A separate name so tests can count YouTube set-up calls without a real broadcast. The saved stream is
+    # passed so a broadcast rebound in YouTube Studio is refused instead of posting to the old stream.
+    await yt.enable_http_captions(connection, room.youtube_broadcast_id, room.youtube_stream_id)
 
 
 async def stop(room_id: int, reason: str = "") -> None:
@@ -168,7 +171,9 @@ async def reconcile_room(room_id: int, now: float | None = None) -> None:
     async with room_lock(room_id):
         async with get_session() as session:
             room = await session.get(Room, room_id)
-            if room is None or not room.youtube_captions_language:
+            event = await session.get(Event, room.event_id) if room is not None else None
+            # A deleted event keeps its rooms and saved choice; delivery stops and never restarts for it.
+            if room is None or event is None or event.deleted_at is not None or not room.youtube_captions_language:
                 if room_id in _running or room_id in youtube_captions.targets:
                     await stop(room_id)
                 _retry_at.pop(room_id, None)
@@ -229,14 +234,16 @@ async def _verify(room: Room, connection: YouTubeConnection, running: _Running, 
     elif broadcast.life_cycle_status in ("complete", "revoked"):
         await stop(room.id, yt.ENDED_MESSAGE)
     elif broadcast.bound_stream_id and broadcast.bound_stream_id != running.stream_id:
-        await stop(room.id, "The broadcast was bound to another stream in YouTube Studio. Use this broadcast again.")
+        await stop(room.id, yt.REBOUND_MESSAGE)
     else:
         running.verified_at = now
 
 
 async def reconcile_once(now: float | None = None) -> None:
     async with get_session() as session:
-        result = await session.execute(select(Room.id).where(Room.youtube_captions_language.is_not(None)))
+        result = await session.execute(
+            select(Room.id).join(Event).where(Room.youtube_captions_language.is_not(None), Event.deleted_at.is_(None))
+        )
         wanted = set(result.scalars())
     # Rooms whose choice was cleared, or whose room or event was deleted, stop here.
     for room_id in set(_running) | set(youtube_captions.targets):
@@ -261,7 +268,10 @@ async def reconcile_loop() -> None:
 def kick(room_id: int) -> None:
     """Reconcile one room soon, after the caller has released the room's locks."""
     _retry_at.pop(room_id, None)
-    track_task(asyncio.create_task(_kick(room_id)))
+    task = asyncio.create_task(_kick(room_id))
+    _kicks.add(task)
+    task.add_done_callback(_kicks.discard)
+    track_task(task)
 
 
 async def _kick(room_id: int) -> None:
@@ -272,7 +282,15 @@ async def _kick(room_id: int) -> None:
 
 
 async def shutdown() -> None:
-    """Stop every sender (application shutdown)."""
+    """Stop every sender (application shutdown).
+
+    Pending kicks are cancelled and awaited first: one still talking to YouTube could otherwise activate a
+    sender after the sweep. The reconcile loop is cancelled by the caller before this runs.
+    """
+    kicks = list(_kicks)
+    for task in kicks:
+        task.cancel()
+    await asyncio.gather(*kicks, return_exceptions=True)
     for room_id in list(youtube_captions.targets):
         await youtube_captions.deactivate(room_id)
     _running.clear()

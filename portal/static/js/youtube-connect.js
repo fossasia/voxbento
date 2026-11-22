@@ -20,6 +20,9 @@ let captionChoicesKey = '';
 let connected = false;
 let linkedId = null;
 let pending = false;
+// Bumped by every status read and every change: a response from an older read is dropped, so a status
+// fetched before a caption change can never overwrite what that change set.
+let statusGeneration = 0;
 // Relay mode as of the last status check: null until the first one. The stream key is filled in only
 // when this page sees relay mode switched on, never because a destination is merely absent: an owner
 // who removed the key, or reloads a room without one, keeps forwarding stopped.
@@ -184,8 +187,10 @@ async function fillRelayKey(data) {
 
 async function loadRoomStatus() {
   if (!connected || document.hidden) return;
+  const generation = ++statusGeneration;
   try {
     const data = await readJson(await request(box.dataset.roomStatusUrl));
+    if (generation !== statusGeneration) return;
     renderRoomStatus(data.youtube);
     await fillRelayKey(data);
   } catch (error) {
@@ -216,8 +221,10 @@ async function loadConnection() {
 async function change(run) {
   if (pending) return;
   pending = true;
-  const buttons = [...box.querySelectorAll('button')];
-  buttons.forEach(button => { button.disabled = true; });
+  statusGeneration += 1;
+  // The caption selector is locked too, so a second choice is never silently dropped.
+  const controls = [...box.querySelectorAll('button'), captionsSelect];
+  controls.forEach(control => { control.disabled = true; });
   try {
     await run();
   } catch (error) {
@@ -225,8 +232,10 @@ async function change(run) {
     say(error.message, 'error');
     offerSignInAgain(error);
   } finally {
-    buttons.forEach(button => { button.disabled = false; });
+    controls.forEach(control => { control.disabled = false; });
     pending = false;
+    // Show the caption language in effect after the change, whether it succeeded or not.
+    captionsSelect.value = captionsLanguage;
   }
 }
 
@@ -263,20 +272,15 @@ form.addEventListener('submit', event => {
 
 captionsSelect.addEventListener('change', () => {
   const language = captionsSelect.value;
+  // On an error nothing was saved, and change() puts the selector back on the language in effect.
   change(async () => {
-    try {
-      const captions = await readJson(await request(box.dataset.captionsUrl, {
-        method: 'PUT',
-        headers: {'Content-Type': 'application/json'},
-        body: JSON.stringify({language: language || null}),
-      }));
-      say(language ? 'Captions will be posted to this broadcast\'s CC track.' : 'Captions on YouTube are off.', 'success');
-      renderCaptions(captions);
-    } catch (error) {
-      // Nothing was saved: show the language that is really in effect.
-      captionsSelect.value = captionsLanguage;
-      throw error;
-    }
+    const captions = await readJson(await request(box.dataset.captionsUrl, {
+      method: 'PUT',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({language: language || null}),
+    }));
+    say(language ? 'Captions will be posted to this broadcast\'s CC track.' : 'Captions on YouTube are off.', 'success');
+    renderCaptions(captions);
   });
 });
 
@@ -316,5 +320,6 @@ if (outcome) {
 
 loadConnection();
 // YouTube status is cached on the server for 60 s per room, so polling faster gains nothing.
-const statusTimer = setInterval(loadRoomStatus, 60000);
+// A poll never runs during a change: the change reads the status itself when it needs to.
+const statusTimer = setInterval(() => { if (!pending) loadRoomStatus(); }, 60000);
 window.addEventListener('pagehide', () => clearInterval(statusTimer));

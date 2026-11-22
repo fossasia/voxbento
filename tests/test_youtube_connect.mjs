@@ -54,7 +54,7 @@ async function page(routes) {
     fetch: async (url, options = {}) => {
       const key = `${options.method || 'GET'} ${url}`;
       calls.push({ key, body: options.body ? JSON.parse(options.body) : undefined, headers: options.headers || {} });
-      const [status, body] = routes[key] ? routes[key]() : [404, { detail: 'not found' }];
+      const [status, body] = routes[key] ? await routes[key]() : [404, { detail: 'not found' }];
       return { ok: status < 400, status, json: async () => body };
     },
   });
@@ -208,6 +208,58 @@ const whipStatus = () => [200, { enabled: true, mode: 'whip', destination: { con
   select.handlers.change();
   await flush();
   assert.equal(calls.filter((call) => call.key === 'PUT /room/yt/captions').at(-1).body.language, null);
+}
+
+// A slow caption change locks the selector, and a status read that started before it cannot undo it.
+{
+  const choices = [{ value: 'floor', label: 'Spoken language (en)' }, { value: 'fr', label: 'French' }];
+  const off = { language: null, state: 'off', reason: '', last_ok_at: null, choices };
+  const statusWith = (captions) => [200, {
+    enabled: true, mode: 'rtmps', destination: { configured: false },
+    youtube: { broadcast_id: 'LiveVideo01', title: 'Talk', life_cycle_status: 'ready', captions },
+  }];
+  let statusAnswer = () => statusWith(off);
+  let putAnswer = () => [200, { ...off, language: 'fr', state: 'waiting' }];
+  const { elements, calls, timers } = await page({
+    'GET /yt': connected, 'GET /yt/broadcasts': broadcasts, 'GET /room/status': () => statusAnswer(),
+    'PUT /room/yt/captions': () => putAnswer(),
+  });
+  const select = elements['youtube-captions-select'];
+
+  // The 60-second poll starts and is still waiting for the server, which saw captions as off.
+  let finishStatus;
+  statusAnswer = () => new Promise((resolve) => { finishStatus = () => resolve(statusWith(off)); });
+  timers[0]();
+  await flush();
+
+  let finishPut;
+  putAnswer = () => new Promise((resolve) => { finishPut = () => resolve([200, { ...off, language: 'fr', state: 'waiting' }]); });
+  select.value = 'fr';
+  select.handlers.change();
+  await flush();
+  assert.equal(select.disabled, true);
+  finishPut();
+  await flush();
+  assert.equal(select.disabled, false);
+  assert.equal(select.value, 'fr');
+
+  finishStatus();
+  await flush();
+  assert.equal(select.value, 'fr');
+  assert.match(elements['youtube-captions-status'].textContent, /Waiting for speech/);
+
+  // A poll that fires during a change is skipped.
+  putAnswer = () => new Promise((resolve) => { finishPut = () => resolve([200, { ...off, language: 'floor', state: 'waiting' }]); });
+  select.value = 'floor';
+  select.handlers.change();
+  await flush();
+  const reads = calls.filter((call) => call.key === 'GET /room/status').length;
+  timers[0]();
+  await flush();
+  assert.equal(calls.filter((call) => call.key === 'GET /room/status').length, reads);
+  finishPut();
+  await flush();
+  assert.equal(select.value, 'floor');
 }
 
 // A failing target explains itself; an unlinked room hides the control.

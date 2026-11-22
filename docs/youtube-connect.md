@@ -70,9 +70,11 @@ interpreter booths).
 Turning captions on:
 
 1. VoxBento reads the broadcast. **Ultra-low latency** broadcasts cannot show captions
-   (choose Normal or Low latency in Studio); an **ended** broadcast is refused.
+   (choose Normal or Low latency in Studio); an **ended** broadcast is refused, and so is one
+   bound in Studio to a stream other than the one the room linked (choose the broadcast again).
 2. If the broadcast is not yet set to *POST captions to URL*, VoxBento switches it, sending
-   the broadcast's own settings back unchanged apart from the caption type. YouTube only
+   the broadcast's own settings (title, description, category, schedule and stream settings)
+   back unchanged apart from the caption type. YouTube only
    allows this **before the broadcast goes live**. A live broadcast that was already set to
    *POST captions to URL* in Studio is accepted as it is; one that was not cannot be changed
    until its next broadcast.
@@ -87,10 +89,11 @@ captions* (with the time YouTube last accepted one) or *Not posting* with the re
 Delivery runs without the room page open. A background check every 30 seconds restores a
 saved choice after a portal restart (fetching the caption address again), restarts it when
 the room is linked to another broadcast, and stops it when the choice is cleared, the room
-or event is deleted, floor transcription or the chosen translation language is turned off,
+or event is deleted (a deleted event's rooms are never started again), floor transcription or the chosen translation language is turned off,
 or the connection needs signing in again. While captions run, VoxBento asks YouTube about
 the broadcast at most every five minutes, so revoked access, an ended broadcast or a stream
-rebound in Studio stops delivery within that time (sooner when the room page's status poll
+rebound in Studio stops delivery within that time (a rebound broadcast stays stopped until it is
+chosen again) (sooner when the room page's status poll
 finds the error). After YouTube refuses to set a broadcast up, it is asked again after five
 minutes. Unlinking the broadcast, switching channel or **Disconnect** turns captions off.
 
