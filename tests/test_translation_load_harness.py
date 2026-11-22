@@ -10,13 +10,13 @@ from translation_load_harness import (
     DROPPED,
     FAILED,
     MISSING,
+    PROVIDER,
     TRANSLATED,
-    WORKER_STATE,
     LoadConfig,
     LoadReport,
     main,
     percentile,
-    release_worker_state,
+    release_schedulers,
     render,
     run_load_test,
     summarise,
@@ -47,19 +47,19 @@ async def test_run_leaves_the_process_as_it_found_it():
     assert manager.tts_manager is real_tts
     assert manager.listener_manager is real_listeners
     offer.assert_not_called()  # fake translations never reach a YouTube caption track
-    for name in WORKER_STATE:
-        state = getattr(worker_module, name, {})
-        assert not [key for key in state if key.startswith("load-")]
+    assert not [key for key in worker_module.SCHEDULERS if key[0] == PROVIDER]
 
 
-def test_release_worker_state_only_removes_this_runs_booths():
-    """Other booths' queues and semaphores are left alone."""
-    state = {"load-abc-1-floor:fr": 1, "load-abcd-1-floor:fr": 2, "pycon-1-floor:fr": 3}
+def test_release_schedulers_only_removes_the_harness_ones():
+    """Schedulers for real providers are left alone."""
+    harness = (PROVIDER, "")
+    local = ("local", "nllb-200-distilled-600M")
+    schedulers = {harness: object(), local: object()}
 
-    with patch.object(worker_module, WORKER_STATE[0], state, create=True):
-        release_worker_state("load-abc")
+    with patch.object(worker_module, "SCHEDULERS", schedulers):
+        release_schedulers()
 
-    assert state == {"load-abcd-1-floor:fr": 2, "pycon-1-floor:fr": 3}
+    assert list(schedulers) == [local]
 
 
 def test_report_has_a_column_for_translations_that_got_no_answer():

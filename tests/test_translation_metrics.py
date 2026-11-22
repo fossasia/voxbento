@@ -303,7 +303,7 @@ async def test_a_stale_segment_is_recorded_apart_from_failures(monkeypatch, metr
 @pytest.mark.anyio
 async def test_a_segment_dropped_from_a_full_queue_is_a_failure(monkeypatch, metrics):
     monkeypatch.setitem(worker_module.ENGINES, "metrics-full", Engine(""))
-    scheduler = worker_module.scheduler_for("metrics-full")
+    scheduler = worker_module.scheduler_for("metrics-full", "m", 1)
     held = [scheduler.admit(1, "event-1-floor:fr") for _ in range(scheduler.queue_limit)]
 
     await translate("metrics-full")
@@ -395,7 +395,7 @@ async def test_admins_see_translation_health_on_the_models_page(monkeypatch, wor
     metrics = TranslationMetrics()
     monkeypatch.setattr(models_router, "translation_metrics", metrics)
     monkeypatch.setattr(models_router, "loaded_model_ids", lambda: ["nllb-200-distilled-600M"])
-    monkeypatch.setitem(worker_module.SCHEDULERS, "metrics-page", worker_module.TranslationScheduler(3))
+    monkeypatch.setitem(worker_module.SCHEDULERS, ("metrics-page", "event-7"), worker_module.TranslationScheduler(3))
     metrics.record("local", "nllb-200-distilled-600M", world["room"], TRANSLATED, start_lag=0.25, latency=1.5)
     metrics.record("local", "nllb-200-distilled-600M", world["room"], STALE, start_lag=4.5)
 
@@ -406,6 +406,7 @@ async def test_admins_see_translation_health_on_the_models_page(monkeypatch, wor
     health = res.text.split('id="translation-health"')[1]
     assert "<code>metrics-page</code>" in health
     assert "0 of 3" in health
+    assert "<td>Event 7</td>" in health
     row = health.split("<code>nllb-200-distilled-600M</code>")[1].split("</tr>")[0]
     assert "<td>1</td>" in row
     assert "4.5 s" in row

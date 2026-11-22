@@ -20,7 +20,7 @@ from portal.translations.providers.base import ProviderEngine
 from portal.translations.providers.gemini import GeminiProvider
 from portal.translations.providers.local import LocalProvider
 from portal.translations.providers.openai import OpenAIProvider
-from portal.translations.scheduler import StaleTranslationJob, TranslationScheduler
+from portal.translations.scheduler import StaleTranslationJob, TranslationJob, TranslationScheduler
 from portal.translations.vocabulary import resolve_vocabulary_entries
 
 logger = logging.getLogger(__name__)
@@ -67,21 +67,45 @@ ENGINES[TranslationProviderEnum.SELF_HOSTED.value] = ProviderEngine(
     max_concurrency=_self_hosted_concurrency,
 )
 
-#: One scheduler per provider, made on first use (#1188).
-SCHEDULERS: dict[str, TranslationScheduler] = {}
+# Providers that run without a per-event API key.
+KEYLESS_PROVIDERS = {TranslationProviderEnum.LOCAL.value, TranslationProviderEnum.SELF_HOSTED.value}
+
+#: Schedulers made on first use, by what each one limits (#1188); see ``scheduler_for``.
+SCHEDULERS: dict[tuple[str, str], TranslationScheduler] = {}
 
 
-def scheduler_for(provider: str) -> TranslationScheduler:
-    """The scheduler every room shares for ``provider``'s engine.
+def _scheduler_key(provider: str, model: str, event_id: int | None) -> tuple[str, str]:
+    """What one scheduler covers: whatever runs out first when it is overloaded.
+
+    - Local: one model. Each loaded model has its own CTranslate2 threads, so rooms on
+      different models never wait for each other, and loading one model blocks only its rooms.
+    - Self-hosted: the operator's one server, shared by every room.
+    - Hosted: one event. A hosted provider's key always comes from the event, and each key has
+      its own quota, so an event whose key is slow, rate-limited or failing only holds up its
+      own rooms. Keyed by the event rather than the key, so no secret is handled here.
+    """
+    if provider == TranslationProviderEnum.LOCAL.value:
+        return provider, model
+    if provider in KEYLESS_PROVIDERS or event_id is None:
+        return provider, ""
+    return provider, f"event-{event_id}"
+
+
+def scheduler_for(provider: str, model: str = "", event_id: int | None = None) -> TranslationScheduler:
+    """The scheduler shared by every room translating with ``provider`` (and its model or event).
 
     When the engine's limit changes (its setting did), the same scheduler takes the new limit,
     so calls already running still count against it. The lag budget follows its setting too.
     """
     engine = ENGINES.get(provider)
     capacity = engine.max_concurrency if engine is not None else TranslationEngine.max_concurrency
-    scheduler = SCHEDULERS.get(provider)
+    key = _scheduler_key(provider, model, event_id)
+    scheduler = SCHEDULERS.get(key)
     if scheduler is None:
-        scheduler = SCHEDULERS[provider] = TranslationScheduler(capacity)
+        # Drop the ones with nothing in them, so keys and models no longer used do not pile up.
+        for idle in [k for k, s in SCHEDULERS.items() if s.idle()]:
+            del SCHEDULERS[idle]
+        scheduler = SCHEDULERS[key] = TranslationScheduler(capacity)
     elif scheduler.capacity != capacity:
         scheduler.set_capacity(capacity)
     scheduler.lag_budget = _lag_budget()
@@ -93,6 +117,10 @@ def _inference_timeout(provider: str, model: str) -> float | None:
     if provider != TranslationProviderEnum.LOCAL.value:
         return 12.0
     # If the local CPU is pegged, NLLB can take 30+ seconds.
+    if local_provider.is_model_loaded(model):
+        # In memory already, so it translates even while an Admin downloads it again; and the
+        # usual case skips the cache lookup on disk below.
+        return 60.0
     try:
         prog = local_provider.get_download_progress(model)
         if prog and prog.get("status") == "downloading":
@@ -122,10 +150,6 @@ def _audience(room_id: int, lang_code: str, booth_id_str: str, target_booth_id: 
     if booth_id_str.endswith("-floor") and youtube_captions.wants(room_id, lang_code):
         return YOUTUBE_ONLY
     return None
-
-
-# Providers that run without a per-event API key.
-KEYLESS_PROVIDERS = {TranslationProviderEnum.LOCAL.value, TranslationProviderEnum.SELF_HOSTED.value}
 
 
 @dataclass
@@ -241,7 +265,7 @@ class TranslationWorker:
             job, segment_id, text, booth_id_str, uuid_segment_id, seq, arrived_at=arrived_at
         )
         if tasks:
-            logger.error(f"[{booth_id_str}] Spawning {len(tasks)} translation tasks for active listeners")
+            logger.debug("[%s] Spawning %d translation tasks for active listeners", booth_id_str, len(tasks))
             await asyncio.gather(*tasks)
         return tasks
 
@@ -473,7 +497,7 @@ class TranslationWorker:
 
         queue_key = f"{booth_id_str}:{lang_code}"
         # Rooms take turns for the engine, and so do the languages within a room.
-        job = scheduler_for(provider).admit(room.id, queue_key, arrived_at=arrived_at)
+        job = scheduler_for(provider, model, event.id).admit(room.id, queue_key, arrived_at=arrived_at)
 
         if job is None:
             logger.warning(f"[{booth_id_str}] Queue full for {lang_code}. Dropping segment {seq}.")
@@ -514,60 +538,52 @@ class TranslationWorker:
                     )
                     vocabulary_entries = []
 
-            # Enforce a strict timeout on inference (12s for cloud, 60s for local). Checked before
-            # waiting for a slot, so a download never queues segments behind it.
-            if _inference_timeout(provider, model) is None:
-                record(FAILED)
-                await self._drop_while_downloading(room.id, lang_code, booth_id_str, model, uuid_segment_id, seq, text)
-                return
-
             # The slot covers the engine call only; saving and broadcasting happen after it is free.
+            translated_text = None
+            nobody_listens = False
             async with job:
                 start_lag = job.waited
-                # Checked again: the download may have started while this segment waited.
+                # Enforce a strict timeout on inference (12s for cloud, 60s for local). Checked once
+                # the segment has its turn, so a download that started while it waited still counts.
+                # A download runs in its own thread and holds no slot, so nothing queues behind it.
                 timeout_val = _inference_timeout(provider, model)
-                if timeout_val is None:
-                    record(FAILED)
-                    await self._drop_while_downloading(
-                        room.id, lang_code, booth_id_str, model, uuid_segment_id, seq, text
-                    )
-                    return
+                downloading = timeout_val is None
                 if recheck_audience and target_booth_id:
+                    # Checked again now that the segment has its turn: the last listener may have
+                    # left while it waited, and then nothing runs or is sent for it (#1189).
                     audience = _audience(room.id, lang_code, booth_id_str, target_booth_id)
-                    if audience is None:
-                        logger.info(
-                            "[%s] Nobody listens to %s any more. Skipping segment %s.", booth_id_str, lang_code, seq
-                        )
-                        return
+                    nobody_listens = audience is None
                     synthesize_audio = audience == LISTENERS
-                started = time.monotonic()
-                call = asyncio.ensure_future(
-                    self._call_llm(
-                        provider,
-                        model,
-                        api_key,
-                        text,
-                        lang_name,
-                        source_lang_name,
-                        target_lang_code=lang_code,
-                        source_language_code=source_lang_code,
-                        persona=room.floor_ai_interpreter_persona,
-                        style=room.floor_ai_interpretation_style,
-                        vocabulary_entries=vocabulary_entries,
-                    )
-                )
-                try:
-                    translated_text = await asyncio.wait_for(asyncio.shield(call), timeout=timeout_val)
-                except asyncio.TimeoutError:
-                    logger.error(f"[{booth_id_str}] Translation LLM timed out after {timeout_val}s for {lang_code}.")
-                    translated_text = None
-                finally:
-                    latency = time.monotonic() - started
-                    if not call.done():
-                        # Stop the call, but keep its slot until it has ended: a local model runs in a
-                        # thread that cannot be stopped, and the next call must not start beside it.
-                        call.cancel()
-                        job.keep_slot_until(call)
+                if not downloading and not nobody_listens:
+                    started = time.monotonic()
+                    try:
+                        translated_text = await self._infer_holding_slot(
+                            job,
+                            timeout_val,
+                            booth_id_str,
+                            provider,
+                            model,
+                            api_key,
+                            text,
+                            lang_code,
+                            lang_name,
+                            source_lang_code,
+                            source_lang_name,
+                            room,
+                            vocabulary_entries,
+                        )
+                    finally:
+                        latency = time.monotonic() - started
+
+            if nobody_listens:
+                logger.info("[%s] Nobody listens to %s any more. Skipping segment %s.", booth_id_str, lang_code, seq)
+                return
+
+            if downloading:
+                record(FAILED)
+                # Told after the slot is free, so the next segment does not wait for this broadcast.
+                await self._drop_while_downloading(room.id, lang_code, booth_id_str, model, uuid_segment_id, seq, text)
+                return
 
             if translated_text is None:
                 record(FAILED)
@@ -620,13 +636,17 @@ class TranslationWorker:
                         **timing_metadata(),
                     },
                 )
-            record(TRANSLATED)
             if booth_id_str.endswith("-floor"):
                 # Non-blocking: queues the translation for the room's YouTube caption track, if it asks for this language.
                 timing = segment_timing.get()
                 youtube_captions.offer(
                     room.id, lang_code, translated_text, timing.source_received_at_ms if timing else None
                 )
+
+            record(TRANSLATED)
+            # Saved and delivered: the segment leaves its language's queue, so slow speech
+            # synthesis below does not hold back new segments.
+            job.close()
 
             if not synthesize_audio:
                 return
@@ -668,8 +688,53 @@ class TranslationWorker:
                 room.id, lang_code, booth_id_str, b"", uuid_segment_id, seq, text, "", "pipeline_failed"
             )
         finally:
-            # A job that never reached the engine (dropped, failed or cancelled) leaves its channel here.
+            # A job that stopped before its result was delivered (dropped, failed or cancelled) leaves its
+            # channel here; for the others this does nothing.
             job.close()
+
+    async def _infer_holding_slot(
+        self,
+        job: TranslationJob,
+        timeout_val: float,
+        booth_id_str: str,
+        provider: str,
+        model: str,
+        api_key: str | None,
+        text: str,
+        lang_code: str,
+        lang_name: str,
+        source_lang_code: str | None,
+        source_lang_name: str,
+        room: Room,
+        vocabulary_entries: list,
+    ) -> str | None:
+        """Run the engine call within the job's slot and its timeout; None when it timed out."""
+        call = asyncio.ensure_future(
+            self._call_llm(
+                provider,
+                model,
+                api_key,
+                text,
+                lang_name,
+                source_lang_name,
+                target_lang_code=lang_code,
+                source_language_code=source_lang_code,
+                persona=room.floor_ai_interpreter_persona,
+                style=room.floor_ai_interpretation_style,
+                vocabulary_entries=vocabulary_entries,
+            )
+        )
+        try:
+            return await asyncio.wait_for(asyncio.shield(call), timeout=timeout_val)
+        except asyncio.TimeoutError:
+            logger.error(f"[{booth_id_str}] Translation LLM timed out after {timeout_val}s for {lang_code}.")
+            return None
+        finally:
+            if not call.done():
+                # Stop the call, but keep its slot until it has ended: a local model runs in a
+                # thread that cannot be stopped, and the next call must not start beside it.
+                call.cancel()
+                job.keep_slot_until(call)
 
     async def _drop_while_downloading(
         self, room_id: int, lang_code: str, booth_id_str: str, model: str, uuid_segment_id: str, seq: int, text: str

@@ -60,6 +60,7 @@ def model_rows() -> list[ModelRow]:
 @dataclass(frozen=True)
 class EngineRow:
     provider: str
+    covers: str
     running: int
     capacity: int
     waiting: int
@@ -71,10 +72,16 @@ class LoadedModelRow:
     approx_ram_mb: int | None
 
 
+def _covers(part: str) -> str:
+    if part.startswith("event-"):
+        return f"Event {part.removeprefix('event-')}"
+    return part or "All rooms"
+
+
 def engine_rows() -> list[EngineRow]:
     return [
-        EngineRow(provider, scheduler.running, scheduler.capacity, scheduler.waiting())
-        for provider, scheduler in sorted(SCHEDULERS.items())
+        EngineRow(provider, _covers(part), scheduler.running, scheduler.capacity, scheduler.waiting())
+        for (provider, part), scheduler in sorted(SCHEDULERS.items())
     ]
 
 

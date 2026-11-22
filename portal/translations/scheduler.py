@@ -1,14 +1,16 @@
-"""One scheduler per translation engine, shared by every room that uses it (#1188).
+"""Bounded, fair access to a translation engine, shared by every room that uses it (#1188).
 
 An engine serves a fixed number of calls at once (CPU threads for a local model, a configured
 limit for an API). The scheduler never has more than that in flight against it. Calls beyond
 it wait here, where rooms take turns, and then the languages within a room, so one busy room
-with many languages cannot hold the engine while a small room waits behind it.
+with many languages cannot hold the engine while a small room waits behind it. The worker
+decides what one scheduler covers: a local model, the self-hosted server, or one event's key
+for a hosted provider.
 
 Each channel (one source stream translated into one language, e.g. ``"<booth>:fr"``) keeps the
 limits the worker had before: at most ``per_channel`` calls running and ``queue_limit`` jobs
 admitted at once. A job is admitted when its segment arrives and counts against its channel
-until its call is done.
+until the worker closes it, once the result is saved and delivered.
 
 A scheduler with a lag budget drops a job that cannot start within that many seconds of its
 segment arriving (#1189): its language skips that segment and catches up with the speaker,
@@ -50,12 +52,14 @@ class TranslationJob:
     """One translation's place in its channel.
 
     ``async with job:`` waits for the job's turn and holds an engine slot until the block ends.
-    The job leaves its channel when the block ends or when ``close()`` is called, whichever
-    comes first, so a job that never reaches the engine must be closed. Entering raises
-    ``StaleTranslationJob`` when the job cannot start within the scheduler's lag budget.
+    The job keeps its place in the channel until ``close()``, so the worker can count it there
+    while it saves and delivers the result. A job that never reaches the engine must be closed
+    too. ``close()`` also gives back a slot the job still holds, and is safe to call twice.
+    Entering raises ``StaleTranslationJob`` when the job cannot start within the scheduler's lag
+    budget; the job then holds no slot and must still be closed.
     """
 
-    __slots__ = ("_scheduler", "_room", "_channel", "_state", "_busy_until", "_arrived_at")
+    __slots__ = ("_scheduler", "_room", "_channel", "_state", "_admitted", "_busy_until", "_arrived_at")
 
     def __init__(
         self, scheduler: TranslationScheduler, room: Hashable, channel: str, arrived_at: float | None = None
@@ -63,8 +67,9 @@ class TranslationJob:
         self._scheduler = scheduler
         self._room = room
         self._channel = channel
-        # "admitted" -> "running" -> "closed", or straight from "admitted" to "closed".
-        self._state = "admitted"
+        # "waiting" -> "running" -> "done": a job takes an engine slot once.
+        self._state = "waiting"
+        self._admitted = True
         self._busy_until: asyncio.Future | None = None
         #: When the segment arrived (``time.monotonic()``), or when the job was admitted if not given.
         self._arrived_at = time.monotonic() if arrived_at is None else arrived_at
@@ -75,14 +80,14 @@ class TranslationJob:
         return time.monotonic() - self._arrived_at
 
     async def __aenter__(self) -> TranslationJob:
-        if self._state != "admitted":
+        if self._state != "waiting" or not self._admitted:
             raise RuntimeError("a translation job takes an engine slot only once")
         await self._scheduler._wait_for_turn(self)
         self._state = "running"
         return self
 
     async def __aexit__(self, *exc_info: object) -> None:
-        self.close()
+        self._release_slot()
 
     def keep_slot_until(self, call: asyncio.Future) -> None:
         """Keep the engine slot until ``call`` ends, even after the job itself has moved on.
@@ -93,16 +98,23 @@ class TranslationJob:
             self._busy_until = call
 
     def close(self) -> None:
-        """Leave the channel, giving back the engine slot if the job holds one. Safe to call twice."""
-        if self._state == "closed":
+        """Leave the channel, giving back the engine slot too if the job still holds it."""
+        self._release_slot()
+        if self._admitted:
+            self._admitted = False
+            self._scheduler._leave(self._room, self._channel)
+
+    def _release_slot(self) -> None:
+        if self._state != "running":
+            if self._state == "waiting":
+                self._state = "done"
             return
-        running = self._state == "running"
-        self._state = "closed"
+        self._state = "done"
         busy = self._busy_until
-        if running and busy is not None and not busy.done():
-            busy.add_done_callback(lambda _: self._scheduler._leave(self, running=True))
-            return
-        self._scheduler._leave(self, running=running)
+        if busy is not None and not busy.done():
+            busy.add_done_callback(lambda _: self._scheduler._give_back(self._room, self._channel))
+        else:
+            self._scheduler._give_back(self._room, self._channel)
 
 
 class TranslationScheduler:
@@ -156,6 +168,10 @@ class TranslationScheduler:
         self.capacity = capacity
         self._dispatch()
 
+    def idle(self) -> bool:
+        """Nothing admitted, waiting or running: the scheduler can be dropped without losing anything."""
+        return not self._rooms
+
     def admitted(self, room: Hashable, channel: str) -> int:
         """Jobs ``channel`` holds right now, waiting or running."""
         state = self._rooms.get(room, {}).get(channel)
@@ -184,7 +200,7 @@ class TranslationScheduler:
         except (asyncio.CancelledError, TimeoutError) as exc:
             if not turn.cancelled():
                 # The slot was given just before the cancel or the deadline reached the job: pass it on.
-                self._give_back(state)
+                self._give_back(job._room, job._channel)
             elif turn in state.waiters:
                 state.waiters.remove(turn)
             if isinstance(exc, TimeoutError):
@@ -193,24 +209,29 @@ class TranslationScheduler:
         if self.lag_budget and job.waited >= self.lag_budget:
             # The slot came after the deadline, before the late timeout could fire (the loop ran
             # late). The job still did not start in time: pass the slot on without running it.
-            self._give_back(state)
+            self._give_back(job._room, job._channel)
             raise StaleTranslationJob(job.waited)
 
-    def _leave(self, job: TranslationJob, *, running: bool) -> None:
-        channels = self._rooms[job._room]
-        state = channels[job._channel]
+    def _leave(self, room: Hashable, channel: str) -> None:
+        state = self._rooms[room][channel]
         state.admitted -= 1
-        if running:
-            self._give_back(state)
-        if state.admitted == 0:
-            del channels[job._channel]
-            if not channels:
-                del self._rooms[job._room]
+        self._forget_if_idle(room, channel, state)
 
-    def _give_back(self, state: _Channel) -> None:
+    def _give_back(self, room: Hashable, channel: str) -> None:
+        state = self._rooms[room][channel]
         state.running -= 1
         self.running -= 1
+        self._forget_if_idle(room, channel, state)
         self._dispatch()
+
+    def _forget_if_idle(self, room: Hashable, channel: str, state: _Channel) -> None:
+        """Drop a channel (and its room) once it holds no jobs and runs no calls."""
+        if state.admitted or state.running:
+            return
+        channels = self._rooms[room]
+        del channels[channel]
+        if not channels:
+            del self._rooms[room]
 
     def _dispatch(self) -> None:
         """Hand free engine slots to waiting jobs, one turn per room and then per language."""
@@ -231,8 +252,32 @@ class TranslationScheduler:
             channels.move_to_end(channel)
 
     def _next_turn(self) -> tuple[Hashable, OrderedDict[str, _Channel], str, _Channel] | None:
+        """The next job to run: the first room in turn order holding less than its fair share.
+
+        A room's fair share is the capacity split evenly between the rooms using the engine or
+        waiting for it. Running calls are never stopped, so a room whose calls hang can still
+        hold slots it took while it was alone; but once others wait, every slot that frees goes
+        to a room below its share first. A slot no such room can use goes to the next room in
+        turn, so slots never sit idle while someone waits.
+        """
+        rooms = []
         for room, channels in self._rooms.items():
-            for channel, state in channels.items():
-                if state.waiters and state.running < self.per_channel:
-                    return room, channels, channel, state
+            held = sum(state.running for state in channels.values())
+            ready = next(
+                (
+                    (channel, state)
+                    for channel, state in channels.items()
+                    if state.waiters and state.running < self.per_channel
+                ),
+                None,
+            )
+            if held or ready or any(state.waiters for state in channels.values()):
+                rooms.append((room, channels, held, ready))
+        if not rooms:
+            return None
+        fair_share = -(-self.capacity // len(rooms))
+        for below_share_only in (True, False):
+            for room, channels, held, ready in rooms:
+                if ready is not None and (held < fair_share or not below_share_only):
+                    return room, channels, *ready
         return None

@@ -75,12 +75,13 @@
   <div class="tm-table-wrap">
     <table class="tm-table">
       <thead>
-        <tr><th scope="col">Service</th><th scope="col">Running</th><th scope="col">Waiting</th></tr>
+        <tr><th scope="col">Service</th><th scope="col">For</th><th scope="col">Running</th><th scope="col">Waiting</th></tr>
       </thead>
       <tbody>
         {% for engine in engines %}
         <tr>
           <td><code>{{ engine.provider }}</code></td>
+          <td>{{ engine.covers }}</td>
           <td>{{ engine.running }} of {{ engine.capacity }}</td>
           <td>{{ engine.waiting }}</td>
         </tr>

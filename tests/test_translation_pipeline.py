@@ -308,7 +308,7 @@ async def test_glossary_lookup_does_not_hold_an_inference_slot(db_data, mock_bro
 
     async def slow_lookup(*args, **kwargs):
         # Record how many inference slots are taken while the lookup is in flight.
-        held_during_lookup.append(worker_module.scheduler_for("local").running)
+        held_during_lookup.append(worker_module.scheduler_for("local", "test").running)
         await asyncio.sleep(0.2)
         return []
 
@@ -465,7 +465,7 @@ async def test_queue_counter_restored_when_glossary_lookup_cancelled(db_data, mo
         with pytest.raises(asyncio.CancelledError):
             await task
 
-    assert worker_module.scheduler_for("local").admitted(room.id, queue_key) == 0
+    assert worker_module.scheduler_for("local", "nllb").admitted(room.id, queue_key) == 0
 
     # A subsequent translation for the same language is still accepted.
     with patch.object(worker, "_call_llm", new=fake_call_llm):
@@ -492,7 +492,7 @@ async def test_queue_counter_restored_when_glossary_lookup_cancelled(db_data, mo
                         2,
                     )
     assert bundle.call_count >= 1
-    assert worker_module.scheduler_for("local").admitted(room.id, queue_key) == 0
+    assert worker_module.scheduler_for("local", "nllb").admitted(room.id, queue_key) == 0
 
 
 @pytest.mark.anyio
@@ -727,7 +727,7 @@ async def test_translate_and_broadcast_queue_full_drops_and_broadcasts_failure(d
 
     worker = TranslationWorker(mock_broadcast)
     queue_key = "floor:fr"
-    scheduler = worker_module.scheduler_for("local")
+    scheduler = worker_module.scheduler_for("local", "m")
     held = [scheduler.admit(db_data["room"].id, queue_key) for _ in range(15)]
     assert all(held)
 
