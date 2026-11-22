@@ -46,6 +46,11 @@ async def srt_env(monkeypatch):
     def control(request: httpx.Request):
         data = json.loads(request.read()) if request.content else {}
         calls.append((request.method, str(request.url), data))
+        if "/v3/config/paths/get/" in request.url.path:
+            name = request.url.path.split("/v3/config/paths/get/")[1]
+            return httpx.Response(200, json={"name": name, "srtPublishPassphrase": "pass"})
+        if "/v3/config/paths/list" in request.url.path:
+            return httpx.Response(200, json={"items": [{"name": k, "srtPublishPassphrase": "pass"} for k in media]})
         if "/v3/config/paths/" in request.url.path:
             return httpx.Response(200, json={})
         if "/paths/list" in request.url.path:
@@ -92,8 +97,7 @@ async def srt_env(monkeypatch):
             session.add_all(rooms)
             await session.flush()
             for r in rooms:
-                await ingest.generate_srt_passphrase(r, session)
-                ingest._configured_srt_paths.add(f"{event.slug}/{r.id}/floor")
+                await ingest.generate_srt_passphrase(r)
             await session.commit()
 
         token = create_user_token(user_id=admin.id, email=admin.email, is_admin=True)
@@ -111,7 +115,6 @@ async def srt_env(monkeypatch):
                 "start": start,
             }
 
-    ingest._configured_srt_paths.clear()
     ingest.health.clear()
     ingest.failures.clear()
     ingest.room_locks.clear()
@@ -121,12 +124,14 @@ async def srt_env(monkeypatch):
 
 
 def srt_publish(event: Event, room: Room, **overrides) -> dict:
+    passphrase = decrypt_val(room.program_srt_passphrase_enc) if room.program_srt_passphrase_enc else "test-pass"
     return {
         "action": "publish",
         "path": f"{event.slug}/{room.id}/floor",
         "protocol": "srt",
         "id": str(uuid4()),
         "ip": "198.51.100.1",
+        "password": passphrase,
         **overrides,
     }
 
@@ -140,6 +145,35 @@ async def test_srt_auth_hook_accepts_valid_room(srt_env):
     payload = srt_publish(event, room)
     response = await client.post("/internal/media-auth", json=payload)
     assert response.status_code == 204
+
+
+@pytest.mark.anyio
+async def test_srt_auth_hook_accepts_passphrase_in_query(srt_env):
+    client = srt_env["client"]
+    event = srt_env["event"]
+    room = srt_env["rooms"][0]
+
+    passphrase = decrypt_val(room.program_srt_passphrase_enc)
+    payload = srt_publish(event, room, password="", query=f"passphrase={passphrase}&pkt_size=1316")
+    response = await client.post("/internal/media-auth", json=payload)
+    assert response.status_code == 204
+
+
+@pytest.mark.anyio
+async def test_srt_auth_hook_rejects_missing_or_empty_passphrase(srt_env):
+    client = srt_env["client"]
+    event = srt_env["event"]
+    room = srt_env["rooms"][0]
+
+    # Empty password rejected
+    payload = srt_publish(event, room, password="")
+    response = await client.post("/internal/media-auth", json=payload)
+    assert response.status_code == 401
+
+    # Wrong password rejected
+    payload2 = srt_publish(event, room, password="wrong-passphrase")
+    response2 = await client.post("/internal/media-auth", json=payload2)
+    assert response2.status_code == 401
 
 
 @pytest.mark.anyio
@@ -164,7 +198,7 @@ async def test_srt_passphrase_stored_encrypted_never_logged(srt_env, caplog):
     async with get_session() as session:
         stored = await session.get(Room, room.id)
         assert stored is not None
-        passphrase = await ingest.generate_srt_passphrase(stored, session)
+        passphrase = await ingest.generate_srt_passphrase(stored)
         await session.commit()
 
         encrypted = stored.program_srt_passphrase_enc
@@ -226,14 +260,14 @@ async def test_generate_and_apply_srt_passphrase(srt_env):
     async with get_session() as session:
         stored = await session.get(Room, room.id)
         assert stored is not None
-        passphrase = await ingest.generate_srt_passphrase(stored, session)
+        passphrase = await ingest.generate_srt_passphrase(stored)
         assert len(passphrase) >= 16
         await session.commit()
 
     path = f"{event.slug}/{room.id}/floor"
     await ingest.apply_srt_passphrase_to_mediamtx(path, passphrase)
 
-    # Verify MediaMTX control client was invoked with srtPublishPassphrase and publishPass
+    # Verify MediaMTX control client was invoked with srtPublishPassphrase and NOT publishPass
     matching_calls = [
         (method, url, data)
         for method, url, data in calls
@@ -241,12 +275,12 @@ async def test_generate_and_apply_srt_passphrase(srt_env):
     ]
     assert len(matching_calls) >= 1
     assert matching_calls[0][2]["srtPublishPassphrase"] == passphrase
-    assert matching_calls[0][2]["publishPass"] == passphrase
+    assert "publishPass" not in matching_calls[0][2]
     assert matching_calls[0][2]["overridePublisher"] is False
 
 
 @pytest.mark.anyio
-async def test_srt_codec_validation_requires_both_h264_and_aac(srt_env):
+async def test_srt_codec_validation_accepts_aac_audio_and_tolerates_data_tracks(srt_env):
     event = srt_env["event"]
     room = srt_env["rooms"][0]
 
@@ -270,26 +304,32 @@ async def test_srt_codec_validation_requires_both_h264_and_aac(srt_env):
         await ingest.reconcile_room(stored, event, path)
         return health_entry.state
 
-    # 1. Video only -> rejected
+    # 1. Video only -> rejected (no audio)
     assert await evaluate_tracks(["H264"]) == "rejected_codec"
 
-    # 2. Audio only -> rejected
-    assert await evaluate_tracks(["AAC"]) == "rejected_codec"
+    # 2. Audio only (AAC) -> accepted
+    assert await evaluate_tracks(["AAC"]) != "rejected_codec"
 
     # 3. Empty tracks -> rejected
     assert await evaluate_tracks([]) == "rejected_codec"
 
-    # 4. Incompatible extra track (HEVC) -> rejected
+    # 4. Incompatible extra track (HEVC video) -> rejected
     assert await evaluate_tracks(["H264", "AAC", "HEVC"]) == "rejected_codec"
 
     # 5. Non-AAC MPEG-4 -> rejected
     assert await evaluate_tracks(["H264", "MPEG-4 Visual"]) == "rejected_codec"
 
-    # 6. Valid H.264 + AAC -> accepted (not rejected_codec)
+    # 6. Valid H.264 + AAC -> accepted
     state_valid1 = await evaluate_tracks(["H264", "AAC"])
     assert state_valid1 != "rejected_codec"
 
     # 7. Valid H.264 + MPEG-4 Audio -> accepted
+    state_valid2 = await evaluate_tracks(["H.264", "MPEG-4 Audio"])
+    assert state_valid2 != "rejected_codec"
+
+    # 8. Valid H.264 + AAC + KLV data track -> accepted
+    state_valid3 = await evaluate_tracks(["H264", "AAC", "KLV"])
+    assert state_valid3 != "rejected_codec"
     state_valid2 = await evaluate_tracks(["H.264", "MPEG-4 Audio"])
     assert state_valid2 != "rejected_codec"
 

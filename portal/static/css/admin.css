@@ -1228,6 +1228,23 @@ code { font-family: var(--font-mono); font-size: 0.85em; background: var(--color
 .program-backup-secret-row { margin-top: 12px; }
 .program-backup-secret-label-wrap { width: 100%; margin-bottom: 4px; }
 .program-backup-secret-label { font-size: 0.85rem; font-weight: 600; }
+.program-tool-selector { margin-bottom: 14px; }
+.program-tool-tabs { display: flex; gap: 6px; flex-wrap: wrap; margin-top: 6px; }
+.program-tool-tab { height: 34px; padding: 0 14px; border: 1px solid var(--color-border-strong); border-radius: 8px; background: var(--color-surface); color: var(--color-text-secondary); font: inherit; font-size: 0.8rem; font-weight: 600; cursor: pointer; transition: all 0.15s ease; }
+.program-tool-tab:hover { background: var(--color-surface-2); color: var(--color-text); }
+.program-tool-tab.is-active { border-color: var(--color-primary-border); background: var(--color-primary-subtle); color: var(--color-primary-active); font-weight: 700; box-shadow: 0 1px 2px rgba(0,0,0,0.05); }
+.program-tool-panel { display: block; }
+.program-tool-panel[hidden] { display: none !important; }
+.program-param-badges { display: flex; flex-wrap: wrap; gap: 8px; margin: 8px 0 14px; }
+.program-badge { display: inline-flex; align-items: center; gap: 5px; padding: 4px 10px; border-radius: 6px; background: var(--color-surface-2); border: 1px solid var(--color-border); color: var(--color-text); font-size: 0.76rem; }
+.program-badge strong { color: var(--color-text-secondary); font-weight: 600; }
+.program-tool-help { margin-top: 8px; margin-bottom: 12px; color: var(--color-text-secondary); font-size: 0.78rem; line-height: 1.45; }
+.program-fields-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 10px; margin-bottom: 10px; }
+.program-fields-grid .program-field-full { grid-column: 1 / -1; }
+.program-fields-grid label { margin-bottom: 4px; }
+.program-fields-grid .input { height: 38px; padding: 6px 10px; font-size: 0.78rem; font-family: var(--font-mono); }
+.program-fields-grid .program-copy-field .btn { height: 38px; padding: 0 12px; font-size: 0.75rem; }
+.program-srt-backup-toggle-row { margin-top: 16px; padding-top: 14px; border-top: 1px dashed var(--color-border); }
 .program-primary-action { display: flex; align-items: center; gap: 12px; margin-top: 14px; }
 .program-primary-action p { color: var(--color-text-secondary); font-size: 0.75rem; }
 .program-ingest-card button:disabled { border-color: var(--color-border); background: #edf0f5; box-shadow: none; color: var(--color-muted); cursor: not-allowed; opacity: 1; transform: none; }

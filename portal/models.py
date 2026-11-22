@@ -159,7 +159,7 @@ class Room(Base):
     youtube_stream_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
 
     # ── SRT Contribution Credentials ─────────────────────────────────────────
-    # Fernet-encrypted: MediaMTX needs plaintext passphrase via Control API publishPass.
+    # Fernet-encrypted: MediaMTX needs plaintext passphrase via Control API srtPublishPassphrase.
     # Never hashed — must be recoverable. Use encrypt_val()/decrypt_val() from portal/crypto.py.
     program_srt_passphrase_enc: Mapped[str | None] = mapped_column(Text, nullable=True)
     program_srt_passphrase_expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)

@@ -45,9 +45,29 @@ async def backup_env(monkeypatch):
 
     media: dict[str, dict] = {}
     calls: list[tuple[str, str]] = []
+    configured_paths: set[str] = set()
 
     def control(request: httpx.Request):
         calls.append((request.method, str(request.url)))
+        if "/v3/config/paths/get/" in request.url.path:
+            name = request.url.path.split("/v3/config/paths/get/")[1]
+            if name in configured_paths:
+                return httpx.Response(200, json={"name": name, "srtPublishPassphrase": "pass"})
+            return httpx.Response(404, json={})
+        if "/v3/config/paths/list" in request.url.path:
+            return httpx.Response(200, json={"items": [{"name": k, "srtPublishPassphrase": "pass"} for k in configured_paths]})
+        if "/v3/config/paths/add/" in request.url.path or "/v3/config/paths/patch/" in request.url.path:
+            name = (
+                request.url.path.split("/v3/config/paths/add/")[1]
+                if "/v3/config/paths/add/" in request.url.path
+                else request.url.path.split("/v3/config/paths/patch/")[1]
+            )
+            configured_paths.add(name)
+            return httpx.Response(200, json={})
+        if "/v3/config/paths/delete/" in request.url.path:
+            name = request.url.path.split("/v3/config/paths/delete/")[1]
+            configured_paths.discard(name)
+            return httpx.Response(200, json={})
         if "/v3/config/paths/" in request.url.path:
             return httpx.Response(200, json={})
         if "/paths/list" in request.url.path:
@@ -68,6 +88,16 @@ async def backup_env(monkeypatch):
         start.side_effect = started
         monkeypatch.setattr(ingest, "start_transcription_worker", start)
         monkeypatch.setattr(ingest, "stop_transcription_worker", stop)
+
+        _backup_passphrases.clear()
+        orig_gen_backup = ingest.generate_backup_srt_passphrase
+
+        async def _tracking_gen_backup(r):
+            p = await orig_gen_backup(r)
+            _backup_passphrases[r.id] = p
+            return p
+
+        monkeypatch.setattr(ingest, "generate_backup_srt_passphrase", _tracking_gen_backup)
 
         async with get_session() as session:
             admin = await create_user(
@@ -91,8 +121,8 @@ async def backup_env(monkeypatch):
             )
             session.add(room)
             await session.flush()
-            await ingest.generate_srt_passphrase(room, session)
-            ingest._configured_srt_paths.add(f"{event.slug}/{room.id}/floor")
+            await ingest.generate_srt_passphrase(room)
+            configured_paths.add(f"{event.slug}/{room.id}/floor")
             await session.commit()
 
         token = create_user_token(user_id=admin.id, email=admin.email, is_admin=True)
@@ -107,24 +137,37 @@ async def backup_env(monkeypatch):
                 "room": room,
                 "media": media,
                 "calls": calls,
+                "start": start,
+                "stop": stop,
+                "configured_paths": configured_paths,
             }
 
     ingest.health.clear()
     ingest.failures.clear()
     ingest.room_locks.clear()
     ingest.audio_progress.clear()
-    ingest._configured_srt_paths.clear()
+    configured_paths.clear()
     relay.relay_health.clear()
     await dispose()
 
 
+_backup_passphrases: dict[int, str] = {}
+
+
 def backup_publish(event: Event, room: Room, **overrides) -> dict:
+    if room.program_backup_key_enc:
+        passphrase = decrypt_val(room.program_backup_key_enc)
+    elif room.id in _backup_passphrases:
+        passphrase = _backup_passphrases[room.id]
+    else:
+        passphrase = "test-pass"
     return {
         "action": "publish",
         "path": f"{event.slug}/{room.id}/floor_backup",
         "protocol": "srt",
         "id": str(uuid4()),
         "ip": "198.51.100.1",
+        "password": passphrase,
         **overrides,
     }
 
@@ -151,8 +194,8 @@ async def test_backup_path_accepted_when_enabled(backup_env):
         stored = await session.get(Room, room.id)
         assert stored is not None
         stored.program_backup_enabled = True
-        await ingest.generate_backup_srt_passphrase(stored, session)
-        ingest._configured_srt_paths.add(f"{event.slug}/{room.id}/floor_backup")
+        await ingest.generate_backup_srt_passphrase(stored)
+        backup_env["configured_paths"].add(f"{event.slug}/{room.id}/floor_backup")
         await session.commit()
 
     payload = backup_publish(event, room)
@@ -217,8 +260,8 @@ async def test_backup_single_publisher_and_capacity_limits(backup_env, monkeypat
     async with get_session() as session:
         stored = await session.get(Room, room.id)
         stored.program_backup_enabled = True
-        await ingest.generate_backup_srt_passphrase(stored, session)
-        ingest._configured_srt_paths.add(f"{event.slug}/{room.id}/floor_backup")
+        await ingest.generate_backup_srt_passphrase(stored)
+        backup_env["configured_paths"].add(f"{event.slug}/{room.id}/floor_backup")
         await session.commit()
 
     # 1. First backup publisher succeeds
@@ -246,9 +289,9 @@ async def test_backup_single_publisher_and_capacity_limits(backup_env, monkeypat
         )
         session.add(room2)
         await session.flush()
-        await ingest.generate_srt_passphrase(room2, session)
-        await ingest.generate_backup_srt_passphrase(room2, session)
-        ingest._configured_srt_paths.add(f"{event.slug}/{room2.id}/floor_backup")
+        await ingest.generate_srt_passphrase(room2)
+        await ingest.generate_backup_srt_passphrase(room2)
+        backup_env["configured_paths"].add(f"{event.slug}/{room2.id}/floor_backup")
         await session.commit()
 
     p3 = backup_publish(event, room2)
@@ -267,8 +310,8 @@ async def test_backup_credentials_revocation_kicks_backup(backup_env):
     async with get_session() as session:
         stored = await session.get(Room, room.id)
         stored.program_backup_enabled = True
-        await ingest.generate_backup_srt_passphrase(stored, session)
-        ingest._configured_srt_paths.add(f"{event.slug}/{room.id}/floor_backup")
+        await ingest.generate_backup_srt_passphrase(stored)
+        backup_env["configured_paths"].add(f"{event.slug}/{room.id}/floor_backup")
         await session.commit()
 
     # Publish backup
@@ -301,11 +344,11 @@ async def test_backup_srt_credentials_restored_on_restart(backup_env):
     async with get_session() as session:
         stored = await session.get(Room, room.id)
         stored.program_backup_enabled = True
-        await ingest.generate_srt_passphrase(stored, session)
-        await ingest.generate_backup_srt_passphrase(stored, session)
+        await ingest.generate_srt_passphrase(stored)
+        await ingest.generate_backup_srt_passphrase(stored)
         await session.commit()
 
-    ingest._configured_srt_paths.clear()
+    backup_env["configured_paths"].clear()
     await ingest.reconcile_once()
 
     # Check that MediaMTX was called to configure both primary and backup paths
@@ -349,6 +392,10 @@ async def test_backup_ui_api_actions_toggle_and_promote(backup_env):
     async with get_session() as session:
         stored = await session.get(Room, room.id)
         assert stored.program_active_feed == "primary"
+
+    # Regression test: verify promote_primary stops the worker so reconcile restarts on primary
+    stop = backup_env["stop"]
+    assert stop.called
 
 
 @pytest.mark.anyio
@@ -404,7 +451,7 @@ async def test_backup_separate_credentials_generated_and_isolated(backup_env):
         await session.commit()
 
     # Valid backup publish succeeds
-    p_backup = backup_publish(event, room)
+    p_backup = backup_publish(event, stored)
     resp = await client.post("/internal/media-auth", json=p_backup)
     assert resp.status_code == 204
 
@@ -557,8 +604,8 @@ async def test_active_feed_stall_detected_after_takeover_when_counters_unchanged
         stored.program_connected_at = ingest.utc_now()
         stored.program_session_id = "primary-sess"
         stored.program_backup_enabled = True
-        await ingest.generate_backup_srt_passphrase(stored, session)
-        ingest._configured_srt_paths.add(f"{event.slug}/{room.id}/floor_backup")
+        await ingest.generate_backup_srt_passphrase(stored)
+        backup_env["configured_paths"].add(f"{event.slug}/{room.id}/floor_backup")
         stored.program_backup_connected_at = ingest.utc_now()
         stored.program_active_feed = "backup"
         await session.commit()
@@ -649,8 +696,8 @@ async def test_invalid_srt_passphrase_rejected(backup_env):
     async with get_session() as session:
         stored = await session.get(Room, room.id)
         stored.program_backup_enabled = True
-        await ingest.generate_backup_srt_passphrase(stored, session)
-        ingest._configured_srt_paths.add(f"{event.slug}/{room.id}/floor_backup")
+        await ingest.generate_backup_srt_passphrase(stored)
+        backup_env["configured_paths"].add(f"{event.slug}/{room.id}/floor_backup")
         await session.commit()
 
     # Attempt to publish with wrong password
@@ -670,11 +717,11 @@ async def test_unconfigured_srt_path_rejected_at_media_auth(backup_env):
     async with get_session() as session:
         stored = await session.get(Room, room.id)
         stored.program_backup_enabled = True
-        await ingest.generate_backup_srt_passphrase(stored, session)
+        await ingest.generate_backup_srt_passphrase(stored)
         await session.commit()
 
     backup_path = f"{event.slug}/{room.id}/floor_backup"
-    ingest._configured_srt_paths.discard(backup_path)
+    backup_env["configured_paths"].discard(backup_path)
 
     payload = backup_publish(event, room)
     response = await client.post("/internal/media-auth", json=payload)
@@ -694,8 +741,8 @@ async def test_backup_feed_allowed_when_max_rooms_limit_reached(backup_env, monk
         stored = await session.get(Room, room.id)
         stored.program_session_id = "primary-sess-uuid"
         stored.program_backup_enabled = True
-        await ingest.generate_backup_srt_passphrase(stored, session)
-        ingest._configured_srt_paths.add(f"{event.slug}/{room.id}/floor_backup")
+        await ingest.generate_backup_srt_passphrase(stored)
+        backup_env["configured_paths"].add(f"{event.slug}/{room.id}/floor_backup")
         await session.commit()
 
     payload = backup_publish(event, room)
@@ -736,7 +783,7 @@ async def test_independent_backup_credential_validity(backup_env):
     async with get_session() as session:
         stored = await session.get(Room, room.id)
         stored.program_backup_enabled = True
-        await ingest.generate_backup_srt_passphrase(stored, session)
+        await ingest.generate_backup_srt_passphrase(stored)
         # Primary expired yesterday
         stored.program_srt_passphrase_expires_at = ingest.utc_now() - timedelta(days=1)
         # Backup valid for 30 days
@@ -845,8 +892,8 @@ async def test_bitrate_sampling_reset_on_feed_takeover_prevents_false_limits_kic
         stored = await session.get(Room, room.id)
         stored.program_connected_at = ingest.utc_now()
         stored.program_backup_enabled = True
-        await ingest.generate_backup_srt_passphrase(stored, session)
-        ingest._configured_srt_paths.add(f"{event.slug}/{room.id}/floor_backup")
+        await ingest.generate_backup_srt_passphrase(stored)
+        backup_env["configured_paths"].add(f"{event.slug}/{room.id}/floor_backup")
         stored.program_backup_connected_at = ingest.utc_now()
         stored.program_active_feed = "primary"
         await session.commit()
@@ -1029,8 +1076,8 @@ async def test_worker_omitted_stream_path_does_not_replace_running_backup_worker
     assert session.stream_path == backup_path
     first_session_id = session.session_id
 
-    # 2. Call start_transcription_worker with omitted stream_path (None)
-    # MUST NOT replace or stop the running backup worker session
+    # 2. Call start_transcription_worker with omitted stream_path (None) on switchback
+    # MUST stop the running backup worker session and switch back to primary (None)
     started_again = await start_transcription_worker(
         event_slug="test-event",
         language_code="floor",
@@ -1042,11 +1089,10 @@ async def test_worker_omitted_stream_path_does_not_replace_running_backup_worker
         room_id=1,
         stream_path=None,
     )
-    assert started_again is False
+    assert started_again is True
     current_session = active_workers.get(booth_id)
     assert current_session is not None
-    assert current_session.session_id == first_session_id
-    assert current_session.stream_path == backup_path
+    assert current_session.stream_path is None
 
     # 3. Call start_transcription_worker with an explicitly different stream_path
     # MUST stop old worker and start new one
@@ -1341,8 +1387,8 @@ async def test_backup_bitrate_counters_reset_on_new_publisher_reservation(backup
         stored.program_ingest_mode = "srt"
         stored.program_backup_enabled = True
         stored.program_active_feed = "primary"
-        await ingest.generate_backup_srt_passphrase(stored, session)
-        ingest._configured_srt_paths.add(f"{event.slug}/{room.id}/floor_backup")
+        await ingest.generate_backup_srt_passphrase(stored)
+        backup_env["configured_paths"].add(f"{event.slug}/{room.id}/floor_backup")
         await session.commit()
 
     # Suppose a previous backup publisher accumulated 4 high-bitrate cycles and 50MB
@@ -1361,6 +1407,7 @@ async def test_backup_bitrate_counters_reset_on_new_publisher_reservation(backup
         ip="127.0.0.1",
         path=f"{event.slug}/{room.id}/floor_backup",
         id=new_sess_id,
+        password=decrypt_val(stored.program_backup_key_enc),
     )
     await ingest.authorize_publish(auth_data)
 

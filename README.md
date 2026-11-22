@@ -154,37 +154,6 @@ and [registration protection](docs/registration-protection.md) for signup contro
 docker compose up -d --build
 ```
 
-To enable SRT contribution ingest on port `8890/udp`, add `docker-compose.srt.yml` to `COMPOSE_FILE` in your `.env` (recommended), or run with active compose files:
-```bash
-# Standard SRT deployment:
-docker compose -f docker-compose.yml -f docker-compose.srt.yml up -d --build
-
-# Or when combined with YouTube relaying:
-docker compose -f docker-compose.yml -f docker-compose.relay.yml -f docker-compose.srt.yml up -d --build
-```
-
-> **Deployment, Upgrades, and Rollback Procedures:**
-> * **Zero-Downtime Application Updates (Stream Preservation):** Updating the portal application container (`docker compose up -d --no-deps portal`) preserves live contribution streams and relays. MediaMTX runs in an isolated process; existing UDP/TCP streams remain uninterrupted while the portal restarts and reconnects.
-> * **MediaMTX Upgrade & Deliberate Termination:** When upgrading or restarting MediaMTX (`docker compose restart mediamtx`), active SRT and RTMPS connections terminate immediately as kernel UDP/TCP socket state cannot be preserved across process restarts. Configure all encoders with automatic reconnect enabled (e.g. 2-second retry delay). The operator dashboard will briefly show `disconnected` and transition back to `receiving` as encoders reconnect and the portal reconciler repopulates per-path SRT credentials.
-> * **Rollback Procedure:** If a newly deployed application change or configuration causes errors:
->   1. If database schema migrations were executed for the current release, determine the target revision of the rollback commit (e.g. `045` or `<target-revision>`) and roll back the database to that target revision **before** checking out the previous commit (ensuring Alembic still has the downgrade scripts present in the working tree):
->      ```bash
->      uv run alembic downgrade <target-revision>
->      ```
->   2. Check out the previous known-good commit or tag (e.g. `git checkout <previous-tag-or-commit>`) and restore its environment settings.
->   3. Re-deploy the known-good version matching the active features and Compose files present in that target revision:
->      ```bash
->      # Base deployment:
->      docker compose -f docker-compose.yml up -d --build --remove-orphans
->
->      # When YouTube relaying is enabled:
->      docker compose -f docker-compose.yml -f docker-compose.relay.yml up -d --build --remove-orphans
->
->      # When both YouTube relaying and SRT contribution ingest are enabled:
->      docker compose -f docker-compose.yml -f docker-compose.relay.yml -f docker-compose.srt.yml up -d --build --remove-orphans
->      ```
->      *(Always include `-f docker-compose.relay.yml` when YouTube relay is active so `--remove-orphans` does not stop the relay service, and include `-f docker-compose.srt.yml` only if that overlay file exists in the checked-out target revision).* Verify operational recovery in the admin room ingest health panel.
-
 **Option B: Native Development (Faster backend iteration)**
 ```bash
 # Run database migrations

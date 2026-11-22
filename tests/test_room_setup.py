@@ -1118,6 +1118,8 @@ async def test_ai_settings_tab_explains_a_room_without_ai(admin_cookie, event_ro
         ({}, ""),
         ({"meeting_agent_enabled": True}, room_setup.AUDIO_MEETING),
         ({"floor_source": "program_ingest", "program_key_hash": "k"}, room_setup.AUDIO_ENCODER),
+        ({"floor_source": "program_ingest", "program_srt_passphrase_enc": "enc"}, room_setup.AUDIO_ENCODER),
+        ({"floor_source": "program_ingest", "program_ingest_mode": "srt"}, room_setup.AUDIO_ENCODER),
         ({"floor_source": "program_ingest", "program_session_secret_hash": "s"}, room_setup.AUDIO_DESK),
     ],
 )

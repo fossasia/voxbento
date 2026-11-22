@@ -17,6 +17,8 @@ const fullUrl = document.getElementById('program-full-url');
 let busy = false;
 let modeChosen = false;
 let latest = null;
+let currentPassphrase = '';
+let currentBackupPassphrase = '';
 
 const stateLabels = {
   disabled: 'Disabled',
@@ -82,6 +84,79 @@ function setStep(name, status) {
   card.querySelectorAll(`[data-step="${name}"]`).forEach(step => { step.dataset.status = status; });
 }
 
+function getSessionPassKey() {
+  return 'voxbento_srt_pass_' + (card.dataset.url || '');
+}
+
+function getSessionBackupPassKey() {
+  return 'voxbento_srt_backup_pass_' + (card.dataset.url || '');
+}
+
+function loadSavedPassphrases() {
+  try {
+    const p = sessionStorage.getItem(getSessionPassKey());
+    if (p) currentPassphrase = p;
+    const bp = sessionStorage.getItem(getSessionBackupPassKey());
+    if (bp) currentBackupPassphrase = bp;
+  } catch {}
+}
+
+function savePassphrases(pass, backupPass) {
+  try {
+    if (pass !== undefined && pass !== null) {
+      currentPassphrase = pass;
+      if (pass) {
+        sessionStorage.setItem(getSessionPassKey(), pass);
+      } else {
+        sessionStorage.removeItem(getSessionPassKey());
+      }
+    }
+    if (backupPass !== undefined && backupPass !== null) {
+      currentBackupPassphrase = backupPass;
+      if (backupPass) {
+        sessionStorage.setItem(getSessionBackupPassKey(), backupPass);
+      } else {
+        sessionStorage.removeItem(getSessionBackupPassKey());
+      }
+    }
+  } catch {}
+}
+
+function clearSavedPassphrases() {
+  currentPassphrase = '';
+  currentBackupPassphrase = '';
+  try {
+    sessionStorage.removeItem(getSessionPassKey());
+    sessionStorage.removeItem(getSessionBackupPassKey());
+  } catch {}
+}
+
+const toolTitles = {
+  obs: 'Connect OBS Studio',
+  vmix: 'Connect vMix',
+  wirecast: 'Connect Wirecast',
+  hardware: 'Connect hardware encoder',
+};
+
+function currentTool() {
+  const activeTab = card.querySelector('.program-tool-tab.is-active');
+  return activeTab?.dataset?.tool || 'obs';
+}
+
+function updateConnectTitle() {
+  const titleEl = document.getElementById('program-connect-title');
+  if (!titleEl) return;
+  const mode = selectedMode();
+  if (mode === 'srt') {
+    const tool = currentTool();
+    titleEl.textContent = toolTitles[tool] || 'Connect encoder';
+  } else if (mode === 'rtmps') {
+    titleEl.textContent = 'Connect streaming tool';
+  } else {
+    titleEl.textContent = 'Connect OBS';
+  }
+}
+
 function selectedMode() {
   return card.querySelector('input[name="program-mode"]:checked')?.value || 'whip';
 }
@@ -96,7 +171,7 @@ function applyMode(mode) {
   document.getElementById('program-connect-step').textContent = relay ? '2' : '1';
   document.getElementById('program-monitor-step').textContent = relay ? '3' : '2';
   document.getElementById('program-monitor-title').textContent = relay ? 'Go live and check' : 'Monitor the feed';
-  document.getElementById('program-connect-title').textContent = mode === 'rtmps' ? 'Connect your streaming tool' : 'Connect OBS';
+  updateConnectTitle();
   const words = credentialWords[mode];
   card.querySelector('[data-ingest-action="rotate"]').textContent = words.rotate;
   card.querySelector('[data-ingest-action="revoke"]').textContent = words.revoke;
@@ -249,6 +324,177 @@ async function readError(response) {
   return data;
 }
 
+function updateSrtToolFields(data) {
+  if (!data) return;
+  const host = data.srt_host || (window.location.hostname || 'localhost');
+  const port = data.srt_port || 8890;
+  const path = data.srt_path || '';
+  const backupPath = data.srt_backup_path || '';
+  const pass = currentPassphrase;
+  const backupPass = currentBackupPassphrase;
+  const hasCredential = Boolean(data.credential_present || pass);
+
+  // OBS URLs
+  let obsUrl = '';
+  let backupObsUrl = '';
+  if (pass) {
+    obsUrl = `srt://${host}:${port}?streamid=publish:${path}::${pass}&passphrase=${pass}&pkt_size=1316`;
+  } else if (hasCredential) {
+    obsUrl = `srt://${host}:${port}?streamid=publish:${path}::<passphrase>&passphrase=<passphrase>&pkt_size=1316`;
+  } else {
+    obsUrl = data.srt_server || `srt://${host}:${port}?streamid=publish:${path}&pkt_size=1316`;
+  }
+
+  if (backupPass) {
+    backupObsUrl = `srt://${host}:${port}?streamid=publish:${backupPath}::${backupPass}&passphrase=${backupPass}&pkt_size=1316`;
+  } else if (hasCredential) {
+    backupObsUrl = `srt://${host}:${port}?streamid=publish:${backupPath}::<passphrase>&passphrase=<passphrase>&pkt_size=1316`;
+  } else {
+    backupObsUrl = data.srt_backup_server || `srt://${host}:${port}?streamid=publish:${backupPath}&pkt_size=1316`;
+  }
+
+  const srtServerInput = document.getElementById('program-srt-server');
+  if (srtServerInput) srtServerInput.value = obsUrl;
+  const srtBackupInput = document.getElementById('program-srt-backup');
+  if (srtBackupInput) srtBackupInput.value = backupObsUrl;
+
+  // Stream IDs
+  const streamId = pass ? `publish:${path}::${pass}` : (hasCredential ? `publish:${path}::<passphrase>` : `publish:${path}`);
+  const backupStreamId = backupPass ? `publish:${backupPath}::${backupPass}` : (hasCredential ? `publish:${backupPath}::<passphrase>` : `publish:${backupPath}`);
+
+  // vMix fields
+  const vmixHost = document.getElementById('program-srt-vmix-host');
+  if (vmixHost) vmixHost.value = host;
+  const vmixPort = document.getElementById('program-srt-vmix-port');
+  if (vmixPort) vmixPort.value = port;
+  const vmixStreamId = document.getElementById('program-srt-vmix-streamid');
+  if (vmixStreamId) vmixStreamId.value = streamId;
+  const vmixBackupStreamId = document.getElementById('program-srt-vmix-backup-streamid');
+  if (vmixBackupStreamId) vmixBackupStreamId.value = backupStreamId;
+
+  // Wirecast fields
+  const wcAddress = document.getElementById('program-srt-wirecast-address');
+  if (wcAddress) wcAddress.value = host;
+  const wcPort = document.getElementById('program-srt-wirecast-port');
+  if (wcPort) wcPort.value = port;
+  const wcStreamId = document.getElementById('program-srt-wirecast-streamid');
+  if (wcStreamId) wcStreamId.value = streamId;
+  const wcBackupStreamId = document.getElementById('program-srt-wirecast-backup-streamid');
+  if (wcBackupStreamId) wcBackupStreamId.value = backupStreamId;
+
+  // Hardware / Other fields
+  const hwHost = document.getElementById('program-srt-hw-host');
+  if (hwHost) hwHost.value = host;
+  const hwPort = document.getElementById('program-srt-hw-port');
+  if (hwPort) hwPort.value = port;
+  const hwStreamId = document.getElementById('program-srt-hw-streamid');
+  if (hwStreamId) hwStreamId.value = streamId;
+  const hwUrl = document.getElementById('program-srt-hw-url');
+  if (hwUrl) hwUrl.value = obsUrl;
+  const hwBackupStreamId = document.getElementById('program-srt-hw-backup-streamid');
+  if (hwBackupStreamId) hwBackupStreamId.value = backupStreamId;
+  const hwBackupUrl = document.getElementById('program-srt-hw-backup-url');
+  if (hwBackupUrl) hwBackupUrl.value = backupObsUrl;
+
+  // Manage passphrase inputs across vMix, Wirecast, and Hardware
+  const passInputs = [
+    { inputId: 'program-srt-vmix-passphrase', pass: pass },
+    { inputId: 'program-srt-vmix-backup-passphrase', pass: backupPass },
+    { inputId: 'program-srt-wirecast-passphrase', pass: pass },
+    { inputId: 'program-srt-wirecast-backup-passphrase', pass: backupPass },
+    { inputId: 'program-srt-hw-passphrase', pass: pass },
+    { inputId: 'program-srt-hw-backup-passphrase', pass: backupPass },
+  ];
+
+  passInputs.forEach(({ inputId, pass: p }) => {
+    const inputEl = document.getElementById(inputId);
+    const toggleBtn = card.querySelector(`[data-toggle-target="${inputId}"]`);
+    const copyBtn = card.querySelector(`[data-copy-target="${inputId}"]`);
+    if (!inputEl) return;
+
+    if (p) {
+      inputEl.value = p;
+      inputEl.placeholder = '';
+      if (toggleBtn) {
+        toggleBtn.disabled = false;
+        toggleBtn.title = '';
+      }
+      if (copyBtn) {
+        copyBtn.disabled = false;
+      }
+    } else {
+      inputEl.value = '';
+      inputEl.placeholder = hasCredential ? 'Hidden (click "Create a new passphrase" to view)' : 'Click "Create a new passphrase"';
+      if (toggleBtn) {
+        toggleBtn.disabled = true;
+        toggleBtn.textContent = 'Show';
+        toggleBtn.title = 'Passphrase is encrypted on the server. Click "Create a new passphrase" to generate a viewable one.';
+      }
+      if (copyBtn) {
+        copyBtn.disabled = true;
+      }
+    }
+  });
+
+  // Toggle backup sections visibility based on data.backup_enabled
+  const backupSections = card.querySelectorAll('[data-backup-section]');
+  backupSections.forEach(section => {
+    section.hidden = !data.backup_enabled;
+  });
+}
+
+function initToolTabs() {
+  const tabs = card.querySelectorAll('.program-tool-tab');
+  const panels = card.querySelectorAll('.program-tool-panel');
+  if (!tabs.length) return;
+
+  function selectTool(toolName) {
+    tabs.forEach(tab => {
+      const active = tab.dataset.tool === toolName;
+      tab.classList.toggle('is-active', active);
+      tab.setAttribute('aria-selected', active ? 'true' : 'false');
+    });
+    panels.forEach(panel => {
+      panel.hidden = panel.dataset.toolPanel !== toolName;
+    });
+    try { localStorage.setItem('voxbento_srt_tool', toolName); } catch {}
+    updateConnectTitle();
+  }
+
+  tabs.forEach(tab => {
+    tab.addEventListener('click', () => selectTool(tab.dataset.tool));
+  });
+
+  const saved = (function() {
+    try { return localStorage.getItem('voxbento_srt_tool'); } catch { return null; }
+  })() || 'obs';
+  selectTool(saved);
+
+  card.querySelectorAll('[data-copy-target]').forEach(btn => {
+    btn.addEventListener('click', async () => {
+      const targetId = btn.dataset.copyTarget;
+      const targetEl = document.getElementById(targetId);
+      if (targetEl && targetEl.value) {
+        await copyField(targetEl, btn, 'Copied');
+      } else if (targetEl && !targetEl.value) {
+        status.textContent = 'No value available to copy. Click "Create a new passphrase" below.';
+      }
+    });
+  });
+
+  card.querySelectorAll('[data-toggle-target]').forEach(btn => {
+    btn.addEventListener('click', () => {
+      const targetId = btn.dataset.toggleTarget;
+      const targetEl = document.getElementById(targetId);
+      if (targetEl && targetEl.value) {
+        const isPassword = targetEl.type === 'password';
+        targetEl.type = isPassword ? 'text' : 'password';
+        btn.textContent = isPassword ? 'Hide' : 'Show';
+      }
+    });
+  });
+}
+
 async function refresh() {
   if (busy || document.hidden) return;
   try {
@@ -272,10 +518,7 @@ async function refresh() {
     applyMode(selectedMode());
     document.getElementById('program-endpoint').value = data.endpoint;
     document.getElementById('program-rtmps-server').value = data.rtmps_server;
-    const srtServerInput = document.getElementById('program-srt-server');
-    if (srtServerInput && data.srt_server) srtServerInput.value = data.srt_server;
-    const srtBackupInput = document.getElementById('program-srt-backup');
-    if (srtBackupInput && data.srt_backup_server) srtBackupInput.value = data.srt_backup_server;
+    updateSrtToolFields(data);
     renderStatus(data);
     card.querySelectorAll('[data-ingest-action]').forEach(button => {
       const action = button.dataset.ingestAction;
@@ -300,11 +543,13 @@ function showSecret(data) {
   const isSrt = Boolean(data.passphrase);
   const streamKey = Boolean(data.stream_key);
   if (isSrt) {
+    savePassphrases(data.passphrase, data.backup_passphrase || '');
+    updateSrtToolFields(latest || {});
     secret.value = data.passphrase;
     secret.dataset.kind = 'passphrase';
     document.getElementById('program-secret-label').textContent = 'SRT Passphrase';
     document.getElementById('program-secret-help').textContent =
-      'Set this as the Passphrase in OBS, vMix or your hardware encoder. Copy it now: it is shown only once and expires in 30 days.';
+      'Copy the passphrase below or copy the complete URL above for OBS. It is shown only once and expires in 30 days.';
   } else {
     secret.value = streamKey ? data.stream_key : data.secret;
     secret.dataset.kind = streamKey ? 'stream_key' : 'token';
@@ -329,6 +574,7 @@ function showSecret(data) {
 card.querySelectorAll('input[name="program-mode"]').forEach(radio => {
   radio.addEventListener('change', () => {
     modeChosen = true;
+    try { localStorage.setItem('voxbento_program_mode_' + card.dataset.url, radio.value); } catch {}
     applyMode(selectedMode());
     if (latest) renderStatus(latest);
   });
@@ -364,6 +610,10 @@ card.querySelectorAll('[data-ingest-action]').forEach(button => {
         body: JSON.stringify({action, sync_offset_ms: Number(offset.value), mode}),
       });
       const data = await readError(response);
+      if (['revoke', 'disable'].includes(action)) {
+        clearSavedPassphrases();
+        updateSrtToolFields(latest || {});
+      }
       if (data.secret) showSecret(data);
       if (action === 'enable') modeChosen = false;
       shouldRefresh = true;
@@ -498,15 +748,18 @@ if (backupToggle) {
       const backupSecretInput = document.getElementById('program-backup-secret');
       const backupSecretRow = document.getElementById('program-backup-secret-row');
       if (data?.backup_passphrase) {
+        savePassphrases(undefined, data.backup_passphrase);
         if (backupSecretInput && backupSecretRow) {
           backupSecretInput.value = data.backup_passphrase;
           backupSecretRow.hidden = false;
           document.getElementById('program-secret-panel').hidden = false;
         }
       } else if (!backupToggle.checked) {
+        savePassphrases(undefined, '');
         if (backupSecretRow) backupSecretRow.hidden = true;
         if (backupSecretInput) backupSecretInput.value = '';
       }
+      updateSrtToolFields(latest || {});
     } catch (error) {
       console.error('Failed to toggle backup feed', error);
       status.textContent = error.message;
@@ -517,6 +770,19 @@ if (backupToggle) {
     }
   });
 }
+loadSavedPassphrases();
+initToolTabs();
+const savedProgramMode = (function() {
+  try { return localStorage.getItem('voxbento_program_mode_' + card.dataset.url); } catch { return null; }
+})();
+if (savedProgramMode) {
+  const radio = card.querySelector(`input[name="program-mode"][value="${savedProgramMode}"]`);
+  if (radio) {
+    radio.checked = true;
+    modeChosen = true;
+  }
+}
+applyMode(selectedMode());
 window.addEventListener('pagehide', () => { secret.value = ''; fullUrl.value = ''; if (backupSecretInput) backupSecretInput.value = ''; relayKey.value = ''; });
 refresh();
 const refreshTimer = setInterval(refresh, 5000);

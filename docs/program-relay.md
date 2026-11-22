@@ -228,7 +228,7 @@ The badge at the top reads **Live on YouTube**. Check the preview in YouTube Stu
   secure 256-bit random passphrases (`secrets.token_urlsafe(16)`), stored Fernet-encrypted
   (`program_srt_passphrase_enc` and `program_backup_key_enc`), write-only via API, never logged,
   and never exposed in plaintext. Passphrases are pushed to MediaMTX dynamically via local
-  Control API (`publishPass` directive) without configuring a static global passphrase.
+  Control API (`srtPublishPassphrase` directive) without configuring a static global passphrase.
 - **Dual-feed credential isolation.** Primary and backup SRT feeds have separate cryptographic passphrases
   stored in distinct encrypted columns (`program_srt_passphrase_enc` and `program_backup_key_enc`).
   When credentials are regenerated or rotated on a room, both passphrases are regenerated simultaneously
@@ -310,7 +310,7 @@ SRT provides superior transmission resilience over unstable public networks comp
 3. **Topology & Credential Architecture:**
    * **MediaMTX Role:** MediaMTX acts as an **SRT Listener** on `:8890/udp`.
    * **Encoder Role:** Encoders connect as **SRT Callers**.
-   * **Zero Global Passphrase:** MediaMTX is deliberately configured without a global passphrase. Passphrases are generated per-room and registered dynamically via the MediaMTX Control API (`/v3/config/paths/add` and `patch`) with the `publishPass` directive.
+   * **Zero Global Passphrase:** MediaMTX is deliberately configured without a global passphrase. Passphrases are generated per-room and registered dynamically via the MediaMTX Control API (`/v3/config/paths/add` and `patch`) with the `srtPublishPassphrase` directive.
    * **Restart Recovery:** If MediaMTX restarts, the portal reconciler automatically detects active SRT rooms, decrypts `program_srt_passphrase_enc`, and repopulates the per-path configuration via the Control API.
 
 4. **Rolling Deployments and Rollback Procedure:**
@@ -449,10 +449,10 @@ spawned. No old process outlives a successful stop or replacement.
 - **Authentication / Admission Failure (Connection Rejected / 401 / 403):**
   - Verify the stream ID parameter exactly matches: `#!::r=<event_slug>/<room_id>/floor,m=publish` (or `floor_backup`).
   - Verify the passphrase is correct and has not expired (30-day default TTL) or rotated.
-  - MediaMTX enforces `publishPass` dynamically via its Control API. Admission fails closed until MediaMTX confirms the per-path passphrase is active (`_configured_srt_paths`). If MediaMTX was restarted, allow 2 seconds for the reconciler loop to reapply path credentials.
+  - MediaMTX enforces `srtPublishPassphrase` dynamically via its Control API. Admission fails closed until MediaMTX confirms the per-path passphrase is active. If MediaMTX was restarted, allow 2 seconds for the reconciler loop to reapply path credentials.
 
 - **Non-Conforming Tracks / Rejected Codec (`rejected_codec`):**
-  - SRT contribution ingest requires **both H.264 video and AAC audio**. Encoders sending only AAC audio, or non-supported codecs (Opus, MP3, HEVC/H.265), are immediately kicked and marked `rejected_codec`.
+  - SRT contribution ingest requires **AAC audio** (H.264 video optional; hardware data/KLV tracks tolerated). Encoders sending non-supported audio codecs (MP3, Vorbis) or non-H.264 video codecs are kicked and marked `rejected_codec`.
 
 - **Excessive Bitrate (`rejected_limits`):**
   - Streams exceeding 12,000 kbps for 5 consecutive reconciler polling cycles are kicked to protect gateway stability. Configure encoder CBR at <= 10,000 kbps (recommended: 5,000 kbps).

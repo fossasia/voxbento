@@ -137,23 +137,245 @@
           </div>
         </div>
         <div data-mode-panel='srt' hidden>
-          <label for='program-srt-server'>SRT Caller URL (with Stream ID)</label>
-          <div class='program-copy-field'>
-            <input id='program-srt-server' class='input' readonly placeholder='Not configured on this server'>
-            <button type='button' class='btn btn-outline' id='program-copy-srt'>Copy URL</button>
+          <div class='program-tool-selector'>
+            <label>Choose your streaming software or hardware</label>
+            <div class='program-tool-tabs' role='tablist' aria-label='Streaming software or hardware'>
+              <button type='button' class='program-tool-tab is-active' role='tab' aria-selected='true' data-tool='obs'>OBS Studio</button>
+              <button type='button' class='program-tool-tab' role='tab' aria-selected='false' data-tool='vmix'>vMix</button>
+              <button type='button' class='program-tool-tab' role='tab' aria-selected='false' data-tool='wirecast'>Wirecast</button>
+              <button type='button' class='program-tool-tab' role='tab' aria-selected='false' data-tool='hardware'>Hardware / Other</button>
+            </div>
           </div>
-          <div id='program-srt-backup-row' class='program-srt-backup-row'>
-            <div class='program-srt-backup-header'>
-              <label for='program-srt-backup'>Backup Feed Stream URL</label>
-              <label class='program-backup-toggle-label'>
-                <input type='checkbox' id='program-backup-toggle'>
-                <span>Enable backup</span>
-              </label>
+
+          <!-- OBS Studio View -->
+          <div class='program-tool-panel' data-tool-panel='obs'>
+            <div class='program-param-badges'>
+              <span class='program-badge'><strong>Service:</strong> Custom…</span>
+              <span class='program-badge'><strong>Stream Key:</strong> (leave empty)</span>
             </div>
+            <label for='program-srt-server'>OBS Server URL</label>
             <div class='program-copy-field'>
-              <input id='program-srt-backup' class='input' readonly placeholder='Backup feed endpoint'>
-              <button type='button' class='btn btn-outline' id='program-copy-srt-backup'>Copy</button>
+              <input id='program-srt-server' class='input' readonly placeholder='Not configured on this server'>
+              <button type='button' class='btn btn-outline' id='program-copy-srt'>Copy URL</button>
             </div>
+            <p class='program-tool-help'>In OBS open <strong>Settings → Stream</strong>, choose <strong>Custom…</strong>, paste into <strong>Server</strong>, and leave <strong>Stream Key</strong> empty.</p>
+            <div class='program-srt-backup-row' data-backup-section hidden>
+              <div class='program-srt-backup-header'>
+                <label for='program-srt-backup'>Backup OBS Server URL</label>
+              </div>
+              <div class='program-copy-field'>
+                <input id='program-srt-backup' class='input' readonly placeholder='Backup feed endpoint'>
+                <button type='button' class='btn btn-outline' id='program-copy-srt-backup'>Copy</button>
+              </div>
+            </div>
+          </div>
+
+          <!-- vMix View -->
+          <div class='program-tool-panel' data-tool-panel='vmix' hidden>
+            <div class='program-param-badges'>
+              <span class='program-badge'><strong>Destination:</strong> SRT</span>
+              <span class='program-badge'><strong>Type:</strong> Caller</span>
+              <span class='program-badge'><strong>Latency:</strong> 120 ms</span>
+            </div>
+            <div class='program-fields-grid'>
+              <div>
+                <label for='program-srt-vmix-host'>Hostname</label>
+                <div class='program-copy-field'>
+                  <input id='program-srt-vmix-host' class='input' readonly>
+                  <button type='button' class='btn btn-outline' data-copy-target='program-srt-vmix-host'>Copy</button>
+                </div>
+              </div>
+              <div>
+                <label for='program-srt-vmix-port'>Port</label>
+                <div class='program-copy-field'>
+                  <input id='program-srt-vmix-port' class='input' readonly>
+                  <button type='button' class='btn btn-outline' data-copy-target='program-srt-vmix-port'>Copy</button>
+                </div>
+              </div>
+              <div class='program-field-full'>
+                <label for='program-srt-vmix-streamid'>Stream ID</label>
+                <div class='program-copy-field'>
+                  <input id='program-srt-vmix-streamid' class='input' readonly>
+                  <button type='button' class='btn btn-outline' data-copy-target='program-srt-vmix-streamid'>Copy</button>
+                </div>
+              </div>
+              <div class='program-field-full'>
+                <label for='program-srt-vmix-passphrase'>Passphrase</label>
+                <div class='program-copy-field'>
+                  <input id='program-srt-vmix-passphrase' class='input' type='password' readonly>
+                  <button type='button' class='btn btn-outline' data-toggle-target='program-srt-vmix-passphrase'>Show</button>
+                  <button type='button' class='btn btn-outline' data-copy-target='program-srt-vmix-passphrase'>Copy</button>
+                </div>
+              </div>
+            </div>
+            <p class='program-tool-help'>In vMix open <strong>Stream Settings</strong>, set <strong>Destination</strong> to <strong>SRT</strong>, <strong>Type</strong> to <strong>Caller</strong>, and paste the values above.</p>
+            <div class='program-srt-backup-row' data-backup-section hidden>
+              <div class='program-srt-backup-header'>
+                <label>Backup feed (vMix)</label>
+              </div>
+              <div class='program-fields-grid'>
+                <div class='program-field-full'>
+                  <label for='program-srt-vmix-backup-streamid'>Backup Stream ID</label>
+                  <div class='program-copy-field'>
+                    <input id='program-srt-vmix-backup-streamid' class='input' readonly>
+                    <button type='button' class='btn btn-outline' data-copy-target='program-srt-vmix-backup-streamid'>Copy</button>
+                  </div>
+                </div>
+                <div class='program-field-full'>
+                  <label for='program-srt-vmix-backup-passphrase'>Backup Passphrase</label>
+                  <div class='program-copy-field'>
+                    <input id='program-srt-vmix-backup-passphrase' class='input' type='password' readonly>
+                    <button type='button' class='btn btn-outline' data-toggle-target='program-srt-vmix-backup-passphrase'>Show</button>
+                    <button type='button' class='btn btn-outline' data-copy-target='program-srt-vmix-backup-passphrase'>Copy</button>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <!-- Wirecast View -->
+          <div class='program-tool-panel' data-tool-panel='wirecast' hidden>
+            <div class='program-param-badges'>
+              <span class='program-badge'><strong>Destination:</strong> SRT</span>
+              <span class='program-badge'><strong>Mode:</strong> Caller</span>
+            </div>
+            <div class='program-fields-grid'>
+              <div>
+                <label for='program-srt-wirecast-address'>Address</label>
+                <div class='program-copy-field'>
+                  <input id='program-srt-wirecast-address' class='input' readonly>
+                  <button type='button' class='btn btn-outline' data-copy-target='program-srt-wirecast-address'>Copy</button>
+                </div>
+              </div>
+              <div>
+                <label for='program-srt-wirecast-port'>Port</label>
+                <div class='program-copy-field'>
+                  <input id='program-srt-wirecast-port' class='input' readonly>
+                  <button type='button' class='btn btn-outline' data-copy-target='program-srt-wirecast-port'>Copy</button>
+                </div>
+              </div>
+              <div class='program-field-full'>
+                <label for='program-srt-wirecast-streamid'>Stream ID</label>
+                <div class='program-copy-field'>
+                  <input id='program-srt-wirecast-streamid' class='input' readonly>
+                  <button type='button' class='btn btn-outline' data-copy-target='program-srt-wirecast-streamid'>Copy</button>
+                </div>
+              </div>
+              <div class='program-field-full'>
+                <label for='program-srt-wirecast-passphrase'>Passphrase</label>
+                <div class='program-copy-field'>
+                  <input id='program-srt-wirecast-passphrase' class='input' type='password' readonly>
+                  <button type='button' class='btn btn-outline' data-toggle-target='program-srt-wirecast-passphrase'>Show</button>
+                  <button type='button' class='btn btn-outline' data-copy-target='program-srt-wirecast-passphrase'>Copy</button>
+                </div>
+              </div>
+            </div>
+            <p class='program-tool-help'>In Wirecast open <strong>Output → Output Settings</strong>, choose <strong>Destination: SRT</strong>, set <strong>Mode: Caller</strong>, and enter the values above.</p>
+            <div class='program-srt-backup-row' data-backup-section hidden>
+              <div class='program-srt-backup-header'>
+                <label>Backup feed (Wirecast)</label>
+              </div>
+              <div class='program-fields-grid'>
+                <div class='program-field-full'>
+                  <label for='program-srt-wirecast-backup-streamid'>Backup Stream ID</label>
+                  <div class='program-copy-field'>
+                    <input id='program-srt-wirecast-backup-streamid' class='input' readonly>
+                    <button type='button' class='btn btn-outline' data-copy-target='program-srt-wirecast-backup-streamid'>Copy</button>
+                  </div>
+                </div>
+                <div class='program-field-full'>
+                  <label for='program-srt-wirecast-backup-passphrase'>Backup Passphrase</label>
+                  <div class='program-copy-field'>
+                    <input id='program-srt-wirecast-backup-passphrase' class='input' type='password' readonly>
+                    <button type='button' class='btn btn-outline' data-toggle-target='program-srt-wirecast-backup-passphrase'>Show</button>
+                    <button type='button' class='btn btn-outline' data-copy-target='program-srt-wirecast-backup-passphrase'>Copy</button>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <!-- Hardware / Other View -->
+          <div class='program-tool-panel' data-tool-panel='hardware' hidden>
+            <div class='program-param-badges'>
+              <span class='program-badge'><strong>Mode:</strong> Caller</span>
+              <span class='program-badge'><strong>Encryption:</strong> AES-128 / AES-256</span>
+            </div>
+            <div class='program-fields-grid'>
+              <div>
+                <label for='program-srt-hw-host'>Host / IP Address</label>
+                <div class='program-copy-field'>
+                  <input id='program-srt-hw-host' class='input' readonly>
+                  <button type='button' class='btn btn-outline' data-copy-target='program-srt-hw-host'>Copy</button>
+                </div>
+              </div>
+              <div>
+                <label for='program-srt-hw-port'>Port</label>
+                <div class='program-copy-field'>
+                  <input id='program-srt-hw-port' class='input' readonly>
+                  <button type='button' class='btn btn-outline' data-copy-target='program-srt-hw-port'>Copy</button>
+                </div>
+              </div>
+              <div class='program-field-full'>
+                <label for='program-srt-hw-streamid'>Stream ID</label>
+                <div class='program-copy-field'>
+                  <input id='program-srt-hw-streamid' class='input' readonly>
+                  <button type='button' class='btn btn-outline' data-copy-target='program-srt-hw-streamid'>Copy</button>
+                </div>
+              </div>
+              <div class='program-field-full'>
+                <label for='program-srt-hw-passphrase'>Passphrase</label>
+                <div class='program-copy-field'>
+                  <input id='program-srt-hw-passphrase' class='input' type='password' readonly>
+                  <button type='button' class='btn btn-outline' data-toggle-target='program-srt-hw-passphrase'>Show</button>
+                  <button type='button' class='btn btn-outline' data-copy-target='program-srt-hw-passphrase'>Copy</button>
+                </div>
+              </div>
+              <div class='program-field-full'>
+                <label for='program-srt-hw-url'>Full SRT URL (if single field)</label>
+                <div class='program-copy-field'>
+                  <input id='program-srt-hw-url' class='input' readonly>
+                  <button type='button' class='btn btn-outline' data-copy-target='program-srt-hw-url'>Copy URL</button>
+                </div>
+              </div>
+            </div>
+            <p class='program-tool-help'>Configure your hardware encoder (Teradek, Kiloview, Haivision, LiveU) as an <strong>SRT Caller</strong> with the parameters above.</p>
+            <div class='program-srt-backup-row' data-backup-section hidden>
+              <div class='program-srt-backup-header'>
+                <label>Backup feed (Hardware)</label>
+              </div>
+              <div class='program-fields-grid'>
+                <div class='program-field-full'>
+                  <label for='program-srt-hw-backup-streamid'>Backup Stream ID</label>
+                  <div class='program-copy-field'>
+                    <input id='program-srt-hw-backup-streamid' class='input' readonly>
+                    <button type='button' class='btn btn-outline' data-copy-target='program-srt-hw-backup-streamid'>Copy</button>
+                  </div>
+                </div>
+                <div class='program-field-full'>
+                  <label for='program-srt-hw-backup-passphrase'>Backup Passphrase</label>
+                  <div class='program-copy-field'>
+                    <input id='program-srt-hw-backup-passphrase' class='input' type='password' readonly>
+                    <button type='button' class='btn btn-outline' data-toggle-target='program-srt-hw-backup-passphrase'>Show</button>
+                    <button type='button' class='btn btn-outline' data-copy-target='program-srt-hw-backup-passphrase'>Copy</button>
+                  </div>
+                </div>
+                <div class='program-field-full'>
+                  <label for='program-srt-hw-backup-url'>Backup Full SRT URL</label>
+                  <div class='program-copy-field'>
+                    <input id='program-srt-hw-backup-url' class='input' readonly>
+                    <button type='button' class='btn btn-outline' data-copy-target='program-srt-hw-backup-url'>Copy URL</button>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <div class='program-srt-backup-toggle-row'>
+            <label class='program-backup-toggle-label'>
+              <input type='checkbox' id='program-backup-toggle'>
+              <span><strong>Enable redundant backup feed</strong> (creates a second stream for seamless failover)</span>
+            </label>
           </div>
         </div>
 

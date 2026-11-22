@@ -267,7 +267,7 @@ async def start_transcription_worker(
                 # Drop lock, actively await the old session's death, then loop around and re-check registry.
                 pass
             elif (restart_on_key_change and existing_session.config.get_key() != config.get_key()) or (
-                stream_path is not None and getattr(existing_session, "stream_path", None) != stream_path
+                getattr(existing_session, "stream_path", None) != stream_path
             ):
                 existing_session.stop()
             else:

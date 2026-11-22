@@ -25,6 +25,7 @@ from portal.program_ingest import (
     authorize_publish,
     close_sender_session,
     configure_source,
+    delete_srt_path_from_mediamtx,
     generate_backup_srt_passphrase,
     health,
     kick,
@@ -83,8 +84,18 @@ def _srt_host() -> str:
 
 def _check_origin(request: Request) -> None:
     origin = request.headers.get("origin")
-    if origin and origin.rstrip("/") != settings.public_base_url.rstrip("/"):
-        raise HTTPException(403, "Origin mismatch")
+    if not origin:
+        return
+    clean_origin = origin.rstrip("/")
+    clean_base = settings.public_base_url.rstrip("/")
+    if clean_origin == clean_base:
+        return
+    if settings.debug:
+        parsed_orig = urlsplit(origin)
+        parsed_base = urlsplit(settings.public_base_url)
+        if parsed_orig.hostname in ("localhost", "127.0.0.1") and parsed_base.hostname in ("localhost", "127.0.0.1"):
+            return
+    raise HTTPException(403, "Origin mismatch")
 
 
 async def _youtube_status(session, room) -> dict | None:
@@ -220,7 +231,6 @@ async def ingest_status(event_id: int, room_id: int) -> JSONResponse:
         bytes_val = current.last_bytes if current and current.last_bytes >= 0 else 0
         metrics = {
             "bytes_received": bytes_val,
-            "packets_received": bytes_val // 1316 if bytes_val > 0 else 0,
             "audio_present": audio_present,
             "reconnect_count": current.reconnect_count if current else 0,
             "ingest_continuity": bool(current and current.ingest_state in ("connected", "receiving", "processing")),
@@ -253,10 +263,14 @@ async def ingest_status(event_id: int, room_id: int) -> JSONResponse:
                 "relay_available": settings.program_ingest_enabled and settings.program_relay_enabled,
                 "rtmps_available": settings.rtmps_ingest_enabled,
                 "srt_available": settings.srt_ingest_enabled,
-                "srt_server": f"srt://{_srt_host()}:{settings.program_srt_public_port}?streamid=#!::r={make_mediamtx_path(event.slug, room_id, 'floor')},m=publish"
+                "srt_host": _srt_host(),
+                "srt_port": settings.program_srt_public_port,
+                "srt_path": make_mediamtx_path(event.slug, room_id, "floor"),
+                "srt_backup_path": make_backup_floor_path(event.slug, room_id),
+                "srt_server": f"srt://{_srt_host()}:{settings.program_srt_public_port}?streamid=publish:{make_mediamtx_path(event.slug, room_id, 'floor')}&pkt_size=1316"
                 if settings.srt_ingest_enabled
                 else "",
-                "srt_backup_server": f"srt://{_srt_host()}:{settings.program_srt_public_port}?streamid=#!::r={make_backup_floor_path(event.slug, room_id)},m=publish"
+                "srt_backup_server": f"srt://{_srt_host()}:{settings.program_srt_public_port}?streamid=publish:{make_backup_floor_path(event.slug, room_id)}&pkt_size=1316"
                 if settings.srt_ingest_enabled
                 else "",
                 "backup_enabled": room.program_backup_enabled,
@@ -313,38 +327,51 @@ async def ingest_change(request: Request, event_id: int, room_id: int, change: I
                 event = await get_event_by_id(session, event_id)
                 if not room or room.event_id != event_id or not event:
                     raise HTTPException(404, "Room not found")
-                await promote_primary_feed(room, session)
+                await promote_primary_feed(room, event.slug)
                 await session.commit()
                 return JSONResponse({"active_feed": "primary"})
     if change.action == "toggle_backup":
+        if not settings.program_ingest_enabled or not settings.srt_ingest_enabled:
+            raise HTTPException(409, "Program ingest and SRT must be enabled by the server operator")
         async with room_lock(room_id):
             async with get_session() as session:
                 room = await get_room_by_id(session, room_id)
                 event = await get_event_by_id(session, event_id)
                 if not room or room.event_id != event_id or not event:
                     raise HTTPException(404, "Room not found")
+                if room.floor_source != "program_ingest" or room.program_ingest_mode != program_relay.SRT_MODE:
+                    raise HTTPException(409, "Backup feeds are only supported for SRT program ingest")
                 room.program_backup_enabled = (
                     change.backup_enabled if change.backup_enabled is not None else not room.program_backup_enabled
                 )
                 backup_secret = None
-                if room.program_backup_enabled and room.program_ingest_mode == program_relay.SRT_MODE:
-                    backup_secret = await generate_backup_srt_passphrase(room, session)
-                    backup_path = make_backup_floor_path(event.slug, room.id)
-                    await apply_srt_passphrase_to_mediamtx(backup_path, backup_secret)
-                elif not room.program_backup_enabled:
-                    backup_path = make_backup_floor_path(event.slug, room.id)
-                    current_backup = await media_path(backup_path)
-                    await kick(backup_path, current_backup.source if current_backup else None)
-                    await kick(backup_path, reserved_backup_source(room))
-                    await apply_srt_passphrase_to_mediamtx(backup_path, "")
-                    room.program_backup_connected_at = None
-                    room.program_backup_key_enc = None
-                    room.program_backup_key_expires_at = None
-                    room.program_active_feed = "primary"
+                backup_path = make_backup_floor_path(event.slug, room.id)
+                try:
+                    if room.program_backup_enabled:
+                        current_backup = await media_path(backup_path)
+                        await kick(backup_path, current_backup.source if current_backup else None)
+                        await kick(backup_path, reserved_backup_source(room))
+                        backup_secret = await generate_backup_srt_passphrase(room)
+                        await apply_srt_passphrase_to_mediamtx(backup_path, backup_secret)
+                    else:
+                        current_backup = await media_path(backup_path)
+                        await kick(backup_path, current_backup.source if current_backup else None)
+                        await kick(backup_path, reserved_backup_source(room))
+                        await delete_srt_path_from_mediamtx(backup_path)
+                        room.program_backup_connected_at = None
+                        room.program_backup_key_enc = None
+                        room.program_backup_key_expires_at = None
+                        room.program_active_feed = "primary"
+                except (httpx.HTTPError, ValueError):
+                    raise HTTPException(502, "Media control unavailable; retry.") from None
                 await session.commit()
                 resp = {"backup_enabled": room.program_backup_enabled}
                 if backup_secret:
                     resp["backup_passphrase"] = backup_secret
+                    resp["backup_streamid"] = f"publish:{backup_path}::{backup_secret}"
+                    resp["backup_obs_server_url"] = (
+                        f"srt://{_srt_host()}:{settings.program_srt_public_port}?streamid=publish:{backup_path}::{backup_secret}&passphrase={backup_secret}&pkt_size=1316"
+                    )
                 return JSONResponse(resp)
     secret = None
     rtmps_mode = False
@@ -406,10 +433,17 @@ async def ingest_change(request: Request, event_id: int, room_id: int, change: I
         body["stream_key"] = f"floor?key={secret}"
     elif secret and room.program_ingest_mode == program_relay.SRT_MODE:
         body["passphrase"] = secret
-        body["streamid"] = f"#!::r={make_mediamtx_path(event.slug, room_id, 'floor')},m=publish"
+        body["streamid"] = f"publish:{make_mediamtx_path(event.slug, room_id, 'floor')}::{secret}"
+        body["obs_server_url"] = (
+            f"srt://{_srt_host()}:{settings.program_srt_public_port}?streamid=publish:{make_mediamtx_path(event.slug, room_id, 'floor')}::{secret}&passphrase={secret}&pkt_size=1316"
+        )
         if room.program_backup_enabled and room.program_backup_key_enc:
-            body["backup_passphrase"] = decrypt_val(room.program_backup_key_enc)
-            body["backup_streamid"] = f"#!::r={make_backup_floor_path(event.slug, room_id)},m=publish"
+            backup_pass = decrypt_val(room.program_backup_key_enc)
+            body["backup_passphrase"] = backup_pass
+            body["backup_streamid"] = f"publish:{make_backup_floor_path(event.slug, room_id)}::{backup_pass}"
+            body["backup_obs_server_url"] = (
+                f"srt://{_srt_host()}:{settings.program_srt_public_port}?streamid=publish:{make_backup_floor_path(event.slug, room_id)}::{backup_pass}&passphrase={backup_pass}&pkt_size=1316"
+            )
     if cleanup_pending:
         body["cleanup_pending"] = True
     return JSONResponse(

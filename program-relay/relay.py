@@ -88,6 +88,11 @@ def redact(text: str, secrets_: list[str]) -> str:
 
 def classify(line: str) -> tuple[str, bool]:
     """Return (reason, is_fatal). Fatal errors should halt retries."""
+    if re.search(r"(?i)rtsp", line):
+        for pattern, reason in TRANSIENT_ERRORS:
+            if pattern.search(line):
+                return reason, False
+        return "Floor stream unavailable at the media server.", False
     for pattern, reason in FATAL_ERRORS:
         if pattern.search(line):
             return reason, True
@@ -234,9 +239,10 @@ class RelayManager:
             return 400, {"error": str(exc)}
         with self.lock:
             current = self.relays.get(relay_id)
-            if current and current.source == source and current.fingerprint == fingerprint:
+            if current and current.source == source and current.fingerprint == fingerprint and current.state != "failed":
                 return 200, current.public()
-            if current is None and len(self.relays) >= self.max_relays:
+            active_relays = [r for r in self.relays.values() if r.state != "failed"]
+            if current is None and len(active_relays) >= self.max_relays:
                 return 503, {"error": "Relay capacity reached"}
             if current:
                 self._stop_locked(current)
@@ -344,7 +350,13 @@ class RelayManager:
                             )
                             relay.stop.set()
                             relay.state, relay.reason = "failed", reason
-                            self._terminate(process)
+                            try:
+                                if os.name == "posix":
+                                    os.killpg(process.pid, signal.SIGTERM)
+                                else:
+                                    process.terminate()
+                            except ProcessLookupError:
+                                pass
                             return
 
             def watchdog() -> None:
