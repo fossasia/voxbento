@@ -31,7 +31,7 @@ from portal.exceptions import RedirectRequired
 from portal.globals import asset_version_context
 from portal.logging_config import configure_logging
 from portal.rate_limit import auth_rate_limiter, login_limiter, token_rate_limiter
-from portal.request_logging import RequestLoggingMiddleware
+from portal.request_logging import REQUEST_ID_HEADER, REQUEST_ID_STATE_KEY, RequestLoggingMiddleware
 from portal.routers.admin import router as admin_router
 from portal.routers.api import router as api_router
 from portal.routers.api_v1 import router as api_v1_router
@@ -388,6 +388,12 @@ async def general_exception_handler(request: Request, exc: Exception):
     # Unhandled-error responses are built outside the middleware stack, so add the headers here.
     is_https = request.url.scheme == "https" or forwarded_https(request.headers)
     apply_security_headers(response.headers, path=request.url.path, is_https=is_https)
+    # This response never passes through RequestLoggingMiddleware's send wrapper,
+    # so the correlation id is read back off the scope and echoed here. It ties
+    # the 500 the caller sees to the "request failed" line in the log.
+    request_id = (request.scope.get("state") or {}).get(REQUEST_ID_STATE_KEY, "")
+    if request_id:
+        response.headers[REQUEST_ID_HEADER] = request_id
     return response
 
 

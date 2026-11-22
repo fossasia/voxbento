@@ -5,7 +5,7 @@ import re
 import time
 from collections.abc import Awaitable, Callable
 
-from starlette.datastructures import Headers, MutableHeaders
+from starlette.datastructures import MutableHeaders
 from starlette.types import Message, Receive, Scope, Send
 
 from portal.logging_config import new_request_id, reset_request_id, set_request_id
@@ -13,6 +13,9 @@ from portal.logging_config import new_request_id, reset_request_id, set_request_
 logger = logging.getLogger("portal.request")
 
 REQUEST_ID_HEADER = "x-request-id"
+
+# Where the id is parked for handlers that run outside this middleware.
+REQUEST_ID_STATE_KEY = "request_id"
 
 # Stands in for the route label when no route matched; the concrete path can
 # carry a token, so it is never used as a fallback.
@@ -74,6 +77,11 @@ class RequestLoggingMiddleware:
         request_id = new_request_id()
         upstream_id = _inbound_request_id(scope)
         token = set_request_id(request_id)
+        # An unhandled error is answered by ServerErrorMiddleware, which sits
+        # outside this middleware: its response never passes through
+        # ``send_wrapper`` and the context variable is already reset by then.
+        # Recording the id on the scope lets that handler echo it anyway.
+        scope.setdefault("state", {})[REQUEST_ID_STATE_KEY] = request_id
         started = time.perf_counter()
         status_code = 0
 
@@ -110,26 +118,11 @@ class RequestLoggingMiddleware:
                     duration_ms=round((time.perf_counter() - started) * 1000, 2),
                 ),
             )
-            # Once http.response.start has gone out a second one is an ASGI
-            # protocol error that would mask this exception, so only answer
-            # with a 500 when nothing has been sent yet.
-            if scope["type"] == "http" and status_code == 0:
-                from portal.security_headers import apply_security_headers
-
-                body = b'{"detail":"Internal Server Error","request_id":"' + request_id.encode() + b'"}'
-                error_msg: dict = {"type": "http.response.start", "status": 500, "headers": [
-                    [b"content-type", b"application/json"],
-                ]}
-                path = scope.get("path", "/")
-                req_headers = Headers(scope=scope)
-                is_https = (
-                    scope.get("scheme") == "https"
-                    or req_headers.get("x-forwarded-proto", "").split(",")[0].strip().lower() == "https"
-                )
-                apply_security_headers(MutableHeaders(scope=error_msg), path=path, is_https=is_https)
-                await send_wrapper(error_msg)
-                await send_wrapper({"type": "http.response.body", "body": body})
-                return
+            # The error response belongs to the application's own exception
+            # handler, which negotiates HTML or JSON and applies the security
+            # headers. Answering here instead would bypass it, so the exception
+            # is re-raised and only the correlation id is handed over, on the
+            # scope.
             raise
         else:
             if scope.get("path") in _QUIET_WHEN_HEALTHY and status_code < 400:

@@ -4,10 +4,16 @@ import logging
 
 import pytest
 from fastapi import FastAPI, WebSocket
+from fastapi.responses import JSONResponse
 from starlette.testclient import TestClient
 
 from portal.logging_config import current_request_id
-from portal.request_logging import REQUEST_ID_HEADER, UNMATCHED_ROUTE, RequestLoggingMiddleware
+from portal.request_logging import (
+    REQUEST_ID_HEADER,
+    REQUEST_ID_STATE_KEY,
+    UNMATCHED_ROUTE,
+    RequestLoggingMiddleware,
+)
 
 pytestmark = pytest.mark.anyio
 
@@ -16,6 +22,17 @@ pytestmark = pytest.mark.anyio
 def app() -> FastAPI:
     application = FastAPI()
     application.add_middleware(RequestLoggingMiddleware)
+
+    # Mirrors fastapi_app.general_exception_handler: the application owns the
+    # error response and echoes the id the middleware parked on the scope.
+    @application.exception_handler(Exception)
+    async def unhandled(request, exc):
+        request_id = (request.scope.get("state") or {}).get(REQUEST_ID_STATE_KEY, "")
+        return JSONResponse(
+            {"detail": "Internal Server Error"},
+            status_code=500,
+            headers={REQUEST_ID_HEADER: request_id} if request_id else None,
+        )
 
     @application.get("/ping")
     async def ping():
@@ -185,6 +202,42 @@ def test_a_handler_error_carries_the_correlation_header(client):
     resp = client.get("/boom")
     assert resp.status_code == 500
     assert len(resp.headers.get(REQUEST_ID_HEADER, "")) == 16
+
+
+async def test_the_middleware_does_not_answer_unhandled_errors_itself():
+    """Answering here would bypass the application's own exception handler.
+
+    The full-stack consequence (HTML negotiation preserved, id echoed) is covered
+    by test_fastapi_app.test_unhandled_exception_response_*.
+    """
+    sent: list = []
+
+    async def raising_app(scope, receive, send):
+        raise RuntimeError("deliberate")
+
+    async def capture(message):
+        sent.append(message)
+
+    with pytest.raises(RuntimeError, match="deliberate"):
+        await RequestLoggingMiddleware(raising_app)(
+            {"type": "http", "method": "GET", "path": "/boom", "headers": []},
+            None,
+            capture,
+        )
+
+    assert sent == []
+
+
+async def test_the_correlation_id_is_left_on_the_scope_for_the_error_handler():
+    scope: dict = {"type": "http", "method": "GET", "path": "/boom", "headers": []}
+
+    async def raising_app(_scope, receive, send):
+        raise RuntimeError("deliberate")
+
+    with pytest.raises(RuntimeError):
+        await RequestLoggingMiddleware(raising_app)(scope, None, lambda m: None)
+
+    assert len(scope["state"][REQUEST_ID_STATE_KEY]) == 16
 
 
 async def test_an_error_after_the_response_started_does_not_send_a_second_start():

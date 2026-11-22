@@ -42,6 +42,11 @@ logger.info("transcription started", extra={"event": "transcription.started", "r
  "event":"transcription.started","room_id":14}
 ```
 
+An unhandled exception is answered by `general_exception_handler`, which runs
+outside the middleware, so the id is also recorded on the ASGI scope and that
+handler echoes the header itself. The 500 a caller sees therefore carries the
+same id as its `request.failed` log line.
+
 The id is always minted by the portal. An upstream `X-Request-ID` is recorded
 beside it as `upstream_request_id` rather than adopted — these endpoints are
 public, so honouring the header would let a caller file its activity under
