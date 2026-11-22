@@ -84,51 +84,18 @@ function setStep(name, status) {
   card.querySelectorAll(`[data-step="${name}"]`).forEach(step => { step.dataset.status = status; });
 }
 
-function getSessionPassKey() {
-  return 'voxbento_srt_pass_' + (card.dataset.url || '');
-}
-
-function getSessionBackupPassKey() {
-  return 'voxbento_srt_backup_pass_' + (card.dataset.url || '');
-}
-
-function loadSavedPassphrases() {
-  try {
-    const p = sessionStorage.getItem(getSessionPassKey());
-    if (p) currentPassphrase = p;
-    const bp = sessionStorage.getItem(getSessionBackupPassKey());
-    if (bp) currentBackupPassphrase = bp;
-  } catch {}
-}
-
 function savePassphrases(pass, backupPass) {
-  try {
-    if (pass !== undefined && pass !== null) {
-      currentPassphrase = pass;
-      if (pass) {
-        sessionStorage.setItem(getSessionPassKey(), pass);
-      } else {
-        sessionStorage.removeItem(getSessionPassKey());
-      }
-    }
-    if (backupPass !== undefined && backupPass !== null) {
-      currentBackupPassphrase = backupPass;
-      if (backupPass) {
-        sessionStorage.setItem(getSessionBackupPassKey(), backupPass);
-      } else {
-        sessionStorage.removeItem(getSessionBackupPassKey());
-      }
-    }
-  } catch {}
+  if (pass !== undefined && pass !== null) {
+    currentPassphrase = pass;
+  }
+  if (backupPass !== undefined && backupPass !== null) {
+    currentBackupPassphrase = backupPass;
+  }
 }
 
 function clearSavedPassphrases() {
   currentPassphrase = '';
   currentBackupPassphrase = '';
-  try {
-    sessionStorage.removeItem(getSessionPassKey());
-    sessionStorage.removeItem(getSessionBackupPassKey());
-  } catch {}
 }
 
 const toolTitles = {
@@ -770,7 +737,6 @@ if (backupToggle) {
     }
   });
 }
-loadSavedPassphrases();
 initToolTabs();
 const savedProgramMode = (function() {
   try { return localStorage.getItem('voxbento_program_mode_' + card.dataset.url); } catch { return null; }

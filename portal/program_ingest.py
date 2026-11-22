@@ -298,10 +298,10 @@ def presented_secret(data: MediaAuth) -> str:
         if data.query:
             try:
                 q = parse_qs(data.query)
-                if "passphrase" in q and q["passphrase"]:
-                    return q["passphrase"][0]
-            except Exception:
-                pass
+            except ValueError:
+                q = {}
+            if "passphrase" in q and q["passphrase"]:
+                return q["passphrase"][0]
         return ""
     if data.protocol == "rtmp" and settings.rtmps_ingest_enabled and not (data.token or data.password):
         # OBS stream key "floor?key=<secret>": the query must be exactly one key parameter.
@@ -406,10 +406,10 @@ async def authorize_publish(data: MediaAuth) -> None:
                 if not presented_pass and data.query:
                     try:
                         q = parse_qs(data.query)
-                        if "passphrase" in q and q["passphrase"]:
-                            presented_pass = q["passphrase"][0]
-                    except Exception:
-                        pass
+                    except ValueError:
+                        q = {}
+                    if "passphrase" in q and q["passphrase"]:
+                        presented_pass = q["passphrase"][0]
                 if not expected_pass or not presented_pass or not secrets.compare_digest(presented_pass, expected_pass):
                     deny(data.ip)
                 if not await is_srt_path_configured_in_mediamtx(data.path):
