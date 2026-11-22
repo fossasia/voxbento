@@ -559,6 +559,9 @@ function onMessage(r, raw) {
     case 'status':
       setStatus('Warming up the speech models on the server…');
       break;
+    case 'notice':
+      setStatus(msg.message);
+      break;
     case 'ready':
       r.ready = true;
       r.deadline = performance.now() + msg.max_seconds * 1000;

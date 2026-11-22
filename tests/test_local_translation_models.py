@@ -114,7 +114,7 @@ def test_new_rooms_get_the_first_offered_model(monkeypatch):
 def test_not_offered_when_the_list_is_empty(none_offered):
     catalog = engine_catalog(_event())
     assert catalog.find("translation", "local") is None
-    assert "NLLB (built in) needs LOCAL_TRANSLATION_MODELS" in catalog.unavailable
+    assert "Built-in translator needs LOCAL_TRANSLATION_MODELS" in catalog.unavailable
     assert blank_plan(catalog).translation_engine != "local"
 
 
@@ -304,7 +304,11 @@ async def test_admin_download_needs_the_csrf_token(people, offered, no_downloads
 async def test_admin_page_lists_models_with_size_and_download_status(people, offered):
     admin_cookie, _, _, _ = people
     states = {NLLB: {"status": "completed"}, OWN_BUILD: {"status": "downloading"}}
-    with patch("portal.routers.translation_models.get_download_progress", side_effect=lambda m: states[m]):
+    # Registry models this server doesn't offer are listed too, as not downloaded.
+    with patch(
+        "portal.routers.translation_models.get_download_progress",
+        side_effect=lambda m: states.get(m, {"status": ""}),
+    ):
         async with _client(admin_cookie) as client:
             page = await client.get("/admin/translation-models/")
     assert page.status_code == 200

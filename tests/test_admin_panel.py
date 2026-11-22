@@ -2682,7 +2682,7 @@ class TestBoothCRUD:
         async with _client() as c:
             html = (await c.get(url, cookies=admin_cookie)).text
         assert "Whisper (built in) — free, downloads the first time" in html
-        assert "NLLB (built in)" in html
+        assert "Built-in translator" in html
         assert "Deepgram Nova" not in html
         # Services without a key are named once, in a hint for each kind.
         assert html.count("appear here once you add their API key") == 2
