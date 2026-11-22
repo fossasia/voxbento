@@ -11,14 +11,14 @@ from translation_load_harness import (
     DROPPED,
     FAILED,
     MISSING,
+    PROVIDER,
     TRANSLATED,
-    WORKER_STATE,
     ChannelReport,
     LoadConfig,
     LoadReport,
     main,
     percentile,
-    release_worker_state,
+    release_schedulers,
     render,
     run_load_test,
     summarise,
@@ -49,28 +49,27 @@ async def test_run_leaves_the_process_as_it_found_it():
     assert manager.tts_manager is real_tts
     assert manager.listener_manager is real_listeners
     offer.assert_not_called()  # fake translations never reach a YouTube caption track
-    for name in WORKER_STATE:
-        state = getattr(worker_module, name, {})
-        assert not [key for key in state if key.startswith("load-")]
+    assert not [key for key in worker_module.SCHEDULERS if key[0] == PROVIDER]
 
 
-def test_release_worker_state_only_removes_this_runs_booths():
-    """Other booths' queues and semaphores are left alone."""
-    state = {"load-abc-1-floor:fr": 1, "load-abcd-1-floor:fr": 2, "pycon-1-floor:fr": 3}
+def test_release_schedulers_only_removes_the_harness_ones():
+    """Schedulers for real providers are left alone."""
+    harness = (PROVIDER, "")
+    local = ("local", "nllb-200-distilled-600M")
+    schedulers = {harness: object(), local: object()}
 
-    with patch.object(worker_module, WORKER_STATE[0], state):
-        release_worker_state("load-abc")
+    with patch.object(worker_module, "SCHEDULERS", schedulers):
+        release_schedulers()
 
-    assert state == {"load-abcd-1-floor:fr": 2, "pycon-1-floor:fr": 3}
+    assert list(schedulers) == [local]
 
 
 def test_worker_state_and_database_attributes_exist():
     """Tracked worker state dictionaries and database engine attributes exist."""
     assert hasattr(database, "_engine"), "_engine missing from database module"
     assert hasattr(database, "_async_session_factory"), "_async_session_factory missing from database module"
-    for name in WORKER_STATE:
-        assert hasattr(worker_module, name), f"{name} missing from worker module"
-        assert isinstance(getattr(worker_module, name), dict)
+    assert hasattr(worker_module, "SCHEDULERS"), "SCHEDULERS missing from worker module"
+    assert isinstance(worker_module.SCHEDULERS, dict)
     assert hasattr(worker_module, "reset_worker_state")
 
 
@@ -78,20 +77,17 @@ def test_worker_reset_hook():
     """The worker's reset hook clears only the matching prefix when given, or all state."""
     worker_module.reset_worker_state()
     try:
-        worker_module.LANGUAGE_QUEUES["load-abc-1-floor:fr"] = 1
-        worker_module.LANGUAGE_QUEUES["load-abcd-1-floor:fr"] = 2
-        worker_module.LANGUAGE_QUEUES["pycon-1-floor:fr"] = 3
-        worker_module.LANGUAGE_SEMAPHORES["load-abc-1-floor:fr"] = asyncio.Semaphore(2)
+        worker_module.SCHEDULERS[("load-abc-1", "m1")] = object()  # type: ignore[assignment]
+        worker_module.SCHEDULERS[("load-abcd-1", "m2")] = object()  # type: ignore[assignment]
+        worker_module.SCHEDULERS[("pycon-1", "m3")] = object()  # type: ignore[assignment]
 
         worker_module.reset_worker_state("load-abc-")
-        assert "load-abc-1-floor:fr" not in worker_module.LANGUAGE_QUEUES
-        assert "load-abc-1-floor:fr" not in worker_module.LANGUAGE_SEMAPHORES
-        assert worker_module.LANGUAGE_QUEUES["load-abcd-1-floor:fr"] == 2
-        assert worker_module.LANGUAGE_QUEUES["pycon-1-floor:fr"] == 3
+        assert ("load-abc-1", "m1") not in worker_module.SCHEDULERS
+        assert ("load-abcd-1", "m2") in worker_module.SCHEDULERS
+        assert ("pycon-1", "m3") in worker_module.SCHEDULERS
 
         worker_module.reset_worker_state()
-        assert not worker_module.LANGUAGE_QUEUES
-        assert not worker_module.LANGUAGE_SEMAPHORES
+        assert not worker_module.SCHEDULERS
     finally:
         worker_module.reset_worker_state()
 
