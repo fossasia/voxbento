@@ -112,6 +112,9 @@ These variables control external encoder ingest and YouTube RTMPS forwarding.
 | `PROGRAM_RELAY_CONTROL_SECRET` | _(none)_ | Shared Bearer token (min 32 characters) for authenticating commands to `program-relay`. |
 | `PROGRAM_RELAY_MAX` | `4` | Maximum concurrent active YouTube relay streams. |
 | `PROGRAM_RELAY_ALLOWED_HOSTS` | `a.rtmps.youtube.com,b.rtmps.youtube.com` | Comma-separated allowlist of permitted destination hostnames for RTMPS relay. |
+| `YOUTUBE_OAUTH_CLIENT_ID` | _(none)_ | Google OAuth web client id for Sign in with YouTube. The feature is off unless this and the secret are both set; see `docs/youtube-connect.md`. |
+| `YOUTUBE_OAUTH_CLIENT_SECRET` | _(none)_ | Its client secret. Production refuses to start when only one of the two is set. The client's redirect URI is `{PUBLIC_BASE_URL}/youtube/oauth/callback`. |
+| `YOUTUBE_STATUS_CACHE_SECS` | `60.0` | How long a room's YouTube broadcast status is reused before asking YouTube again (saves API quota; quota errors back off for five minutes). |
 
 ## Token Expiry and Embed Controls
 
@@ -135,10 +138,12 @@ These variables control external encoder ingest and YouTube RTMPS forwarding.
 | `LIVE_DEMO_MAX_SESSION_SECONDS` | `120` | Longest single demo run. |
 | `LIVE_DEMO_SESSIONS_PER_IP_PER_HOUR` | `12` | Demo runs one client address may start per hour. |
 | `NVIDIA_FUNCTION_ID` | _(empty)_ | Optional function ID for NVIDIA Cloud Riva integrations. |
-| `LOCAL_TRANSLATION_MODELS` | `nllb-200-distilled-600M` | Comma-separated built-in (NLLB) translation models rooms and booths may use. The first one is the default. Each name can be at most 100 characters. Only these can be selected or downloaded, and only Admins can start a download. The live demo uses its own `LIVE_DEMO_TRANSLATION_MODEL` and downloads it itself. A name that isn't in the registry is loaded as your own build, from a Hugging Face repository or a folder on the server. Leave empty to turn built-in translation off. |
+| `LOCAL_TRANSLATION_MODELS` | `nllb-200-distilled-600M` | Comma-separated built-in translation models rooms and booths may use: `nllb-200-distilled-600M` and `madlad400-3b-mt` are in the registry. The first one is the default. Each name can be at most 100 characters. Only these can be selected or downloaded, and only Admins can start a download. The live demo uses its own `LIVE_DEMO_TRANSLATION_MODEL` and downloads it itself. A name that isn't in the registry is loaded as your own build, from a Hugging Face repository or a folder on the server. Leave empty to turn built-in translation off. |
 | `SELF_HOSTED_LLM_BASE_URL` | _(empty)_ | Base URL of your own OpenAI-compatible server, for example `http://localhost:11434/v1`, without `/chat/completions`. Must be `http` or `https` with a valid port and no credentials, query string or fragment. Only the server sets it; rooms can't. |
 | `SELF_HOSTED_LLM_MODELS` | _(empty)_ | Comma-separated models rooms and booths may use, spelled exactly as the server names them (for Ollama, as `ollama list` shows them). The first one is the default. Each name can be at most 100 characters. Self-hosted translation is offered only when this and the URL are both set. |
 | `SELF_HOSTED_LLM_API_KEY` | _(empty)_ | Optional bearer token, for servers started with an API key (for example vLLM `--api-key`). |
+| `SELF_HOSTED_LLM_CONCURRENCY` | `4` | Most translation requests sent to the self-hosted server at once, across all rooms. Set it to what the server runs in parallel (for Ollama, `OLLAMA_NUM_PARALLEL`). Further requests wait, with rooms taking turns. |
+| `TRANSLATION_API_CONCURRENCY` | `32` | Most translation requests one event sends at once to a hosted provider (OpenAI, OpenRouter, Groq, Gemini, Anthropic) with its API key, across its rooms. Each event has its own limit, so an event whose key is slow or rate-limited does not hold up other events. Further requests wait, with rooms taking turns. Local models need no setting: each loaded model runs one translation at a time. |
 | `MEETING_ANALYSIS_OLLAMA_BASE_URL` | `http://localhost:11434` | Ollama (or OpenAI-compatible) server used for meeting reports when an event chooses the Local service. |
 | `MEETING_ANALYSIS_OLLAMA_NUM_CTX` | `32768` | Context window, in tokens, requested from Ollama for meeting reports. |
 
