@@ -36,10 +36,11 @@ def format_offset(seconds: int) -> str:
     return f"{hours}:{minutes:02d}:{secs:02d}" if hours else f"{minutes:02d}:{secs:02d}"
 
 
-def transcript_lines(segments: Sequence[Segment]) -> list[TranscriptLine]:
+def transcript_lines(segments: Sequence[Segment], origin: datetime | None = None) -> list[TranscriptLine]:
+    """Clean lines, each timed from ``origin`` (the session start), or from the first segment without one."""
     if not segments:
         return []
-    first = segments[0].created_at
+    first = origin or segments[0].created_at
     lines = []
     for segment in segments:
         text = _clean(_TRANSCRIPT_TAG.sub(" ", segment.text or ""), 2000)

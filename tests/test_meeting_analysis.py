@@ -1225,6 +1225,29 @@ async def test_a_translation_report_leaves_out_lines_that_were_never_translated(
     assert "Bienvenue au sommet." in fake.calls[0]["user"] and "ship captions" not in fake.calls[0]["user"]
 
 
+@pytest.mark.anyio
+async def test_a_translation_report_times_lines_from_the_session_start(world, monkeypatch):
+    from portal.models import TranscriptTranslation
+
+    await _enable(world)
+    async with get_session() as s:
+        first, second = (await s.scalars(select(TranscriptSegment).order_by(TranscriptSegment.id))).all()
+        s.add(TranscriptTranslation(segment_id=second.id, language_code="fr", text="Nous livrerons les sous-titres."))
+        started_at, ended_at = first.created_at, second.created_at
+    fake = FakeProvider()
+    monkeypatch.setattr(worker, "get_provider", lambda name: fake)
+    report_id = await _report(
+        world, transcript_language="fr", language_code="fr", session_started_at=started_at, session_ended_at=ended_at
+    )
+    await worker.run_analysis(report_id)
+    assert "[01:15] Nous livrerons" in fake.calls[0]["user"], "the untranslated first line still starts the clock"
+    async with _client() as c:
+        detail = await c.get(
+            f"/admin/events/{world['event']}/rooms/{world['room']}/analysis/{report_id}/", cookies=world["admin"]
+        )
+    assert "01:15" in detail.text and "00:00" not in detail.text
+
+
 async def _auto_on(world, monkeypatch, min_lines: int = 2) -> None:
     await _enable(world, meeting_analysis_auto=True)
     monkeypatch.setattr(settings, "meeting_analysis_auto_min_lines", min_lines)
@@ -1254,6 +1277,23 @@ async def test_an_automatic_report_covers_the_latest_session_once(world, monkeyp
 
 
 @pytest.mark.anyio
+async def test_a_report_left_by_a_server_restart_does_not_block_the_automatic_one(world, monkeypatch):
+    from portal.meeting_analysis import auto
+    from portal.meeting_analysis.constants import STALE_AFTER
+
+    await _auto_on(world, monkeypatch)
+    async with get_session() as s:
+        first, last = (await s.scalars(select(TranscriptSegment).order_by(TranscriptSegment.id))).all()
+        bounds = {"session_started_at": first.created_at, "session_ended_at": last.created_at}
+    stale_id = await _report(
+        world, status="running", created_at=utc_now() - STALE_AFTER - timedelta(minutes=1), **bounds
+    )
+    report_id = await auto.create_auto_report(world["room"], "floor")
+    assert report_id is not None
+    assert (await _load(stale_id)).status == "failed"
+
+
+@pytest.mark.anyio
 async def test_no_automatic_report_unless_the_event_asks_and_the_session_is_long_enough(world, monkeypatch):
     from portal.meeting_analysis import auto
 
@@ -1262,6 +1302,10 @@ async def test_no_automatic_report_unless_the_event_asks_and_the_session_is_long
     await _auto_on(world, monkeypatch, min_lines=3)
     assert await auto.create_auto_report(world["room"], "floor") is None, "two lines are a sound check"
     assert await auto.create_auto_report(world["room"], "es") is None, "no transcript for that channel"
+    monkeypatch.setattr(settings, "meeting_analysis_auto_min_lines", 1)
+    await _enable(world, deleted_at=utc_now())
+    assert await auto.create_auto_report(world["room"], "floor") is None, "the event was deleted during the wait"
+    await _enable(world, deleted_at=None)
     await _enable(world, meeting_analysis_enabled=False)
     monkeypatch.setattr(settings, "meeting_analysis_auto_min_lines", 1)
     assert await auto.create_auto_report(world["room"], "floor") is None, "reports are off"
@@ -1287,6 +1331,48 @@ async def test_an_automatic_report_waits_for_the_room_and_skips_restarted_captio
         (await s.get(MeetingReport, busy_id)).status = "done"
     report_id = await auto.auto_report(world["room"], "floor", lambda: False)
     assert started == [report_id] and (await _load(report_id)).automatic
+
+
+@pytest.mark.anyio
+async def test_captions_that_restart_while_an_automatic_report_is_queued_withdraw_it(world, monkeypatch):
+    from datetime import timedelta as td
+
+    from portal.meeting_analysis import auto
+
+    await _auto_on(world, monkeypatch)
+    monkeypatch.setattr(auto, "AUTO_DELAY", td(0))
+    started: list[int] = []
+    monkeypatch.setattr(auto, "start_analysis", started.append)
+    checks = iter([False, True])
+    assert await auto.auto_report(world["room"], "floor", lambda: next(checks)) is None
+    assert started == []
+    async with get_session() as s:
+        assert (await s.scalars(select(MeetingReport))).all() == [], "the queued report was withdrawn"
+
+
+@pytest.mark.anyio
+async def test_a_later_stop_overtakes_the_earlier_timer(monkeypatch):
+    import asyncio
+
+    from portal.meeting_analysis import auto
+
+    timers = []
+
+    def fake_auto_report(room_id, channel_id, overtaken):
+        timers.append(overtaken)
+        return asyncio.sleep(0)
+
+    monkeypatch.setattr(auto, "auto_report", fake_auto_report)
+    running = False
+    auto.schedule_auto_report(7, "floor", lambda: running)
+    auto.schedule_auto_report(7, "floor", lambda: running)
+    auto.schedule_auto_report(7, "es", lambda: running)
+    first, second, other = timers
+    assert first() and not second() and not other(), "only each channel's latest stop counts"
+    running = True
+    assert second(), "captions started again"
+    await asyncio.sleep(0.01)
+    assert auto._latest_stop == {}, "finished timers are forgotten"
 
 
 @pytest.mark.anyio

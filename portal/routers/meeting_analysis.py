@@ -180,7 +180,7 @@ async def room_analysis_report(request: Request, event_id: int, room_id: int, re
         if report.status == STATUS_DONE and report.last_segment_id is not None:
             segments = await report_lines(session, report, covered_only=True)
     admin_flags = await get_access_flags(request, event_id=event_id, room_id=room_id)
-    transcript = [(format_offset(line.offset_seconds), line.text) for line in transcript_lines(segments)]
+    transcript = [(format_offset(line.offset_seconds), line.text) for line in transcript_lines(segments, report.session_started_at)]
     return templates.TemplateResponse(
         request=request,
         name="admin/room_analysis_report.html",

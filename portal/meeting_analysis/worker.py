@@ -145,7 +145,7 @@ async def _prepare(report_id: int) -> _Job | None:
             report.error = "The event or room no longer exists."
             return None
         segments = await report_lines(session, report)
-        lines = transcript_lines(segments)
+        lines = transcript_lines(segments, report.session_started_at)
         if not lines:
             report.status = STATUS_FAILED
             report.error = (

@@ -122,7 +122,8 @@ channel's latest session:
 - Only for a session with at least `MEETING_ANALYSIS_AUTO_MIN_LINES` transcript
   lines (default 20), so a sound check leaves no report.
 - Not when captions start again within that minute: a quick restart (a changed
-  key, a dropped stream) carries on the same session.
+  key, a dropped stream) carries on the same session. If they stop again, the
+  minute starts over from that later stop.
 - Not when the session already has a report covering it. If the session goes on
   after its report (captions started again later, within 30 minutes), the next
   stop writes a new report covering all of it.
