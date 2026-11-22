@@ -1140,6 +1140,11 @@ async def save_transcript_segment(booth_id_str: str, text: str, room_id: int | N
     from portal.models import DBBooth, Event
 
     parts = booth_id_str.split("-")
+
+    if room_id is None:
+        logger.warning("Cannot save transcript segment without a room (booth '%s')", booth_id_str)
+        return None
+
     if len(parts) < 3:
         # Fallback for floor or invalid
         language_code = parts[-1] if parts else "floor"
