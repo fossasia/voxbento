@@ -26,6 +26,7 @@ Describe how you tested these changes.
 
 ## Checklist
 
+- [ ] Screencast is not required for this PR.
 - [ ] My code follows the project's coding standards
 - [ ] I have tested my changes
 - [ ] I have updated documentation where necessary
