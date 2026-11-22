@@ -304,7 +304,11 @@ async def test_admin_download_needs_the_csrf_token(people, offered, no_downloads
 async def test_admin_page_lists_models_with_size_and_download_status(people, offered):
     admin_cookie, _, _, _ = people
     states = {NLLB: {"status": "completed"}, OWN_BUILD: {"status": "downloading"}}
-    with patch("portal.routers.translation_models.get_download_progress", side_effect=lambda m: states[m]):
+    # Registry models this server doesn't offer are listed too, as not downloaded.
+    with patch(
+        "portal.routers.translation_models.get_download_progress",
+        side_effect=lambda m: states.get(m, {"status": ""}),
+    ):
         async with _client(admin_cookie) as client:
             page = await client.get("/admin/translation-models/")
     assert page.status_code == 200
