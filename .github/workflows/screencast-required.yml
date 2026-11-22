@@ -131,6 +131,24 @@ jobs:
               return;
             }
             
+            if(!isExemptionRequested) {
+              await github.rest.issues.removeLabel({
+                owner,
+                repo,
+                issue_number: issueNumber,
+                name: EXEMPTION_REQUEST_LABEL,
+              });
+
+              if(!videoPresent) {
+                await github.rest.issues.addLabels({
+                  owner,
+                  repo,
+                  issue_number: issueNumber,
+                  labels: [LABEL],
+                });
+              }
+              core.info(`#${issueNumber}: exemption withdrawn, restored ${LABEL} label`);
+            }
             // 1. If PR currently has the needs-screencast label AND a video is now present:
             // Remove the label immediately and confirm!
             if (hasScreencastLabel && videoPresent) {
