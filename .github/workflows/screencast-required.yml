@@ -39,6 +39,7 @@ permissions:
 
 env:
   LABEL: needs-screencast
+  EXEMPTION_REQUEST_LABEL: screencast-exemption-requested
   REMIND_AFTER_HOURS: "48"
   CLOSE_AFTER_HOURS: "72"
 
@@ -53,6 +54,7 @@ jobs:
           script: |
             const { owner, repo } = context.repo;
             const LABEL = process.env.LABEL;
+            const EXEMPTION_REQUEST_LABEL = process.env.EXEMPTION_REQUEST_LABEL;
             const hours = process.env.CLOSE_AFTER_HOURS;
             const APPROVED_MARKER = '<!-- screencast-approved -->';
 
