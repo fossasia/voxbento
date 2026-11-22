@@ -233,6 +233,8 @@ async function refresh() {
     document.getElementById('program-endpoint').value = data.endpoint;
     document.getElementById('program-rtmps-server').value = data.rtmps_server;
     renderStatus(data);
+    // The "From a YouTube stream" guide follows the room's saved source from here (#1087).
+    card.dispatchEvent(new CustomEvent('program-ingest:status', {detail: {enabled: data.enabled, mode: data.mode}}));
     card.querySelectorAll('[data-ingest-action]').forEach(button => {
       const action = button.dataset.ingestAction;
       const relayBlocked = action === 'enable' && selectedMode() === 'rtmps_relay' && !data.relay_available;

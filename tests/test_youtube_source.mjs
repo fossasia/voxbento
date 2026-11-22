@@ -65,15 +65,30 @@ function radio(name, value, extra = {}) {
   });
 }
 
+// Like a browser radio group: checking one unchecks the others.
+function exclusive(group) {
+  group.forEach((input) => {
+    let checked = input.checked;
+    Object.defineProperty(input, 'checked', {
+      get: () => checked,
+      set: (value) => {
+        if (value) group.forEach((other) => { if (other !== input) other.checked = false; });
+        checked = value;
+      },
+    });
+  });
+  return group;
+}
+
 function page({ choice = 'youtube', initialRoute = '', relayDisabled = false } = {}) {
   const root = new FakeNode('root');
-  const choices = ['youtube', 'meeting', 'encoder', 'desk'].map((value) => radio('audio_choice', value, { checked: value === choice }));
+  const choices = exclusive(['youtube', 'meeting', 'encoder', 'desk'].map((value) => radio('audio_choice', value, { checked: value === choice })));
   choices.forEach((input) => root.appendChild(input));
 
   const guide = root.appendChild(new FakeNode('youtube-source'));
   guide.dataset.initialRoute = initialRoute;
   const connectSlot = guide.appendChild(new FakeNode('connect-slot', { matches: ['[data-youtube-account-slot]'] }));
-  const routes = ['multi', 'forward', 'tab'].map((value) => guide.appendChild(radio('youtube-route', value)));
+  const routes = exclusive(['multi', 'forward', 'tab'].map((value) => guide.appendChild(radio('youtube-route', value))));
   const notes = Object.fromEntries(['multi', 'forward'].map((value) => [value,
     guide.appendChild(new FakeNode(`note-${value}`, { matches: [`[data-route-unavailable="${value}"]`], hidden: true }))]));
   const panels = Object.fromEntries(['', 'multi forward', 'tab'].map((value) => {
@@ -82,6 +97,7 @@ function page({ choice = 'youtube', initialRoute = '', relayDisabled = false } =
     return [value, panel];
   }));
   const ingestSlot = panels['multi forward'].appendChild(new FakeNode('ingest-slot', { matches: ['[data-youtube-ingest-slot]'] }));
+  const tabBlocked = guide.appendChild(new FakeNode('tab-blocked', { matches: ['[data-tab-blocked]'], hidden: true }));
 
   // The encoder panel: the streaming-software card, with the YouTube block inside it.
   const encoderPanel = root.appendChild(new FakeNode('encoder-panel'));
@@ -89,6 +105,7 @@ function page({ choice = 'youtube', initialRoute = '', relayDisabled = false } =
   const picker = ingest.appendChild(new FakeNode('picker', { matches: ['.program-mode-picker'] }));
   const modes = Object.fromEntries(['whip', 'rtmps', 'rtmps_relay'].map((value) => [value,
     picker.appendChild(radio('program-mode', value, { checked: value === 'whip', disabled: value === 'rtmps_relay' && relayDisabled }))]));
+  exclusive(Object.values(modes));
   const setup = ingest.appendChild(new FakeNode('setup'));
   const connect = setup.appendChild(new FakeNode('youtube-connect'));
   setup.appendChild(new FakeNode('destination-form'));
@@ -103,7 +120,9 @@ function page({ choice = 'youtube', initialRoute = '', relayDisabled = false } =
     Event: class { constructor(type) { this.type = type; } },
   });
   vm.runInContext(source, context);
-  return { choices, routes, notes, panels, connectSlot, ingestSlot, encoderPanel, ingest, picker, modes, setup, connect };
+  // What program-ingest.js dispatches after each status check.
+  const status = (detail) => ingest.dispatchEvent({ type: 'program-ingest:status', detail });
+  return { choices, routes, notes, panels, connectSlot, ingestSlot, tabBlocked, encoderPanel, ingest, picker, modes, setup, connect, status };
 }
 
 const choose = (input) => { input.checked = true; input.dispatchEvent({ type: 'change' }); };
@@ -118,6 +137,41 @@ const choose = (input) => { input.checked = true; input.dispatchEvent({ type: 'c
   assert.equal(p.panels['multi forward'].hidden, false);
   assert.equal(p.panels.tab.hidden, true);
   assert.equal(p.panels[''].hidden, true);
+  // The card shows the rendered mode before its first status check, without a change event.
+  assert.equal(p.modes.rtmps_relay.checked, true);
+}
+
+// Until the owner picks a route, the route follows the room's saved source from each status check.
+{
+  const p = page();
+  p.status({ enabled: true, mode: 'rtmps_relay' });
+  assert.equal(p.routes[1].checked, true);
+  assert.equal(p.panels['multi forward'].hidden, false);
+  // Another tab switched the room to an RTMPS copy.
+  p.status({ enabled: true, mode: 'rtmps' });
+  assert.equal(p.routes[0].checked, true);
+  // Once a route is picked here, it stays.
+  choose(p.routes[2]);
+  p.status({ enabled: true, mode: 'rtmps_relay' });
+  assert.equal(p.routes[2].checked, true);
+}
+
+// The tab route on a room still taking an RTMPS stream shows the card to stop it, with the reason.
+{
+  const p = page({ initialRoute: 'multi' });
+  p.status({ enabled: true, mode: 'rtmps' });
+  choose(p.routes[2]);
+  assert.equal(p.panels.tab.hidden, false);
+  assert.equal(p.panels['multi forward'].hidden, false);
+  assert.equal(p.tabBlocked.hidden, false);
+  // "Switch to the online meeting" in the card: the sender can start, the card goes away.
+  p.status({ enabled: false, mode: 'rtmps' });
+  assert.equal(p.panels['multi forward'].hidden, true);
+  assert.equal(p.tabBlocked.hidden, true);
+  // Other routes never show the note.
+  p.status({ enabled: true, mode: 'rtmps' });
+  choose(p.routes[0]);
+  assert.equal(p.tabBlocked.hidden, true);
 }
 
 // A route picks the matching mode in the card, the same as clicking it there; the tab route changes none.

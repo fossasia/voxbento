@@ -22,7 +22,7 @@ from starlette.datastructures import FormData
 from portal.config import settings
 from portal.database import create_booth, delete_booth, list_booths_for_room
 from portal.models import DBBooth, Event, Room, RoomTranslationLanguage
-from portal.program_relay import RELAY_MODE, RTMPS_MODE
+from portal.program_relay import RELAY_MODE, RTMPS_MODE, WHIP_MODE
 from portal.roles import INTERPRETER
 from portal.transcription.constants import ALLOWED_MODELS, ProviderEnum
 from portal.translations.model_languages import supported_languages, unsupported_languages
@@ -697,11 +697,12 @@ def room_audio_choice(room: Room) -> str:
     """Which way VoxBento hears the room today, so the Room audio tab opens on it ('' if none yet).
 
     Only saved room state counts. A room forwarding to YouTube, or hearing a YouTube-linked room through
-    streaming software or the browser sender, opens on the YouTube guide, which holds those same controls.
+    one of the guide's routes (an RTMPS copy or the browser sender), opens on the YouTube guide, which holds
+    those same controls. A WHIP encoder has no route there, so it stays on the streaming-software card.
     """
     if room.floor_source == "program_ingest":
-        source_set_up = bool(room.program_key_hash or room.program_session_secret_hash)
-        if room.program_ingest_mode == RELAY_MODE or (room.youtube_broadcast_id and source_set_up):
+        route = youtube_route(room)
+        if route == YOUTUBE_ROUTE_FORWARD or (route and room.youtube_broadcast_id):
             return AUDIO_YOUTUBE
         if room.program_key_hash:
             return AUDIO_ENCODER
@@ -722,6 +723,8 @@ def youtube_route(room: Room) -> str:
         return YOUTUBE_ROUTE_FORWARD
     if room.program_key_hash and room.program_ingest_mode == RTMPS_MODE:
         return YOUTUBE_ROUTE_MULTI
-    if room.program_session_secret_hash and not room.program_key_hash:
+    # Starting the sender switches the room to WHIP and keeps an earlier WHIP token, so a session counts
+    # whether or not one is there.
+    if room.program_session_secret_hash and room.program_ingest_mode == WHIP_MODE:
         return YOUTUBE_ROUTE_TAB
     return ""

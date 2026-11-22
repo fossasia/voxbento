@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import re
+from html.parser import HTMLParser
 
 import pytest
 from httpx import ASGITransport, AsyncClient
@@ -1136,6 +1137,18 @@ async def test_ai_settings_tab_explains_a_room_without_ai(admin_cookie, event_ro
             {"floor_source": "program_ingest", "program_session_secret_hash": "s", "youtube_broadcast_id": "B"},
             "youtube",
         ),
+        # The browser sender keeps an earlier WHIP token: still the tab route.
+        (
+            {
+                "floor_source": "program_ingest",
+                "program_key_hash": "k",
+                "program_session_secret_hash": "s",
+                "youtube_broadcast_id": "B",
+            },
+            "youtube",
+        ),
+        # A WHIP encoder has no route in the guide, so it stays on the streaming-software card.
+        ({"floor_source": "program_ingest", "program_key_hash": "k", "youtube_broadcast_id": "B"}, "encoder"),
         # A linked broadcast with no source yet.
         ({"youtube_broadcast_id": "Broadcast01"}, "youtube"),
         # Without a broadcast, an extra destination is still streaming software.
@@ -1166,6 +1179,10 @@ def test_room_audio_tab_opens_on_the_source_in_use(fields, choice):
         ({"floor_source": "program_ingest", "program_ingest_mode": "rtmps_relay"}, room_setup.YOUTUBE_ROUTE_FORWARD),
         ({"floor_source": "program_ingest", "program_ingest_mode": "rtmps", "program_key_hash": "k"}, "multi"),
         ({"floor_source": "program_ingest", "program_session_secret_hash": "s"}, room_setup.YOUTUBE_ROUTE_TAB),
+        (
+            {"floor_source": "program_ingest", "program_key_hash": "k", "program_session_secret_hash": "s"},
+            room_setup.YOUTUBE_ROUTE_TAB,
+        ),
         ({"floor_source": "program_ingest", "program_ingest_mode": "whip", "program_key_hash": "k"}, ""),
         ({"floor_source": "jitsi_bot", "program_ingest_mode": "rtmps_relay"}, ""),
     ],
@@ -1188,10 +1205,42 @@ async def test_room_page_offers_the_youtube_guide_over_the_existing_controls(adm
     assert 'data-audio-panel="youtube"' in html
     assert "From a YouTube stream" in html
     assert "/static/js/youtube-source.js" in html
+    page_tree = _PageTree()
+    page_tree.feed(html)
     # The guide reuses the streaming-software card and the YouTube block: each exists exactly once.
-    assert html.count("id='program-ingest'") == 1
-    assert html.count("id='youtube-source'") == 1
+    for element_id in ("program-ingest", "youtube-source", "program-mode-relay"):
+        assert page_tree.ids.count(element_id) == 1, element_id
     # The forwarding route states the outage trade-off, and the tab route links the sender on the tab source.
     assert "a VoxBento outage also interrupts your YouTube stream" in html
     assert f"/rooms/{room_id}/sender/?source=tab" in html
-    assert "<script>" not in html.split("id='youtube-source'")[1].split("</section>")[0]
+    # No inline script anywhere in the guide: only module files.
+    assert page_tree.guide_scripts == []
+
+
+class _PageTree(HTMLParser):
+    """Element ids on the page, and any inline script inside the YouTube guide."""
+
+    def __init__(self):
+        super().__init__()
+        self.ids: list[str] = []
+        self.guide_scripts: list[dict] = []
+        self._guide_depth = 0  # open elements inside #youtube-source, 0 outside it
+
+    def handle_starttag(self, tag, attrs):
+        values = dict(attrs)
+        if "id" in values:
+            self.ids.append(values["id"])
+        if self._guide_depth:
+            if tag == "script" and not values.get("src"):
+                self.guide_scripts.append(values)
+            if tag not in _VOID_TAGS:
+                self._guide_depth += 1
+        elif values.get("id") == "youtube-source":
+            self._guide_depth = 1
+
+    def handle_endtag(self, tag):
+        if self._guide_depth and tag not in _VOID_TAGS:
+            self._guide_depth -= 1
+
+
+_VOID_TAGS = {"area", "base", "br", "col", "embed", "hr", "img", "input", "link", "meta", "source", "track", "wbr"}

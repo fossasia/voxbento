@@ -16,6 +16,11 @@ const audioChoices = [...document.querySelectorAll('input[name="audio_choice"]')
 
 // The program-ingest mode each route stands for.
 const routeModes = {multi: 'rtmps', forward: 'rtmps_relay'};
+const modeRoutes = {rtmps: 'multi', rtmps_relay: 'forward'};
+// Set once the owner picks a route on this page; until then the route follows the room's saved source.
+let routeChosen = false;
+// The room takes an RTMPS stream (either mode), as of the card's last status check.
+let rtmpsActive = false;
 
 // Comment markers remember where each moved block lives when this guide is closed.
 function placeholder(node, name) {
@@ -41,10 +46,15 @@ function modeRadio(mode) {
   return ingest?.querySelector(`input[name="program-mode"][value="${mode}"]`) || null;
 }
 
+// The browser sender is refused while the room takes an RTMPS stream, so the tab route then also shows
+// the streaming-software card, whose "Switch to the online meeting" stops that stream first.
 function showRoutePanels(route) {
+  const blocked = route === 'tab' && rtmpsActive;
   guide.querySelectorAll('[data-route-panel]').forEach(panel => {
-    panel.hidden = !panel.dataset.routePanel.split(' ').includes(route);
+    const routes = panel.dataset.routePanel.split(' ');
+    panel.hidden = !(routes.includes(route) || (blocked && routes.includes('multi')));
   });
+  guide.querySelectorAll('[data-tab-blocked]').forEach(note => { note.hidden = !blocked; });
 }
 
 // Moves the shared blocks in or out. Inside the guide the route question replaces the card's own mode
@@ -65,12 +75,25 @@ function place() {
 // Picking a route selects the matching mode in the streaming-software card, the same as clicking it
 // there: nothing changes on the server until the owner creates a stream key in that card.
 function applyRoute(route) {
+  routeChosen = true;
   showRoutePanels(route);
   const radio = modeRadio(routeModes[route]);
   if (radio && !radio.disabled && !radio.checked) {
     radio.checked = true;
     radio.dispatchEvent(new Event('change'));
   }
+}
+
+// Follows each status check of the streaming-software card: until the owner picks a route here, the route
+// is the one the room's saved source uses, the same rule the card applies to its own mode.
+function followStatus(event) {
+  const {enabled, mode} = event.detail || {};
+  rtmpsActive = Boolean(enabled && modeRoutes[mode]);
+  if (!routeChosen && enabled && modeRoutes[mode]) {
+    const match = routes.find(route => route.value === modeRoutes[mode]);
+    if (match) match.checked = true;
+  }
+  showRoutePanels(selectedRoute());
 }
 
 // A route the server cannot offer (operator has not enabled RTMPS ingest or forwarding) is shown but
@@ -89,8 +112,15 @@ function syncAvailability() {
 if (guide) {
   const initial = guide.dataset.initialRoute;
   const start = routes.find(route => route.value === initial);
-  if (start) start.checked = true;
+  if (start) {
+    start.checked = true;
+    // Until the card's first status check, show it in the mode the page was rendered for. Setting the
+    // radio without a change event leaves the card free to follow the server's mode.
+    const radio = modeRadio(routeModes[start.value]);
+    if (radio && !radio.disabled) radio.checked = true;
+  }
   showRoutePanels(selectedRoute());
+  ingest?.addEventListener('program-ingest:status', followStatus);
 
   routes.forEach(route => route.addEventListener('change', () => applyRoute(route.value)));
   audioChoices.forEach(choice => choice.addEventListener('change', place));
