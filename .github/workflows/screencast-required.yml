@@ -132,13 +132,14 @@ jobs:
             }
             
             if(!isExemptionRequested) {
-              await github.rest.issues.removeLabel({
-                owner,
-                repo,
-                issue_number: issueNumber,
-                name: EXEMPTION_REQUEST_LABEL,
-              });
-
+              if(labelsOnPr.includes(EXEMPTION_REQUEST_LABEL)) {
+                await github.rest.issues.removeLabel({
+                  owner,
+                  repo,
+                  issue_number: issueNumber,
+                  name: EXEMPTION_REQUEST_LABEL,
+                });
+              }
               if(!videoPresent) {
                 await github.rest.issues.addLabels({
                   owner,
