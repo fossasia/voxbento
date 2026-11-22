@@ -108,13 +108,25 @@ jobs:
 
             const isExemptionRequested = selfScreenCastchecklist(currentPr.body);
 
-            if(!labelsOnPr.includes(EXEMPTION_REQUEST_LABEL)) {
-              await github.rest.issues.addLabels({
-                owner,
-                repo,
-                issue_number: issueNumber,
-                labels: [EXEMPTION_REQUEST_LABEL],
-              });
+            if(isExemptionRequested) {
+              if(!labelsOnPr.includes(EXEMPTION_REQUEST_LABEL)) {
+                await github.rest.issues.addLabels({
+                  owner,
+                  repo,
+                  issue_number: issueNumber,
+                  labels: [EXEMPTION_REQUEST_LABEL],
+                });
+              }
+              if(hasScreencastLabel) {
+                await github.rest.issues.removeLabel({
+                  owner,
+                  repo,
+                  issue_number: issueNumber,
+                  name: LABEL,
+                });
+              }
+              core.info(`#${issueNumber}: screencast exemption requested via checklist, skipping`);
+              return;
             }
             
             // 1. If PR currently has the needs-screencast label AND a video is now present:
