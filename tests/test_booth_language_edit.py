@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from datetime import datetime, timezone
 from unittest.mock import Mock
 
 import pytest
@@ -12,7 +13,7 @@ from portal.auth import create_user_token
 from portal.booth_identity import make_booth_id, make_mediamtx_path, parse_booth_id
 from portal.database import configure, create_booth, create_event, create_room, dispose, get_session, init_db
 from portal.globals import booths
-from portal.models import DBBooth, User
+from portal.models import DBBooth, Event, User
 from portal.roles import INTERPRETER
 from portal.routers import admin
 from portal.transcription.worker import active_workers
@@ -174,3 +175,12 @@ async def test_someone_joining_during_the_save_keeps_the_old_booth(booth, monkey
     resp = await _edit(booth, {"language_code": "de"})
     assert resp.status_code == 303
     assert booths.get_booth_sync(booth["booth_id"]) is not None
+
+
+async def test_code_change_on_a_deleted_event_is_not_found(booth):
+    async with get_session() as s:
+        event = await s.get(Event, booth["event"])
+        event.deleted_at = datetime.now(timezone.utc)
+    resp = await _edit(booth, {"language_code": "de"})
+    assert resp.status_code == 404
+    assert (await _saved(booth))[0] == "es"

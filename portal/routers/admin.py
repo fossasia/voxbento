@@ -2954,6 +2954,8 @@ async def admin_edit_booth(request: Request, event_id: int, room_id: int, booth_
                     raise HTTPException(status_code=400, detail=str(e))
                 if language_code != booth.language_code:
                     event = await get_event_by_id(session, event_id)
+                    if event is None:
+                        raise HTTPException(status_code=404, detail="Event not found.")
                     old_booth_key = (event.slug, room_id, booth.language_code)
                     if _booth_in_use(make_booth_id(*old_booth_key)):
                         raise TranslationLanguageError(status_code=409, detail=BOOTH_IN_USE_MESSAGE)
