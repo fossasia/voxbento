@@ -511,8 +511,8 @@ function openTtsWs(roomId, langCode, boothId) {
     ttsRetryTimer = setTimeout(function () {
       ttsRetryTimer = null;
       // Segments sent while the socket was down never arrive, and a restarted
-      // server numbers them again from the start, so the queue starts over
-      // from the first segment the new socket gets.
+      // server numbers a booth's segments again from the start, so the queue
+      // starts over from the first segment the new socket gets.
       speechDelivery.reset();
       resetSegmentQueue();
       openTtsWs(roomId, langCode, boothId);

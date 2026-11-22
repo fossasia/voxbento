@@ -756,7 +756,7 @@ async function run() {
     'reconnecting keeps the audio context and the speech already scheduled on it',
   );
 
-  // A restarted server numbers segments from 1 again, and the held frame from before the drop must not get in the way.
+  // A restarted server numbers a booth's segments from 1 again, and the held frame from before the drop must not get in the way.
   runTimers(3000);
   assert(!historyBox.textContent.includes('Held'), 'a frame held from before the drop is dropped with the old feed');
   first.onmessage({
