@@ -79,9 +79,6 @@ PROVIDER = "load-harness"
 #: How long to wait for the worker to answer every segment once the last one is sent.
 DRAIN_TIMEOUT = 120.0
 
-#: Per-booth state the current worker keeps between segments, by module attribute name.
-WORKER_STATE = ("LANGUAGE_SEMAPHORES", "LANGUAGE_QUEUES")
-
 TRANSLATED = "translated"
 DROPPED = "dropped"
 FAILED = "failed"
@@ -192,6 +189,8 @@ class FakeEngine(TranslationEngine):
         self._jitter = config.jitter
         self._rng = random.Random(config.seed)
         self._hardware = asyncio.Semaphore(config.capacity) if config.capacity else None
+        # The worker's scheduler sends at most this many calls at once (0 = no limit).
+        self.max_concurrency = config.capacity or 10_000
         self.in_flight = 0
         self.peak_in_flight = 0
         #: (text, target code) -> (start, end), in ``time.perf_counter`` seconds.
@@ -287,18 +286,14 @@ async def seed_rooms(config: LoadConfig, slug: str) -> list[tuple[int, list[str]
     return rooms
 
 
-def release_worker_state(slug: str) -> None:
-    """Remove the per-booth queues and semaphores the worker kept for this run's booths.
+def release_schedulers() -> None:
+    """Remove the schedulers the worker made for the harness's provider, and only those.
 
-    The worker never removes them itself, so repeated runs in one process would pile them up.
-    Names the worker no longer has (a scheduler may replace them) are skipped.
+    The worker keeps a scheduler for a while after its last job, so without this the next run
+    in the same process would start from the previous run's scheduler.
     """
-    prefix = f"{slug}-"
-    for name in WORKER_STATE:
-        state = getattr(worker_module, name, None)
-        if isinstance(state, dict):
-            for key in [key for key in state if key.startswith(prefix)]:
-                del state[key]
+    for key in [key for key in worker_module.SCHEDULERS if key[0] == PROVIDER]:
+        del worker_module.SCHEDULERS[key]
 
 
 def summarise(
@@ -400,7 +395,7 @@ async def run_load_test(config: LoadConfig) -> LoadReport:
             wall_time = time.perf_counter() - started
         finally:
             await database.dispose()
-            release_worker_state(slug)
+            release_schedulers()
 
     errors = sum(1 for job in done if not job.cancelled() and job.exception() is not None)
     channels, reasons = summarise(rooms, config.segments, texts, arrivals, engine.calls, tts.first)

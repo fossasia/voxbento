@@ -220,6 +220,11 @@ class Settings(BaseSettings):
     self_hosted_llm_base_url: str = ""
     self_hosted_llm_api_key: str = Field(default="", repr=False)
     self_hosted_llm_models: str = ""
+    # Translation requests in flight at once: to the self-hosted server across all rooms, and
+    # from each event to a hosted provider (OpenAI, Gemini, ...). Further requests
+    # wait, with rooms taking turns. Each local model's limit comes from its CPU threads instead.
+    self_hosted_llm_concurrency: int = Field(default=4, ge=1)
+    translation_api_concurrency: int = Field(default=32, ge=1)
 
     # Built-in translation models this server offers to events (#1191), comma-separated; the
     # first is the default. Models are large, so only the operator chooses what may be downloaded.
