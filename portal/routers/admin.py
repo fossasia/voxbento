@@ -203,7 +203,7 @@ from portal.user_admin import FIELDS as USER_ACCESS_FIELDS
 from portal.user_admin import AccessChange, UserAdminError, delete_user_account, is_last_active_admin, set_user_access
 from portal.user_menu import resolve_user_menu, user_menu_context
 from portal.utils import _check_mediamtx, _make_jitsi_url, get_client_ip, safe_redirect, verify_same_origin
-from portal.websockets.manager import broadcast_transcription, manager
+from portal.websockets.manager import broadcast_transcription, manager, notify_glossary_changed
 from portal.websockets.revocation import revoke_booths_for_deleted_entity, revoke_membership_push
 from portal.workspace_routing import management_template_context, management_url
 
@@ -2158,7 +2158,9 @@ async def admin_upload_ai_vocabulary(request: Request, event_id: int, room_id: i
             )
             imported += 1
         await session.flush()
+        event_slug = await session.scalar(select(Event.slug).where(Event.id == event_id))
 
+    await _push_room_glossary(event_slug, room_id)
     return safe_redirect(
         url=_vocabulary_result_url(event_id, room_id, imported, warnings, languages),
         status_code=status.HTTP_303_SEE_OTHER,
@@ -2211,7 +2213,20 @@ async def admin_delete_ai_vocabulary(request: Request, event_id: int, room_id: i
             except ValueError as exc:
                 raise HTTPException(status_code=400, detail="Invalid vocabulary entry ID.") from exc
         await session.execute(statement)
+        event_slug = await session.scalar(select(Event.slug).where(Event.id == event_id))
+    await _push_room_glossary(event_slug, room_id)
     return safe_redirect(url=f"/admin/events/{event_id}/rooms/{room_id}/", status_code=status.HTTP_303_SEE_OTHER)
+
+
+async def _push_room_glossary(event_slug: str | None, room_id: int) -> None:
+    """Show the edited glossary in the room's open booths; the edit itself is already saved."""
+    if not event_slug:
+        return
+    try:
+        await notify_glossary_changed(event_slug, room_id)
+    except Exception:
+        # Floor captions use the new entries once the cache expires; the list refreshes on the next join.
+        logger.warning("Could not push the edited glossary to room %s booths", room_id, exc_info=True)
 
 
 @router.get("/api/admin/providers/translation/models", dependencies=[Depends(require_owner_or_coordinator)])

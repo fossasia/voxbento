@@ -1203,3 +1203,109 @@ label {
 .portal-footer .footer-links a:hover {
   text-decoration: underline;
 }
+
+/* ── Interpreter Assist: glossary and live floor transcript (#1375) ── */
+.assist-body {
+  display: flex;
+  flex-direction: column;
+  gap: 0.9rem;
+}
+
+.assist-section {
+  display: flex;
+  flex-direction: column;
+  gap: 0.45rem;
+}
+
+.assist-floor-log {
+  max-height: 210px;
+  overflow-y: auto;
+  border: 1px solid var(--bx-border);
+  border-radius: var(--bx-radius-sm);
+  background: var(--bx-surface-2);
+  padding: 0.6rem 0.7rem;
+  font-size: 0.95rem;
+  line-height: 1.55;
+  color: var(--bx-text);
+}
+
+.assist-floor-log:empty {
+  display: none;
+}
+
+.assist-line {
+  margin: 0 0 0.4rem;
+}
+
+.assist-line:last-child {
+  margin-bottom: 0;
+}
+
+.assist-line--partial {
+  color: var(--bx-muted);
+  font-style: italic;
+}
+
+.assist-hit {
+  background: color-mix(in srgb, var(--vb-color-warning) 24%, transparent);
+  color: inherit;
+  border-radius: 4px;
+  padding: 0 0.15rem;
+  font-style: normal;
+  font-weight: 600;
+}
+
+.assist-hit-target {
+  margin-left: 0.3rem;
+  padding: 0 0.3rem;
+  border-radius: 4px;
+  background: var(--bx-surface);
+  border: 1px solid var(--bx-border-strong);
+  color: var(--bx-accent-ink);
+  font-size: 0.8em;
+  font-weight: 700;
+}
+
+.assist-glossary {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  max-height: 240px;
+  overflow-y: auto;
+  border: 1px solid var(--bx-border);
+  border-radius: var(--bx-radius-sm);
+}
+
+.assist-glossary:empty {
+  display: none;
+}
+
+.assist-term {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  gap: 0.15rem 0.6rem;
+  padding: 0.45rem 0.6rem;
+  border-bottom: 1px solid var(--bx-border);
+  font-size: 0.86rem;
+}
+
+.assist-term:last-child {
+  border-bottom: 0;
+}
+
+.assist-term-source {
+  color: var(--bx-text);
+  overflow-wrap: anywhere;
+}
+
+.assist-term-target {
+  color: var(--bx-accent-ink);
+  font-weight: 700;
+  overflow-wrap: anywhere;
+}
+
+.assist-term-note {
+  grid-column: 1 / -1;
+  font-size: 0.78rem;
+  color: var(--bx-muted);
+}

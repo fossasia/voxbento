@@ -21,6 +21,7 @@ from portal.booth_identity import booth_id_to_mediamtx_path, parse_booth_id
 from portal.booth_publish import TICKET_TTL_SECS, issue_ticket
 from portal.config import settings
 from portal.globals import booths
+from portal.interpreter_assist import FLOOR_LANGUAGE, FloorCaptionRelay, GlossaryCache
 from portal.roles import ALL_ROLES, INTERPRETER, can_set_active
 from portal.tasks import track_task
 
@@ -196,6 +197,18 @@ class ConnectionManager:
 
     def get_session(self, ws: WebSocket) -> Session | None:
         return self._sessions.get(id(ws))
+
+    def booth_ids_in_room(self, event_slug: str, room_id: int) -> list[str]:
+        """Interpreter booths of one room that have at least one socket open, floor excluded."""
+        booth_ids = []
+        for booth_id in self._rooms:
+            try:
+                slug, booth_room_id, language_code = parse_booth_id(booth_id)
+            except ValueError:
+                continue
+            if slug == event_slug and booth_room_id == room_id and language_code != FLOOR_LANGUAGE:
+                booth_ids.append(booth_id)
+        return sorted(booth_ids)
 
     def detach_participant(self, booth_id: str, participant_id: str, keep: WebSocket) -> list[WebSocket]:
         """Take *participant_id* away from every socket in the booth but *keep*.
@@ -699,6 +712,20 @@ class TTSConnectionManager:
 manager = ConnectionManager()
 listener_manager = ListenerConnectionManager()
 tts_manager = TTSConnectionManager()
+# Interpreter Assist (#1375): delivered through manager.broadcast, so only sockets that hold
+# a role in the receiving booth get the room's glossary and floor captions.
+glossary_cache = GlossaryCache()
+floor_caption_relay = FloorCaptionRelay(
+    send=manager.broadcast, booth_ids_in_room=manager.booth_ids_in_room, glossary=glossary_cache
+)
+
+
+async def notify_glossary_changed(event_slug: str, room_id: int) -> None:
+    """Send the new glossary to every booth of the room that is open now."""
+    glossary_cache.invalidate_room(event_slug, room_id)
+    for booth_id in manager.booth_ids_in_room(event_slug, room_id):
+        glossary = await glossary_cache.get(booth_id)
+        await manager.broadcast(booth_id, glossary.message())
 
 
 async def broadcast_booth_state(booth_id: str, state: dict) -> None:
@@ -723,6 +750,9 @@ async def broadcast_transcription(booth_id: str, payload: str | dict):
     else:
         # Aggregator payload
         await listener_manager.broadcast(booth_id, payload)
+        if booth_id.endswith(f"-{FLOOR_LANGUAGE}"):
+            # Queued, never awaited: the booths of the room get it without delaying listeners.
+            floor_caption_relay.offer(booth_id, payload)
 
 
 async def _handle_join(ws: WebSocket, session: Session, data: dict) -> None:
@@ -813,8 +843,18 @@ async def _handle_join(ws: WebSocket, session: Session, data: dict) -> None:
     # never change it, so we deliberately do NOT re-apply any persisted value
     # here — doing so would flip an interpreter live (or Mission Control to
     # "Stop") simply because they reconnected.
+    # Interpreter Assist: the booth's glossary comes with the join, so only someone who joined
+    # with a role in this booth receives it. Later edits arrive as booth:glossary.
+    glossary = await glossary_cache.get(session.booth_id)
     await ws.send_text(
-        json.dumps({"type": "booth:joined", "participant_id": participant.participant_id, "state": state})
+        json.dumps(
+            {
+                "type": "booth:joined",
+                "participant_id": participant.participant_id,
+                "state": state,
+                "glossary": glossary.message(),
+            }
+        )
     )
     await broadcast_booth_state(session.booth_id, state)
 

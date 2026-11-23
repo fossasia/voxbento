@@ -1,4 +1,5 @@
 import { createBackoff, finalCloseMessage } from './booth-reconnect.js'
+import { createInterpreterAssist } from './interpreter-assist.js'
 import { micIsActive, watchMicTracks } from './mic-activity.js'
 
 const portal = document.getElementById('interpreter-portal')
@@ -58,6 +59,7 @@ const state = {
 }
 
 const reconnectBackoff = createBackoff()
+const assist = createInterpreterAssist(document)
 
 const elements = {
   connectionStatus: document.getElementById('connection-status'),
@@ -268,6 +270,7 @@ function handleServerMessage(data) {
     // being unlocked from Mission Control — never by the act of joining itself,
     // because a booth defaults to locked (Off) until a coordinator turns it on.
     applyBoothState(data.state)
+    if (data.glossary) assist.setGlossary(data.glossary)
     if (rejoined) {
       reconcileIngestAfterRejoin()
     } else {
@@ -284,6 +287,10 @@ function handleServerMessage(data) {
   } else if (type === 'booth:chat') {
     state.chatMessages.push(data.message)
     renderChat()
+  } else if (type === 'booth:glossary') {
+    assist.setGlossary(data)
+  } else if (type === 'booth:floor-caption') {
+    assist.handleFloorCaption(data)
   } else if (type === 'booth:error') {
     showError(data.message || 'An unknown booth error occurred.')
   }
