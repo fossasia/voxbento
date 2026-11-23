@@ -103,7 +103,7 @@ return 404; successful deletion returns 204.
 | `/ws/booth/{booth_id}` | optional JWT via `?token=` + cookies (`session_token` or `user_token`) | See WebSocket Protocol in `REPOSITORY_CONTEXT.md` |
 | `/ws/captions/{booth_id}` | optional JWT via `?token=` (always validated; user tokens must belong to an active account issued after its session cutoff); listener token, join code (cookie or `?code=`), or current user session required when event has `listener_join_code`; events without a join code retain public caption access with an anonymous connection cap | Receives `booth:state` (listener-safe live/lock status, sent on connect and on change), `caption`, and `translated_caption` messages; listener captions feed. Supports `{event_slug}-{room_id}-{language_code}` (`floor-{room_id}` allowed only in unauthenticated dev). Closes 1011 when the session lookup fails so clients can retry |
 | `/ws/tts/{room_id}/{language_code}/{booth_id}` | JWT query param, session/user token, or listener join code cookie (a cookie code spends the shared join-code budget when connecting); current account state and session cutoff checked for user tokens, credentials rechecked at most every 5 s while bundles are sent (a listener-code recheck only compares the code and spends no budget); a failed DB check withholds the bundle | Receives framed binary bundle messages (1-byte version `0x01`, 4-byte big-endian header length `L`, `L`-byte UTF-8 JSON header, optional 24 kHz 16-bit mono PCM payload) |
-| `/ws/demo/live` | none; same-origin `Origin` required (else 403/4003); refused (close 1008) when the Admin or `LIVE_DEMO_ENABLED=false` switched it off; per-server session cap (close 1013), per-IP hourly budget by ASGI client address (close 1008) and time limit, all from `/admin/live-demo/` (env defaults until saved) | Home-page live demo on local models (faster-whisper → NLLB → Supertonic). Client sends JSON `start` `{source, targets (≤ admin limit), listen, names, glossary:[{term, lang (all or a target), translation}] (≤10)}`, then binary 16 kHz s16le mono frames (≤1 s each), optional `listen`, and `stop`. Server sends `status`, `ready`, `partial`/`final` captions, `translation`, `audio` header followed by one binary 24 kHz PCM frame, `error`, and `done` before closing |
+| `/ws/demo/live` | none; same-origin `Origin` required (else 403/4003); refused (close 1008) when the Admin or `LIVE_DEMO_ENABLED=false` switched it off; per-server session cap (close 1013), per-IP hourly budget by ASGI client address (close 1008), daily minutes cap (`daily_limit`, close 1008; a running try ends with `done` reason `daily_limit`) and time limit, all from `/admin/live-demo/` (env defaults until saved) | Home-page live demo on local models (faster-whisper → NLLB → Supertonic), or in room mode on a room's own speech, translation and voice services with its event's keys (the speech service's `run_stream` reads the audio through `AudioPipe`; nothing is saved to the room). Client sends JSON `start` `{source, targets (≤ admin limit), listen, names, glossary:[{term, lang (all or a target), translation}] (≤10)}`, then binary 16 kHz s16le mono frames (≤1 s each), optional `listen`, and `stop`. Server sends `status`, `ready`, `notice` (a speech service's status line), `partial`/`final` captions, `translation`, `audio` header followed by one binary 24 kHz PCM frame, `error`, and `done` before closing |
 
 ---
 
@@ -174,8 +174,10 @@ with `?error=invalid_role&role=…` and the page explains why.
 | POST | `/admin/emails/{key}/draft` | — | Admin + same-origin; validates allowed placeholders and saves a draft |
 | POST | `/admin/emails/{key}/publish` | — | Admin + same-origin; publishes the draft and records a revision |
 | POST | `/admin/emails/{key}/test` | — | Admin + same-origin; queues a safe example message to the signed-in Admin |
-| GET | `/admin/live-demo/` | `admin/live_demo.html` | Admin-only settings for the home-page live demo: on/off, voice, speech model, limits, site glossary; shows visitors using it now and whether models are loaded |
-| POST | `/admin/live-demo/` | — | Admin + same-origin; validates ranges and every glossary line, saves the `live_demo_settings` row and replaces the cached settings; 400 re-renders with the error |
+| GET | `/admin/translation-models/` | `admin/translation_models.html` | Admin-only (#1191); offered built-in models (`LOCAL_TRANSLATION_MODELS`) then the other registry models, with size, languages, licence and download status (`portal/routers/translation_models.py`) |
+| POST | `/admin/translation-models/download` | — | Admin + CSRF; form `model` must be offered (else `404`); starts the download in the background and redirects `303` to the page |
+| GET | `/admin/live-demo/` | `admin/live_demo.html` | Admin-only settings for the home-page live demo: on/off, voice, AI engines (built-in models or independent provider/model settings and encrypted write-only keys), speech model, limits including demo minutes per day, site glossary; shows visitors using it now, today's minutes, whether models are loaded and why configured services cannot run the demo |
+| POST | `/admin/live-demo/` | — | Admin + same-origin; validates ranges, every glossary line and provider/model choices, saves the `live_demo_settings` row and replaces the cached settings; 400 re-renders with the error |
 | POST | `/admin/live-demo/warm-up` | — | Admin + same-origin; loads (first time: downloads) the demo's models in a background task |
 | GET | `/admin/hosting-access/` | `admin/hosting_access.html` | "People with access" tab: hosts and pending hosting invitations, events owned, Remove access / Cancel invitation (#768) |
 | GET | `/admin/hosting-access/requests/` | `admin/hosting_access.html` | "Requests" tab: open hosting requests, newest first |
@@ -194,6 +196,7 @@ with `?error=invalid_role&role=…` and the page explains why.
 | `portal/routers/listener.py` | WHEP listener UI route |
 | `portal/routers/api.py` | Booth state REST API, WHIP URL generation |
 | `portal/routers/admin.py` | Shared event-management handlers and system-admin routes |
+| `portal/routers/meeting_analysis.py` | Room meeting reports page, report generation, Markdown download and status API |
 | `portal/room_setup.py` | Room plan parsing, available AI services, booth/translation-language reconciliation, and room summaries; uses existing tables |
 | `portal/workspace_routing.py` | `/workspace` handler mapping, legacy organizer redirects, and template URL context |
 | `portal/websockets/manager.py` | `ws_booth` and `ws_captions` endpoints |
@@ -242,6 +245,58 @@ with `?error=invalid_role&role=…` and the page explains why.
 - `program-relay` service (private, `Authorization: Bearer $PROGRAM_RELAY_CONTROL_SECRET`):
   `GET /relays`, `PUT /relays/{room_id}` `{source, destination, fingerprint}`,
   `DELETE /relays/{room_id}`, unauthenticated `GET /healthz`.
+
+## Sign in with YouTube routes (#1087)
+
+`portal/routers/youtube.py`; see `docs/youtube-connect.md`. Event-owner
+(`require_event_owner`), `Cache-Control: no-store`, 404 while
+`YOUTUBE_OAUTH_CLIENT_ID`/`_SECRET` are unset (except the status route, which
+returns `available: false`). PUT/DELETE are origin-checked and require
+the admin CSRF token (`require_admin_csrf`, `X-CSRF-Token`).
+
+- `GET /workspace/events/{event_id}/youtube`: `{available, connected, channel_title,
+  channel_id, connected_at, last_error}`. `DELETE` revokes the refresh token at Google
+  (unless another event uses the same channel), deletes the connection and clears every
+  room's broadcast.
+- `GET /workspace/events/{event_id}/youtube/connect?room_id=N`: sets the signed
+  `vb_yt_oauth` cookie (nonce, PKCE verifier, event, room, user; HttpOnly, SameSite=Lax,
+  path `/youtube/oauth`, 10 min) and 303s to Google.
+- `GET /youtube/oauth/callback` (not a workspace route; `/oauth/` keeps `code=` out of the
+  access log): 400 bad/expired cookie or state mismatch, 403 different signed-in user or no
+  ownership; otherwise stores the encrypted refresh token and 303s to the room page with
+  `?youtube=connected|cancelled|error|no-channel#audio`. A different channel than before
+  clears every room's broadcast and the relay destination filled in from it. Link,
+  reconnect and disconnect are serialized per event.
+- `GET /workspace/events/{event_id}/youtube/broadcasts`: active + upcoming broadcasts, live
+  first; 409 `{detail, last_error}` when access was revoked.
+- `PUT/DELETE /workspace/events/{event_id}/rooms/{room_id}/youtube/broadcast`: PUT
+  `{broadcast}` (link or id) links the room and, in relay mode, stores the bound stream's
+  ingest address and key as the relay destination; 422 bad link / not on the channel / no
+  bound stream, 409 sign in again, 502 YouTube unavailable. The key is never returned.
+  DELETE unlinks and keeps the relay destination.
+- `GET .../program-ingest` adds `youtube` (`broadcast_id`, `title`, `life_cycle_status`,
+  `stream_status`, `health`, `latency_preference`, `checked_at`, or `{error}`) when the room
+  has a linked broadcast on a connected channel; cached 60 s per room, five minutes after a
+  quota or rate-limit error.
+
+## Meeting report routes (#1080)
+
+- `GET /workspace/events/{event_id}/rooms/{room_id}/analysis/`: owners and room
+  coordinators; lists the room's reports (no-store). Also marks reports left
+  in progress for 30 minutes as failed.
+- `POST /workspace/events/{event_id}/rooms/{room_id}/analysis/`: event owners,
+  origin-checked. Form `session` (`{channel}:{first segment id}`, one of the
+  channel's sessions as listed on the page), or `channel` alone for its latest
+  session; `channel` is `floor` or a booth language code with stored segments. Redirects with `?error=disabled|busy|channel`; one report per room
+  is written at a time, in a tracked background task.
+- `GET /workspace/events/{event_id}/rooms/{room_id}/analysis/{report_id}/`:
+  owners and coordinators; one report with Summary and Transcript tabs. The
+  transcript shows the segments of the report's session up to `covered_until`.
+- `GET /workspace/events/{event_id}/rooms/{room_id}/analysis/{report_id}.md`:
+  owners and coordinators; Markdown download of a finished report.
+- `GET /api/workspace/events/{event_id}/rooms/{room_id}/analysis/{report_id}`:
+  `{id, status, error}` for the page's polling. All five map to shared
+  `/admin/...` handlers in `portal/routers/meeting_analysis.py`.
 
 ## Meeting source routes (#747)
 

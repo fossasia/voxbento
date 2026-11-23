@@ -3,7 +3,8 @@
 VOXBENTO_REAL_MODELS=1 uv run --extra supertonic pytest tests/test_real_models.py -v
 
 Nothing is mocked: the providers download and load the real weights (about 1.2 GB on first
-run, cached under HF_HOME and SUPERTONIC_CACHE_DIR afterwards) and run on the CPU. The
+run, cached under HF_HOME and SUPERTONIC_CACHE_DIR afterwards) and run on the CPU. NLLB is
+downloaded first the way an Admin does it, since rooms never download a translation model. The
 models check each other, so no audio fixtures are stored: Supertonic speaks a known
 sentence and Whisper has to hear it back. Model output is not bit-stable across library
 versions, so every assertion is a keyword or word-overlap threshold, never an exact string.
@@ -26,7 +27,7 @@ from portal.transcription.providers.base import BoothTranscriptionState, Provide
 from portal.transcription.providers.local import LocalProvider as WhisperProvider
 from portal.translations.constants import TRANSLATION_MODELS, TranslationProviderEnum
 from portal.translations.providers.local import LocalProvider as NllbProvider
-from portal.translations.providers.local import get_download_progress
+from portal.translations.providers.local import get_download_progress, trigger_download
 from portal.translations.vocabulary import VocabularyEntryInput
 from portal.tts.providers.base import TTSProviderEnum, get_tts_provider
 
@@ -49,6 +50,12 @@ ENGLISH = "The conference starts at nine o'clock tomorrow morning. Please bring 
 ENGLISH_KEYWORDS = ("conference", "starts", "tomorrow", "morning", "laptop", "badge")
 
 _speech_cache: dict[tuple[str, str], bytes] = {}
+
+
+@pytest.fixture(scope="module", autouse=True)
+def _nllb_downloaded():
+    trigger_download(NLLB_MODEL)
+    assert get_download_progress(NLLB_MODEL).get("status") == "completed", "NLLB download failed"
 
 
 def _normalize(text: str) -> str:

@@ -18,6 +18,9 @@ from portal.transcription.providers.base import (
 
 logger = logging.getLogger(__name__)
 
+# Allow delayed finals after audio EOF without retaining a session indefinitely.
+FINAL_TRANSCRIPT_TIMEOUT_SECONDS = 3.0
+
 
 class OpenAIProvider(TranscriptionProvider):
     # The realtime API takes 24 kHz PCM
@@ -188,30 +191,30 @@ class OpenAIProvider(TranscriptionProvider):
 
                     sender_task = asyncio.create_task(sender())
                     receiver_task = asyncio.create_task(receiver())
-                    done, pending = await asyncio.wait(
-                        [sender_task, receiver_task], return_when=asyncio.FIRST_COMPLETED
-                    )
-                    if sender_task in done and sender_task.result() == "EOF":
-                        try:
+                    try:
+                        done, _ = await asyncio.wait([sender_task, receiver_task], return_when=asyncio.FIRST_COMPLETED)
+                        if sender_task in done and sender_task.result() == "EOF":
+                            # Commit does not close the socket. Keep receiving delayed finals
+                            # for a bounded interval, including replies to earlier VAD commits.
                             await ws.send(json.dumps({"type": "input_audio_buffer.commit"}))
-                            await receiver_task
-                        except asyncio.CancelledError:
-                            raise
-                        except Exception as e:
-                            logger.warning(f"Receiver task error: {e}")
-                        for task in pending:
-                            task.cancel()
-                        return
-                    for task in done:
-                        exc = task.exception() if not task.cancelled() else None
-                        if isinstance(exc, TranscriptionAuthError):
-                            for t in pending:
-                                t.cancel()
-                            raise exc
-                    for task in pending:
-                        task.cancel()
-                    raise Exception("WebSocket disconnected.")
+                            try:
+                                await asyncio.wait_for(receiver_task, FINAL_TRANSCRIPT_TIMEOUT_SECONDS)
+                            except TimeoutError:
+                                logger.debug("[%s] Final transcript drain finished", booth_id)
+                            return
+                        if receiver_task in done:
+                            receiver_task.result()
+                        raise OSError("Speech WebSocket disconnected")
+                    finally:
+                        for task in (sender_task, receiver_task):
+                            if not task.done():
+                                task.cancel()
+                        await asyncio.gather(sender_task, receiver_task, return_exceptions=True)
+
             except TranscriptionAuthError:
+                # A rejected key must reach the worker as auth_failed, including when it
+                # arrives on the final commit after the sender has reached EOF. The
+                # handler below would otherwise count it as a connection failure and retry.
                 raise
             except Exception as e:
                 status = getattr(getattr(e, "response", None), "status_code", None) or getattr(e, "status_code", None)

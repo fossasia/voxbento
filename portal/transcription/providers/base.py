@@ -67,6 +67,10 @@ def get_api_key(event: Event, provider: ProviderEnum) -> str | None:
 @dataclass
 class ProviderConfig:
     api_key: str | None
+    #: Text local Whisper reads as preceding speech, e.g. glossary terms to spell as written.
+    prompt: str | None = None
+    #: Terms Deepgram listens for. Empty: the room's glossary is looked up as before.
+    keyterms: tuple[str, ...] = ()
 
     def get_key(self) -> str | None:
         return self.api_key
@@ -119,10 +123,8 @@ class TranscriptionProvider:
                 except asyncio.IncompleteReadError as e:
                     chunk = e.partial
                     if chunk:
-                        try:
-                            queue.put_nowait(chunk)
-                        except asyncio.QueueFull:
-                            pass
+                        # The last words before the stream ended: wait for room rather than drop them.
+                        await queue.put(chunk)
                     break
                 except Exception as e:
                     logger.error(f"[{booth_id}] Reader error: {e}")
@@ -207,6 +209,9 @@ class TranscriptionProvider:
         try:
             if reader in done:
                 await reader
+            # The audio ended. The reader queued its end marker last, so let the chunks still
+            # waiting be transcribed instead of dropping the last few seconds of speech.
+            # Awaiting (rather than cancelling) also lets a TranscriptionAuthError surface.
             await inference
         finally:
             for task in (reader, inference):

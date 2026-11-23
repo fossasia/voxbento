@@ -135,7 +135,7 @@ class DeepgramProvider(TranscriptionProvider):
             logger.error("[%s] Deepgram API key missing", booth_id)
             return
 
-        keyterms = await load_keyterms(room_id)
+        keyterms = list(config.keyterms) or await load_keyterms(room_id)
         if keyterms:
             logger.info("[%s] Deepgram %s listening for %d glossary terms", booth_id, model_variant, len(keyterms))
         url = build_listen_url(model_variant, language_code, keyterms)

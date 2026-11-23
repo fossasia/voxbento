@@ -19,6 +19,7 @@ import pycountry
 from huggingface_hub.utils import LocalEntryNotFoundError
 from tqdm.auto import tqdm
 
+from portal.config import settings
 from portal.translations.constants import TranslationProviderEnum
 from portal.translations.engine import (
     EngineKind,
@@ -30,7 +31,7 @@ from portal.translations.engine import (
 )
 from portal.translations.model_languages import fixed_language_model
 from portal.translations.providers.base import TranslationProvider
-from portal.translations.registry import get_translation_model
+from portal.translations.registry import LanguageTagging, get_translation_model
 from portal.translations.vocabulary import protect_terms, restore_terms
 
 logger = logging.getLogger(__name__)
@@ -106,6 +107,9 @@ def trigger_download(model_size: str):
             self._custom_model_id = model_size
 
     with _progress_lock:
+        # Checked and set under the lock, so a second request for the same model starts no second download.
+        if _download_progress.get(model_size, {}).get("status") == "downloading":
+            return
         _download_progress[model_size] = {"n": 0, "total": 100, "rate": 0, "status": "downloading"}
 
     try:
@@ -129,6 +133,10 @@ def get_download_progress(model_size: str):
         if prog:
             return dict(prog)
 
+    # An operator's own build loaded from a folder is already on the server, as get_model_and_tokenizer treats it.
+    if os.path.exists(model_size):
+        return {"status": "completed", "n": 1, "total": 1, "rate": 0}
+
     # If not in active download, check if it exists on disk
     try:
         from huggingface_hub import snapshot_download
@@ -150,6 +158,9 @@ class ModelEntry:
     tokenizer: PreTrainedTokenizer | PreTrainedTokenizerFast
     last_used: float
 
+
+#: Translations one loaded model runs at once. Each model's scheduler sends no more than this (#1188).
+CT2_INTER_THREADS = 1
 
 _loaded_models = {}
 _active_translations_per_model = {}
@@ -196,33 +207,12 @@ def get_model_and_tokenizer(model_size: str):
         import transformers
         from huggingface_hub import snapshot_download
 
-        if not os.path.exists(model_size):
-            try:
-                logger.info(f"Starting download of {model_size} from HuggingFace. This may take a few minutes...")
-
-                class ScopedTqdm(ModelDownloadTqdm):
-                    def __init__(self, *args, **kwargs):
-                        super().__init__(*args, **kwargs)
-                        self._custom_model_id = model_size
-
-                with _progress_lock:
-                    _download_progress[model_size] = {"n": 0, "total": 100, "rate": 0, "status": "downloading"}
-
-                hf_repo_id, rev = _hf_source(model_size)
-
-                local_model_path = snapshot_download(repo_id=hf_repo_id, revision=rev, tqdm_class=ScopedTqdm)
-                with _progress_lock:
-                    _download_progress[model_size]["status"] = "completed"
-                logger.info(f"Successfully downloaded {model_size} to {local_model_path}")
-            except Exception as e:
-                logger.error(f"Failed to download {model_size} from HuggingFace: {e}")
-                with _progress_lock:
-                    _download_progress[model_size] = {"status": "error"}
-                local_model_path = model_size
-        else:
+        if os.path.exists(model_size):
             local_model_path = model_size
-            with _progress_lock:
-                _download_progress[model_size] = {"status": "completed"}
+        else:
+            # Only an Admin downloads a model (#1191), so a room translating never fetches one.
+            hf_repo_id, rev = _hf_source(model_size)
+            local_model_path = snapshot_download(repo_id=hf_repo_id, revision=rev, local_files_only=True)
 
         tokenizer = transformers.AutoTokenizer.from_pretrained(local_model_path, src_lang="eng_Latn", revision="main")  # nosec
         cpu_count = os.cpu_count() or 4
@@ -231,7 +221,7 @@ def get_model_and_tokenizer(model_size: str):
             local_model_path,
             device="cpu",
             compute_type="int8",
-            inter_threads=1,
+            inter_threads=CT2_INTER_THREADS,
             intra_threads=intra_threads,
         )
 
@@ -270,10 +260,44 @@ def start_eviction_loop():
             pass
 
 
+async def _in_thread(func, /, *args):
+    """Run blocking inference in a thread and return its result.
+
+    A thread cannot be stopped, so when the caller is cancelled (say by a timeout) this waits
+    for the thread to finish before passing the cancellation on. The call then ends only when
+    the model is free again, which keeps the scheduler's slot taken until then (#1188).
+    """
+    work = asyncio.ensure_future(asyncio.to_thread(func, *args))
+    try:
+        return await asyncio.shield(work)
+    except asyncio.CancelledError:
+        # A second cancel while waiting here (shutdown, or a caller cancelling again) interrupts
+        # the wait: the call then ends, and its slot is freed, while the thread still runs. That
+        # is acceptable at shutdown, the only place it is expected.
+        await asyncio.wait([work])
+        raise
+
+
+def _translate_with_target_tag(model, tokenizer, text: str, target_tag: str) -> str:
+    """Translate with a model that reads a ``<2xx>`` target tag in front of the text (MADLAD-400).
+
+    The model detects the source language itself, so only the target is named.
+    """
+    source = tokenizer.convert_ids_to_tokens(tokenizer.encode(f"{target_tag} {text}"))
+    results = model.translate_batch([source], beam_size=1, max_decoding_length=256)
+    if not results or not results[0].hypotheses:
+        return ""
+    target = tokenizer.convert_tokens_to_ids(results[0].hypotheses[0])
+    return tokenizer.decode(target, skip_special_tokens=True).strip()
+
+
 class LocalProvider(TranslationProvider, TranslationEngine):
     """NLLB through CTranslate2, in the portal process."""
 
     kind = EngineKind.CT2_SEQ2SEQ
+    #: Each loaded model runs ``CT2_INTER_THREADS`` translations at a time. Several models can be
+    #: loaded at once, so the worker gives each model its own scheduler with this limit.
+    max_concurrency = CT2_INTER_THREADS
 
     #: Set once the operator has been told the interpretation settings do not apply here.
     _warned_unsupported_settings = False
@@ -334,6 +358,11 @@ class LocalProvider(TranslationProvider, TranslationEngine):
             f"[NLLB] translate called: source='{source_lang_name}' -> target='{target_lang_name}' "
             f"model='{model}' text_len={len(text)}"
         )
+        # A room left on a model the operator no longer offers stops here. The live demo's model
+        # is the operator's own setting, so it works even when rooms are not offered it.
+        if not settings.local_translation_allows(model) and model != settings.live_demo_translation_model:
+            logger.error("[NLLB] Model %r is not offered on this server (LOCAL_TRANSLATION_MODELS)", model)
+            return None
         # NLLB is sequence-to-sequence and has no system-prompt channel, so persona and style
         # cannot be applied here (glossary terms are, through placeholders). Say so once per
         # process rather than letting configured settings look active.
@@ -348,21 +377,24 @@ class LocalProvider(TranslationProvider, TranslationEngine):
 
         target_lang_token = _engine_code(model, target_lang_code, target_lang_name)
         source_lang_token = _engine_code(model, source_lang_code, source_lang_name)
+        entry = get_translation_model(model)
+        # A target-tag model (MADLAD-400) detects the spoken language itself and is told only the
+        # target, so a source language it has no tag for, or none at all, does not stop it.
+        needs_source = entry is None or entry.language_tagging is not LanguageTagging.TARGET_TAG
         if not target_lang_token:
             logger.error("[NLLB] Model %r does not translate into %r (%s)", model, target_lang_code, target_lang_name)
             return None
-        if not source_lang_token:
+        if not source_lang_token and needs_source:
             logger.error("[NLLB] Model %r does not translate from %r (%s)", model, source_lang_code, source_lang_name)
             return None
+        source_lang_token = source_lang_token or ""
 
         logger.debug(
             f"[NLLB] Language tokens resolved: source_token='{source_lang_token}' target_token='{target_lang_token}'"
         )
         segment = protect_terms(text, vocabulary_entries)
         if segment.target_terms:
-            translated = await asyncio.to_thread(
-                self._run_inference, segment.text, source_lang_token, target_lang_token, model
-            )
+            translated = await _in_thread(self._run_inference, segment.text, source_lang_token, target_lang_token, model)
             if translated is None:
                 return None
             restored = restore_terms(translated, segment)
@@ -370,7 +402,7 @@ class LocalProvider(TranslationProvider, TranslationEngine):
                 return restored
             # Never show a placeholder to listeners: translate the original segment instead.
             logger.debug("[NLLB] Glossary placeholders did not survive translation; using the plain translation")
-        return await asyncio.to_thread(self._run_inference, text, source_lang_token, target_lang_token, model)
+        return await _in_thread(self._run_inference, text, source_lang_token, target_lang_token, model)
 
     def _run_inference(self, text: str, source_lang_token: str, target_lang_token: str, model_size: str) -> str | None:
         if not text or not text.strip():
@@ -378,6 +410,10 @@ class LocalProvider(TranslationProvider, TranslationEngine):
         increment_model_ref(model_size)
         try:
             model, tokenizer = get_model_and_tokenizer(model_size)
+            entry = get_translation_model(model_size)
+            if entry is not None and entry.language_tagging is LanguageTagging.TARGET_TAG:
+                return _translate_with_target_tag(model, tokenizer, text.strip(), target_lang_token)
+
             source = tokenizer.convert_ids_to_tokens(tokenizer.encode(text.strip()))
             if not source:
                 return ""
@@ -401,6 +437,12 @@ class LocalProvider(TranslationProvider, TranslationEngine):
             translated_text = tokenizer.decode(tokenizer.convert_tokens_to_ids(target))
             return translated_text.strip()
 
+        except LocalEntryNotFoundError:
+            logger.error(
+                "[NLLB] Model %r is not downloaded. An Admin must download it on the Translation models page.",
+                model_size,
+            )
+            return None
         except Exception as e:
             import traceback
 
