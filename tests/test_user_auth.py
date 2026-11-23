@@ -1205,13 +1205,14 @@ class TestLastSignIn:
             ("database is locked", "operational", 3),
             ("disk I/O error", "operational", 1),
             ("QueuePool limit reached, connection timed out", "pool_timeout", 1),
+            ("Can't reconnect until invalid transaction is rolled back", "other_sqlalchemy", 1),
         ],
-        ids=["retries-exhausted", "non-retryable", "pool-timeout"],
+        ids=["retries-exhausted", "non-retryable", "pool-timeout", "other-sqlalchemy-error"],
     )
     async def test_password_login_succeeds_when_sign_in_write_fails(
         self, setup_db, monkeypatch, caplog, error_message, error_kind, expected_attempts
     ):
-        from sqlalchemy.exc import OperationalError
+        from sqlalchemy.exc import InvalidRequestError, OperationalError
         from sqlalchemy.exc import TimeoutError as PoolTimeoutError
 
         import portal.routers.auth as auth_router
@@ -1224,15 +1225,20 @@ class TestLastSignIn:
             attempts += 1
             if error_kind == "pool_timeout":
                 raise PoolTimeoutError(error_message)
+            if error_kind == "other_sqlalchemy":
+                raise InvalidRequestError(error_message)
             raise OperationalError(error_message, {}, Exception())
 
         monkeypatch.setattr(auth_router, "update_user", always_fail)
         with caplog.at_level("WARNING", logger="portal.routers.auth"):
             async with _client() as client:
                 response = await client.post("/login", data={"email": user.email, "password": "securepass123"})
+                assert response.status_code == 303
+                # The issued cookie must be a valid session: it has to authenticate a real request.
+                assert client.cookies.get("user_token")
+                account = await client.get("/account", follow_redirects=False)
+                assert account.status_code == 200
 
-        assert response.status_code == 303
-        assert "user_token" in response.headers.get("set-cookie", "")
         assert attempts == expected_attempts
         assert f"Failed to record last_sign_in_at for user {user.id}" in caplog.text
 

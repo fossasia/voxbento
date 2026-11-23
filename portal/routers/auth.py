@@ -17,7 +17,6 @@ from fastapi import APIRouter, Body, Depends, HTTPException, Request, Response, 
 from fastapi.responses import RedirectResponse
 from fastapi.templating import Jinja2Templates
 from sqlalchemy.exc import DBAPIError, IntegrityError, OperationalError, SQLAlchemyError
-from sqlalchemy.exc import TimeoutError as PoolTimeoutError
 from sqlalchemy.ext.asyncio import AsyncSession
 from unilimit.integrations.fastapi import RateLimit
 
@@ -449,7 +448,7 @@ async def user_login_submit(request: Request):
             async with get_session() as session:
                 await update_user(session, user.id, last_sign_in_at=utc_now())
             break
-        except (OperationalError, DBAPIError, PoolTimeoutError) as exc:
+        except SQLAlchemyError as exc:
             if attempt == 2 or not _is_retryable_sign_in_write_conflict(exc):
                 logger.warning("Failed to record last_sign_in_at for user %s", user.id, exc_info=True)
                 break
