@@ -274,7 +274,7 @@
 
       <details class="room-more" data-translation-instructions {% if room.floor_ai_interpreter_persona or room.floor_ai_interpretation_style %}open{% endif %}>
         <summary>Instructions for the AI translator <span class="rs-label-note">optional</span></summary>
-        <p class="hint" data-local-translation-note>The built-in translator (NLLB) uses the glossary but doesn't read these instructions. Choose another service to use them.</p>
+        <p class="hint" data-local-translation-note>The built-in translator uses the glossary but doesn't read these instructions. Choose another service to use them.</p>
         <div class="field">
           <label for="floor_ai_interpreter_persona">What is this event about?</label>
           <textarea id="floor_ai_interpreter_persona" name="floor_ai_interpreter_persona" rows="3" placeholder="Example: An open source developer conference. Talks are technical.">{{ room.floor_ai_interpreter_persona or '' }}</textarea>
@@ -393,7 +393,7 @@
                   <form method="post" action="{{ management_prefix }}/events/{{ event.id }}/rooms/{{ room.id }}/ai-vocabulary/delete">
                     <input type="hidden" name="csrf_token" value="{{ request.state.admin_csrf_token }}" />
                     <input type="hidden" name="entry_id" value="{{ entry.id }}">
-                    <button type="submit" class="btn btn-sm btn-outline">Delete</button>
+                    <button type="submit" class="btn btn-sm btn-outline" title="Delete this glossary entry">Delete</button>
                   </form>
                 </td>
               </tr>
@@ -404,7 +404,7 @@
       <form method="post" action="{{ management_prefix }}/events/{{ event.id }}/rooms/{{ room.id }}/ai-vocabulary/delete" class="ai-vocabulary-clear">
         <input type="hidden" name="csrf_token" value="{{ request.state.admin_csrf_token }}" />
         <input type="hidden" name="entry_id" value="all">
-        <button type="submit" class="btn btn-sm btn-outline">Delete the whole glossary</button>
+        <button type="submit" class="btn btn-sm btn-outline" title="Delete the entire glossary">Delete the whole glossary</button>
       </form>
     {% else %}
       <p class="ai-vocabulary-empty">No glossary yet.</p>
@@ -463,7 +463,7 @@
     <form method="post" action="{{ management_prefix }}/events/{{ event.id }}/rooms/{{ room.id }}/delete" class="inline-delete"
           data-confirm="Delete room '{{ room.display_name }}'? All booths in this room will be removed.">
       <input type="hidden" name="csrf_token" value="{{ request.state.admin_csrf_token }}" />
-      <button type="submit" class="btn btn-danger">Delete room</button>
+      <button type="submit" class="btn btn-danger" title="Permanently delete this room">Delete room</button>
       <span class="danger-text">This removes its booths and their invite links. It can't be undone.</span>
     </form>
   </div>
