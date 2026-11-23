@@ -105,6 +105,7 @@ async def render_dashboard(
     form_error: str | None = None,
     new_client: OAuthClient | None = None,
     new_secret: str | None = None,
+    is_rotation: bool = False,
 ) -> Response:
     clients = []
     webhooks = []
@@ -127,6 +128,7 @@ async def render_dashboard(
             "webhooks": webhooks,
             "new_client": new_client,
             "new_secret": new_secret,
+            "is_rotation": is_rotation,
             "form_error": form_error,
             "csrf_token": csrf_token,
         },
@@ -245,6 +247,60 @@ async def create_oauth_client(
     await db.flush()
 
     return await render_dashboard(request, user, db, account, dashboard_csrf, new_client=client, new_secret=raw_secret)
+
+
+@router.post("/api/developer/clients/{client_id}/rotate-secret")
+async def rotate_oauth_client_secret(
+    client_id: str,
+    request: Request,
+    csrf_token: str = Form(...),
+    dashboard_csrf: str | None = Cookie(None),
+    user: dict = Depends(require_user),
+    db: AsyncSession = Depends(get_db_session),
+):
+    if not dashboard_csrf or not secrets.compare_digest(csrf_token, dashboard_csrf):
+        raise HTTPException(status_code=403, detail="Invalid CSRF token")
+
+    result = await db.execute(select(DeveloperAccount).where(DeveloperAccount.user_id == int(user["sub"])))
+    account = result.scalars().first()
+
+    if not account or account.status != "approved":
+        return RedirectResponse(url="/developer", status_code=status.HTTP_303_SEE_OTHER)
+
+    client_result = await db.execute(
+        select(OAuthClient).where(OAuthClient.client_id == client_id, OAuthClient.developer_account_id == account.id)
+    )
+    client = client_result.scalars().first()
+    if not client:
+        raise HTTPException(status_code=404, detail="OAuth client not found")
+
+    if not client.is_confidential:
+        raise HTTPException(status_code=400, detail="Public clients do not have a client secret")
+
+    raw_secret = f"secret_{secrets.token_urlsafe(32)}"
+    secret_hash = hashlib.sha256(raw_secret.encode()).hexdigest()
+
+    client.client_secret_hash = secret_hash
+
+    audit = OAuthAuditLog(
+        client_id=client.id,
+        action="client.secret_rotated",
+        request_path=f"/api/developer/clients/{client_id}/rotate-secret",
+        status_code=status.HTTP_200_OK,
+    )
+    db.add(audit)
+    await db.flush()
+
+    return await render_dashboard(
+        request,
+        user,
+        db,
+        account,
+        dashboard_csrf,
+        new_client=client,
+        new_secret=raw_secret,
+        is_rotation=True,
+    )
 
 
 @router.post("/api/developer/clients/{client_id}/delete")

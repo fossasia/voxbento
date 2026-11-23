@@ -141,6 +141,11 @@
 .status-badge.dev-badge--disabled { background: #fef2f2; color: #991b1b; }
 
 .dev-inline-form { display: inline; }
+.btn.dev-btn-rotate {
+  padding: 4px 8px;
+  font-size: 0.8rem;
+  margin-right: 4px;
+}
 .btn.dev-btn-delete {
   color: #ef4444;
   border-color: #ef4444;

@@ -128,6 +128,12 @@
                   <span class="status-badge dev-badge status-{{ client.status }}">{{ client.status }}</span>
                 </td>
                 <td class="dev-td dev-td--right">
+                  {% if client.is_confidential %}
+                  <form method="POST" action="/api/developer/clients/{{ client.client_id }}/rotate-secret" onsubmit="return confirm('Rotate this client secret? The old secret will stop working immediately for token exchanges and refreshes.');" class="dev-inline-form">
+                    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+                    <button type="submit" class="btn btn-outline dev-btn-rotate">Rotate Secret</button>
+                  </form>
+                  {% endif %}
                   <form method="POST" action="/api/developer/clients/{{ client.client_id }}/delete" onsubmit="return confirm('Are you sure you want to delete this app? This will break any integrations using it.');" class="dev-inline-form">
                     <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
                     <button type="submit" class="btn btn-outline dev-btn-delete">Delete</button>
@@ -231,10 +237,10 @@
     <dialog id="modal-new-secret" class="custom-modal-overlay" aria-labelledby="modal-new-secret-title">
       <div class="custom-modal dev-modal--narrow">
         <div class="custom-modal-header">
-          <span id="modal-new-secret-title" class="brand-text brand-text--modal">App Created Successfully</span>
+          <span id="modal-new-secret-title" class="brand-text brand-text--modal">{% if is_rotation %}Client Secret Rotated{% else %}App Created Successfully{% endif %}</span>
         </div>
         <div class="custom-modal-body">
-          <p>Your new OAuth Client <strong>{{ new_client.name }}</strong> has been created.</p>
+          <p>{% if is_rotation %}The secret for OAuth Client <strong>{{ new_client.name }}</strong> has been rotated.{% else %}Your new OAuth Client <strong>{{ new_client.name }}</strong> has been created.{% endif %}</p>
           <div class="dev-secret-group">
             <label class="dev-secret-label">Client ID</label>
             <button type="button" class="secret-box copy-wrapper" data-copy-text="{{ new_client.client_id }}">
