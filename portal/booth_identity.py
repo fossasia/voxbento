@@ -251,7 +251,7 @@ def validate_language_code(code: str) -> str:
     """
     normalised = code.strip().lower()
     if normalised == "floor":
-        return "floor"
+        return normalised
     if not _LANGUAGE_CODE_RE.match(normalised):
         raise ValueError(
             f"Language code must be exactly two lowercase ASCII letters (ISO 639-1) or 'floor'. Got: '{code}'."

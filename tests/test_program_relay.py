@@ -656,3 +656,38 @@ async def test_deleted_event_relay_is_stopped_while_media_listing_fails(relay_en
         assert (await session.get(Room, room.id)).program_session_id is None
     # The encoder reconnecting is refused.
     assert (await client.post("/internal/media-auth", json=rtmps_publish(room, secret))).status_code == 401
+
+
+@pytest.mark.anyio
+async def test_relay_resave_same_key_restarts_failed_relay(relay_env):
+    env = relay_env
+    client, event, room = env["client"], env["event"], env["rooms"][0]
+    secret = await enable_relay(client, event, room)
+    await save_destination(client, event, room, key=YOUTUBE_KEY)
+    await connect(env, room, secret)
+    await ingest.reconcile_once()
+
+    assert str(room.id) in env["relays"]
+    assert env["relays"][str(room.id)]["state"] == "live"
+
+    # Simulate fatal failure on the relay service (e.g. broadcast ended / terminated)
+    env["relays"][str(room.id)]["state"] = "failed"
+    env["relays"][str(room.id)]["reason"] = "YouTube broadcast completed"
+    relay.relay_health[room.id] = relay.RelayHealth("failed", "YouTube broadcast completed")
+
+    # Reconcile while failed does NOT auto-restart because fingerprint hasn't changed
+    env["calls"].clear()
+    await ingest.reconcile_once()
+    assert env["relays"][str(room.id)]["state"] == "failed"
+    assert ("PUT", f"/relays/{room.id}") not in env["calls"]
+
+    # Explicit save with the EXACT SAME key must call stop_relay(room_id, forget_health=False)
+    # which evicts the room from the relay daemon
+    await save_destination(client, event, room, key=YOUTUBE_KEY)
+    assert ("DELETE", f"/relays/{room.id}") in env["calls"]
+    assert str(room.id) not in env["relays"]
+
+    # At next reconcile, relay daemon has no entry for room, so start_relay is invoked again
+    await ingest.reconcile_once()
+    assert str(room.id) in env["relays"]
+    assert env["relays"][str(room.id)]["state"] == "live"

@@ -42,15 +42,32 @@ async def srt_env(monkeypatch):
 
     media: dict[str, dict] = {}
     calls: list[tuple[str, str, dict]] = []
+    configured_paths: dict[str, str] = {}
 
     def control(request: httpx.Request):
         data = json.loads(request.read()) if request.content else {}
         calls.append((request.method, str(request.url), data))
         if "/v3/config/paths/get/" in request.url.path:
             name = request.url.path.split("/v3/config/paths/get/")[1]
-            return httpx.Response(200, json={"name": name, "srtPublishPassphrase": "pass"})
+            if name in configured_paths:
+                return httpx.Response(200, json={"name": name, "srtPublishPassphrase": configured_paths[name]})
+            return httpx.Response(404, json={})
         if "/v3/config/paths/list" in request.url.path:
-            return httpx.Response(200, json={"items": [{"name": k, "srtPublishPassphrase": "pass"} for k in media]})
+            return httpx.Response(
+                200, json={"items": [{"name": k, "srtPublishPassphrase": v} for k, v in configured_paths.items()]}
+            )
+        if "/v3/config/paths/add/" in request.url.path or "/v3/config/paths/patch/" in request.url.path:
+            name = (
+                request.url.path.split("/v3/config/paths/add/")[1]
+                if "/v3/config/paths/add/" in request.url.path
+                else request.url.path.split("/v3/config/paths/patch/")[1]
+            )
+            configured_paths[name] = data.get("srtPublishPassphrase", "")
+            return httpx.Response(200, json={})
+        if "/v3/config/paths/delete/" in request.url.path:
+            name = request.url.path.split("/v3/config/paths/delete/")[1]
+            configured_paths.pop(name, None)
+            return httpx.Response(200, json={})
         if "/v3/config/paths/" in request.url.path:
             return httpx.Response(200, json={})
         if "/paths/list" in request.url.path:
@@ -97,7 +114,8 @@ async def srt_env(monkeypatch):
             session.add_all(rooms)
             await session.flush()
             for r in rooms:
-                await ingest.generate_srt_passphrase(r)
+                pass_r = await ingest.generate_srt_passphrase(r)
+                configured_paths[f"{event.slug}/{r.id}/floor"] = pass_r
             await session.commit()
 
         token = create_user_token(user_id=admin.id, email=admin.email, is_admin=True)
@@ -113,6 +131,7 @@ async def srt_env(monkeypatch):
                 "media": media,
                 "calls": calls,
                 "start": start,
+                "configured_paths": configured_paths,
             }
 
     ingest.health.clear()
@@ -467,3 +486,48 @@ async def test_egress_continuity_only_reported_when_relay_state_is_live(srt_env,
         resp = await client.get(f"/admin/events/{event.id}/rooms/{room.id}/program-ingest")
         assert resp.status_code == 200
         assert resp.json()["metrics"]["egress_continuity"] is False
+
+
+@pytest.mark.anyio
+async def test_srt_passphrase_rotation_surfaces_apply_failure(srt_env, monkeypatch):
+    client = srt_env["client"]
+    event = srt_env["event"]
+    room = srt_env["rooms"][0]
+
+    def failing_control(request: httpx.Request):
+        if b"srtPublishPassphrase" in request.content:
+            return httpx.Response(503, json={"error": "MediaMTX service unavailable"})
+        if "/paths/get/" in request.url.path:
+            return httpx.Response(404, json={})
+        return httpx.Response(200, json={})
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(failing_control)) as failing_http:
+        monkeypatch.setattr(ingest, "get_http_client", lambda: failing_http)
+        resp = await client.post(
+            f"/admin/events/{event.id}/rooms/{room.id}/program-ingest",
+            json={"action": "rotate"},
+        )
+        assert resp.status_code == 502
+        assert "Media control unavailable" in resp.text
+
+
+@pytest.mark.anyio
+async def test_srt_reconcile_recovers_mismatched_passphrase(srt_env):
+    event = srt_env["event"]
+    room = srt_env["rooms"][0]
+    configured_paths = srt_env["configured_paths"]
+    primary_path = f"{event.slug}/{room.id}/floor"
+
+    async with get_session() as session:
+        stored = await session.get(Room, room.id)
+        assert stored is not None
+        expected_pass = decrypt_val(stored.program_srt_passphrase_enc)
+
+    # Set MediaMTX configured path to mismatched/stale passphrase
+    configured_paths[primary_path] = "stale-outdated-passphrase"
+    assert configured_paths[primary_path] != expected_pass
+
+    # Reconcile detects mismatch and re-applies current passphrase
+    await ingest.reconcile_once()
+
+    assert configured_paths[primary_path] == expected_pass

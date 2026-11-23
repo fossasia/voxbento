@@ -122,6 +122,8 @@ class IngestHealth:
     backup_last_cycle_bytes: int = -1
     backup_last_cycle_time: float = 0.0
     backup_high_bitrate_cycles: int = 0
+    backup_last_bytes: int = -1
+    backup_last_progress: float = 0.0
     worker_config: tuple | None = None
     worker_started_at: float | None = None
     # Contribution ingest and language processing are reported separately from the overall state.
@@ -137,6 +139,7 @@ class IngestHealth:
     reconnect_count: int = 0
     last_session_id: str | None = None
     client_ip: str = ""
+    backup_client_ip: str = ""
 
 
 health: dict[int, IngestHealth] = {}
@@ -412,7 +415,7 @@ async def authorize_publish(data: MediaAuth) -> None:
                         presented_pass = q["passphrase"][0]
                 if not expected_pass or not presented_pass or not secrets.compare_digest(presented_pass, expected_pass):
                     deny(data.ip)
-                if not await is_srt_path_configured_in_mediamtx(data.path):
+                if not await is_srt_path_configured_in_mediamtx(data.path, expected_pass):
                     deny(data.ip)
             try:
                 session_id = str(UUID(data.id))
@@ -495,12 +498,14 @@ async def authorize_publish(data: MediaAuth) -> None:
                 room.program_backup_connected_at = utc_now()
                 await session.commit()
                 current = health.setdefault(parsed_room_id, IngestHealth())
-                current.client_ip = data.ip
+                current.backup_client_ip = data.ip
                 current.backup_session_id = session_id
                 current.backup_reservation_started_at = time.monotonic()
                 current.backup_high_bitrate_cycles = 0
                 current.backup_last_cycle_bytes = -1
                 current.backup_last_cycle_time = 0.0
+                current.backup_last_bytes = -1
+                current.backup_last_progress = 0.0
                 current.backup_conforming = True
                 return
             room.program_session_id = session_id
@@ -545,7 +550,7 @@ async def media_paths() -> dict[str, MediaPath]:
     return {path.name: path for path in paths}
 
 
-async def is_srt_path_configured_in_mediamtx(path: str) -> bool:
+async def is_srt_path_configured_in_mediamtx(path: str, expected_passphrase: str | None = None) -> bool:
     try:
         response = await get_http_client().get(
             f"{settings.mediamtx_api_base}/v3/config/paths/get/{path}", timeout=MEDIA_CONTROL_TIMEOUT
@@ -554,7 +559,14 @@ async def is_srt_path_configured_in_mediamtx(path: str) -> bool:
             return False
         response.raise_for_status()
         data = response.json()
-        return bool(isinstance(data, dict) and data.get("srtPublishPassphrase"))
+        if not isinstance(data, dict):
+            return False
+        configured_pass = data.get("srtPublishPassphrase")
+        if not configured_pass:
+            return False
+        if expected_passphrase is not None:
+            return secrets.compare_digest(str(configured_pass), str(expected_passphrase))
+        return True
     except Exception:
         return False
 
@@ -569,25 +581,25 @@ async def delete_srt_path_from_mediamtx(path: str) -> None:
     response.raise_for_status()
 
 
-async def media_config_paths() -> set[str]:
+async def media_config_paths() -> dict[str, str]:
     """Read every path configured in MediaMTX so idle paths are not repeatedly re-applied."""
     try:
         response = await get_http_client().get(
             f"{settings.mediamtx_api_base}/v3/config/paths/list?itemsPerPage=1000", timeout=MEDIA_CONTROL_TIMEOUT
         )
         if response.status_code == 404:
-            return set()
+            return {}
         response.raise_for_status()
         body = response.json()
         if not isinstance(body, dict) or not isinstance(body.get("items"), list):
-            return set()
+            return {}
         return {
-            item["name"]
+            item["name"]: str(item.get("srtPublishPassphrase", ""))
             for item in body["items"]
             if isinstance(item, dict) and "name" in item and item.get("srtPublishPassphrase")
         }
     except Exception:
-        return set()
+        return {}
 
 
 async def kick(path: str, source: MediaSource | None) -> None:
@@ -711,8 +723,9 @@ async def configure_source(
                 await apply_srt_passphrase_to_mediamtx(path, secret)
                 if room.program_backup_enabled and backup_secret:
                     await apply_srt_passphrase_to_mediamtx(backup_path, backup_secret)
-            except Exception:
-                logger.warning("program_ingest srt_passphrase_apply_pending room_id=%s", room.id)
+            except (httpx.HTTPError, ValueError) as exc:
+                logger.warning("program_ingest srt_passphrase_apply_failed room_id=%s: %s", room.id, exc)
+                raise HTTPException(502, "Media control unavailable; retry.") from None
         else:
             secret = secrets.token_urlsafe(32)
             room.program_key_hash = await asyncio.to_thread(digest_program_secret, secret)
@@ -1302,7 +1315,7 @@ async def reconcile_once() -> None:
     await release_deleted_event_sessions()
     try:
         snapshots = await media_paths() if ids else {}
-        config_paths = await media_config_paths() if srt_rooms else set()
+        config_paths = await media_config_paths() if srt_rooms else {}
     except (httpx.HTTPError, ValueError):
         for room_id in ids:
             current = health.setdefault(room_id, IngestHealth())
@@ -1333,20 +1346,20 @@ async def reconcile_once() -> None:
                         passphrase = decrypt_val(room.program_srt_passphrase_enc)
                         if passphrase:
                             primary_floor = make_mediamtx_path(event.slug, room_id, "floor")
-                            if primary_floor not in config_paths:
+                            if config_paths.get(primary_floor) != passphrase:
                                 try:
                                     await apply_srt_passphrase_to_mediamtx(primary_floor, passphrase)
-                                    config_paths.add(primary_floor)
+                                    config_paths[primary_floor] = passphrase
                                 except Exception:
                                     logger.warning("program_ingest srt_passphrase_restore_failed room_id=%s", room_id)
                             if room.program_backup_enabled and room.program_backup_key_enc:
                                 backup_passphrase = decrypt_val(room.program_backup_key_enc)
                                 if backup_passphrase:
                                     backup_floor = make_backup_floor_path(event.slug, room_id)
-                                    if backup_floor not in config_paths:
+                                    if config_paths.get(backup_floor) != backup_passphrase:
                                         try:
                                             await apply_srt_passphrase_to_mediamtx(backup_floor, backup_passphrase)
-                                            config_paths.add(backup_floor)
+                                            config_paths[backup_floor] = backup_passphrase
                                         except Exception:
                                             logger.warning(
                                                 "program_ingest srt_backup_passphrase_restore_failed room_id=%s",
@@ -1433,6 +1446,7 @@ async def reconcile_once() -> None:
                             if room.program_ingest_mode in program_relay.SRT_MODES and not is_conforming_srt_codec(
                                 backup_snapshot.tracks
                             ):
+                                record_failure(current.backup_client_ip)
                                 await kick(backup_path_name, backup_snapshot.source)
                                 backup_connected = False
                                 current.backup_connected = False
@@ -1447,17 +1461,27 @@ async def reconcile_once() -> None:
                             else:
                                 current.backup_conforming = True
                                 backup_sess_id = backup_snapshot.source.id if backup_snapshot.source else None
-                                if (
+                                backup_session_changed = bool(
                                     current.backup_session_id is not None
                                     and backup_sess_id is not None
                                     and backup_sess_id != current.backup_session_id
-                                ) or (
-                                    current.backup_last_cycle_bytes >= 0
-                                    and backup_snapshot.bytesReceived < current.backup_last_cycle_bytes
+                                )
+                                backup_counter_decreased = bool(
+                                    current.backup_last_bytes >= 0
+                                    and backup_snapshot.bytesReceived < current.backup_last_bytes
+                                )
+                                if (
+                                    current.backup_last_bytes == -1
+                                    or current.backup_last_progress == 0.0
+                                    or backup_session_changed
+                                    or backup_counter_decreased
                                 ):
-                                    current.backup_high_bitrate_cycles = 0
-                                    current.backup_last_cycle_bytes = -1
-                                    current.backup_last_cycle_time = 0.0
+                                    current.backup_last_bytes = backup_snapshot.bytesReceived
+                                    current.backup_last_progress = now
+                                elif backup_snapshot.bytesReceived > current.backup_last_bytes:
+                                    current.backup_last_bytes = backup_snapshot.bytesReceived
+                                    current.backup_last_progress = now
+
                                 current.backup_session_id = backup_sess_id
 
                                 if current.backup_last_cycle_bytes >= 0 and current.backup_last_cycle_time > 0:
@@ -1477,6 +1501,7 @@ async def reconcile_once() -> None:
                                 current.backup_last_cycle_time = now
 
                                 if current.backup_high_bitrate_cycles >= 5:
+                                    record_failure(current.backup_client_ip)
                                     await kick(backup_path_name, backup_snapshot.source)
                                     backup_connected = False
                                     current.backup_connected = False
@@ -1491,6 +1516,8 @@ async def reconcile_once() -> None:
                         current.backup_high_bitrate_cycles = 0
                         current.backup_last_cycle_bytes = -1
                         current.backup_last_cycle_time = 0.0
+                        current.backup_last_bytes = -1
+                        current.backup_last_progress = 0.0
 
                     # Reset program_active_feed if backup is not enabled or stale
                     if getattr(room, "program_active_feed", "primary") == "backup":
@@ -1505,12 +1532,20 @@ async def reconcile_once() -> None:
                             current.last_cycle_bytes = -1
                             current.last_cycle_time = 0.0
 
+                    backup_progressing = bool(
+                        backup_connected
+                        and current.backup_last_progress > 0
+                        and (now - current.backup_last_progress < TAKEOVER_STALL_SECS)
+                        and backup_snapshot.bytesReceived > 0
+                    )
+
                     # Deterministic Backup Takeover
                     if (
                         primary_failed
                         and room.program_backup_enabled
                         and backup_connected
                         and current.backup_conforming
+                        and backup_progressing
                         and getattr(room, "program_active_feed", "primary") == "primary"
                     ):
                         # Re-verify primary path state under room_lock to eliminate TOCTOU race

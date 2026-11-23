@@ -5,6 +5,7 @@ import hmac
 import ipaddress
 import json
 import logging
+import time
 from typing import Literal
 from urllib.parse import urlsplit
 
@@ -20,6 +21,7 @@ from portal.config import settings
 from portal.crypto import decrypt_val
 from portal.database import get_event_by_id, get_room_by_id, get_session
 from portal.program_ingest import (
+    TAKEOVER_STALL_SECS,
     MediaAuth,
     apply_srt_passphrase_to_mediamtx,
     authorize_publish,
@@ -327,6 +329,19 @@ async def ingest_change(request: Request, event_id: int, room_id: int, change: I
                 event = await get_event_by_id(session, event_id)
                 if not room or room.event_id != event_id or not event:
                     raise HTTPException(404, "Room not found")
+                primary_path = make_mediamtx_path(event.slug, room.id, "floor")
+                primary_snapshot = await media_path(primary_path)
+                if not primary_snapshot or not primary_snapshot.ready or not primary_snapshot.source:
+                    raise HTTPException(409, "Primary feed is not connected")
+                if primary_snapshot.bytesReceived <= 0:
+                    raise HTTPException(409, "Primary feed is not sending media")
+                current = health.get(room.id)
+                if (
+                    current
+                    and current.primary_last_progress > 0
+                    and (time.monotonic() - current.primary_last_progress >= TAKEOVER_STALL_SECS)
+                ):
+                    raise HTTPException(409, "Primary feed is stalled")
                 await promote_primary_feed(room, event.slug)
                 await session.commit()
                 return JSONResponse({"active_feed": "primary"})
@@ -530,6 +545,10 @@ async def relay_destination_set(
             except RuntimeError:
                 raise HTTPException(409, "The server encryption key is not configured; ask the operator.") from None
             server_url = room.program_relay_server
+        try:
+            await program_relay.stop_relay(room_id, forget_health=False)
+        except httpx.HTTPError:
+            logger.warning("program_relay stop_failed_on_save room_id=%s", room_id)
     # A running relay restarts on the new destination at the next reconcile (fingerprint change).
     logger.info("program_relay destination_set room_id=%s", room_id)
     return JSONResponse({"configured": True, "server_url": server_url}, headers={"Cache-Control": "no-store"})

@@ -45,24 +45,34 @@ async def backup_env(monkeypatch):
 
     media: dict[str, dict] = {}
     calls: list[tuple[str, str]] = []
-    configured_paths: set[str] = set()
+    class ConfiguredPaths(dict):
+        def add(self, name: str, pass_: str = "pass"):
+            self[name] = pass_
+
+        def discard(self, name: str):
+            self.pop(name, None)
+
+    configured_paths = ConfiguredPaths()
 
     def control(request: httpx.Request):
         calls.append((request.method, str(request.url)))
+        data = json.loads(request.read()) if request.content else {}
         if "/v3/config/paths/get/" in request.url.path:
             name = request.url.path.split("/v3/config/paths/get/")[1]
             if name in configured_paths:
-                return httpx.Response(200, json={"name": name, "srtPublishPassphrase": "pass"})
+                return httpx.Response(200, json={"name": name, "srtPublishPassphrase": configured_paths[name]})
             return httpx.Response(404, json={})
         if "/v3/config/paths/list" in request.url.path:
-            return httpx.Response(200, json={"items": [{"name": k, "srtPublishPassphrase": "pass"} for k in configured_paths]})
+            return httpx.Response(
+                200, json={"items": [{"name": k, "srtPublishPassphrase": v} for k, v in configured_paths.items()]}
+            )
         if "/v3/config/paths/add/" in request.url.path or "/v3/config/paths/patch/" in request.url.path:
             name = (
                 request.url.path.split("/v3/config/paths/add/")[1]
                 if "/v3/config/paths/add/" in request.url.path
                 else request.url.path.split("/v3/config/paths/patch/")[1]
             )
-            configured_paths.add(name)
+            configured_paths[name] = data.get("srtPublishPassphrase", "pass")
             return httpx.Response(200, json={})
         if "/v3/config/paths/delete/" in request.url.path:
             name = request.url.path.split("/v3/config/paths/delete/")[1]
@@ -121,8 +131,8 @@ async def backup_env(monkeypatch):
             )
             session.add(room)
             await session.flush()
-            await ingest.generate_srt_passphrase(room)
-            configured_paths.add(f"{event.slug}/{room.id}/floor")
+            primary_pass = await ingest.generate_srt_passphrase(room)
+            configured_paths.add(f"{event.slug}/{room.id}/floor", primary_pass)
             await session.commit()
 
         token = create_user_token(user_id=admin.id, email=admin.email, is_admin=True)
@@ -194,8 +204,8 @@ async def test_backup_path_accepted_when_enabled(backup_env):
         stored = await session.get(Room, room.id)
         assert stored is not None
         stored.program_backup_enabled = True
-        await ingest.generate_backup_srt_passphrase(stored)
-        backup_env["configured_paths"].add(f"{event.slug}/{room.id}/floor_backup")
+        pass_b = await ingest.generate_backup_srt_passphrase(stored)
+        backup_env["configured_paths"].add(f"{event.slug}/{room.id}/floor_backup", pass_b)
         await session.commit()
 
     payload = backup_publish(event, room)
@@ -260,8 +270,8 @@ async def test_backup_single_publisher_and_capacity_limits(backup_env, monkeypat
     async with get_session() as session:
         stored = await session.get(Room, room.id)
         stored.program_backup_enabled = True
-        await ingest.generate_backup_srt_passphrase(stored)
-        backup_env["configured_paths"].add(f"{event.slug}/{room.id}/floor_backup")
+        pass_b = await ingest.generate_backup_srt_passphrase(stored)
+        backup_env["configured_paths"].add(f"{event.slug}/{room.id}/floor_backup", pass_b)
         await session.commit()
 
     # 1. First backup publisher succeeds
@@ -290,8 +300,8 @@ async def test_backup_single_publisher_and_capacity_limits(backup_env, monkeypat
         session.add(room2)
         await session.flush()
         await ingest.generate_srt_passphrase(room2)
-        await ingest.generate_backup_srt_passphrase(room2)
-        backup_env["configured_paths"].add(f"{event.slug}/{room2.id}/floor_backup")
+        pass_b2 = await ingest.generate_backup_srt_passphrase(room2)
+        backup_env["configured_paths"].add(f"{event.slug}/{room2.id}/floor_backup", pass_b2)
         await session.commit()
 
     p3 = backup_publish(event, room2)
@@ -310,8 +320,8 @@ async def test_backup_credentials_revocation_kicks_backup(backup_env):
     async with get_session() as session:
         stored = await session.get(Room, room.id)
         stored.program_backup_enabled = True
-        await ingest.generate_backup_srt_passphrase(stored)
-        backup_env["configured_paths"].add(f"{event.slug}/{room.id}/floor_backup")
+        pass_b = await ingest.generate_backup_srt_passphrase(stored)
+        backup_env["configured_paths"].add(f"{event.slug}/{room.id}/floor_backup", pass_b)
         await session.commit()
 
     # Publish backup
@@ -381,7 +391,47 @@ async def test_backup_ui_api_actions_toggle_and_promote(backup_env):
         stored.program_active_feed = "backup"
         await session.commit()
 
-    # Promote primary
+    # 1. Promote primary when primary feed is not connected -> 409
+    promote_resp = await client.post(
+        f"/admin/events/{event.id}/rooms/{room.id}/program-ingest",
+        json={"action": "promote_primary"},
+    )
+    assert promote_resp.status_code == 409
+    assert "not connected" in promote_resp.text
+
+    # 2. Promote primary when primary feed has 0 bytes -> 409
+    media = backup_env["media"]
+    primary_path = f"{event.slug}/{room.id}/floor"
+    media[primary_path] = {
+        "name": primary_path,
+        "ready": True,
+        "source": {"id": "prim-sess", "type": "srtSource"},
+        "tracks": ["H264", "AAC"],
+        "bytesReceived": 0,
+    }
+    promote_resp = await client.post(
+        f"/admin/events/{event.id}/rooms/{room.id}/program-ingest",
+        json={"action": "promote_primary"},
+    )
+    assert promote_resp.status_code == 409
+    assert "not sending media" in promote_resp.text
+
+    # 3. Promote primary when stalled -> 409
+    media[primary_path]["bytesReceived"] = 2048
+    ingest.health[room.id] = ingest.IngestHealth(
+        primary_session_id="prim-sess",
+        primary_last_bytes=2048,
+        primary_last_progress=time.monotonic() - 10.0,
+    )
+    promote_resp = await client.post(
+        f"/admin/events/{event.id}/rooms/{room.id}/program-ingest",
+        json={"action": "promote_primary"},
+    )
+    assert promote_resp.status_code == 409
+    assert "stalled" in promote_resp.text
+
+    # 4. Promote primary when healthy and progressing -> 200
+    ingest.health[room.id].primary_last_progress = time.monotonic()
     promote_resp = await client.post(
         f"/admin/events/{event.id}/rooms/{room.id}/program-ingest",
         json={"action": "promote_primary"},
@@ -604,8 +654,8 @@ async def test_active_feed_stall_detected_after_takeover_when_counters_unchanged
         stored.program_connected_at = ingest.utc_now()
         stored.program_session_id = "primary-sess"
         stored.program_backup_enabled = True
-        await ingest.generate_backup_srt_passphrase(stored)
-        backup_env["configured_paths"].add(f"{event.slug}/{room.id}/floor_backup")
+        pass_b = await ingest.generate_backup_srt_passphrase(stored)
+        backup_env["configured_paths"].add(f"{event.slug}/{room.id}/floor_backup", pass_b)
         stored.program_backup_connected_at = ingest.utc_now()
         stored.program_active_feed = "backup"
         await session.commit()
@@ -696,8 +746,8 @@ async def test_invalid_srt_passphrase_rejected(backup_env):
     async with get_session() as session:
         stored = await session.get(Room, room.id)
         stored.program_backup_enabled = True
-        await ingest.generate_backup_srt_passphrase(stored)
-        backup_env["configured_paths"].add(f"{event.slug}/{room.id}/floor_backup")
+        pass_b = await ingest.generate_backup_srt_passphrase(stored)
+        backup_env["configured_paths"].add(f"{event.slug}/{room.id}/floor_backup", pass_b)
         await session.commit()
 
     # Attempt to publish with wrong password
@@ -741,8 +791,8 @@ async def test_backup_feed_allowed_when_max_rooms_limit_reached(backup_env, monk
         stored = await session.get(Room, room.id)
         stored.program_session_id = "primary-sess-uuid"
         stored.program_backup_enabled = True
-        await ingest.generate_backup_srt_passphrase(stored)
-        backup_env["configured_paths"].add(f"{event.slug}/{room.id}/floor_backup")
+        pass_b = await ingest.generate_backup_srt_passphrase(stored)
+        backup_env["configured_paths"].add(f"{event.slug}/{room.id}/floor_backup", pass_b)
         await session.commit()
 
     payload = backup_publish(event, room)
@@ -892,8 +942,8 @@ async def test_bitrate_sampling_reset_on_feed_takeover_prevents_false_limits_kic
         stored = await session.get(Room, room.id)
         stored.program_connected_at = ingest.utc_now()
         stored.program_backup_enabled = True
-        await ingest.generate_backup_srt_passphrase(stored)
-        backup_env["configured_paths"].add(f"{event.slug}/{room.id}/floor_backup")
+        pass_b = await ingest.generate_backup_srt_passphrase(stored)
+        backup_env["configured_paths"].add(f"{event.slug}/{room.id}/floor_backup", pass_b)
         stored.program_backup_connected_at = ingest.utc_now()
         stored.program_active_feed = "primary"
         await session.commit()
@@ -1387,8 +1437,8 @@ async def test_backup_bitrate_counters_reset_on_new_publisher_reservation(backup
         stored.program_ingest_mode = "srt"
         stored.program_backup_enabled = True
         stored.program_active_feed = "primary"
-        await ingest.generate_backup_srt_passphrase(stored)
-        backup_env["configured_paths"].add(f"{event.slug}/{room.id}/floor_backup")
+        pass_b = await ingest.generate_backup_srt_passphrase(stored)
+        backup_env["configured_paths"].add(f"{event.slug}/{room.id}/floor_backup", pass_b)
         await session.commit()
 
     # Suppose a previous backup publisher accumulated 4 high-bitrate cycles and 50MB
@@ -1482,3 +1532,109 @@ async def test_in_memory_backup_session_kicked_when_db_timestamp_is_null_on_even
     assert any("kick/mem-only-sess-42" in url for method, url in calls)
     assert entry.backup_session_id is None
     assert entry.backup_reservation_started_at is None
+
+
+@pytest.mark.anyio
+async def test_backup_takeover_blocked_when_backup_frozen(backup_env):
+    event = backup_env["event"]
+    room = backup_env["room"]
+    media = backup_env["media"]
+
+    async with get_session() as session:
+        stored = await session.get(Room, room.id)
+        stored.program_connected_at = ingest.utc_now()
+        stored.program_session_id = "prim-sess"
+        stored.program_backup_enabled = True
+        pass_b = await ingest.generate_backup_srt_passphrase(stored)
+        backup_env["configured_paths"].add(f"{event.slug}/{room.id}/floor_backup", pass_b)
+        stored.program_backup_connected_at = ingest.utc_now()
+        stored.program_active_feed = "primary"
+        await session.commit()
+
+    primary_path = f"{event.slug}/{room.id}/floor"
+    backup_path = f"{event.slug}/{room.id}/floor_backup"
+
+    # Primary is disconnected / missing from media
+    media.pop(primary_path, None)
+
+    # Backup is connected, conforming codec, but frozen (0 bytes received or flat progress)
+    media[backup_path] = {
+        "name": backup_path,
+        "ready": True,
+        "source": {"id": "backup-sess-frozen", "type": "srtSource"},
+        "tracks": ["H264", "AAC"],
+        "bytesReceived": 0,
+    }
+
+    entry = ingest.IngestHealth()
+    entry.primary_session_id = "prim-sess"
+    entry.primary_last_progress = 0.0
+    entry.backup_session_id = "backup-sess-frozen"
+    entry.backup_last_bytes = 0
+    entry.backup_last_progress = time.monotonic() - 10.0  # stalled for 10s
+    ingest.health[room.id] = entry
+
+    # 1. Takeover must NOT happen when backup is not progressing
+    await ingest.reconcile_once()
+
+    async with get_session() as session:
+        stored = await session.get(Room, room.id)
+        assert stored.program_active_feed == "primary"
+
+    # 2. When backup starts progressing (bytesReceived grows), takeover happens
+    media[backup_path]["bytesReceived"] = 50_000
+    await ingest.reconcile_once()
+
+    async with get_session() as session:
+        stored = await session.get(Room, room.id)
+        assert stored.program_active_feed == "backup"
+
+
+@pytest.mark.anyio
+async def test_backup_kick_failure_recorded_against_backup_client_ip(backup_env):
+    event = backup_env["event"]
+    room = backup_env["room"]
+    media = backup_env["media"]
+    client = backup_env["client"]
+
+    async with get_session() as session:
+        stored = await session.get(Room, room.id)
+        stored.program_backup_enabled = True
+        pass_b = await ingest.generate_backup_srt_passphrase(stored)
+        backup_env["configured_paths"].add(f"{event.slug}/{room.id}/floor_backup", pass_b)
+        await session.commit()
+
+    # 1. Authorize primary from IP 198.51.100.10
+    primary_payload = {
+        "action": "publish",
+        "path": f"{event.slug}/{room.id}/floor",
+        "protocol": "srt",
+        "id": str(uuid4()),
+        "ip": "198.51.100.10",
+        "password": decrypt_val(stored.program_srt_passphrase_enc),
+    }
+    resp1 = await client.post("/internal/media-auth", json=primary_payload)
+    assert resp1.status_code == 204
+    assert ingest.health[room.id].client_ip == "198.51.100.10"
+
+    # 2. Authorize backup from IP 198.51.100.20
+    backup_payload = backup_publish(event, stored, ip="198.51.100.20")
+    resp2 = await client.post("/internal/media-auth", json=backup_payload)
+    assert resp2.status_code == 204
+    assert ingest.health[room.id].client_ip == "198.51.100.10"
+    assert ingest.health[room.id].backup_client_ip == "198.51.100.20"
+
+    # 3. Simulate backup sending invalid codec track -> kicked on reconcile
+    backup_path = f"{event.slug}/{room.id}/floor_backup"
+    media[backup_path] = {
+        "name": backup_path,
+        "ready": True,
+        "source": {"id": backup_payload["id"], "type": "srtConn"},
+        "tracks": ["VP9"],  # Non-conforming codec
+        "bytesReceived": 1024,
+    }
+    await ingest.reconcile_once()
+
+    # Verify failure recorded against backup_client_ip (198.51.100.20), NOT primary (198.51.100.10)
+    assert ingest.failures["198.51.100.20"][1] >= 1
+    assert "198.51.100.10" not in ingest.failures
