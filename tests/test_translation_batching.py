@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import threading
+from contextlib import asynccontextmanager
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
@@ -267,3 +268,26 @@ async def test_a_cloud_engine_is_not_batched_for_a_model_name_matching_the_local
 async def test_empty_grid_does_not_load_a_model(model, texts, targets, expected):
     rows = await LocalProvider().translate_batch(EN, targets, texts, TranslationContext(), model=NLLB)
     assert rows == expected and not model.calls
+
+
+async def test_one_slow_glossary_lookup_cannot_multiply_the_batch_lookup_budget(worker_env, monkeypatch):
+    worker, job, engine, _, _ = worker_env
+    job.room.floor_ai_vocabulary_enabled = True
+    entry = VocabularyEntryInput("booth", "fr", "cabine")
+
+    @asynccontextmanager
+    async def session():
+        yield object()
+
+    async def resolve(session, **kwargs):
+        if kwargs["target_language"] == "fr":
+            return [entry]
+        await asyncio.Event().wait()
+
+    monkeypatch.setattr(worker_module, "get_session", session)
+    monkeypatch.setattr(worker_module, "resolve_vocabulary_entries", resolve)
+    monkeypatch.setattr(worker_module, "VOCABULARY_LOOKUP_TIMEOUT", 0.01)
+    await asyncio.wait_for(worker._process_completed_sentence(job, 10, "Hello", "source"), 0.2)
+    assert len(engine.calls) == 1
+    assert engine.calls[0][3].vocabulary_for(TARGETS[0]) == (entry,)
+    assert engine.calls[0][3].vocabulary_for(TARGETS[1]) == ()

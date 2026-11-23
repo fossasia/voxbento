@@ -710,10 +710,10 @@ class TranslationWorker:
         try:
             vocabulary = {}
             if resolved.room.floor_ai_vocabulary_enabled:
-                for target in targets:
-                    try:
-                        async with asyncio.timeout(VOCABULARY_LOOKUP_TIMEOUT):
-                            async with get_session() as session:
+                try:
+                    async with asyncio.timeout(VOCABULARY_LOOKUP_TIMEOUT):
+                        async with get_session() as session:
+                            for target in targets:
                                 vocabulary[target.code] = await resolve_vocabulary_entries(
                                     session,
                                     event_id=resolved.event.id,
@@ -722,8 +722,9 @@ class TranslationWorker:
                                     target_language=target.code,
                                     transcript_text=text,
                                 )
-                    except Exception as exc:
-                        logger.warning("Batch glossary lookup failed (%s)", type(exc).__name__)
+                except Exception as exc:
+                    logger.warning("Batch glossary lookup failed (%s)", type(exc).__name__)
+
             rows = None
             async with job:
                 timeout = _inference_timeout(resolved.provider, resolved.model)
