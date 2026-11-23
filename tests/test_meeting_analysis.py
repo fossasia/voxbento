@@ -1193,6 +1193,18 @@ async def test_a_report_can_be_written_from_a_translation(world, monkeypatch):
 
 
 @pytest.mark.anyio
+async def test_batch_promotion_conflict_marks_each_waiting_report_failed(world):
+    active = await _report(world, status="running")
+    queued = [await _report(world, status="queued") for _ in range(2)]
+    await worker._run_batch(queued)
+    assert (await _load(active)).status == "running"
+    for report_id in queued:
+        report = await _load(report_id)
+        assert report.status == "failed"
+        assert "Generate this report again" in report.error
+
+
+@pytest.mark.anyio
 async def test_batch_writes_spoken_and_translated_reports(world, monkeypatch):
     await _enable(world)
     await _translate_floor(world, "fr")

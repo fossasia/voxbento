@@ -4,9 +4,9 @@
   <meta charset="utf-8">
   <base target="_top">
   <title>Meeting reports</title>
-  {% for sheet in ('tokens', 'fonts', 'admin') %}
-  <link rel="stylesheet" href="{{ url_for('static', path='css/' ~ sheet ~ '.css') }}?v={{ asset_version }}">
-  {% endfor %}
+  <link rel="stylesheet" href="{{ url_for('static', path='css/tokens.css') }}?v={{ asset_version }}">
+  <link rel="stylesheet" href="{{ url_for('static', path='css/fonts.css') }}?v={{ asset_version }}">
+  <link rel="stylesheet" href="{{ url_for('static', path='css/admin.css') }}?v={{ asset_version }}">
 </head>
 <body><main>{% block content %}{% endblock %}</main></body>
 </html>

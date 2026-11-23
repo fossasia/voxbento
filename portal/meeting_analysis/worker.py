@@ -6,6 +6,7 @@ from dataclasses import dataclass
 from datetime import datetime
 
 from sqlalchemy import func, select, update
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from portal.database import get_session
@@ -269,12 +270,16 @@ def start_batch(ids: list[int]) -> None:
 async def _run_batch(ids: list[int]) -> None:
     try:
         for report_id in ids:
-            async with get_session() as session:
-                await session.execute(
-                    update(MeetingReport)
-                    .where(MeetingReport.id == report_id, MeetingReport.status == STATUS_QUEUED)
-                    .values(status=STATUS_PENDING)
-                )
+            try:
+                async with get_session() as session:
+                    await session.execute(
+                        update(MeetingReport)
+                        .where(MeetingReport.id == report_id, MeetingReport.status == STATUS_QUEUED)
+                        .values(status=STATUS_PENDING)
+                    )
+            except IntegrityError:
+                await _fail(report_id, "Another report is being written for this room. Generate this report again.")
+                continue
             try:
                 await run_analysis(report_id)
             except Exception:
