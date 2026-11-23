@@ -1,0 +1,269 @@
+"""Multi-target inference and the production worker's batch dispatch (#1190)."""
+
+from __future__ import annotations
+
+import asyncio
+import threading
+from types import SimpleNamespace
+from unittest.mock import AsyncMock, MagicMock
+
+import pytest
+
+from portal.translations import worker as worker_module
+from portal.translations.engine import EngineKind, Language, TranslationContext, TranslationEngine
+from portal.translations.providers import local
+from portal.translations.providers.local import LocalProvider
+from portal.translations.scheduler import TranslationScheduler
+from portal.translations.vocabulary import VocabularyEntryInput
+from portal.translations.worker import TranslationWorker, _ResolvedTranslation
+
+NLLB = "nllb-200-distilled-600M"
+MADLAD = "madlad400-3b-mt"
+EN = Language("en", "English")
+TARGETS = [Language("fr", "French"), Language("de", "German")]
+pytestmark = pytest.mark.anyio
+
+
+class Tokenizer:
+    def encode(self, text):
+        return ["eng_Latn", *text.split()]
+
+    def convert_ids_to_tokens(self, ids):
+        return list(ids)
+
+    def convert_tokens_to_ids(self, tokens):
+        return list(tokens)
+
+    def decode(self, ids, **kwargs):
+        return " ".join(ids)
+
+
+class Translator:
+    def __init__(self):
+        self.calls = []
+
+    def translate_batch(self, sources, **options):
+        self.calls.append((sources, options))
+        prefixes = options.get("target_prefix", [[] for _ in sources])
+        return [SimpleNamespace(hypotheses=[[*prefix, *source[1:]]]) for source, prefix in zip(sources, prefixes)]
+
+
+@pytest.fixture
+def model(monkeypatch):
+    translator = Translator()
+    monkeypatch.setattr(local, "get_model_and_tokenizer", lambda name: (translator, Tokenizer()))
+    monkeypatch.setattr(local.settings, "local_translation_models", f"{NLLB},{MADLAD}")
+    return translator
+
+
+@pytest.mark.parametrize("name", [NLLB, MADLAD])
+async def test_one_native_call_for_the_entire_grid(model, name):
+    rows = await LocalProvider().translate_batch(EN, TARGETS, ["Hello", "Goodbye"], TranslationContext(), model=name)
+    assert len(model.calls) == 1
+    sources, options = model.calls[0]
+    assert len(sources) == 4
+    if name == NLLB:
+        assert rows == [["Hello", "Hello"], ["Goodbye", "Goodbye"]]
+        assert options["target_prefix"] == [["fra_Latn"], ["deu_Latn"]] * 2
+        assert all(source[0] == "eng_Latn" for source in sources)
+    else:
+        assert rows == [["<2fr> Hello", "<2de> Hello"], ["<2fr> Goodbye", "<2de> Goodbye"]]
+        assert "target_prefix" not in options
+
+
+async def test_invalid_target_keeps_its_column_and_blank_is_not_failure(model):
+    rows = await LocalProvider().translate_batch(
+        EN, [TARGETS[0], Language("xx", "Unknown"), TARGETS[1]], ["Hello", " "], TranslationContext(), model=NLLB
+    )
+    assert rows == [["Hello", None, "Hello"], ["", None, ""]]
+    assert len(model.calls) == 1
+    assert len(model.calls[0][0]) == 2
+
+
+async def test_glossary_retry_batches_only_cells_with_lost_placeholders(model, monkeypatch):
+    original = model.translate_batch
+
+    def drop_one(sources, **options):
+        results = original(sources, **options)
+        if len(model.calls) == 1:
+            results[0].hypotheses = [["fra_Latn", "lost"]]
+        return results
+
+    monkeypatch.setattr(model, "translate_batch", drop_one)
+    context = TranslationContext(
+        vocabulary={
+            "fr": [VocabularyEntryInput("booth", "fr", "cabine")],
+            "de": [VocabularyEntryInput("booth", "de", "Kabine")],
+        }
+    )
+    rows = await LocalProvider().translate_batch(EN, TARGETS, ["The booth is open"], context, model=NLLB)
+    assert rows == [["The booth is open", "The Kabine is open"]]
+    assert len(model.calls) == 2
+    assert len(model.calls[0][0]) == 2 and len(model.calls[1][0]) == 1
+    assert "[1]" not in model.calls[1][0][0]
+    assert model.calls[1][1]["target_prefix"] == [["fra_Latn"]]
+
+
+async def test_native_error_returns_failed_cells_and_releases_model_reference(model, monkeypatch):
+    def fail(*args, **kwargs):
+        raise RuntimeError("private transcript")
+
+    monkeypatch.setattr(model, "translate_batch", fail)
+    assert await LocalProvider().translate_batch(EN, TARGETS, ["Hello"], TranslationContext(), model=NLLB) == [
+        [None, None]
+    ]
+    assert local._active_translations_per_model.get(NLLB, 0) == 0
+
+
+class Engine(TranslationEngine):
+    kind = EngineKind.CT2_SEQ2SEQ
+    max_concurrency = 1
+
+    def __init__(self, rows=None):
+        self.calls = []
+        self.rows = rows
+
+    async def translate_batch(self, source, targets, texts, context, *, model, api_key=None):
+        self.calls.append((source, targets, texts, context))
+        return (
+            self.rows if self.rows is not None else [[f"{text}:{target.code}" for target in targets] for text in texts]
+        )
+
+
+@pytest.fixture
+def worker_env(monkeypatch):
+    engine = Engine()
+    monkeypatch.setitem(worker_module.ENGINES, "local", engine)
+    monkeypatch.setattr(worker_module, "SCHEDULERS", {})
+    monkeypatch.setattr(worker_module, "_inference_timeout", lambda *args: 1)
+    bundle = AsyncMock()
+    monkeypatch.setattr("portal.websockets.manager.tts_manager.broadcast_bundle", bundle)
+    monkeypatch.setattr("portal.websockets.manager.tts_manager.has_listeners", lambda *args: False)
+    monkeypatch.setattr("portal.websockets.manager.listener_manager.has_listeners", lambda *args: True)
+    monkeypatch.setattr("portal.websockets.manager.listener_manager.broadcast", AsyncMock())
+    room = SimpleNamespace(
+        id=7, floor_ai_vocabulary_enabled=False, floor_ai_interpreter_persona=None, floor_ai_interpretation_style=None
+    )
+    langs = [SimpleNamespace(language_code=t.code, language_name=t.name) for t in [EN, *TARGETS]]
+    resolved = _ResolvedTranslation(
+        SimpleNamespace(id=1, slug="event"), room, "local", NLLB, None, langs, "en", "English"
+    )
+    worker = TranslationWorker(MagicMock())
+    delivery = AsyncMock()
+
+    async def deliver(*args):
+        await delivery(*args[:-1])
+        args[-1]()
+
+    monkeypatch.setattr(worker, "_deliver_translation", deliver)
+    return worker, resolved, engine, bundle, delivery
+
+
+async def test_segment_dispatches_one_call_and_preserves_target_order(worker_env):
+    worker, job, engine, bundle, delivery = worker_env
+    await worker._process_completed_sentence(job, 10, "Hello", "source", "uuid", 1)
+    assert len(engine.calls) == 1
+    assert engine.calls[0][:3] == (EN, TARGETS, ["Hello"])
+    assert [call.args[0] for call in delivery.call_args_list] == ["Hello:fr", "Hello:de"]
+    assert bundle.await_args.args[1] == "en"  # Source language bypassed inference.
+    assert worker_module.scheduler_for("local", NLLB, 1).idle()
+
+
+async def test_no_listener_no_call(worker_env, monkeypatch):
+    worker, job, engine, _, _ = worker_env
+    monkeypatch.setattr("portal.websockets.manager.listener_manager.has_listeners", lambda *args: False)
+    await worker._process_completed_sentence(job, 10, "Hello", "source")
+    assert engine.calls == []
+
+
+async def test_batch_cancellation_holds_slot_until_native_work_ends(worker_env, monkeypatch):
+    worker, job, engine, _, _ = worker_env
+    started, release = threading.Event(), threading.Event()
+
+    def blocking():
+        started.set()
+        release.wait(3)
+        return [["Bonjour", "Hallo"]]
+
+    async def translate(*args, **kwargs):
+        return await local._in_thread(blocking)
+
+    monkeypatch.setattr(engine, "translate_batch", translate)
+    task = asyncio.create_task(worker._process_completed_sentence(job, 10, "Hello", "source"))
+    try:
+        while not started.is_set():
+            await asyncio.sleep(0.001)
+        scheduler = worker_module.scheduler_for("local", NLLB, 1)
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+        assert scheduler.running == 1
+    finally:
+        release.set()
+    for _ in range(100):
+        if scheduler.idle():
+            break
+        await asyncio.sleep(0.001)
+    assert scheduler.running == 0 and scheduler.idle()
+
+
+async def test_full_segment_queue_drops_each_target_without_calling_engine(worker_env, monkeypatch):
+    worker, job, engine, bundle, _ = worker_env
+    scheduler = TranslationScheduler(1, queue_limit=1)
+    blocker = scheduler.admit(job.room.id, "source:batch")
+    monkeypatch.setitem(worker_module.SCHEDULERS, ("local", NLLB), scheduler)
+    try:
+        await worker._process_completed_sentence(job, 10, "Hello", "source")
+        assert not engine.calls
+        assert [call.args[1] for call in bundle.await_args_list if call.args[-1] == "pipeline_failed"] == ["fr", "de"]
+    finally:
+        blocker.close()
+    assert scheduler.idle()
+
+
+@pytest.mark.parametrize("rows", [[[None, "Hallo"]], [["", "Hallo"]]])
+async def test_batch_keeps_failed_or_empty_result_in_its_own_column(worker_env, rows):
+    worker, job, engine, _, delivery = worker_env
+    engine.rows = rows
+    await worker._process_completed_sentence(job, 10, "Hello", "source")
+    assert [call.args[0] for call in delivery.call_args_list] == rows[0]
+
+
+async def test_invalid_engine_shape_fails_targets_without_misattributing_text(worker_env):
+    worker, job, engine, bundle, delivery = worker_env
+    engine.rows = [["Only one column"]]
+    await worker._process_completed_sentence(job, 10, "Hello", "source")
+    delivery.assert_not_called()
+    assert [call.args[1] for call in bundle.await_args_list if call.args[-1] == "pipeline_failed"] == ["fr", "de"]
+    assert worker_module.scheduler_for("local", NLLB, 1).idle()
+
+
+async def test_one_failed_delivery_does_not_fail_a_successful_sibling(worker_env, monkeypatch):
+    worker, job, _, bundle, delivery = worker_env
+
+    async def deliver(*args):
+        if args[2] == "fr":
+            raise RuntimeError("save failed")
+        await delivery(*args[:-1])
+        args[-1]()
+
+    monkeypatch.setattr(worker, "_deliver_translation", deliver)
+    await worker._process_completed_sentence(job, 10, "Hello", "source")
+    assert [call.args[2] for call in delivery.call_args_list] == ["de"]
+    assert [call.args[1] for call in bundle.await_args_list if call.args[-1] == "pipeline_failed"] == ["fr"]
+    assert worker_module.scheduler_for("local", NLLB, 1).idle()
+
+
+async def test_a_cloud_engine_is_not_batched_for_a_model_name_matching_the_local_registry(worker_env, monkeypatch):
+    worker, job, engine, _, _ = worker_env
+    engine.kind = EngineKind.LLM_API
+    one = AsyncMock()
+    monkeypatch.setattr(worker, "_translate_and_broadcast", one)
+    await worker._process_completed_sentence(job, 10, "Hello", "source")
+    assert not engine.calls and one.await_count == 2
+
+
+@pytest.mark.parametrize("texts,targets,expected", [([], TARGETS, []), (["Hello"], [], [[]])])
+async def test_empty_grid_does_not_load_a_model(model, texts, targets, expected):
+    rows = await LocalProvider().translate_batch(EN, targets, texts, TranslationContext(), model=NLLB)
+    assert rows == expected and not model.calls

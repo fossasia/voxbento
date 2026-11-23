@@ -211,3 +211,22 @@ def test_percentile_uses_nearest_rank():
     assert percentile([3.0], 0.95) == 3.0
     assert percentile([4.0, 1.0, 3.0, 2.0], 0.5) == 2.0
     assert percentile([float(n) for n in range(1, 21)], 0.95) == 19.0
+
+
+@pytest.mark.anyio
+async def test_multi_target_batch_uses_one_call_per_segment_without_losing_results():
+    config = LoadConfig(
+        rooms=2,
+        languages=(1, 4),
+        segments=3,
+        interval=0.01,
+        latency=0.01,
+        jitter=0,
+        capacity=1,
+        multi_target_batch=True,
+    )
+    report = await run_load_test(config)
+    assert report.engine_calls == 6
+    assert report.total(TRANSLATED) == 15
+    assert report.total(MISSING) == 0 and report.errors == 0
+    assert report.peak_in_flight == 1

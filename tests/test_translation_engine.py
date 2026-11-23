@@ -293,25 +293,26 @@ def test_the_local_provider_is_a_seq2seq_engine():
 async def test_nllb_translates_each_target_with_its_own_language_token(monkeypatch):
     calls = []
 
-    def fake_inference(self, text, source_token, target_token, model_size):
-        calls.append((text, source_token, target_token, model_size))
-        return f"{text}→{target_token}"
+    def fake_inference(self, cells, source_token, model_size):
+        calls.append((cells, source_token, model_size))
+        return [f"{text}→{target_token}" for text, target_token in cells]
 
-    monkeypatch.setattr(LocalProvider, "_run_inference", fake_inference)
+    monkeypatch.setattr(LocalProvider, "_run_batch_inference", fake_inference)
 
     rows = await LocalProvider().translate_batch(
         ENGLISH, [FRENCH, GERMAN], ["Hello"], TranslationContext(), model="nllb-200-distilled-600M"
     )
 
     assert rows == [["Hello→fra_Latn", "Hello→deu_Latn"]]
-    assert sorted(calls) == [
-        ("Hello", "eng_Latn", "deu_Latn", "nllb-200-distilled-600M"),
-        ("Hello", "eng_Latn", "fra_Latn", "nllb-200-distilled-600M"),
+    assert calls == [
+        ([("Hello", "fra_Latn"), ("Hello", "deu_Latn")], "eng_Latn", "nllb-200-distilled-600M"),
     ]
 
 
 async def test_nllb_marks_a_language_it_lacks_without_losing_the_others(monkeypatch):
-    monkeypatch.setattr(LocalProvider, "_run_inference", lambda self, text, source, target, model: "Bonjour")
+    monkeypatch.setattr(
+        LocalProvider, "_run_batch_inference", lambda self, cells, source, model: ["Bonjour" for _ in cells]
+    )
 
     rows = await LocalProvider().translate_batch(
         ENGLISH,
@@ -327,11 +328,14 @@ async def test_nllb_marks_a_language_it_lacks_without_losing_the_others(monkeypa
 async def test_nllb_applies_each_targets_glossary(monkeypatch):
     seen = []
 
-    def fake_inference(self, text, source_token, target_token, model_size):
-        seen.append((target_token, text))
-        return {"The [1] is open": "La [1] est ouverte", "The booth is open": "Die Kabine ist offen"}[text]
+    def fake_inference(self, cells, source_token, model_size):
+        seen.extend((token, text) for text, token in cells)
+        return [
+            {"The [1] is open": "La [1] est ouverte", "The booth is open": "Die Kabine ist offen"}[text]
+            for text, _ in cells
+        ]
 
-    monkeypatch.setattr(LocalProvider, "_run_inference", fake_inference)
+    monkeypatch.setattr(LocalProvider, "_run_batch_inference", fake_inference)
 
     rows = await LocalProvider().translate_batch(
         ENGLISH,
@@ -434,8 +438,21 @@ async def test_the_worker_tells_a_failed_translation_from_an_empty_one(monkeypat
     )
 
     await TranslationWorker(MagicMock())._translate_and_broadcast(
-        SimpleNamespace(id=1), room, "fake", "fake-model", None, "fr", "French", "en", "English",
-        42, "Hello", "floor", "uuid-1", 3, "event-7-fr",
+        SimpleNamespace(id=1),
+        room,
+        "fake",
+        "fake-model",
+        None,
+        "fr",
+        "French",
+        "en",
+        "English",
+        42,
+        "Hello",
+        "floor",
+        "uuid-1",
+        3,
+        "event-7-fr",
     )
 
     assert bundle.await_args_list == [closing_bundle]
