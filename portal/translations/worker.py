@@ -2,13 +2,14 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 from portal import youtube_captions
 from portal.config import settings
 from portal.database import get_session
 from portal.models import DBBooth, Event, Room, TranscriptTranslation
 from portal.transcription.timing import segment_timing, timing_metadata
+from portal.translations.circuit import circuit_for
 from portal.translations.constants import OPENAI_COMPATIBLE_ENDPOINTS, TranslationProviderEnum
 from portal.translations.engine import EngineKind, Language, TranslationContext, TranslationEngine
 from portal.translations.keys import get_translation_api_key
@@ -126,6 +127,13 @@ def _inference_timeout(provider: str, model: str) -> float | None:
     return 60.0
 
 
+@dataclass(frozen=True)
+class FallbackTranslation:
+    provider: str
+    model: str
+    api_key: str | None = field(repr=False)
+
+
 @dataclass
 class _ResolvedTranslation:
     """Resolved provider/model/room/language state for a single translation segment."""
@@ -139,6 +147,7 @@ class _ResolvedTranslation:
     source_lang_code: str | None
     source_lang_name: str
     source_booth_id: int | None = None
+    fallback: FallbackTranslation | None = None
 
 
 @dataclass
@@ -285,8 +294,16 @@ class TranslationWorker:
         if not event:
             return None
 
+        fallback = None
+        fallback_provider = context.room.translation_fallback_provider
+        fallback_model = context.room.translation_fallback_model
+        if fallback_provider in ENGINES and fallback_model:
+            fallback_key = self._get_translation_api_key(event, fallback_provider)
+            if fallback_key or fallback_provider in KEYLESS_PROVIDERS:
+                if (fallback_provider, fallback_model) != (context.provider, context.model):
+                    fallback = FallbackTranslation(fallback_provider, fallback_model, fallback_key)
         api_key = self._get_translation_api_key(event, context.provider)
-        if not api_key and context.provider not in KEYLESS_PROVIDERS:
+        if not api_key and context.provider not in KEYLESS_PROVIDERS and fallback is None:
             logger.error(f"[{booth_id_str}] Translation API key not found for provider {context.provider}")
             return None
 
@@ -300,6 +317,7 @@ class TranslationWorker:
             source_lang_code=context.source_lang_code,
             source_lang_name=_resolve_source_lang_name(context.source_lang_code),
             source_booth_id=segment.booth_id,
+            fallback=fallback,
         )
 
     async def _resolve_job_context(self, session, room_id: int, segment, booth_id_str: str) -> _JobContext | None:
@@ -424,6 +442,7 @@ class TranslationWorker:
                         target_booth_id,
                         job.source_booth_id,
                         synthesize_audio=not youtube_only,
+                        fallback=job.fallback,
                     )
                 )
 
@@ -452,6 +471,7 @@ class TranslationWorker:
         target_booth_id: str | None = None,
         source_booth_id: int | None = None,
         synthesize_audio: bool = True,
+        fallback: FallbackTranslation | None = None,
     ):
         """Translate and deliver a segment, keeping advisory status failures outside inference.
 
@@ -461,10 +481,19 @@ class TranslationWorker:
         from portal.websockets.manager import tts_manager
 
         queue_key = f"{booth_id_str}:{lang_code}"
+        attempt = None
+        primary_choice = (provider, model)
+        if fallback is not None:
+            attempt = circuit_for(room.id, provider, model, fallback.provider, fallback.model).start()
+            if attempt is None:
+                provider, model, api_key = fallback.provider, fallback.model, fallback.api_key
+                fallback = None
         # Rooms take turns for the engine, and so do the languages within a room.
         job = scheduler_for(provider, model, event.id).admit(room.id, queue_key)
 
         if job is None:
+            if attempt is not None:
+                attempt.finish(None)
             logger.warning(f"[{booth_id_str}] Queue full for {lang_code}. Dropping segment {seq}.")
             await tts_manager.broadcast_bundle(
                 room.id, lang_code, booth_id_str, b"", uuid_segment_id, seq, text, "", "pipeline_failed"
@@ -494,22 +523,28 @@ class TranslationWorker:
                     )
                     vocabulary_entries = []
 
-            # The slot covers the engine call only; saving and broadcasting happen after it is free.
-            translated_text = None
-            async with job:
-                # Enforce a strict timeout on inference (12s for cloud, 60s for local). Checked once
-                # the segment has its turn, so a download that started while it waited still counts.
-                # A download runs in its own thread and holds no slot, so nothing queues behind it.
-                timeout_val = _inference_timeout(provider, model)
-                downloading = timeout_val is None
-                if not downloading:
-                    translated_text = await self._infer_holding_slot(
-                        job,
-                        timeout_val,
+            async def infer(
+                current_job: TranslationJob,
+                current_provider: str,
+                current_model: str,
+                current_key: str | None,
+            ) -> tuple[str | None, bool]:
+                async with current_job:
+                    if attempt is not None and attempt.generation != attempt.circuit.generation:
+                        if (current_provider, current_model) == primary_choice:
+                            return None, False
+                    timeout = _inference_timeout(current_provider, current_model)
+                    if timeout is None:
+                        return None, True
+                    if fallback is not None and not current_key and current_provider not in KEYLESS_PROVIDERS:
+                        return None, False
+                    value = await self._infer_holding_slot(
+                        current_job,
+                        timeout,
                         booth_id_str,
-                        provider,
-                        model,
-                        api_key,
+                        current_provider,
+                        current_model,
+                        current_key,
                         text,
                         lang_code,
                         lang_name,
@@ -518,6 +553,27 @@ class TranslationWorker:
                         room,
                         vocabulary_entries,
                     )
+                    return value, False
+
+            if attempt is None:
+                translated_text, downloading = await infer(job, provider, model, api_key)
+            else:
+                try:
+                    translated_text, downloading = await infer(job, provider, model, api_key)
+                except Exception as exc:
+                    logger.warning("Primary translation failed for room %s (%s)", room.id, type(exc).__name__)
+                    translated_text, downloading = None, False
+                attempt.finish(translated_text is not None)
+                if translated_text is None and fallback is not None:
+                    job.close()
+                    provider, model, api_key = fallback.provider, fallback.model, fallback.api_key
+                    job = scheduler_for(provider, model, event.id).admit(room.id, queue_key)
+                    if job is None:
+                        await tts_manager.broadcast_bundle(
+                            room.id, lang_code, booth_id_str, b"", uuid_segment_id, seq, text, "", "pipeline_failed"
+                        )
+                        return
+                    translated_text, downloading = await infer(job, provider, model, api_key)
 
             if downloading:
                 # Told after the slot is free, so the next segment does not wait for this broadcast.
@@ -541,7 +597,9 @@ class TranslationWorker:
 
             # Save to DB using an independent session to avoid concurrent transaction crashes
             async with get_session() as local_session:
-                translation = TranscriptTranslation(segment_id=segment_id, language_code=lang_code, text=translated_text)
+                translation = TranscriptTranslation(
+                    segment_id=segment_id, language_code=lang_code, text=translated_text
+                )
                 local_session.add(translation)
                 await local_session.flush()
 
@@ -601,17 +659,18 @@ class TranslationWorker:
                 room.id, lang_code, booth_id_str, audio_bytes, uuid_segment_id, seq, text, translated_text, error
             )
 
-        except Exception as e:
-            logger.error(
-                f"[{booth_id_str}] Translation failed for {lang_code}: {e} (api_key is None? {api_key is None})"
-            )
+        except Exception as exc:
+            logger.warning("[%s] Translation failed for %s (%s)", booth_id_str, lang_code, type(exc).__name__)
             await tts_manager.broadcast_bundle(
                 room.id, lang_code, booth_id_str, b"", uuid_segment_id, seq, text, "", "pipeline_failed"
             )
         finally:
             # A job that stopped before its result was delivered (dropped, failed or cancelled) leaves its
             # channel here; for the others this does nothing.
-            job.close()
+            if job is not None:
+                job.close()
+            if attempt is not None:
+                attempt.finish(None)
 
     async def _infer_holding_slot(
         self,
@@ -663,9 +722,7 @@ class TranslationWorker:
         """Drop a segment because its local model is still downloading, and tell listeners why."""
         from portal.websockets.manager import tts_manager
 
-        logger.info(
-            "[%s] Local model %s is downloading. Dropping segment for %s.", booth_id_str, model, lang_code
-        )
+        logger.info("[%s] Local model %s is downloading. Dropping segment for %s.", booth_id_str, model, lang_code)
         await tts_manager.broadcast_bundle(
             room_id, lang_code, booth_id_str, b"", uuid_segment_id, seq, text, "", "model_downloading"
         )
@@ -702,6 +759,6 @@ class TranslationWorker:
             model=model,
             api_key=api_key,
         )
-        if not translated:
-            logger.warning(f"Provider {provider} returned empty translation for text: '{text}'")
+        if translated is None:
+            logger.warning("Provider %s returned no translation", provider)
         return translated

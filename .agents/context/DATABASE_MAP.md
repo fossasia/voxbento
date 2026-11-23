@@ -68,6 +68,8 @@ Cascade: deletes rooms + booths when event is deleted.
 | `floor_translation_enabled` | Boolean | Default False |
 | `floor_translation_provider` | String(50) nullable | — |
 | `floor_translation_model` | String(100) nullable | — |
+| `translation_fallback_provider` | String(50) nullable | Optional room fallback; NULL disables failover (migration 048) |
+| `translation_fallback_model` | String(100) nullable | Fallback model; uses existing encrypted event credentials |
 | `floor_source_language_code` | String(20) | Default `'en'` |
 | `floor_tts_enabled` | Boolean | Default False; controls whether TTS is generated for floor audio translations |
 | `floor_tts_provider` | String(20) | Default `'deepgram'`; TTS engine — `'deepgram'` (cloud) or `'supertonic'` (self-hosted ONNX) |

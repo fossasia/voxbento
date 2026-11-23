@@ -24,6 +24,27 @@ Voxbento merges these instructions with a system-level safety prompt requiring c
 The translated text is broadcast concurrently to listeners via the target booth's captions feed (`/ws/captions/{booth_id}`) and delivered via framed binary bundles (`/ws/tts/{room_id}/{language_code}/{booth_id}`) to the room's configured TTS engine (Deepgram Aura, ElevenLabs v4 or Supertonic ONNX), ensuring that captions and speech share the exact same translation.
 :::
 
+## Fallback translator
+
+In the room's **AI settings → Translation**, expand **Fallback translator** and choose a
+service and optional model. **No fallback** keeps the existing behaviour. The service
+must be available to this event and support the room's languages; built-in models must
+already be downloaded by an admin. Existing encrypted event credentials are reused.
+Choose a different service or model from the primary translator.
+
+On a primary error, failed result or inference timeout, the same segment is sent to the
+fallback before captions and speech are delivered. An intentionally empty translation
+is not retried. Each engine retains its own bounded, fair scheduler; a timed-out native
+model keeps its slot until its thread actually finishes.
+
+After three consecutive failed primary calls, that room uses the fallback directly for
+30 seconds. One call then probes the primary; other calls in that room continue using
+the fallback. A successful probe restores normal translation, while another failure
+starts a new cooldown. Cancellation does not count as an engine failure. This recovery
+state is held per room and engine configuration in the portal process and resets on a
+restart. Booth translations in the room also use the fallback when it is configured;
+ensure it supports their source and target languages too.
+
 ## AI Vocabulary & Glossary CSV
 
 Event owners manage custom glossaries to enforce accurate translation of brand names, product terms, and technical acronyms. (The AI interpretation vocabulary card is displayed to event owners; room coordinators without event ownership do not have card access).

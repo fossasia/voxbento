@@ -1253,6 +1253,14 @@ async def admin_room_setup_save(request: Request, event_id: int, room_id: int):
         booth_codes = [b.language_code for b in await list_booths_for_room(session, room_id)]
         plan, errors = parse_plan(form, catalog, existing_booth_codes=booth_codes)
         live = _live_booth_codes(event.slug, room_id, booth_codes)
+        if plan.ai_languages and room.translation_fallback_provider:
+            error = language_support_error(
+                room.translation_fallback_provider,
+                room.translation_fallback_model,
+                (plan.spoken_language, *plan.ai_languages),
+            )
+            if error:
+                errors = (*errors, error)
         if errors:
             admin_flags = await get_access_flags(request, event_id=event_id, room_id=room_id)
             return _room_setup_response(
@@ -1269,6 +1277,13 @@ async def admin_room_setup_save(request: Request, event_id: int, room_id: int):
                 status_code=status.HTTP_400_BAD_REQUEST,
             )
         result = await apply_plan(session, event, room, plan, catalog, live_booth_codes=live)
+        if (
+            room.floor_translation_enabled
+            and room.translation_fallback_provider
+            and (room.floor_translation_provider, room.floor_translation_model)
+            == (room.translation_fallback_provider, room.translation_fallback_model)
+        ):
+            raise HTTPException(status_code=400, detail="The primary translator and fallback must be different.")
     # The session has committed: drop the old voice settings so AI text languages stop speaking now.
     invalidate_tts_config(room_id)
     query = {"updated": "1"}
@@ -1474,7 +1489,9 @@ async def admin_event_api_settings_post(
     if meeting_analysis_model is not None and len(meeting_analysis_model) > ANALYSIS_MAX_MODEL_LENGTH:
         raise HTTPException(status_code=400, detail="The meeting report model name is too long.")
     if meeting_analysis_model and not _ANALYSIS_MODEL_RE.fullmatch(meeting_analysis_model):
-        raise HTTPException(status_code=400, detail="The meeting report model name has characters a model name can't have.")
+        raise HTTPException(
+            status_code=400, detail="The meeting report model name has characters a model name can't have."
+        )
     async with get_session() as session:
         event = await get_event_by_id(session, event_id)
         if event is None:
@@ -1887,6 +1904,52 @@ def _apply_ai_settings(room: Room, form: FormData, catalog: EngineCatalog) -> No
             )
         room.floor_translation_provider = translation.provider
         room.floor_translation_model = model
+    if "translation_fallback_provider" in form:
+        provider = str(form.get("translation_fallback_provider", "")).strip()
+        model = str(form.get("translation_fallback_model", "")).strip()
+        if not provider:
+            room.translation_fallback_provider = None
+            room.translation_fallback_model = None
+        else:
+            fallback = catalog.find("translation", provider)
+            if fallback is None:
+                raise TranslationLanguageError(
+                    status_code=400, detail="The fallback translation service is not available for this event."
+                )
+            if len(model) > 100:
+                raise TranslationLanguageError(status_code=400, detail="The fallback model name is too long.")
+            if provider == TranslationProviderEnum.LOCAL.value:
+                if model and not settings.local_translation_allows(model):
+                    raise TranslationLanguageError(
+                        status_code=400, detail="The fallback built-in model is not offered on this server."
+                    )
+                model = model or fallback.model
+            elif provider == TranslationProviderEnum.SELF_HOSTED.value:
+                if model and not settings.self_hosted_llm_allows(model):
+                    raise TranslationLanguageError(
+                        status_code=400, detail="The fallback self-hosted model is not offered on this server."
+                    )
+                model = model or fallback.model
+            else:
+                model = model or fallback.model
+            if (provider, model) == (room.floor_translation_provider, room.floor_translation_model):
+                raise TranslationLanguageError(
+                    status_code=400, detail="Choose a fallback service or model different from the primary translator."
+                )
+            _require_translatable(
+                provider, model, (room.floor_language_code, *_enabled_codes(room.translation_languages))
+            )
+            room.translation_fallback_provider = provider
+            room.translation_fallback_model = model
+    elif room.translation_fallback_provider and room.floor_translation_enabled:
+        if (room.translation_fallback_provider, room.translation_fallback_model) == (
+            room.floor_translation_provider,
+            room.floor_translation_model,
+        ):
+            raise TranslationLanguageError(
+                status_code=400,
+                detail="Choose a primary translator different from the fallback, or turn the fallback off.",
+            )
     if "floor_ai_interpreter_persona" in form:
         room.floor_ai_interpreter_persona = str(form.get("floor_ai_interpreter_persona", "")).strip() or None
         room.floor_ai_interpretation_style = str(form.get("floor_ai_interpretation_style", "")).strip() or None
@@ -1976,6 +2039,14 @@ def _require_room_form_translatable(room: Room, form: FormData, form_section: st
         after = (*after[:3], form.get("floor_language_code", "").strip() or None, after[4])
     if after != before and after[0]:
         _require_translatable(after[1], after[2], (after[3], *after[4]))
+        if room.translation_fallback_provider:
+            _require_translatable(
+                room.translation_fallback_provider, room.translation_fallback_model, (after[3], *after[4])
+            )
+            if after[1:3] == (room.translation_fallback_provider, room.translation_fallback_model):
+                raise TranslationLanguageError(
+                    status_code=400, detail="The primary translator and fallback must be different."
+                )
 
 
 def _process_room_translation_section(session: AsyncSession, room: Room, form: FormData, form_section: str) -> None:

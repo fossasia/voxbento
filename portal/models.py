@@ -163,6 +163,8 @@ class Room(Base):
     floor_translation_enabled: Mapped[bool] = mapped_column(Boolean, default=False, server_default="0")
     floor_translation_provider: Mapped[str | None] = mapped_column(String(50), nullable=True, default=None)
     floor_translation_model: Mapped[str | None] = mapped_column(String(100), nullable=True, default=None)
+    translation_fallback_provider: Mapped[str | None] = mapped_column(String(50), nullable=True, default=None)
+    translation_fallback_model: Mapped[str | None] = mapped_column(String(100), nullable=True, default=None)
     floor_source_language_code: Mapped[str] = mapped_column(String(20), default="en", server_default=sa.text("'en'"))
     floor_ai_interpreter_persona: Mapped[str | None] = mapped_column(Text, nullable=True, default=None)
     floor_ai_interpretation_style: Mapped[str | None] = mapped_column(Text, nullable=True, default=None)

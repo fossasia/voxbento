@@ -662,6 +662,14 @@ async def _check_translation_languages(db: AsyncSession, payload_dict: dict, roo
     error = language_support_error(proposed[1], proposed[2], (proposed[3], *proposed[4]))
     if error:
         raise HTTPException(status_code=422, detail=error)
+    if room is not None and room.translation_fallback_provider:
+        error = language_support_error(
+            room.translation_fallback_provider, room.translation_fallback_model, (proposed[3], *proposed[4])
+        )
+        if error:
+            raise HTTPException(status_code=422, detail=error)
+        if proposed[1:3] == (room.translation_fallback_provider, room.translation_fallback_model):
+            raise HTTPException(status_code=422, detail="The primary translator and fallback must be different.")
 
 
 def _apply_room_settings(room: Room, payload_dict: dict) -> None:

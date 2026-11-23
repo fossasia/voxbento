@@ -61,12 +61,11 @@ function initAiSettings() {
     filterModels();
   }
 
-  const transProvider = document.getElementById('floor_translation_provider');
-  const transModel = document.getElementById('floor_translation_model');
-  if (transProvider && transModel) {
+  function initTranslationPicker(providerId, modelId, savedModel, localNote = null) {
+    const transProvider = document.getElementById(providerId);
+    const transModel = document.getElementById(modelId);
+    if (!transProvider || !transModel) return;
     const savedProvider = transProvider.value;
-    const savedModel = root.dataset.initialTranslationModel || '';
-    const localNote = document.querySelector('[data-local-translation-note]');
     let catalog = null;
     let loads = 0;
 
@@ -75,6 +74,7 @@ function initAiSettings() {
       const provider = transProvider.value;
       if (localNote) localNote.hidden = provider !== 'local';
       transModel.replaceChildren(new Option('Recommended for this service', ''));
+      transModel.disabled = !provider;
       if (!provider) return;
       try {
         // Only a list that loaded is kept, so a failed load tries again on the next change.
@@ -101,6 +101,11 @@ function initAiSettings() {
     transProvider.addEventListener('change', loadModels);
     loadModels();
   }
+
+  initTranslationPicker('floor_translation_provider', 'floor_translation_model',
+    root?.dataset.initialTranslationModel || '', document.querySelector('[data-local-translation-note]'));
+  initTranslationPicker('translation_fallback_provider', 'translation_fallback_model',
+    root?.dataset.initialFallbackModel || '');
 
   const ttsProvider = document.getElementById('floor_tts_provider');
   if (ttsProvider) {
