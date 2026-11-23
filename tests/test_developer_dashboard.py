@@ -14,9 +14,8 @@ import os
 os.environ["BOOTH_ACCESS_TOKEN"] = ""
 
 import re
-from html.parser import HTMLParser
-
 from datetime import datetime, timedelta, timezone
+from html.parser import HTMLParser
 
 import pytest
 from sqlalchemy import select
