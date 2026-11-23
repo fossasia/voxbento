@@ -565,6 +565,84 @@ async def test_openai_realtime_non_auth_failure_still_retries():
     assert attempts > 1
 
 
+class _FakeOpenAIEOFWS:
+    """Rejects the key only once the final commit is sent, after the sender's EOF.
+
+    The receiver blocks until `input_audio_buffer.commit` goes out, so the error
+    can only be observed by the drain inside run_stream's EOF branch — never by
+    the disconnect path. That is the ordering the race is about.
+    """
+
+    def __init__(self, frames):
+        self._frames = list(frames)
+        self.sent = []
+        self.committed = asyncio.Event()
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, *exc):
+        return False
+
+    def __aiter__(self):
+        return self
+
+    async def __anext__(self):
+        await self.committed.wait()
+        if not self._frames:
+            raise StopAsyncIteration
+        return self._frames.pop(0)
+
+    async def send(self, payload):
+        self.sent.append(payload)
+        if "input_audio_buffer.commit" in payload:
+            self.committed.set()
+
+
+@pytest.mark.anyio
+async def test_openai_realtime_auth_error_after_eof_is_reported():
+    """A key rejected on the final commit must still be reported as auth_failed.
+
+    The sender hits EOF at once, so run_stream sends the closing commit and drains
+    the receiver. Only then does the socket reject the key. The error has to travel
+    out of run_stream rather than be absorbed by the drain or retried as if the
+    connection had merely dropped.
+    """
+    import json
+
+    from portal.transcription.providers.openai import OpenAIProvider
+
+    process = MagicMock()
+    process.returncode = None
+    process.stdout = MagicMock()
+    process.stdout.read = AsyncMock(return_value=b"")  # immediate EOF
+
+    ws = _FakeOpenAIEOFWS(
+        [json.dumps({"type": "error", "error": {"code": "invalid_api_key", "message": "Incorrect API key"}})]
+    )
+
+    # Patch the provider's retry sleep only, so a regression that falls through to
+    # the retry loop fails fast instead of hanging. The websocket's own waiting is
+    # driven by an Event, not by sleeping, so it is unaffected.
+    with patch("websockets.connect", return_value=ws):
+        with patch("portal.transcription.providers.openai.asyncio.sleep", new=AsyncMock()):
+            with pytest.raises(TranscriptionAuthError) as excinfo:
+                async with asyncio.timeout(10):
+                    await OpenAIProvider().run_stream(
+                        process,
+                        "en",
+                        "gpt-4o-realtime-preview",
+                        ProviderConfig(api_key="bad"),
+                        AsyncMock(),
+                        "booth-1",
+                    )
+
+    assert excinfo.value.error_code == "auth_failed"
+    assert excinfo.value.provider == "openai"
+    # The rejection really did arrive after the closing commit, not before it.
+    assert any("input_audio_buffer.commit" in payload for payload in ws.sent)
+
+
 @pytest.mark.parametrize(
     "event,expected",
     [
