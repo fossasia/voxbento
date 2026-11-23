@@ -253,6 +253,7 @@ jobs:
         with:
           script: |
             const LABEL = process.env.LABEL;
+            const EXEMPTION_REQUEST_LABEL = process.env.EXEMPTION_REQUEST_LABEL;
             const REMIND_HOURS = Number(process.env.REMIND_AFTER_HOURS);
             const CLOSE_HOURS = Number(process.env.CLOSE_AFTER_HOURS);
             const DRY_RUN = String(context.payload.inputs?.dry_run ?? 'false') === 'true';
@@ -300,6 +301,12 @@ jobs:
                   owner, repo, pull_number: n,
                 });
                 const author = pr.user.login;
+
+                // Live labels: never remind or close a PR that has an exemption requested.
+                if ((pr.labels ?? []).some(l => l.name === EXEMPTION_REQUEST_LABEL)) {
+                  core.info(`#${n}: exemption requested, skipping`);
+                  continue;
+                }
 
                 const events = await github.paginate(github.rest.issues.listEventsForTimeline, {
                   owner, repo, issue_number: n, per_page: 100,
