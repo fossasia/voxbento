@@ -19,6 +19,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_asyn
 # Because portal.database uses a module-level engine tied to settings,
 # we import the functions and call them with our test session.
 from portal.database import (
+    configure,
     count_users,
     create_booth,
     create_event,
@@ -28,12 +29,15 @@ from portal.database import (
     delete_booth,
     delete_event,
     delete_room,
+    dispose,
     get_booth_by_id,
     get_booth_language_name,
     get_event_by_id,
     get_event_by_slug,
     get_invite_token,
     get_room_by_id,
+    get_session,
+    init_db,
     list_all_booths_for_events,
     list_booths_for_event,
     list_booths_for_room,
@@ -1455,8 +1459,6 @@ class TestSaveTranscriptSegment:
 
     @pytest.fixture(autouse=True)
     async def setup_test_db(self):
-        from portal.database import configure, dispose, init_db
-
         configure("sqlite+aiosqlite://")
         await init_db()
         yield
@@ -1465,9 +1467,6 @@ class TestSaveTranscriptSegment:
     @pytest.mark.anyio
     async def test_omitted_room_id(self):
         """Standard 3-part booth ID resolves room_id from string when room_id is omitted."""
-        from portal.database import create_booth, create_event, create_room, get_session
-        from portal.models import TranscriptSegment
-
         async with get_session() as session:
             event = await create_event(session, slug="pycon-berlin", display_name="PyCon Berlin")
             room = await create_room(session, event_id=event.id, display_name="Main Hall")
@@ -1490,9 +1489,6 @@ class TestSaveTranscriptSegment:
     @pytest.mark.anyio
     async def test_explicit_room_id(self):
         """Explicitly supplied room_id is supported and matches record."""
-        from portal.database import create_booth, create_event, create_room, get_session
-        from portal.models import TranscriptSegment
-
         async with get_session() as session:
             event = await create_event(session, slug="fosdem-event", display_name="FOSDEM")
             room = await create_room(session, event_id=event.id, display_name="Room 1")
@@ -1514,9 +1510,6 @@ class TestSaveTranscriptSegment:
     @pytest.mark.anyio
     async def test_floor_three_part_omitted_room_id(self):
         """Floor channel with 3-part ID ({slug}-{room_id}-floor) resolves room_id with omitted room_id."""
-        from portal.database import create_event, create_room, get_session
-        from portal.models import TranscriptSegment
-
         async with get_session() as session:
             event = await create_event(session, slug="summit-2026", display_name="Summit 2026")
             room = await create_room(session, event_id=event.id, display_name="Plenary")
@@ -1536,9 +1529,6 @@ class TestSaveTranscriptSegment:
     @pytest.mark.anyio
     async def test_floor_legacy_two_part_explicit_room_id(self):
         """Legacy 2-part floor ID ({slug}-floor) falls back to explicitly supplied room_id."""
-        from portal.database import create_event, create_room, get_session
-        from portal.models import TranscriptSegment
-
         async with get_session() as session:
             event = await create_event(session, slug="legacy-event", display_name="Legacy Event")
             room = await create_room(session, event_id=event.id, display_name="Stage")
@@ -1557,8 +1547,6 @@ class TestSaveTranscriptSegment:
     @pytest.mark.anyio
     async def test_missing_room_id_returns_none(self):
         """When neither the booth ID nor the caller provides a room_id, returns None safely."""
-        from portal.database import create_event, get_session
-
         async with get_session() as session:
             event = await create_event(session, slug="no-room-event", display_name="No Room Event")
             event_slug = event.slug
@@ -1569,11 +1557,6 @@ class TestSaveTranscriptSegment:
     @pytest.mark.anyio
     async def test_malformed_middle_segment(self):
         """A 3-part ID with non-digit middle segment is safely rejected even with explicit room_id."""
-        from sqlalchemy import func, select
-
-        from portal.database import create_event, create_room, get_session
-        from portal.models import TranscriptSegment
-
         async with get_session() as session:
             event = await create_event(session, slug="bad-id-event", display_name="Bad ID Event")
             room = await create_room(session, event_id=event.id, display_name="Room A")
@@ -1589,15 +1572,13 @@ class TestSaveTranscriptSegment:
 
         # Verify no segment was created for the rejected input
         async with get_session() as session:
-            stmt = select(func.count(TranscriptSegment.id)).where(TranscriptSegment.room_id == room_id)
+            stmt = sa.select(sa.func.count(TranscriptSegment.id)).where(TranscriptSegment.room_id == room_id)
             count = await session.scalar(stmt)
             assert count == 0
 
     @pytest.mark.anyio
     async def test_malformed_non_floor_id_returns_none(self):
         """Malformed non-floor identifier (non-digit room segment) is safely rejected."""
-        from portal.database import create_booth, create_event, create_room, get_session
-
         async with get_session() as session:
             event = await create_event(session, slug="pycon-berlin", display_name="PyCon Berlin")
             room = await create_room(session, event_id=event.id, display_name="Main Hall")
@@ -1615,9 +1596,6 @@ class TestSaveTranscriptSegment:
     @pytest.mark.anyio
     async def test_floor_legacy_event_slug_ending_in_digits_explicit_room_id(self):
         """Legacy floor ID whose event slug ends in digits resolves correctly with explicit room_id."""
-        from portal.database import create_event, create_room, get_session
-        from portal.models import TranscriptSegment
-
         async with get_session() as session:
             event = await create_event(session, slug="summit-2026", display_name="Summit 2026")
             room = await create_room(session, event_id=event.id, display_name="Plenary")
@@ -1637,8 +1615,6 @@ class TestSaveTranscriptSegment:
     @pytest.mark.anyio
     async def test_floor_legacy_event_slug_ending_in_digits_omitted_room_id_returns_none(self):
         """Legacy floor ID whose event slug ends in digits returns None when room_id is omitted."""
-        from portal.database import create_event, create_room, get_session
-
         async with get_session() as session:
             event = await create_event(session, slug="summit-2026", display_name="Summit 2026")
             await create_room(session, event_id=event.id, display_name="Plenary")
@@ -1651,9 +1627,6 @@ class TestSaveTranscriptSegment:
     @pytest.mark.anyio
     async def test_floor_canonical_event_slug_ending_in_digits(self):
         """Canonical floor ID whose event slug ends in digits resolves room_id correctly."""
-        from portal.database import create_event, create_room, get_session
-        from portal.models import TranscriptSegment
-
         async with get_session() as session:
             event = await create_event(session, slug="summit-2026", display_name="Summit 2026")
             room = await create_room(session, event_id=event.id, display_name="Room B")
@@ -1672,8 +1645,6 @@ class TestSaveTranscriptSegment:
     @pytest.mark.anyio
     async def test_unicode_digit_like_room_id_returns_none(self):
         """Unicode digit-like room characters (e.g. '²') return None safely without ValueError."""
-        from portal.database import create_booth, create_event, create_room, get_session
-
         async with get_session() as session:
             event = await create_event(session, slug="pycon-berlin", display_name="PyCon Berlin")
             room = await create_room(session, event_id=event.id, display_name="Main Hall")
@@ -1697,9 +1668,6 @@ class TestSaveTranscriptSegment:
     @pytest.mark.anyio
     async def test_case_normalization_resolves_consistently(self):
         """Uppercase/mixed-case identifiers are normalized and resolve consistently."""
-        from portal.database import create_booth, create_event, create_room, get_session
-        from portal.models import TranscriptSegment
-
         async with get_session() as session:
             event = await create_event(session, slug="pycon-berlin", display_name="PyCon Berlin")
             room = await create_room(session, event_id=event.id, display_name="Main Hall")
@@ -1743,15 +1711,10 @@ class TestSaveTranscriptSegment:
     @pytest.mark.anyio
     async def test_three_letter_iso_language_code(self):
         """Valid 3-letter ISO language code (e.g. 'eng') resolves and saves successfully."""
-        from sqlalchemy import insert
-
-        from portal.database import create_event, create_room, get_session
-        from portal.models import DBBooth, TranscriptSegment
-
         async with get_session() as session:
             event = await create_event(session, slug="pycon-berlin", display_name="PyCon Berlin")
             room = await create_room(session, event_id=event.id, display_name="Main Hall")
-            stmt = insert(DBBooth).values(
+            stmt = sa.insert(DBBooth).values(
                 event_id=event.id,
                 room_id=room.id,
                 language_code="eng",
@@ -1803,16 +1766,11 @@ class TestSaveTranscriptSegment:
     @pytest.mark.anyio
     async def test_regional_tag_language_code(self):
         """Valid regional language tag (e.g. 'pt-br') resolves and saves successfully."""
-        from sqlalchemy import insert
-
-        from portal.database import create_event, create_room, get_session
-        from portal.models import DBBooth, TranscriptSegment
-
         async with get_session() as session:
             event = await create_event(session, slug="summit-2026", display_name="Summit 2026")
             room = await create_room(session, event_id=event.id, display_name="Auditorium")
             res_pt = await session.execute(
-                insert(DBBooth).values(
+                sa.insert(DBBooth).values(
                     event_id=event.id,
                     room_id=room.id,
                     language_code="pt-br",
@@ -1821,7 +1779,7 @@ class TestSaveTranscriptSegment:
             )
             booth_pt_id = res_pt.inserted_primary_key[0]
             res_es = await session.execute(
-                insert(DBBooth).values(
+                sa.insert(DBBooth).values(
                     event_id=event.id,
                     room_id=room.id,
                     language_code="es-419",
@@ -1889,9 +1847,6 @@ class TestSaveTranscriptSegment:
     @pytest.mark.anyio
     async def test_valid_non_floor_booth_identifier_saves_successfully(self):
         """A valid non-floor booth identifier resolves and saves successfully with its booth ID."""
-        from portal.database import create_booth, create_event, create_room, get_session
-        from portal.models import TranscriptSegment
-
         async with get_session() as session:
             event = await create_event(session, slug="conf-2026", display_name="Conf 2026")
             room = await create_room(session, event_id=event.id, display_name="Hall 1")
@@ -1914,11 +1869,6 @@ class TestSaveTranscriptSegment:
     @pytest.mark.anyio
     async def test_non_floor_nonexistent_booth_returns_none_and_inserts_no_segment(self):
         """A non-floor identifier with a valid room but nonexistent booth returns None and inserts no segment."""
-        from sqlalchemy import func, select
-
-        from portal.database import create_event, create_room, get_session
-        from portal.models import TranscriptSegment
-
         async with get_session() as session:
             event = await create_event(session, slug="conf-2026", display_name="Conf 2026")
             room = await create_room(session, event_id=event.id, display_name="Hall 1")
@@ -1934,15 +1884,13 @@ class TestSaveTranscriptSegment:
 
         # 3. Verify no TranscriptSegment was inserted
         async with get_session() as session:
-            stmt = select(func.count(TranscriptSegment.id)).where(TranscriptSegment.room_id == room_id)
+            stmt = sa.select(sa.func.count(TranscriptSegment.id)).where(TranscriptSegment.room_id == room_id)
             count = await session.scalar(stmt)
             assert count == 0
 
     @pytest.mark.anyio
     async def test_malformed_language_codes_return_none(self):
         """Malformed language identifiers and Unicode digit characters are safely rejected."""
-        from portal.database import create_event, create_room, get_session
-
         async with get_session() as session:
             event = await create_event(session, slug="pycon-berlin", display_name="PyCon Berlin")
             room = await create_room(session, event_id=event.id, display_name="Main Hall")
@@ -1973,8 +1921,6 @@ class TestSaveTranscriptSegment:
     @pytest.mark.anyio
     async def test_room_belonging_to_different_event_returns_none(self):
         """Room belonging to a different event cannot be associated via fallback lookup."""
-        from portal.database import create_event, create_room, get_session
-
         async with get_session() as session:
             event_a = await create_event(session, slug="event-alpha", display_name="Event Alpha")
             event_b = await create_event(session, slug="event-beta", display_name="Event Beta")
@@ -1991,17 +1937,12 @@ class TestSaveTranscriptSegment:
     @pytest.mark.anyio
     async def test_numeric_segments_in_event_slug_disambiguation(self):
         """Right-to-left parsing correctly selects room ID when event slug contains numeric segments."""
-        from sqlalchemy import insert
-
-        from portal.database import create_booth, create_event, create_room, get_session
-        from portal.models import DBBooth, Room, TranscriptSegment
-
         async with get_session() as session:
             # 1. summit-2026 with room_id=1 and pt-br (with booth)
             ev1 = await create_event(session, slug="summit-2026", display_name="Summit 2026")
             rm1 = await create_room(session, event_id=ev1.id, display_name="Auditorium")
             res_bth1 = await session.execute(
-                insert(DBBooth).values(
+                sa.insert(DBBooth).values(
                     event_id=ev1.id,
                     room_id=rm1.id,
                     language_code="pt-br",
@@ -2014,7 +1955,7 @@ class TestSaveTranscriptSegment:
             ev2 = await create_event(session, slug="event-2026", display_name="Event 2026")
             rm2 = await create_room(session, event_id=ev2.id, display_name="Hall 14")
             res_bth2 = await session.execute(
-                insert(DBBooth).values(
+                sa.insert(DBBooth).values(
                     event_id=ev2.id,
                     room_id=rm2.id,
                     language_code="eng",
@@ -2032,7 +1973,7 @@ class TestSaveTranscriptSegment:
 
             # 4. summit-2026 with room_id=1 and es-419 (with booth)
             res_bth4 = await session.execute(
-                insert(DBBooth).values(
+                sa.insert(DBBooth).values(
                     event_id=ev1.id,
                     room_id=rm1.id,
                     language_code="es-419",
