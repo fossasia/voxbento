@@ -364,3 +364,42 @@ async def test_glossary_snapshot_survives_a_later_lookup_rolling_back(worker_env
         assert engine.calls[0][3].vocabulary_for(TARGETS[0]) == (VocabularyEntryInput("booth", "fr", "cabine"),)
     finally:
         await dispose()
+
+
+async def test_batch_replaces_the_tokenizers_default_with_the_requested_source(model):
+    await LocalProvider().translate_batch(Language("el", "Greek"), TARGETS, ["Hello"], TranslationContext(), model=NLLB)
+    sources, options = model.calls[0]
+    assert all(source[0] == "ell_Grek" for source in sources)
+    assert options["target_prefix"] == [["fra_Latn"], ["deu_Latn"]]
+
+
+@pytest.mark.parametrize("fails", [False, True])
+async def test_batch_holds_a_model_reference_until_native_inference_finishes(model, monkeypatch, fails):
+    started, release = threading.Event(), threading.Event()
+    original = model.translate_batch
+    held = []
+
+    def translate(*args, **kwargs):
+        held.append(local._active_translations_per_model.get(NLLB, 0))
+        started.set()
+        release.wait(3)
+        if fails:
+            raise RuntimeError("native inference failed")
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(model, "translate_batch", translate)
+    task = asyncio.create_task(
+        LocalProvider().translate_batch(EN, TARGETS, ["Hello"], TranslationContext(), model=NLLB)
+    )
+    try:
+        for _ in range(1000):
+            if started.is_set():
+                break
+            await asyncio.sleep(0.001)
+        assert started.is_set() and held == [1]
+        assert local._active_translations_per_model[NLLB] == 1
+    finally:
+        release.set()
+        result = await task
+    assert result == ([[None, None]] if fails else [["Hello", "Hello"]])
+    assert local._active_translations_per_model.get(NLLB, 0) == 0
