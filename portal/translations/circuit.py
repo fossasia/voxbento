@@ -87,7 +87,8 @@ def circuit_for(room_id: int, provider: str, model: str, fallback_provider: str,
     now = time.monotonic()
     for old, circuit in list(CIRCUITS.items()):
         if not circuit.active and (
-            (old[:3] == key[:3] and old != key) or now - circuit.last_used > 2 * circuit.recovery
+            (old[:3] == key[:3] and old != key)
+            or (circuit.opened_until is None and now - circuit.last_used > 2 * circuit.recovery)
         ):
             del CIRCUITS[old]
     if key not in CIRCUITS:

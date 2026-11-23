@@ -133,3 +133,30 @@ for (const [reverse, newerFails] of [[false, false], [true, false], [false, true
   assert.deepEqual(added.filter((opt) => opt.selected).map((opt) => opt.value), []);
 }
 console.log('Room AI regression checks passed');
+
+// A saved custom fallback remains selected while the catalog request is still pending.
+{
+  const added = [];
+  let finish;
+  const elements = {
+    'room-detail': { dataset: { initialFallbackModel: 'my-custom-backup' } },
+    translation_fallback_provider: { value: 'openai', addEventListener() {} },
+    translation_fallback_model: {
+      replaceChildren(...options) { added.length = 0; added.push(...options); },
+      append(option) { added.push(option); },
+    },
+  };
+  vm.runInNewContext(roomDetail, {
+    console: { error() {} },
+    initTabs() {},
+    Option: class {
+      constructor(text, value, defaultSelected, selected) { this.value = value; this.selected = Boolean(selected); }
+    },
+    fetch: () => new Promise((resolve) => { finish = resolve; }),
+    document: { querySelector: () => null, querySelectorAll: () => [], getElementById: (id) => elements[id] },
+  });
+  assert.deepEqual(added.filter((option) => option.selected).map((option) => option.value), ['my-custom-backup']);
+  finish({ ok: true, json: async () => ({ openai: ['gpt-4o-mini'] }) });
+  await new Promise(setImmediate);
+  assert.deepEqual(added.filter((option) => option.selected).map((option) => option.value), ['my-custom-backup']);
+}

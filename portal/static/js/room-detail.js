@@ -73,7 +73,9 @@ function initAiSettings() {
       const load = ++loads;
       const provider = transProvider.value;
       if (localNote) localNote.hidden = provider !== 'local';
+      const keep = provider === savedProvider ? savedModel : '';
       transModel.replaceChildren(new Option('Recommended for this service', ''));
+      if (keep) transModel.append(new Option(keep, keep, false, true));
       transModel.disabled = !provider;
       if (!provider) return;
       try {
@@ -88,9 +90,9 @@ function initAiSettings() {
       }
       // The service may have changed while the list was loading; only the latest call fills the list.
       if (load !== loads) return;
+      transModel.replaceChildren(new Option('Recommended for this service', ''));
       const listed = catalog?.[provider];
       const models = [...(listed || [])];
-      const keep = provider === savedProvider ? savedModel : '';
       // Cloud services accept any model name, but a self-hosted model must be on the server's list.
       // If the list didn't load, keep the saved model and let the server check it on save.
       const mustBeListed = provider === 'self_hosted' && Boolean(listed);

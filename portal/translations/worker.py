@@ -302,6 +302,10 @@ class TranslationWorker:
             if fallback_key or fallback_provider in KEYLESS_PROVIDERS:
                 if (fallback_provider, fallback_model) != (context.provider, context.model):
                     fallback = FallbackTranslation(fallback_provider, fallback_model, fallback_key)
+            else:
+                logger.warning(
+                    "Room %s fallback provider %s has no usable event credential", context.room.id, fallback_provider
+                )
         api_key = self._get_translation_api_key(event, context.provider)
         if not api_key and context.provider not in KEYLESS_PROVIDERS and fallback is None:
             logger.error(f"[{booth_id_str}] Translation API key not found for provider {context.provider}")
@@ -563,7 +567,7 @@ class TranslationWorker:
                 except Exception as exc:
                     logger.warning("Primary translation failed for room %s (%s)", room.id, type(exc).__name__)
                     translated_text, downloading = None, False
-                attempt.finish(translated_text is not None)
+                attempt.finish(None if downloading else translated_text is not None)
                 if translated_text is None and fallback is not None:
                     job.close()
                     provider, model, api_key = fallback.provider, fallback.model, fallback.api_key

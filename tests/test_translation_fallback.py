@@ -180,7 +180,8 @@ async def test_primary_failure_uses_fallback_and_persists_and_speaks_its_text(pi
     assert [(row.language_code, row.text) for row in rows] == [("fr", "Bonjour")]
     assert len(env.primary.calls) == len(env.backup.calls) == 1
     assert env.backup.calls[0][1][0].code == "fr"
-    assert all(call.args[7] == "Bonjour" for call in env.bundle.await_args_list)
+    assert env.bundle.await_count == 2
+    assert all(call.args[1] == "fr" and call.args[7] == "Bonjour" for call in env.bundle.await_args_list)
     env.synthesize.assert_awaited_once_with(env.room.id, "Bonjour", "fr")
 
 
@@ -398,3 +399,46 @@ async def test_queued_segments_skip_primary_after_another_segment_opens_the_circ
 
 def test_fallback_credentials_are_not_in_configuration_repr():
     assert "private-key" not in repr(FallbackTranslation("openai", "gpt-4o-mini", "private-key"))
+
+
+def test_idle_open_circuit_retains_its_single_recovery_probe(monkeypatch):
+    monkeypatch.setattr(circuit_module, "CIRCUITS", {})
+    circuit = circuit_for(1, "local", "primary", "self_hosted", "backup")
+    for _ in range(3):
+        circuit.start().finish(False)
+    now = circuit.last_used + 100
+    circuit.clock = lambda: now
+    monkeypatch.setattr(circuit_module.time, "monotonic", lambda: now)
+    same = circuit_for(1, "local", "primary", "self_hosted", "backup")
+    assert same is circuit
+    probe = same.start()
+    assert probe is not None and probe.probe
+    assert same.start() is None
+    probe.finish(True)
+
+
+@pytest.mark.anyio
+async def test_downloading_primary_uses_fallback_without_tripping_the_circuit(pipeline, monkeypatch):
+    env = pipeline
+    async with get_session() as session:
+        room = await session.get(Room, env.room.id)
+        room.floor_translation_provider = "local"
+        room.floor_translation_model = "nllb-200-distilled-600M"
+        room.translation_fallback_provider = "self_hosted"
+        room.translation_fallback_model = "backup"
+    monkeypatch.setitem(worker_module.ENGINES, "local", env.primary)
+    monkeypatch.setitem(worker_module.ENGINES, "self_hosted", env.backup)
+    downloading = True
+    monkeypatch.setattr(
+        worker_module, "_inference_timeout", lambda provider, model: None if provider == "local" and downloading else 1
+    )
+    for _ in range(4):
+        await run(env)
+    circuit = next(iter(circuit_module.CIRCUITS.values()))
+    assert circuit.failures == 0 and circuit.opened_until is None
+    assert not env.primary.calls and len(env.backup.calls) == 4
+    downloading = False
+    env.primary.result = "Ready"
+    await run(env)
+    assert len(env.primary.calls) == 1 and len(env.backup.calls) == 4
+    assert env.bundle.await_args.args[7] == "Ready"

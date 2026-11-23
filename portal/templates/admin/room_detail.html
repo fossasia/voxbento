@@ -293,6 +293,9 @@
           <label for="translation_fallback_model">Fallback model</label>
           <select id="translation_fallback_model" name="translation_fallback_model">
             <option value="">Recommended for this service</option>
+            {% if room.translation_fallback_model %}
+            <option value="{{ room.translation_fallback_model }}" selected>{{ room.translation_fallback_model }}</option>
+            {% endif %}
           </select>
         </div>
         <p class="hint">Uses this event's existing service credentials. A built-in fallback model must be downloaded by an admin first.</p>

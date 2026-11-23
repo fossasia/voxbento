@@ -150,3 +150,14 @@ async def test_fallback_can_be_disabled_after_translation_and_captions_are_off(r
     assert response.status_code == 200 and 'id="translation_fallback_provider"' in response.text
     assert (await post({"translation_fallback_provider": ""}, room_form)).status_code == 303
     assert (await read_room(room_id)).translation_fallback_provider is None
+
+
+async def test_saved_custom_fallback_model_is_selected_without_javascript(room_form):
+    response = await post(
+        {"translation_fallback_provider": "openai", "translation_fallback_model": "my-custom-backup"}, room_form
+    )
+    assert response.status_code == 303
+    cookie, event_id, room_id = room_form
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test", cookies=cookie) as client:
+        page = await client.get(f"/admin/events/{event_id}/rooms/{room_id}/")
+    assert '<option value="my-custom-backup" selected>my-custom-backup</option>' in page.text
