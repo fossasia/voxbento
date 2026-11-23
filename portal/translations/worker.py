@@ -22,7 +22,7 @@ from portal.translations.providers.local import LocalProvider
 from portal.translations.providers.openai import OpenAIProvider
 from portal.translations.registry import get_translation_model
 from portal.translations.scheduler import TranslationJob, TranslationScheduler
-from portal.translations.vocabulary import resolve_vocabulary_entries
+from portal.translations.vocabulary import VocabularyEntryInput, resolve_vocabulary_entries
 
 logger = logging.getLogger(__name__)
 
@@ -714,7 +714,7 @@ class TranslationWorker:
                     async with asyncio.timeout(VOCABULARY_LOOKUP_TIMEOUT):
                         async with get_session() as session:
                             for target in targets:
-                                vocabulary[target.code] = await resolve_vocabulary_entries(
+                                entries = await resolve_vocabulary_entries(
                                     session,
                                     event_id=resolved.event.id,
                                     room_id=resolved.room.id,
@@ -722,6 +722,18 @@ class TranslationWorker:
                                     target_language=target.code,
                                     transcript_text=text,
                                 )
+                                vocabulary[target.code] = [
+                                    VocabularyEntryInput(
+                                        entry.source_term,
+                                        entry.target_language,
+                                        entry.target_term,
+                                        entry.description,
+                                        entry.case_sensitive,
+                                        entry.match_type,
+                                        entry.priority,
+                                    )
+                                    for entry in entries
+                                ]
                 except Exception as exc:
                     logger.warning("Batch glossary lookup failed (%s)", type(exc).__name__)
 
@@ -766,10 +778,10 @@ class TranslationWorker:
                 if not pending:
                     job.close()
 
-            results = await asyncio.gather(
-                *(
-                    self._deliver_translation(
-                        rows[0][i] if rows is not None else None,
+            async def deliver_target(index: int, target: _BatchTarget) -> None:
+                try:
+                    await self._deliver_translation(
+                        rows[0][index] if rows is not None else None,
                         resolved.room,
                         target.code,
                         segment_id,
@@ -781,27 +793,29 @@ class TranslationWorker:
                         target.synthesize_audio,
                         partial(delivered, target.code),
                     )
-                    for i, target in enumerate(targets)
-                ),
-                return_exceptions=True,
-            )
-            for target, result in zip(targets, results, strict=True):
-                if isinstance(result, asyncio.CancelledError):
-                    raise result
-                if isinstance(result, Exception):
-                    logger.warning("Batch delivery failed for %s (%s)", target.code, type(result).__name__)
-                    await tts_manager.broadcast_bundle(
-                        resolved.room.id,
-                        target.code,
-                        booth_id_str,
-                        b"",
-                        uuid_segment_id,
-                        seq,
-                        text,
-                        "",
-                        "pipeline_failed",
-                    )
+                except Exception as exc:
+                    logger.warning("Batch delivery failed for %s (%s)", target.code, type(exc).__name__)
+                    try:
+                        await tts_manager.broadcast_bundle(
+                            resolved.room.id,
+                            target.code,
+                            booth_id_str,
+                            b"",
+                            uuid_segment_id,
+                            seq,
+                            text,
+                            "",
+                            "pipeline_failed",
+                        )
+                    except Exception as notification_error:
+                        logger.warning(
+                            "Failure notification failed for %s (%s)", target.code, type(notification_error).__name__
+                        )
+                finally:
                     delivered(target.code)
+
+            await asyncio.gather(*(deliver_target(i, target) for i, target in enumerate(targets)))
+
         except Exception as exc:
             logger.warning("Batch translation failed for room %s (%s)", resolved.room.id, type(exc).__name__)
             for target in targets:

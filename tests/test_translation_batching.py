@@ -9,7 +9,10 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
+from sqlalchemy import select
 
+from portal.database import configure, dispose, get_session, init_db
+from portal.models import AIVocabularyEntry, Event, Room
 from portal.translations import worker as worker_module
 from portal.translations.engine import EngineKind, Language, TranslationContext, TranslationEngine
 from portal.translations.providers import local
@@ -280,14 +283,84 @@ async def test_one_slow_glossary_lookup_cannot_multiply_the_batch_lookup_budget(
         yield object()
 
     async def resolve(session, **kwargs):
+        await asyncio.sleep(0.06)
         if kwargs["target_language"] == "fr":
             return [entry]
-        await asyncio.Event().wait()
+        return [VocabularyEntryInput("booth", "de", "Kabine")]
 
     monkeypatch.setattr(worker_module, "get_session", session)
     monkeypatch.setattr(worker_module, "resolve_vocabulary_entries", resolve)
-    monkeypatch.setattr(worker_module, "VOCABULARY_LOOKUP_TIMEOUT", 0.01)
-    await asyncio.wait_for(worker._process_completed_sentence(job, 10, "Hello", "source"), 0.2)
+    monkeypatch.setattr(worker_module, "VOCABULARY_LOOKUP_TIMEOUT", 0.1)
+    await asyncio.wait_for(worker._process_completed_sentence(job, 10, "Hello", "source"), 1)
     assert len(engine.calls) == 1
     assert engine.calls[0][3].vocabulary_for(TARGETS[0]) == (entry,)
     assert engine.calls[0][3].vocabulary_for(TARGETS[1]) == ()
+
+
+async def test_failed_notification_does_not_fail_siblings_or_wait_for_their_audio(worker_env, monkeypatch):
+    worker, job, _, bundle, delivery = worker_env
+    notified, speaking, release = asyncio.Event(), asyncio.Event(), asyncio.Event()
+
+    async def deliver(*args):
+        if args[2] == "fr":
+            raise RuntimeError("caption delivery failed")
+        args[-1]()
+        speaking.set()
+        await release.wait()
+        await delivery(*args[:-1])
+
+    async def broadcast(*args, **kwargs):
+        if args[1] == "fr":
+            notified.set()
+            raise RuntimeError("notification unavailable")
+
+    monkeypatch.setattr(worker, "_deliver_translation", deliver)
+    bundle.side_effect = broadcast
+    task = asyncio.create_task(worker._process_completed_sentence(job, 10, "Hello", "source"))
+    try:
+        await asyncio.wait_for(speaking.wait(), 1)
+        await asyncio.wait_for(notified.wait(), 1)
+        assert not task.done()
+    finally:
+        release.set()
+        await task
+    assert [call.args[1] for call in bundle.await_args_list if call.args[-1] == "pipeline_failed"] == ["fr"]
+    assert [call.args[2] for call in delivery.await_args_list] == ["de"]
+    assert worker_module.scheduler_for("local", NLLB, 1).idle()
+
+
+async def test_glossary_snapshot_survives_a_later_lookup_rolling_back(worker_env, monkeypatch):
+    worker, job, engine, _, _ = worker_env
+    configure("sqlite+aiosqlite://")
+    await init_db()
+    try:
+        async with get_session() as session:
+            session.add(Event(id=1, slug="snapshot", display_name="Snapshot"))
+            session.add(Room(id=7, event_id=1, display_name="Room"))
+            session.add(
+                AIVocabularyEntry(
+                    event_id=1, room_id=7, source_term="booth", target_language="fr", target_term="cabine"
+                )
+            )
+        job.room.floor_ai_vocabulary_enabled = True
+
+        async def resolve(session, **kwargs):
+            if kwargs["target_language"] == "fr":
+                return list(await session.scalars(select(AIVocabularyEntry)))
+            await asyncio.Event().wait()
+
+        original = engine.translate_batch
+        seen = []
+
+        async def translate(source, targets, texts, context, **kwargs):
+            seen.extend(entry.source_term for entry in context.vocabulary_for(targets[0]))
+            return await original(source, targets, texts, context, **kwargs)
+
+        monkeypatch.setattr(worker_module, "resolve_vocabulary_entries", resolve)
+        monkeypatch.setattr(worker_module, "VOCABULARY_LOOKUP_TIMEOUT", 0.03)
+        monkeypatch.setattr(engine, "translate_batch", translate)
+        await worker._process_completed_sentence(job, 10, "Hello", "source")
+        assert seen == ["booth"] and len(engine.calls) == 1
+        assert engine.calls[0][3].vocabulary_for(TARGETS[0]) == (VocabularyEntryInput("booth", "fr", "cabine"),)
+    finally:
+        await dispose()

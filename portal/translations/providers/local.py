@@ -433,7 +433,7 @@ class LocalProvider(TranslationProvider, TranslationEngine):
                 ids = tokenizer.convert_tokens_to_ids(tokens)
                 values[index] = tokenizer.decode(ids, skip_special_tokens=True).strip()
             return values
-        except Exception as exc:
+        except (RuntimeError, ValueError, OSError) as exc:
             # Model/native failures fail the call without disclosing transcript or glossary text.
             logger.warning("[CT2] Batch inference failed for model %s (%s)", model_size, type(exc).__name__)
             return [None for _ in cells]
