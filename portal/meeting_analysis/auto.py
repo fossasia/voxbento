@@ -44,20 +44,20 @@ class _Busy(Exception):
 
 
 # The latest stop of each (room, channel); a timer from an earlier stop no longer counts.
-_latest_stop: dict[tuple[int, str], int] = {}
+_latest_stop: dict[tuple[int, str], object] = {}
 
 
 def schedule_auto_report(room_id: int, channel_id: str, captions_running: Callable[[], bool]) -> None:
     """Write a report on the channel's latest session soon, unless its captions start again first."""
     key = (room_id, channel_id)
-    stop = _latest_stop.get(key, 0) + 1
+    stop = object()  # compared by identity, so a later stop can never reuse an earlier one's token
     _latest_stop[key] = stop
 
     def overtaken() -> bool:
-        return _latest_stop.get(key) != stop or captions_running()
+        return _latest_stop.get(key) is not stop or captions_running()
 
     def forget(_task: asyncio.Task) -> None:
-        if _latest_stop.get(key) == stop:
+        if _latest_stop.get(key) is stop:
             del _latest_stop[key]
 
     task = asyncio.create_task(

@@ -1374,6 +1374,14 @@ async def test_a_later_stop_overtakes_the_earlier_timer(monkeypatch):
     await asyncio.sleep(0.01)
     assert auto._latest_stop == {}, "finished timers are forgotten"
 
+    # A stop that finished without a report is forgotten; a later stop must not reuse its token.
+    auto.schedule_auto_report(8, "floor", lambda: False)
+    older = timers[-1]
+    auto._latest_stop.pop((8, "floor"))  # the middle stop finished and was forgotten
+    auto.schedule_auto_report(8, "floor", lambda: False)
+    assert older(), "an older stop never matches a later one"
+    await asyncio.sleep(0.01)
+
 
 @pytest.mark.anyio
 async def test_stopping_captions_schedules_an_automatic_report(monkeypatch):
