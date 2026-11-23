@@ -140,10 +140,10 @@ async def _create(room_id: int, channel_id: str) -> int | None:
             return None
         # A report left pending or running by a server restart must not count as covering the session.
         await mark_interrupted_reports(session, room_id)
-        if await _already_reported(session, room_id, channel, stretch):
-            return None
         if await room_busy(session, room_id):
             raise _Busy
+        if await _already_reported(session, room_id, channel, stretch):
+            return None
         report = await create_meeting_report(
             session,
             event_id=event.id,

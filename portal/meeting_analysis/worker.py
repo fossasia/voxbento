@@ -16,6 +16,7 @@ from portal.meeting_analysis.constants import (
     STATUS_DONE,
     STATUS_FAILED,
     STATUS_PENDING,
+    STATUS_QUEUED,
     STATUS_RUNNING,
     AnalysisProviderEnum,
 )
@@ -256,6 +257,32 @@ def start_analysis(report_id: int) -> None:
     track_task(asyncio.create_task(run_analysis(report_id), name=f"meeting-report-{report_id}"))
 
 
+# The portal runs one process. A live batch can take longer than the stale-report timeout.
+_batch_ids: set[int] = set()
+
+
+def start_batch(ids: list[int]) -> None:
+    _batch_ids.update(ids)
+    track_task(asyncio.create_task(_run_batch(ids), name=f"meeting-report-batch-{ids[0]}"))
+
+
+async def _run_batch(ids: list[int]) -> None:
+    try:
+        for report_id in ids:
+            async with get_session() as session:
+                await session.execute(
+                    update(MeetingReport)
+                    .where(MeetingReport.id == report_id, MeetingReport.status == STATUS_QUEUED)
+                    .values(status=STATUS_PENDING)
+                )
+            try:
+                await run_analysis(report_id)
+            except Exception:
+                logger.exception("Meeting report %s failed during batch generation", report_id)
+    finally:
+        _batch_ids.difference_update(ids)
+
+
 async def room_busy(session: AsyncSession, room_id: int) -> bool:
     """Whether a report of the room is being written; only one is, at a time."""
     count = await session.scalar(
@@ -273,6 +300,7 @@ async def mark_interrupted_reports(session: AsyncSession, room_id: int) -> None:
             MeetingReport.room_id == room_id,
             MeetingReport.status.in_(IN_PROGRESS),
             MeetingReport.created_at < utc_now() - STALE_AFTER,
+            MeetingReport.id.not_in(_batch_ids),
         )
         .values(status=STATUS_FAILED, error=INTERRUPTED)
     )

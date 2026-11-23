@@ -81,19 +81,17 @@ SYSTEM_PROMPT = """You write the notes for a live session from its transcript, f
 Reply with one JSON object and nothing else, using exactly these keys:
 {{
   "title": "a short title for this session, at most 8 words",
-  "overview": "one or two sentences on what the session was about and what came out of it",
+  "overview": "a 3–5 sentence executive summary of the session and its outcomes",
   "sections": [
-    {{"heading": "a heading that names one theme of this session", "points": ["one specific point"]}}
+    {{"heading": "section heading", "points": ["one specific point"]}}
   ]
 }}
 
 Rules:
 - Write every value in {language}.
-- Group the notes the way this session actually went: choose 2 to 6 sections whose headings name its own themes,
-  for example the products, decisions or questions discussed. Don't use a fixed template or generic headings
-  such as "Summary" or "Key topics".
-- If decisions were made or follow-ups agreed, give them their own section with a heading that says so.
-  If there were none, leave that section out.
+- Include Key topics and a chronological Timestamped digest. Prefix each digest point with its source timestamp.
+- Include Action items for agreed follow-ups, naming the owner when the speaker attribution or discussion
+  identifies one. Leave ownership unspecified when unclear. Translate section headings into the report language.
 - Each section has 1 to 6 short, specific points, in the order they came up.
 - Use only what the transcript says. Name people only as the transcript names them, and never invent names,
   owners, numbers or decisions.

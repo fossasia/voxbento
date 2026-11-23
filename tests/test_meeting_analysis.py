@@ -187,7 +187,10 @@ def test_prompt_asks_for_headings_that_fit_the_meeting():
         event_name="e", room_name="r", channel_label="c", language_name="English", transcript="[00:00] hi"
     )
     assert '"sections"' in system and '"overview"' in system
-    assert "Don't use a fixed template" in system
+    assert all(
+        label in system
+        for label in ("3–5 sentence executive summary", "Key topics", "Timestamped digest", "Action items")
+    )
 
 
 def test_empty_model_uses_the_recommended_one():
@@ -1139,8 +1142,8 @@ async def test_glossary_terms_follow_the_language_and_scope_of_the_report(world)
             s, event_id=world["event"], room_id=world["room"], language_code="de", language_name="German"
         )
         booth_id = booth.id
-    await _glossary_entry(world, "keynote", "discours d'ouverture", priority=5)
-    await _glossary_entry(world, "KEYNOTE", "allocution", priority=1)
+    await _glossary_entry(world, "keynote", "discours d'ouverture", room_id=world["room"], priority=5)
+    await _glossary_entry(world, "KEYNOTE", "allocution", priority=10)
     await _glossary_entry(world, "summit", "sommet", booth_id=booth_id)
     text = "Welcome to the summit. We will ship captions for the keynote."
     async with get_session() as s:
@@ -1187,6 +1190,25 @@ async def test_a_report_can_be_written_from_a_translation(world, monkeypatch):
     async with _client() as c:
         detail = await c.get(f"{url}{started[0]}/", cookies=world["admin"])
     assert "[fr] Welcome to the summit." in detail.text
+
+
+@pytest.mark.anyio
+async def test_batch_writes_spoken_and_translated_reports(world, monkeypatch):
+    await _enable(world)
+    await _translate_floor(world, "fr")
+    await _translate_floor(world, "de")
+    ids = []
+    monkeypatch.setattr(analysis_router, "start_batch", ids.extend)
+    url = f"/admin/events/{world['event']}/rooms/{world['room']}/analysis/"
+    async with _client() as c:
+        response = await c.post(url, data={"channel": "floor", "language": "*"}, headers=ORIGIN, cookies=world["admin"])
+    assert response.status_code in (200, 303)
+    reports = [await _load(report_id) for report_id in ids]
+    assert [report.status for report in reports] == ["pending", "queued", "queued"]
+    assert {report.transcript_language for report in reports} == {None, "de", "fr"}
+    monkeypatch.setattr(worker, "get_provider", lambda name: FakeProvider())
+    await worker._run_batch(ids)
+    assert [(await _load(report_id)).status for report_id in ids] == ["done"] * 3
 
 
 @pytest.mark.anyio
@@ -1260,6 +1282,8 @@ async def test_an_automatic_report_covers_the_latest_session_once(world, monkeyp
     await _auto_on(world, monkeypatch)
     await _add_old_session(world)
     report_id = await auto.create_auto_report(world["room"], "floor")
+    with pytest.raises(auto._Busy):
+        await auto.create_auto_report(world["room"], "floor")
     report = await _load(report_id)
     assert report.automatic and report.status == "pending" and report.transcript_language is None
     async with get_session() as s:
@@ -1448,9 +1472,11 @@ async def test_mission_control_shows_each_rooms_latest_report(world):
         admin = await c.get("/mission-control/summit/", cookies=world["admin"])
     reports = _mission_control_rooms(coordinator.text)[0]["reports"]
     base = f"/events/{world['event']}/rooms/{world['room']}/analysis/"
-    assert reports["url"] == f"/admin{base}" and reports["statusUrl"] == f"/api/admin{base}"
-    assert reports["latest"]["id"] == report_id and reports["latest"]["status"] == "running"
-    assert reports["latest"]["automatic"] is True
+    assert reports["url"] == f"/admin{base}"
+    async with _client() as c:
+        panel = await c.get(reports["url"] + "?panel=1", cookies=world["coordinator"])
+    assert "Old notes" in panel.text and f'data-report-id="{report_id}"' in panel.text
+    assert "Generate report</button>" not in panel.text
     assert _mission_control_rooms(admin.text)[0]["reports"]["url"] == f"/admin{base}"
     async with _client() as c:
         status_check = await c.get(f"/api/admin{base}{report_id}", cookies=world["coordinator"])

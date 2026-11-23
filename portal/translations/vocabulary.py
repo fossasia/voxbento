@@ -10,7 +10,7 @@ from collections.abc import Iterable
 from dataclasses import dataclass
 
 import pycountry
-from sqlalchemy import or_, select
+from sqlalchemy import case, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from portal.models import AIVocabularyEntry, DBBooth, Room
@@ -479,7 +479,17 @@ async def mentioned_glossary_terms(
     query = select(AIVocabularyEntry).where(AIVocabularyEntry.event_id == event_id, or_(*scope_filters))
     if target_language is not None:
         query = query.where(AIVocabularyEntry.target_language.in_(("all", target_language)))
-    stream = await session.stream_scalars(query.order_by(AIVocabularyEntry.priority.desc(), AIVocabularyEntry.id))
+    stream = await session.stream_scalars(
+        query.order_by(
+            case(
+                (AIVocabularyEntry.booth_id.is_not(None), 2),
+                (AIVocabularyEntry.room_id.is_not(None), 1),
+                else_=0,
+            ).desc(),
+            AIVocabularyEntry.priority.desc(),
+            AIVocabularyEntry.id,
+        )
+    )
     folded_text = transcript_text.casefold()
     terms: list[str] = []
     seen: set[str] = set()

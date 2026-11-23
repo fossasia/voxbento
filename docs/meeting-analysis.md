@@ -1,10 +1,8 @@
 # Meeting reports
 
 After a session, VoxBento can ask an AI service to read a room's stored
-transcript and write meeting notes: a title, a one or two sentence overview,
-and sections whose headings the AI chooses to fit that meeting (for example the
-products, decisions or questions discussed), each with short points. Decisions
-and follow-ups get their own section only when there were some. An event owner
+transcript and write a 3–5 sentence executive summary, key topics, a
+timestamped digest and agreed actions with owners when identifiable. An event owner
 asks for a report, or the event writes one automatically when a channel's
 captions stop (see [Automatic reports](#automatic-reports)).
 
@@ -41,13 +39,13 @@ that server a context of at least the same size (for Ollama itself,
 
 ## Writing a report
 
-Open the room and choose **View reports** (or go to
+Use the reports panel in Mission Control or the workspace room, or choose **View reports** (or go to
 `/workspace/events/{event_id}/rooms/{room_id}/analysis/`). The page lists the
 sessions of each channel that has a stored transcript (the floor audio and each
 booth). A session is a stretch of transcript with no break longer than 30
 minutes, so a room used over several sessions or days gets one entry per
 session. The latest session is selected; pick an earlier one to report on it
-instead, then select **Generate report**. The report is written in the
+instead. Choose **Spoken transcript and all available translations** to generate every available variant in sequence, then select **Generate report**. The report is written in the
 background and the page refreshes when it is ready.
 
 A report covers only its session, and the session's time range is stored on
@@ -136,11 +134,9 @@ report; an owner can still generate it on the Meeting reports page.
 
 ## Mission Control
 
-When meeting reports are on, each room in Mission Control shows its latest
-report: what it covers, whether it is being written, ready or failed (updated
-while it is written), and a link to it and to all the room's reports. Room
-coordinators open the reports there to read and download them; event owners
-generate them on the same page.
+Mission Control and the workspace room page show report history, summaries and
+expandable sections. Coordinators can read reports. Owners and admins can also
+select a session and generate reports from either panel.
 
 ## Tested models
 
@@ -160,7 +156,7 @@ transcript and a 900-line (capped) session:
 | --- | :-: | :-: | :-: |
 | Turn reports on and choose the service | ✓ | | |
 | Generate a report, or turn on automatic reports | ✓ | | |
-| See the latest report in Mission Control | ✓ | ✓ | |
+| Browse reports in Mission Control | ✓ | ✓ | |
 | Read and download reports | ✓ | ✓ | |
 
 Reports are never shown on listener, embed or overlay pages.

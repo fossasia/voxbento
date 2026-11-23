@@ -1,4 +1,4 @@
-{% extends "admin/base.html" %}
+{% extends "admin/report_panel_base.html" if request.query_params.get("panel") == "1" else "admin/base.html" %}
 {% block title %}Meeting reports — {{ room.display_name }}{% endblock %}
 
 {% block breadcrumb %}
@@ -63,6 +63,7 @@
     <div class="field">
       <label for="analysis_language">Write it from</label>
       <select id="analysis_language" name="language" aria-describedby="analysis_language_help">
+        <option value="*">Spoken transcript and all available translations</option>
         <option value="">The transcript as spoken</option>
         {% for code, name in languages %}
         <option value="{{ code }}">The {{ name }} translation</option>
@@ -92,12 +93,19 @@
       <a href="{{ analysis_url }}{{ report.id }}/" class="btn btn-outline btn-sm">Open report</a>
       {% endif %}
     </div>
-    {% if report.status in ('pending', 'running') %}
+    {% if report.status == 'queued' %}
+    <p role="status">Queued for generation.</p>
+    {% elif report.status in ('pending', 'running') %}
     <p class="analysis-progress" role="status">Writing the report. This can take a minute.</p>
     {% elif report.status == 'failed' %}
     <p class="alert alert-error">{{ report.error or "The report couldn't be written." }}</p>
     {% else %}
     <p class="analysis-summary">{{ report.summary }}</p>
+    {% for section in view.sections %}
+    <details><summary>{{ section.heading }}</summary><ul>
+      {% for point in section.points %}<li>{{ point }}</li>{% endfor %}
+    </ul></details>
+    {% endfor %}
     {% endif %}
   </article>
   {% endfor %}

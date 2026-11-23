@@ -80,7 +80,6 @@ from portal.database import (
     list_booths_for_event,
     list_booths_for_room,
     list_events,
-    list_meeting_reports,
     list_memberships_for_booth,
     list_memberships_for_event,
     list_memberships_for_room,
@@ -667,28 +666,11 @@ async def mission_control_list(request: Request, user=Depends(require_user), pag
     )
 
 
-async def _mission_control_reports(session, event: Event, room_id: int, principal: dict, is_admin: bool) -> dict | None:
-    """The room's meeting reports link and latest report, for its Mission Control panel (#1080)."""
+def _mission_control_reports(event: Event, room_id: int, principal: dict, is_admin: bool) -> dict | None:
     if not event.meeting_analysis_enabled:
         return None
-    # Event owners manage reports in their workspace; Admins and room coordinators use the shared handler.
-    in_workspace = not is_admin and event.id in principal["owned_event_ids"]
-    path = f"/events/{event.id}/rooms/{room_id}/analysis/"
-    latest = next(iter(await list_meeting_reports(session, room_id, limit=1)), None)
-    return {
-        "url": ("/workspace" if in_workspace else "/admin") + path,
-        "statusUrl": ("/api/workspace" if in_workspace else "/api/admin") + path,
-        "latest": None
-        if latest is None
-        else {
-            "id": latest.id,
-            "status": latest.status,
-            "title": latest.title or latest.channel_label,
-            "channel": latest.channel_label,
-            "automatic": latest.automatic,
-            "when": (latest.generated_at or latest.created_at).strftime("%b %d, %H:%M UTC"),
-        },
-    }
+    prefix = "/workspace" if not is_admin and event.id in principal["owned_event_ids"] else "/admin"
+    return {"url": f"{prefix}/events/{event.id}/rooms/{room_id}/analysis/"}
 
 
 @router.get("/mission-control/{event_slug}/")
@@ -746,7 +728,7 @@ async def mission_control_grid(request: Request, event_slug: str, user=Depends(r
                 "name": room.display_name,
                 "floor_captions": room.has_floor_captions,
                 "floor_source": room.floor_source or "jitsi_bot",
-                "reports": await _mission_control_reports(session, event, room.id, principal, is_admin),
+                "reports": _mission_control_reports(event, room.id, principal, is_admin),
             }
             for room in await list_rooms_for_event(session, event.id)
             if allowed_room_ids is None or room.id in allowed_room_ids

@@ -291,7 +291,7 @@ the admin CSRF token (`require_admin_csrf`, `X-CSRF-Token`).
   from the session's translation into that language (`transcript_translations`). Redirects with
   `?error=disabled|busy|channel|language`; one report per room is written at a time, in a tracked background task.
   Events with `meeting_analysis_auto` also get reports when a channel's captions stop (no route; `portal/meeting_analysis/auto.py`).
-  `GET /mission-control/{event_slug}/` passes each room's latest report and its reports link in `data-config`.
+  `GET /mission-control/{event_slug}/` passes each enabled room's reports URL in `data-config`. Mission Control and the workspace room embed its role-scoped panel with `?panel=1`.
 - `GET /workspace/events/{event_id}/rooms/{room_id}/analysis/{report_id}/`:
   owners and coordinators; one report with Summary and Transcript tabs. The
   transcript shows the segments of the report's session up to `covered_until`.

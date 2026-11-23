@@ -19,12 +19,25 @@ from portal.meeting_analysis.channels import (
     translated_lines,
     translation_languages,
 )
-from portal.meeting_analysis.constants import IN_PROGRESS, PROVIDER_LABELS, STATUS_DONE, STATUS_PENDING, model_for
+from portal.meeting_analysis.constants import (
+    IN_PROGRESS,
+    PROVIDER_LABELS,
+    STATUS_DONE,
+    STATUS_PENDING,
+    STATUS_QUEUED,
+    model_for,
+)
 from portal.meeting_analysis.export import report_markdown
 from portal.meeting_analysis.prompts import format_offset, transcript_lines
 from portal.meeting_analysis.schema import load_sections
 from portal.meeting_analysis.sessions import describe_range
-from portal.meeting_analysis.worker import mark_interrupted_reports, report_lines, room_busy, start_analysis
+from portal.meeting_analysis.worker import (
+    mark_interrupted_reports,
+    report_lines,
+    room_busy,
+    start_analysis,
+    start_batch,
+)
 from portal.models import MeetingReport
 from portal.room_setup import language_name
 from portal.routers.admin import room_in_event, templates
@@ -117,16 +130,19 @@ async def room_analysis_generate(
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Invalid request origin.")
     page = f"events/{event_id}/rooms/{room_id}/analysis/"
     try:
-        report_id = await _create_report(event_id, room_id, stretch or channel, language.strip())
+        report_ids = await _create_reports(event_id, room_id, stretch or channel, language.strip())
     except IntegrityError:
         return safe_redirect(url=management_url(request, f"{page}?error=busy"), status_code=303)
     except _Refused as refused:
         return safe_redirect(url=management_url(request, f"{page}?error={refused.reason}"), status_code=303)
-    start_analysis(report_id)
+    if len(report_ids) == 1:
+        start_analysis(report_ids[0])
+    else:
+        start_batch(report_ids)
     return safe_redirect(url=management_url(request, page), status_code=status.HTTP_303_SEE_OTHER)
 
 
-async def _create_report(event_id: int, room_id: int, choice: str, language: str = "") -> int:
+async def _create_reports(event_id: int, room_id: int, choice: str, language: str = "") -> list[int]:
     async with get_session() as session:
         event = await get_event_by_id(session, event_id)
         if event is None:
@@ -141,27 +157,34 @@ async def _create_report(event_id: int, room_id: int, choice: str, language: str
         if picked is None:
             raise _Refused("channel")
         chosen, stretch = picked
-        label, language_code = chosen.label, chosen.language_code
-        if language:
-            # A report from the translation into ``language``, written in that language.
-            if not await translated_lines(session, room, chosen, stretch, language):
-                raise _Refused("language")
-            label, language_code = f"{chosen.label} ({language_name(language)} translation)", language
-        report = await create_meeting_report(
-            session,
-            event_id=event_id,
-            room_id=room_id,
-            channel_id=chosen.id,
-            channel_label=label[:200],
-            language_code=language_code,
-            transcript_language=language or None,
-            provider=event.meeting_analysis_provider,
-            model=model_for(event.meeting_analysis_provider, event.meeting_analysis_model),
-            status=STATUS_PENDING,
-            session_started_at=stretch.started_at,
-            session_ended_at=stretch.ended_at,
-        )
-        return report.id
+        languages = [language]
+        if language == "*":
+            languages = [""]
+            for code, _ in await translation_languages(session, room):
+                if await translated_lines(session, room, chosen, stretch, code):
+                    languages.append(code)
+        elif language and not await translated_lines(session, room, chosen, stretch, language):
+            raise _Refused("language")
+        ids = []
+        for language in languages:
+            label = f"{chosen.label} ({language_name(language)} translation)" if language else chosen.label
+            language_code = language or chosen.language_code
+            report = await create_meeting_report(
+                session,
+                event_id=event_id,
+                room_id=room_id,
+                channel_id=chosen.id,
+                channel_label=label[:200],
+                language_code=language_code,
+                transcript_language=language or None,
+                provider=event.meeting_analysis_provider,
+                model=model_for(event.meeting_analysis_provider, event.meeting_analysis_model),
+                status=STATUS_QUEUED if ids else STATUS_PENDING,
+                session_started_at=stretch.started_at,
+                session_ended_at=stretch.ended_at,
+            )
+            ids.append(report.id)
+        return ids
 
 
 @router.get(
@@ -180,7 +203,10 @@ async def room_analysis_report(request: Request, event_id: int, room_id: int, re
         if report.status == STATUS_DONE and report.last_segment_id is not None:
             segments = await report_lines(session, report, covered_only=True)
     admin_flags = await get_access_flags(request, event_id=event_id, room_id=room_id)
-    transcript = [(format_offset(line.offset_seconds), line.text) for line in transcript_lines(segments, report.session_started_at)]
+    transcript = [
+        (format_offset(line.offset_seconds), line.text)
+        for line in transcript_lines(segments, report.session_started_at)
+    ]
     return templates.TemplateResponse(
         request=request,
         name="admin/room_analysis_report.html",
