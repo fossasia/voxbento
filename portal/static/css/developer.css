@@ -123,6 +123,15 @@
   border-bottom: 1px solid var(--color-border);
 }
 .dev-table .dev-th--narrow { width: 120px; }
+.dev-table .dev-th--actions { width: 200px; text-align: right; }
+.dev-table .dev-td--actions { text-align: right; }
+.dev-actions-wrap {
+  display: flex;
+  justify-content: flex-end;
+  align-items: center;
+  gap: 8px;
+  white-space: nowrap;
+}
 .dev-table .dev-row { border-bottom: 1px solid var(--color-border); }
 .dev-table .dev-td { padding: 20px 24px; border: none; }
 .dev-table .dev-td--right { text-align: right; }
@@ -144,13 +153,14 @@
 .btn.dev-btn-rotate {
   padding: 4px 8px;
   font-size: 0.8rem;
-  margin-right: 4px;
+  white-space: nowrap;
 }
 .btn.dev-btn-delete {
   color: #ef4444;
   border-color: #ef4444;
   padding: 4px 8px;
   font-size: 0.8rem;
+  white-space: nowrap;
 }
 
 /* ── Empty states ────────────────────────────────────────────────────────── */
