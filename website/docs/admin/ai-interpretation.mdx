@@ -30,10 +30,12 @@ In the room's **AI settings → Translation**, expand **Fallback translator** an
 service and optional model. **No fallback** keeps the existing behaviour. The service
 must be available to this event and support the room's languages; built-in models must
 already be downloaded by an admin. Existing encrypted event credentials are reused.
-Choose a different service or model from the primary translator.
+Choose a different service or model from every enabled primary translator in the room,
+including booth translators. The fallback must support their source and target languages.
 
 On a primary error, failed result or inference timeout, the same segment is sent to the
-fallback before captions and speech are delivered. An intentionally empty translation
+fallback before captions and speech are delivered. Caption delivery keeps the original
+segment order even when a fallback call is slower than the next primary call. An intentionally empty translation
 is not retried. Each engine retains its own bounded, fair scheduler; a timed-out native
 model keeps its slot until its thread actually finishes.
 

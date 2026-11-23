@@ -189,6 +189,7 @@ from portal.transcription.worker import (
     wait_for_worker_start,
 )
 from portal.translations.constants import TRANSLATION_MODELS, TranslationProviderEnum
+from portal.translations.fallback_settings import fallback_configuration_error, lock_event_translation_settings
 from portal.translations.model_languages import language_support_error
 from portal.translations.vocabulary import (
     VocabularyOverlapIndex,
@@ -1245,6 +1246,7 @@ async def admin_room_setup_save(request: Request, event_id: int, room_id: int):
     form = await request.form()
     from_setup = form.get("from") == "setup"
     async with room_lock(room_id), get_session() as session:
+        await lock_event_translation_settings(session, event_id)
         event = await get_event_by_id(session, event_id)
         if event is None:
             raise HTTPException(status_code=404, detail="Event not found.")
@@ -1284,6 +1286,9 @@ async def admin_room_setup_save(request: Request, event_id: int, room_id: int):
             == (room.translation_fallback_provider, room.translation_fallback_model)
         ):
             raise HTTPException(status_code=400, detail="The primary translator and fallback must be different.")
+        error = await fallback_configuration_error(session, room)
+        if error:
+            raise HTTPException(status_code=400, detail=error)
     # The session has committed: drop the old voice settings so AI text languages stop speaking now.
     invalidate_tts_config(room_id)
     query = {"updated": "1"}
@@ -1881,6 +1886,7 @@ def _apply_ai_settings(room: Room, form: FormData, catalog: EngineCatalog) -> No
     form, so this never switches anything on or off. A service the event can't use, or one
     left out of the form, keeps the room's current choice.
     """
+    previous_primary = (room.floor_translation_provider, room.floor_translation_model)
     speech = catalog.find("speech", str(form.get("floor_transcription_provider", "")))
     if speech:
         model = str(form.get("floor_transcription_model", ""))
@@ -1941,7 +1947,10 @@ def _apply_ai_settings(room: Room, form: FormData, catalog: EngineCatalog) -> No
             )
             room.translation_fallback_provider = provider
             room.translation_fallback_model = model
-    elif room.translation_fallback_provider and room.floor_translation_enabled:
+    elif room.translation_fallback_provider and (
+        room.floor_translation_enabled
+        or previous_primary != (room.floor_translation_provider, room.floor_translation_model)
+    ):
         if (room.translation_fallback_provider, room.translation_fallback_model) == (
             room.floor_translation_provider,
             room.floor_translation_model,
@@ -2037,6 +2046,12 @@ def _require_room_form_translatable(room: Room, form: FormData, form_section: st
         after = (enabled, provider, model, before[3], sorted(set(form.getlist("floor_translation_languages"))))
     if saves_source:
         after = (*after[:3], form.get("floor_language_code", "").strip() or None, after[4])
+    if (
+        after[1:3] != before[1:3]
+        and room.translation_fallback_provider
+        and after[1:3] == (room.translation_fallback_provider, room.translation_fallback_model)
+    ):
+        raise TranslationLanguageError(status_code=400, detail="The primary translator and fallback must be different.")
     if after != before and after[0]:
         _require_translatable(after[1], after[2], (after[3], *after[4]))
         if room.translation_fallback_provider:
@@ -2113,6 +2128,7 @@ async def admin_edit_room(request: Request, event_id: int, room_id: int):
 
     try:
         async with get_session() as session:
+            await lock_event_translation_settings(session, event_id)
             room = await get_room_by_id(session, room_id)
             if room is None or room.event_id != event_id:
                 raise HTTPException(status_code=404, detail="Room not found.")
@@ -2137,6 +2153,10 @@ async def admin_edit_room(request: Request, event_id: int, room_id: int):
             if form_section == "ai":
                 await _process_room_ai_section(session, room, event_id, form)
 
+            if form_section in ("", "ai", "translation", "transcription"):
+                error = await fallback_configuration_error(session, room)
+                if error:
+                    raise TranslationLanguageError(status_code=400, detail=error)
             await session.flush()
     except TranslationLanguageError as error:
         return await _translation_form_response(request, error, event_id, room_id)
@@ -2935,6 +2955,7 @@ async def admin_booth_translation_settings(
     """Save supported translation settings or return the validation error to the form."""
     try:
         async with get_session() as session:
+            await lock_event_translation_settings(session, event_id)
             db_booth = await booth_in_room(session, event_id, room_id, booth_id)
             event = await get_event_by_id(session, event_id)
             if event is None:
@@ -2981,6 +3002,10 @@ async def admin_booth_translation_settings(
             for code, lang_model in current_langs.items():
                 if code not in translation_languages:
                     lang_model.enabled = False
+            fallback_room = await get_room_by_id(session, room_id)
+            error = await fallback_configuration_error(session, fallback_room)
+            if error:
+                raise TranslationLanguageError(status_code=400, detail=error)
             await session.flush()
     except TranslationLanguageError as error:
         return await _translation_form_response(request, error, event_id, room_id, booth_id)
@@ -3001,6 +3026,7 @@ async def admin_edit_booth(request: Request, event_id: int, room_id: int, booth_
     language_code_raw = form.get("language_code", "").strip()
     try:
         async with get_session() as session:
+            await lock_event_translation_settings(session, event_id)
             booth = await booth_in_room(session, event_id, room_id, booth_id)
             if language_name:
                 booth.language_name = language_name
@@ -3017,6 +3043,10 @@ async def admin_edit_booth(request: Request, event_id: int, room_id: int, booth_
                         (language_code, *_enabled_codes(booth.translation_languages)),
                     )
                 booth.language_code = language_code
+            fallback_room = await get_room_by_id(session, room_id)
+            error = await fallback_configuration_error(session, fallback_room)
+            if error:
+                raise TranslationLanguageError(status_code=400, detail=error)
             await session.flush()
     except TranslationLanguageError as error:
         return await _translation_form_response(request, error, event_id, room_id, booth_id)

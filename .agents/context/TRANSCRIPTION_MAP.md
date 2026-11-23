@@ -89,6 +89,8 @@ Jitsi Meet Floor Conference
 | `portal/transcription/providers/nvidia.py` | `NVIDIAProvider` — Parakeet-RNNT/CTC via Riva gRPC |
 | `portal/transcription/providers/elevenlabs.py` | `ElevenLabsProvider` — scribe_v2 |
 | `portal/translations/worker.py` | `TranslationWorker`: per-language translation dispatch, timeouts and delivery; optional per-room fallback on failure/timeout through its own scheduler; `ENGINES` maps each provider to its `TranslationEngine`; `scheduler_for` gives each local model, the self-hosted server and each event on a hosted provider one shared `TranslationScheduler` |
+| `portal/translations/delivery.py` | Ordered caption delivery across primary/fallback inference; cancellation cannot release later captions ahead of an earlier request |
+| `portal/translations/fallback_settings.py` | Validate room and enabled booth fallback compatibility; share the API event write lock for settings mutations through commit/rollback |
 | `portal/translations/circuit.py` | Process-local per-room/engine circuit: 3 consecutive failures, 30-second cooldown, single recovery probe; cancelled attempts and stale results cannot trip/reset recovery |
 | `portal/translations/scheduler.py` | `TranslationScheduler`: at most `max_concurrency` engine calls in flight; rooms take turns, then languages, and a room below its fair share of slots goes first; per-language limits (2 running, 15 admitted in all, waiting or running). The live demo's local translations use it too |
 | `portal/translations/engine.py` | `TranslationEngine` interface (`translate_batch`, `translate_text`), `Language`, `TranslationContext`, `EngineKind`; the worker calls engines only through it |

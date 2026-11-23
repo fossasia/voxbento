@@ -11,6 +11,7 @@ from portal.models import DBBooth, Event, Room, TranscriptTranslation
 from portal.transcription.timing import segment_timing, timing_metadata
 from portal.translations.circuit import circuit_for
 from portal.translations.constants import OPENAI_COMPATIBLE_ENDPOINTS, TranslationProviderEnum
+from portal.translations.delivery import TranslationDeliveryOrder
 from portal.translations.engine import EngineKind, Language, TranslationContext, TranslationEngine
 from portal.translations.keys import get_translation_api_key
 from portal.translations.providers import local as local_provider
@@ -66,6 +67,7 @@ KEYLESS_PROVIDERS = {TranslationProviderEnum.LOCAL.value, TranslationProviderEnu
 
 #: Schedulers made on first use, by what each one limits (#1188); see ``scheduler_for``.
 SCHEDULERS: dict[tuple[str, str], TranslationScheduler] = {}
+DELIVERY_ORDER = TranslationDeliveryOrder()
 
 
 def _scheduler_key(provider: str, model: str, event_id: int | None) -> tuple[str, str]:
@@ -485,6 +487,7 @@ class TranslationWorker:
         from portal.websockets.manager import tts_manager
 
         queue_key = f"{booth_id_str}:{lang_code}"
+        delivery_turn = DELIVERY_ORDER.reserve((room.id, booth_id_str, lang_code), enabled=fallback is not None)
         attempt = None
         primary_choice = (provider, model)
         if fallback is not None:
@@ -499,9 +502,15 @@ class TranslationWorker:
             if attempt is not None:
                 attempt.finish(None)
             logger.warning(f"[{booth_id_str}] Queue full for {lang_code}. Dropping segment {seq}.")
-            await tts_manager.broadcast_bundle(
-                room.id, lang_code, booth_id_str, b"", uuid_segment_id, seq, text, "", "pipeline_failed"
-            )
+            try:
+                if delivery_turn is not None:
+                    await delivery_turn.wait()
+                await tts_manager.broadcast_bundle(
+                    room.id, lang_code, booth_id_str, b"", uuid_segment_id, seq, text, "", "pipeline_failed"
+                )
+            finally:
+                if delivery_turn is not None:
+                    delivery_turn.close()
             return
 
         try:
@@ -573,11 +582,16 @@ class TranslationWorker:
                     provider, model, api_key = fallback.provider, fallback.model, fallback.api_key
                     job = scheduler_for(provider, model, event.id).admit(room.id, queue_key)
                     if job is None:
+                        if delivery_turn is not None:
+                            await delivery_turn.wait()
                         await tts_manager.broadcast_bundle(
                             room.id, lang_code, booth_id_str, b"", uuid_segment_id, seq, text, "", "pipeline_failed"
                         )
                         return
                     translated_text, downloading = await infer(job, provider, model, api_key)
+
+            if delivery_turn is not None:
+                await delivery_turn.wait()
 
             if downloading:
                 # Told after the slot is free, so the next segment does not wait for this broadcast.
@@ -635,6 +649,8 @@ class TranslationWorker:
             # Saved and delivered: the segment leaves its language's queue, so slow speech
             # synthesis below does not hold back new segments.
             job.close()
+            if delivery_turn is not None:
+                delivery_turn.close()
 
             if not synthesize_audio:
                 return
@@ -665,6 +681,8 @@ class TranslationWorker:
 
         except Exception as exc:
             logger.warning("[%s] Translation failed for %s (%s)", booth_id_str, lang_code, type(exc).__name__)
+            if delivery_turn is not None:
+                await delivery_turn.wait()
             await tts_manager.broadcast_bundle(
                 room.id, lang_code, booth_id_str, b"", uuid_segment_id, seq, text, "", "pipeline_failed"
             )
@@ -675,6 +693,9 @@ class TranslationWorker:
                 job.close()
             if attempt is not None:
                 attempt.finish(None)
+
+            if delivery_turn is not None:
+                delivery_turn.close()
 
     async def _infer_holding_slot(
         self,

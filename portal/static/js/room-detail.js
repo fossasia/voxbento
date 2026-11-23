@@ -73,7 +73,7 @@ function initAiSettings() {
       const load = ++loads;
       const provider = transProvider.value;
       if (localNote) localNote.hidden = provider !== 'local';
-      const keep = provider === savedProvider ? savedModel : '';
+      let keep = provider === savedProvider ? savedModel : '';
       transModel.replaceChildren(new Option('Recommended for this service', ''));
       if (keep) transModel.append(new Option(keep, keep, false, true));
       transModel.disabled = !provider;
@@ -90,6 +90,7 @@ function initAiSettings() {
       }
       // The service may have changed while the list was loading; only the latest call fills the list.
       if (load !== loads) return;
+      keep = transModel.value;
       transModel.replaceChildren(new Option('Recommended for this service', ''));
       const listed = catalog?.[provider];
       const models = [...(listed || [])];

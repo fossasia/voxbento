@@ -310,15 +310,23 @@ async def test_only_one_half_open_probe_runs_across_worker_instances(pipeline, m
     monkeypatch.setattr(env.primary, "translate_batch", translate)
     probe = asyncio.create_task(run(env))
     await entered.wait()
+    following = None
     try:
         # The real aggregator creates a worker per segment; the circuit must be shared.
         other = SimpleNamespace(**vars(env))
         other.worker = TranslationWorker(MagicMock())
-        await run(other)
+        following = asyncio.create_task(run(other))
+        for _ in range(1000):
+            if env.backup.calls:
+                break
+            await asyncio.sleep(0.001)
         assert len(env.backup.calls) == 1 and circuit.probing
+        assert not following.done()
     finally:
         release.set()
         await probe
+        if following is not None:
+            await following
     assert not circuit.probing and circuit.opened_until is None
 
 
@@ -442,3 +450,43 @@ async def test_downloading_primary_uses_fallback_without_tripping_the_circuit(pi
     await run(env)
     assert len(env.primary.calls) == 1 and len(env.backup.calls) == 4
     assert env.bundle.await_args.args[7] == "Ready"
+
+
+@pytest.mark.anyio
+async def test_later_primary_result_waits_for_earlier_fallback_before_delivery(pipeline, monkeypatch):
+    env = pipeline
+    fallback_started, release, later_inferred = asyncio.Event(), asyncio.Event(), asyncio.Event()
+
+    async def primary(source, targets, texts, context, **kwargs):
+        if texts[0] == "earlier":
+            return [[None]]
+        later_inferred.set()
+        return [["later translated"]]
+
+    async def backup(*args, **kwargs):
+        fallback_started.set()
+        await release.wait()
+        return [["earlier translated"]]
+
+    async def publish(text, seq):
+        async with get_session() as session:
+            segment = TranscriptSegment(room_id=env.room.id, text=text, language_code="en")
+            session.add(segment)
+            await session.flush()
+        await env.worker.handle_translation(env.room.id, segment.id, text, "same-floor", f"uuid-{seq}", seq)
+
+    monkeypatch.setattr(env.primary, "translate_batch", primary)
+    monkeypatch.setattr(env.backup, "translate_batch", backup)
+    earlier = asyncio.create_task(publish("earlier", 1))
+    await fallback_started.wait()
+    later = asyncio.create_task(publish("later", 2))
+    try:
+        await asyncio.wait_for(later_inferred.wait(), 1)
+        await asyncio.sleep(0)
+        assert not env.bundle.await_args_list
+    finally:
+        release.set()
+        await asyncio.gather(earlier, later)
+    captions = [call.args for call in env.bundle.await_args_list if call.args[3] == b""]
+    assert [(args[5], args[7]) for args in captions] == [(1, "earlier translated"), (2, "later translated")]
+    assert not worker_module.DELIVERY_ORDER.tails

@@ -33,6 +33,7 @@ from portal.roles import EVENT_OWNER
 from portal.transcription.constants import ProviderEnum
 from portal.transcription.worker import active_workers, start_transcription_worker, stop_transcription_worker
 from portal.translations.constants import TranslationProviderEnum
+from portal.translations.fallback_settings import fallback_configuration_error
 from portal.translations.model_languages import language_support_error
 from portal.websockets.revocation import revoke_booths_for_deleted_entity
 
@@ -657,6 +658,13 @@ async def _check_translation_languages(db: AsyncSession, payload_dict: dict, roo
         payload_dict["source_language"] if "source_language" in payload_dict else before[3],
         before[4] if targets is None else sorted(set(targets)),
     )
+    if (
+        room is not None
+        and room.translation_fallback_provider
+        and proposed[1:3] != before[1:3]
+        and proposed[1:3] == (room.translation_fallback_provider, room.translation_fallback_model)
+    ):
+        raise HTTPException(status_code=422, detail="The primary translator and fallback must be different.")
     if not proposed[0] or (room is not None and proposed == before):
         return
     error = language_support_error(proposed[1], proposed[2], (proposed[3], *proposed[4]))
@@ -879,6 +887,11 @@ async def upsert_room(
     if "target_languages" in payload_dict and payload_dict["target_languages"] is not None:
         requested_langs = set(payload_dict["target_languages"])
         await _sync_target_languages_and_booths(db, event, room, eventyay_room_id, requested_langs, token)
+
+    if _TRANSLATION_SETUP_FIELDS & payload_dict.keys():
+        error = await fallback_configuration_error(db, room)
+        if error:
+            raise HTTPException(status_code=422, detail=error)
 
     # Audit Logging
     audit = OAuthAuditLog(
