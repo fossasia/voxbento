@@ -667,6 +667,13 @@ async def mission_control_list(request: Request, user=Depends(require_user), pag
     )
 
 
+def _mission_control_reports(event: Event, room_id: int, principal: dict, is_admin: bool) -> dict | None:
+    if not event.meeting_analysis_enabled:
+        return None
+    prefix = "/workspace" if not is_admin and event.id in principal["owned_event_ids"] else "/admin"
+    return {"url": f"{prefix}/events/{event.id}/rooms/{room_id}/analysis/"}
+
+
 @router.get("/mission-control/{event_slug}/")
 async def mission_control_grid(request: Request, event_slug: str, user=Depends(require_user)):
     is_admin, _ = await get_accessible_event_ids(request, user_id=int(user["sub"]))
@@ -722,6 +729,7 @@ async def mission_control_grid(request: Request, event_slug: str, user=Depends(r
                 "name": room.display_name,
                 "floor_captions": room.has_floor_captions,
                 "floor_source": room.floor_source or "jitsi_bot",
+                "reports": _mission_control_reports(event, room.id, principal, is_admin),
             }
             for room in await list_rooms_for_event(session, event.id)
             if allowed_room_ids is None or room.id in allowed_room_ids
@@ -1450,6 +1458,7 @@ async def admin_event_api_settings_get(request: Request, event_id: int):
             "event": event,
             "analysis_providers": ANALYSIS_PROVIDER_LABELS,
             "analysis_defaults": ANALYSIS_DEFAULT_MODELS,
+            "analysis_auto_min_lines": settings.meeting_analysis_auto_min_lines,
             **admin_flags,
         },
     )
@@ -1483,6 +1492,7 @@ async def admin_event_api_settings_post(
     clear_anthropic_api_key: bool | None = Form(False),
     clear_groq_api_key: bool | None = Form(False),
     meeting_analysis_enabled: bool | None = Form(False),
+    meeting_analysis_auto: bool | None = Form(False),
     meeting_analysis_provider: str | None = Form(None),
 ):
     form = await request.form()
@@ -1503,6 +1513,7 @@ async def admin_event_api_settings_post(
             raise HTTPException(status_code=404, detail="Event not found.")
         event.transcription_api_enabled = bool(transcription_api_enabled)
         event.meeting_analysis_enabled = bool(meeting_analysis_enabled)
+        event.meeting_analysis_auto = bool(meeting_analysis_auto)
         if meeting_analysis_provider is not None:
             event.meeting_analysis_provider = meeting_analysis_provider
         if meeting_analysis_model is not None:
