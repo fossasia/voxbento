@@ -443,7 +443,7 @@ async def rotate_oauth_client_secret(
             status_code=status.HTTP_303_SEE_OTHER,
         )
         db.add(audit)
-        await db.flush()
+        await db.commit()
 
         existing_secrets = {}
         if existing_cookie := request.cookies.get("dev_flash_secret"):
