@@ -12,8 +12,8 @@ VoxBento accepts program contribution via **SRT Caller** (recommended for low-la
 
 ### OBS Studio (Software Encoder)
 * **Service:** Custom...
-* **Server:** `srt://<host>:8890?streamid=#!::r=<event_slug>/<room_id>/floor,m=publish&latency=500000`
-  * *For Backup Feed:* `srt://<host>:8890?streamid=#!::r=<event_slug>/<room_id>/floor_backup,m=publish&latency=500000`
+* **Server:** `srt://<host>:8890?streamid=publish:<event_slug>/<room_id>/floor::<passphrase>&latency=500000` (or `#!::r=<event_slug>/<room_id>/floor,m=publish,s=<passphrase>&latency=500000`)
+  * *For Backup Feed:* `srt://<host>:8890?streamid=publish:<event_slug>/<room_id>/floor_backup::<passphrase>&latency=500000` (or `#!::r=<event_slug>/<room_id>/floor_backup,m=publish,s=<passphrase>&latency=500000`)
 * **Stream Key / Passphrase:** Leave stream key blank in OBS; enter the room passphrase in the passphrase field (or append `&passphrase=<passphrase>` if using URI-only configuration).
 * **Latency:** `500ms` (`latency=500000` in microseconds).
 * **Video Output:**
@@ -34,8 +34,8 @@ VoxBento accepts program contribution via **SRT Caller** (recommended for low-la
 * **Port:** `8890`
 * **Latency:** `500 ms`
 * **Passphrase:** Enter the room SRT passphrase (AES-128 / AES-256 enabled).
-* **Stream ID:** `#!::r=<event_slug>/<room_id>/floor,m=publish`
-  * *Backup feed:* `#!::r=<event_slug>/<room_id>/floor_backup,m=publish`
+* **Stream ID:** `publish:<event_slug>/<room_id>/floor::<passphrase>` (or `#!::r=<event_slug>/<room_id>/floor,m=publish,s=<passphrase>`)
+  * *Backup feed:* `publish:<event_slug>/<room_id>/floor_backup::<passphrase>` (or `#!::r=<event_slug>/<room_id>/floor_backup,m=publish,s=<passphrase>`)
 * **Video Encoding:** H.264, CBR `5000 kbps`, 1080p, Keyframe interval `2 seconds`.
 * **Audio Encoding:** AAC `48 kHz`, `160 kbps` stereo.
 
@@ -45,7 +45,7 @@ VoxBento accepts program contribution via **SRT Caller** (recommended for low-la
 * **Address:** `srt://<host>:8890`
 * **Latency:** `500 ms`
 * **Passphrase:** Enter room SRT passphrase.
-* **Stream ID:** `#!::r=<event_slug>/<room_id>/floor,m=publish` (or `floor_backup`)
+* **Stream ID:** `publish:<event_slug>/<room_id>/floor::<passphrase>` (or `#!::r=<event_slug>/<room_id>/floor,m=publish,s=<passphrase>`) (or `floor_backup`)
 * **Encoding Profile:** H.264 Main/High, CBR `5000 kbps`, Keyframe every `2 seconds`.
 * **Audio Profile:** AAC `48 kHz` stereo, `128 - 192 kbps`.
 
@@ -58,7 +58,7 @@ VoxBento accepts program contribution via **SRT Caller** (recommended for low-la
 * **SRT Packet Size:** `1316 bytes` (exactly 7 × 188-byte MPEG-TS packets per SRT frame)
 * **SRT Latency:** `500 ms`
 * **Encryption:** AES-128 or AES-256 with the room SRT passphrase
-* **Stream ID:** `#!::r=<event_slug>/<room_id>/floor,m=publish` (or `floor_backup`)
+* **Stream ID:** `publish:<event_slug>/<room_id>/floor::<passphrase>` (or `#!::r=<event_slug>/<room_id>/floor,m=publish,s=<passphrase>`) (or `floor_backup`)
 * **Video Parameters:** H.264, CBR `5000 kbps`, GOP length `60 frames at 30 fps` (2 seconds), closed GOP.
 * **Audio Parameters:** AAC-LC, `48 kHz`, `128 kbps` stereo.
 
@@ -70,7 +70,7 @@ All profiles must be tested against a staging or production deployment prior to 
 
 | Tool | Version Tested | Tested By | Date | Outcome | Notes |
 |---|---|---|---|---|---|
-| OBS Studio | Pending Validation | — | — | Pending Validation | SRT Caller, streamid publish, 5000kbps CBR, 2s GOP |
+| OBS Studio | Pending Validation | — | — | Pending Validation | SRT Caller, streamid publish with credential, 5000kbps CBR, 2s GOP |
 | vMix | Pending Validation | — | — | Pending Validation | SRT Caller, port 8890, AES passphrase, 500ms latency |
 | Wirecast | Pending Validation | — | — | Pending Validation | SRT Caller, 500ms latency, AAC 48kHz |
 | Haivision Makito X4 / AJA HELO Plus (v2.1+) | Pending Validation | — | — | Pending Validation | TS over SRT, packet size 1316, 60 frames GOP at 30fps |
@@ -91,7 +91,7 @@ All profiles must be tested against a staging or production deployment prior to 
 
 | # | Step | Action | Expected Result |
 |---|------|--------|-----------------|
-| 1 | Generate SRT Credentials | Room page → *Secure Reliable Transport (SRT)* → **Create credentials** | SRT URL `srt://<host>:8890`, Stream ID `#!::r=...`, and AES Passphrase displayed |
+| 1 | Generate SRT Credentials | Room page → *Secure Reliable Transport (SRT)* → **Create credentials** | SRT URL `srt://<host>:8890`, Stream ID `publish:...` / `#!::r=...`, and AES Passphrase displayed |
 | 2 | Start Primary SRT Feed | Start primary encoder using the profile in Section 1 | Room page shows *Encoder → VoxBento* **Connected** (H264, MPEG-4 Audio / AAC) |
 | 3 | Verify Ingest & Continuity | Wait 15–30 seconds; monitor room page health indicators | Ingest health shows **Connected** with continuity active and live captions generated |
 | 4 | Audio & AI Pipeline | Speak into floor feed for 5 minutes | Transcription, translation, and TTS work concurrently without degradation |
@@ -107,7 +107,7 @@ All profiles must be tested against a staging or production deployment prior to 
 | # | Step | Action | Expected Result |
 |---|------|--------|-----------------|
 | 1 | Configure Destination | Room page → *From streaming software (RTMPS)* → paste YouTube stream key → **Save stream key** | Saved for `rtmps://a.rtmps.youtube.com/live2`; key write-only |
-| 2 | Generate Credentials | Select RTMPS Relay → **Create credentials** | RTMPS URL `rtmps://<host>:1936/live` and Stream Key `floor?key=...` displayed |
+| 2 | Generate Credentials | Select RTMPS Relay → **Create credentials** | RTMPS URL `rtmps://<host>:1936/<event_slug>/<room_id>` and Stream Key `floor?key=...` displayed |
 | 3 | Start Ingest Feed | Start RTMPS encoder pushing to URL with stream key | *Encoder → VoxBento* shows **Connected** |
 | 4 | Verify Relay & Studio | Wait 15–30 seconds; monitor room page and YouTube Studio | *VoxBento → YouTube* shows **Live**; YouTube Studio shows *Good/Excellent* health and video preview |
 | 5 | Audio & Captions | Speak into floor feed | Real-time floor captions generate concurrently with live YouTube relay |

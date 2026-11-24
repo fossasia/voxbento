@@ -44,6 +44,7 @@ from portal.database import (
 )
 from portal.globals import booths
 from portal.models import DBBooth, Event, Room
+from portal.program_ingest import room_lock
 from portal.rate_limit import check_rate_limit
 from portal.roles import INTERPRETER, Permission, can_set_active, has_permission
 from portal.schemas.booth import CreateBoothRequest
@@ -868,30 +869,48 @@ async def api_transcription_start(
             )
         if provider_enum != ProviderEnum.LOCAL and (not api_key):
             raise HTTPException(status_code=400, detail=f"{provider} API key missing. Cannot start transcription.")
-        db_room = await session.get(Room, room_id)
-        stream_path = None
-        if (
-            language_code == "floor"
-            and db_room
-            and db_room.program_backup_enabled
-            and getattr(db_room, "program_active_feed", "primary") == "backup"
-        ):
-            stream_path = make_backup_floor_path(event_slug, room_id)
         config = ProviderConfig(api_key=api_key)
-    try:
-        await start_transcription_worker(
-            event_slug,
-            language_code,
-            booth_id,
-            broadcast_transcription,
-            provider,
-            model_size,
-            config,
-            room_id=room_id,
-            stream_path=stream_path,
-        )
-    except ValueError as e:
-        raise HTTPException(status_code=429, detail=str(e))
+
+    if language_code == "floor":
+        async with room_lock(room_id):
+            async with get_session() as session:
+                db_room = await session.get(Room, room_id)
+                stream_path = None
+                if (
+                    db_room
+                    and db_room.program_backup_enabled
+                    and getattr(db_room, "program_active_feed", "primary") == "backup"
+                ):
+                    stream_path = make_backup_floor_path(event_slug, room_id)
+            try:
+                await start_transcription_worker(
+                    event_slug,
+                    language_code,
+                    booth_id,
+                    broadcast_transcription,
+                    provider,
+                    model_size,
+                    config,
+                    room_id=room_id,
+                    stream_path=stream_path,
+                )
+            except ValueError as e:
+                raise HTTPException(status_code=429, detail=str(e))
+    else:
+        try:
+            await start_transcription_worker(
+                event_slug,
+                language_code,
+                booth_id,
+                broadcast_transcription,
+                provider,
+                model_size,
+                config,
+                room_id=room_id,
+                stream_path=None,
+            )
+        except ValueError as e:
+            raise HTTPException(status_code=429, detail=str(e))
     logger.info("Transcription worker running for booth %s (provider: %s)", booth_id, provider)
     return {"status": "started", "provider": provider, "model": model_size}
 

@@ -697,7 +697,9 @@ if (copySrtBackupBtn) {
 const backupToggle = document.getElementById('program-backup-toggle');
 if (backupToggle) {
   backupToggle.addEventListener('change', async () => {
+    if (busy) return;
     busy = true;
+    backupToggle.disabled = true;
     try {
       const response = await fetch(card.dataset.url, {
         method: 'POST',
@@ -732,6 +734,7 @@ if (backupToggle) {
       status.textContent = error.message;
       backupToggle.checked = !backupToggle.checked;
     } finally {
+      backupToggle.disabled = false;
       busy = false;
       await refresh();
     }

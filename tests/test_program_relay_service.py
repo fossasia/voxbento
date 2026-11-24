@@ -195,6 +195,23 @@ def test_lifecycle_idempotent_restart_capacity_and_stop(relay_service):
     assert client.delete("/relays/7").json() == {"stopped": False}
 
 
+def test_restarting_failed_relay_checks_capacity(relay_service):
+    """When max_relays=1, a failed relay 7 plus an active relay 8 blocks retrying 7."""
+    client, manager = relay_service
+    # Let relay 7 fail
+    rejecting = f"rtmps://a.rtmps.youtube.com/live2/reject-{KEY}"
+    assert client.put("/relays/7", json=body(destination=rejecting)).status_code == 200
+    assert wait_for(lambda: manager.relays["7"].state == "failed")
+    # Now start relay 8 (which takes the 1 active slot)
+    assert client.put("/relays/8", json=body("relay-test/8/floor")).status_code == 200
+    assert wait_for(lambda: manager.relays["8"].state == "live")
+    # Retrying relay 7 must fail with 503 because capacity is full and 7 is not currently active
+    resp = client.put("/relays/7", json=body(fingerprint="c" * 32))
+    assert resp.status_code == 503
+    assert resp.json() == {"error": "Relay capacity reached"}
+
+
+
 def test_rejected_destination_is_classified_and_redacted(relay_service, caplog):
     client, manager = relay_service
     caplog.set_level(logging.INFO)

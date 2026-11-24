@@ -21,6 +21,7 @@ from portal.config import settings
 from portal.crypto import decrypt_val
 from portal.database import configure, create_user, dispose, get_session, init_db
 from portal.models import Event, Room
+from tests.mediamtx_test_double import MediaMTX121ControlDouble
 
 # Requests carry the token a real page would send.
 pytestmark = pytest.mark.usefixtures("auto_csrf")
@@ -40,54 +41,16 @@ async def backup_env(monkeypatch):
     ingest.health.clear()
     ingest.failures.clear()
     ingest.room_locks.clear()
+    ingest._confirmed_applied_srt_passphrases.clear()
     relay.relay_health.clear()
     relay.list_outage.failures = 0
 
     media: dict[str, dict] = {}
-    calls: list[tuple[str, str]] = []
-    class ConfiguredPaths(dict):
-        def add(self, name: str, pass_: str = "pass"):
-            self[name] = pass_
+    control_double = MediaMTX121ControlDouble(media=media, record_body=False)
+    calls = control_double.calls
+    configured_paths = control_double
 
-        def discard(self, name: str):
-            self.pop(name, None)
-
-    configured_paths = ConfiguredPaths()
-
-    def control(request: httpx.Request):
-        calls.append((request.method, str(request.url)))
-        data = json.loads(request.read()) if request.content else {}
-        if "/v3/config/paths/get/" in request.url.path:
-            name = request.url.path.split("/v3/config/paths/get/")[1]
-            if name in configured_paths:
-                return httpx.Response(200, json={"name": name, "srtPublishPassphrase": configured_paths[name]})
-            return httpx.Response(404, json={})
-        if "/v3/config/paths/list" in request.url.path:
-            return httpx.Response(
-                200, json={"items": [{"name": k, "srtPublishPassphrase": v} for k, v in configured_paths.items()]}
-            )
-        if "/v3/config/paths/add/" in request.url.path or "/v3/config/paths/patch/" in request.url.path:
-            name = (
-                request.url.path.split("/v3/config/paths/add/")[1]
-                if "/v3/config/paths/add/" in request.url.path
-                else request.url.path.split("/v3/config/paths/patch/")[1]
-            )
-            configured_paths[name] = data.get("srtPublishPassphrase", "pass")
-            return httpx.Response(200, json={})
-        if "/v3/config/paths/delete/" in request.url.path:
-            name = request.url.path.split("/v3/config/paths/delete/")[1]
-            configured_paths.discard(name)
-            return httpx.Response(200, json={})
-        if "/v3/config/paths/" in request.url.path:
-            return httpx.Response(200, json={})
-        if "/paths/list" in request.url.path:
-            return httpx.Response(200, json={"items": list(media.values())})
-        if "/paths/get/" in request.url.path:
-            name = request.url.path.split("/paths/get/")[1]
-            return httpx.Response(200, json=media[name]) if name in media else httpx.Response(404)
-        return httpx.Response(200, json={})
-
-    async with httpx.AsyncClient(transport=httpx.MockTransport(control)) as control_client:
+    async with httpx.AsyncClient(transport=httpx.MockTransport(control_double.handle_request)) as control_client:
         monkeypatch.setattr(ingest, "get_http_client", lambda: control_client)
         monkeypatch.setattr(relay, "get_http_client", lambda: control_client)
         start, stop = AsyncMock(), AsyncMock()
@@ -367,8 +330,10 @@ async def test_backup_srt_credentials_restored_on_restart(backup_env):
     configured_paths = [
         url for method, url in calls if "/v3/config/paths/add/" in url or "/v3/config/paths/patch/" in url
     ]
-    assert any(primary_path in c for c in configured_paths)
-    assert any(backup_path in c for c in configured_paths)
+    assert any(c.rstrip("/").endswith(f"/{primary_path}") for c in configured_paths)
+    assert any(c.rstrip("/").endswith(f"/{backup_path}") for c in configured_paths)
+    assert primary_path in backup_env["configured_paths"]
+    assert backup_path in backup_env["configured_paths"]
 
 
 @pytest.mark.anyio
@@ -557,6 +522,7 @@ async def test_backup_first_startup_grace_period(backup_env):
     async with get_session() as session:
         stored = await session.get(Room, room.id)
         stored.program_backup_enabled = True
+        await ingest.generate_backup_srt_passphrase(stored)
         stored.program_backup_connected_at = ingest.utc_now()
         await session.commit()
 
@@ -600,6 +566,7 @@ async def test_primary_stall_triggers_backup_takeover(backup_env):
         stored.program_connected_at = ingest.utc_now()
         stored.program_session_id = "primary-sess"
         stored.program_backup_enabled = True
+        await ingest.generate_backup_srt_passphrase(stored)
         stored.program_backup_connected_at = ingest.utc_now()
         stored.program_active_feed = "primary"
         await session.commit()
@@ -808,6 +775,7 @@ async def test_backup_negotiation_grace_period_prevents_premature_disconnect(bac
     async with get_session() as session:
         stored = await session.get(Room, room.id)
         stored.program_backup_enabled = True
+        await ingest.generate_backup_srt_passphrase(stored)
         stored.program_backup_connected_at = ingest.utc_now()
         await session.commit()
 
@@ -951,7 +919,7 @@ async def test_bitrate_sampling_reset_on_feed_takeover_prevents_false_limits_kic
     primary_path = f"{event.slug}/{room.id}/floor"
     backup_path = f"{event.slug}/{room.id}/floor_backup"
 
-    # Primary is stalled, backup is receiving with 200,000 bytes
+    # Primary is stalled, backup is receiving with 3,000,000 bytes (>12 Mbps over 1s)
     media[primary_path] = {
         "name": primary_path,
         "ready": True,
@@ -964,7 +932,7 @@ async def test_bitrate_sampling_reset_on_feed_takeover_prevents_false_limits_kic
         "ready": True,
         "source": {"id": "backup-sess-1", "type": "srtConn"},
         "tracks": ["H264", "AAC"],
-        "bytesReceived": 200000,
+        "bytesReceived": 3000000,
     }
 
     now = time.monotonic()
@@ -991,7 +959,7 @@ async def test_bitrate_sampling_reset_on_feed_takeover_prevents_false_limits_kic
     # Crucially, backup must NOT be kicked for limits
     assert current.state != "rejected_limits"
     assert current.high_bitrate_cycles == 0
-    assert current.last_cycle_bytes == 200000
+    assert current.last_cycle_bytes == 3000000
 
 
 @pytest.mark.anyio
@@ -1256,7 +1224,7 @@ async def test_backup_only_publisher_released_on_event_deletion(backup_env):
     assert entry.backup_reservation_started_at is None
 
     # Verify kick API was called for the backup path
-    assert any(backup_path in url for method, url in calls)
+    assert any(method == "POST" and "/v3/srtconns/kick/backup-sess-del" in url for method, url in calls)
 
 
 @pytest.mark.anyio
@@ -1638,3 +1606,162 @@ async def test_backup_kick_failure_recorded_against_backup_client_ip(backup_env)
     # Verify failure recorded against backup_client_ip (198.51.100.20), NOT primary (198.51.100.10)
     assert ingest.failures["198.51.100.20"][1] >= 1
     assert "198.51.100.10" not in ingest.failures
+
+
+@pytest.mark.anyio
+async def test_standby_primary_excessive_bitrate_kicked_and_charged_to_primary_client_ip(backup_env):
+    event = backup_env["event"]
+    room = backup_env["room"]
+    media = backup_env["media"]
+    client = backup_env["client"]
+
+    async with get_session() as session:
+        stored = await session.get(Room, room.id)
+        stored.program_backup_enabled = True
+        pass_b = await ingest.generate_backup_srt_passphrase(stored)
+        stored.program_active_feed = "backup"
+        stored.program_backup_connected_at = ingest.utc_now()
+        await session.commit()
+        expected_pass = decrypt_val(stored.program_srt_passphrase_enc)
+
+    backup_path = f"{event.slug}/{room.id}/floor_backup"
+    primary_path = f"{event.slug}/{room.id}/floor"
+    await ingest.apply_srt_passphrase_to_mediamtx(primary_path, expected_pass)
+    await ingest.apply_srt_passphrase_to_mediamtx(backup_path, pass_b)
+
+    # 1. Authorize primary from IP 198.51.100.10 and backup from 198.51.100.20
+    primary_payload = {
+        "action": "publish",
+        "path": primary_path,
+        "protocol": "srt",
+        "id": str(uuid4()),
+        "ip": "198.51.100.10",
+        "password": expected_pass,
+    }
+    resp1 = await client.post("/internal/media-auth", json=primary_payload)
+    assert resp1.status_code == 204
+
+    backup_payload = backup_publish(event, stored, ip="198.51.100.20")
+    resp2 = await client.post("/internal/media-auth", json=backup_payload)
+    assert resp2.status_code == 204
+
+    # Setup active backup feed (transmitting healthy 5000 kbps)
+    media[backup_path] = {
+        "name": backup_path,
+        "ready": True,
+        "source": {"id": backup_payload["id"], "type": "srtConn"},
+        "tracks": ["H264", "MPEG-4 Audio"],
+        "bytesReceived": 1_000_000,
+    }
+
+    # Setup reconnected primary in standby sending 20 Mbps (> 12 Mbps limit: 5,000,000 bytes per 2s cycle)
+    primary_bytes = 1_000_000
+    media[primary_path] = {
+        "name": primary_path,
+        "ready": True,
+        "source": {"id": primary_payload["id"], "type": "srtConn"},
+        "tracks": ["H264", "MPEG-4 Audio"],
+        "bytesReceived": primary_bytes,
+    }
+
+    # Simulate standby primary having accumulated 4 high-bitrate cycles
+    h = ingest.health[room.id]
+    h.standby_primary_high_bitrate_cycles = 4
+    h.standby_primary_last_cycle_bytes = 10_000_000
+    h.standby_primary_last_cycle_time = time.monotonic() - 1.0
+    media[primary_path]["bytesReceived"] = 20_000_000
+
+    await ingest.reconcile_once()
+
+    # On the 5th cycle, standby primary must be kicked and failure attributed to primary_client_ip
+    assert ingest.failures["198.51.100.10"][1] >= 1
+    # Backup client IP must NOT have been charged
+    assert "198.51.100.20" not in ingest.failures
+    # Backup feed remains active on air
+    async with get_session() as session:
+        refreshed = await session.get(Room, room.id)
+        assert refreshed.program_active_feed == "backup"
+    # Standby bitrate counters reset
+    assert h.standby_primary_high_bitrate_cycles == 0
+
+
+@pytest.mark.anyio
+async def test_backup_srt_credentials_restored_when_primary_missing(backup_env):
+    event = backup_env["event"]
+    room = backup_env["room"]
+    calls = backup_env["calls"]
+
+    async with get_session() as session:
+        stored = await session.get(Room, room.id)
+        stored.program_backup_enabled = True
+        stored.program_srt_passphrase_enc = None  # Primary credential revoked / missing
+        stored.program_srt_passphrase_hash = None
+        await ingest.generate_backup_srt_passphrase(stored)
+        await session.commit()
+
+    backup_env["configured_paths"].clear()
+    calls.clear()
+    await ingest.reconcile_once()
+
+    backup_path = f"{event.slug}/{room.id}/floor_backup"
+    primary_path = f"{event.slug}/{room.id}/floor"
+    assert backup_path in backup_env["configured_paths"]
+    assert primary_path not in backup_env["configured_paths"]
+
+
+@pytest.mark.anyio
+async def test_expired_standby_backup_kicked_and_not_promoted(backup_env):
+    event = backup_env["event"]
+    room = backup_env["room"]
+    media = backup_env["media"]
+    calls = backup_env["calls"]
+
+    now = ingest.utc_now()
+    async with get_session() as session:
+        stored = await session.get(Room, room.id)
+        stored.program_backup_enabled = True
+        await ingest.generate_srt_passphrase(stored)
+        await ingest.generate_backup_srt_passphrase(stored)
+        # Expire the backup credential
+        stored.program_backup_key_expires_at = now - timedelta(seconds=60)
+        await session.commit()
+
+    primary_path = f"{event.slug}/{room.id}/floor"
+    backup_path = f"{event.slug}/{room.id}/floor_backup"
+
+    # Primary connected and active
+    media[primary_path] = {
+        "name": primary_path,
+        "ready": True,
+        "source": {"id": "primary-sess-1", "type": "srtConn"},
+        "tracks": ["H264", "AAC"],
+        "bytesReceived": 50000,
+    }
+    # Backup connected as standby with valid tracks
+    media[backup_path] = {
+        "name": backup_path,
+        "ready": True,
+        "source": {"id": "backup-sess-1", "type": "srtConn"},
+        "tracks": ["H264", "AAC"],
+        "bytesReceived": 50000,
+    }
+
+    entry = ingest.IngestHealth()
+    entry.backup_session_id = "backup-sess-1"
+    entry.backup_connected = True
+    ingest.health[room.id] = entry
+
+    calls.clear()
+    await ingest.reconcile_once()
+
+    # Standby backup was kicked because its credential expired
+    assert any("/kick/" in url for method, url in calls)
+    current = ingest.health[room.id]
+    assert current.backup_connected is False
+    assert current.backup_session_id is None
+
+    # Primary remains active feed
+    async with get_session() as session:
+        stored = await session.get(Room, room.id)
+        assert stored.program_active_feed == "primary"
+

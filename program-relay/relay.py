@@ -242,7 +242,8 @@ class RelayManager:
             if current and current.source == source and current.fingerprint == fingerprint and current.state != "failed":
                 return 200, current.public()
             active_relays = [r for r in self.relays.values() if r.state != "failed"]
-            if current is None and len(active_relays) >= self.max_relays:
+            is_active = current is not None and current.state != "failed"
+            if not is_active and len(active_relays) >= self.max_relays:
                 return 503, {"error": "Relay capacity reached"}
             if current:
                 self._stop_locked(current)

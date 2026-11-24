@@ -16,7 +16,7 @@ with automatic, deterministic takeover.
 
 ```
 OBS / vMix / Wirecast / Makito X4 / AJA HELO
-        │  SRT :8890/udp (Caller mode, AES passphrase, streamid=#!::r=.../floor)
+        │  SRT :8890/udp (Caller mode, AES passphrase, streamid=publish:... or #!::r=.../floor,m=publish,s=...)
         │  OR RTMPS :1936/tcp (TLS, stream key "floor?key=<secret>")
         ▼
 MediaMTX (SRT Listener :8890 / RTMPS Listener :1936)
@@ -317,10 +317,12 @@ SRT provides superior transmission resilience over unstable public networks comp
    * **Application Rolling Update (Stream Preservation):** Updating the `portal` container preserves live SRT and RTMPS streams. MediaMTX retains UDP/TCP sockets and stream state across portal restarts without dropping live audience or relay connections.
    * **Deliberate Media Plane Restart:** Upgrading `mediamtx` terminates UDP sockets. Encoders configured with auto-reconnect restore feeds within seconds. The operator dashboard shows `disconnected` and returns to `receiving`.
    * **Rollback Procedure:** If a newly deployed application change or configuration causes errors:
-     1. If database schema migrations were executed for the current release, determine the target revision of the rollback commit (e.g. `047` or `<target-revision>`) and roll back the database to that target revision **before** checking out the previous commit (ensuring Alembic still has the downgrade scripts present in the working tree):
+     1. If database schema migrations were executed for the current release, determine the target revision of the rollback commit (e.g. `047` or `<target-revision>`) and roll back the database to that target revision **before** checking out the previous commit. Stop the portal container before changing its schema, and run Alembic with the current portal image, the service environment, and the database volume (so the deployed database at `/data/interpretation.db` is targeted rather than a local `./interpretation.db`):
         ```bash
-        uv run alembic downgrade <target-revision>
+        docker compose stop portal
+        docker compose run --rm portal uv run alembic downgrade <target-revision>
         ```
+        *(For deployments using an external PostgreSQL or custom `DATABASE_URL`, execute with an explicit `DATABASE_URL`: `docker compose run --rm -e DATABASE_URL=<url> portal uv run alembic downgrade <target-revision>`)*
      2. Check out the previous known-good commit or tag (e.g. `git checkout <previous-tag-or-commit>`) and restore its environment settings.
      3. Re-deploy the known-good version matching the active features and Compose files present in that target revision:
         ```bash
@@ -447,7 +449,7 @@ spawned. No old process outlives a successful stop or replacement.
   - Verify that the encoder connects in **SRT Caller** mode.
 
 - **Authentication / Admission Failure (Connection Rejected / 401 / 403):**
-  - Verify the stream ID parameter exactly matches: `#!::r=<event_slug>/<room_id>/floor,m=publish` (or `floor_backup`).
+  - Verify the stream ID parameter includes the authentication credential: `publish:<event_slug>/<room_id>/floor::<passphrase>` or `#!::r=<event_slug>/<room_id>/floor,m=publish,s=<passphrase>` (or `floor_backup`). MediaMTX 1.21.4 requires the authentication password in the Stream ID (`s=...` or `publish:<path>::<passphrase>`) in addition to the SRT encryption passphrase.
   - Verify the passphrase is correct and has not expired (30-day default TTL) or rotated.
   - MediaMTX enforces `srtPublishPassphrase` dynamically via its Control API. Admission fails closed until MediaMTX confirms the per-path passphrase is active. If MediaMTX was restarted, allow 2 seconds for the reconciler loop to reapply path credentials.
 

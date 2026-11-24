@@ -549,6 +549,7 @@ async def relay_destination_set(
             await program_relay.stop_relay(room_id, forget_health=False)
         except httpx.HTTPError:
             logger.warning("program_relay stop_failed_on_save room_id=%s", room_id)
+            raise HTTPException(502, "Relay service unavailable; retry saving destination to restart relay.")
     # A running relay restarts on the new destination at the next reconcile (fingerprint change).
     logger.info("program_relay destination_set room_id=%s", room_id)
     return JSONResponse({"configured": True, "server_url": server_url}, headers={"Cache-Control": "no-store"})

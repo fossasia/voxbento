@@ -691,3 +691,25 @@ async def test_relay_resave_same_key_restarts_failed_relay(relay_env):
     await ingest.reconcile_once()
     assert str(room.id) in env["relays"]
     assert env["relays"][str(room.id)]["state"] == "live"
+
+
+@pytest.mark.anyio
+async def test_relay_resave_reports_502_when_stop_fails(relay_env):
+    env = relay_env
+    client, event, room = env["client"], env["event"], env["rooms"][0]
+    await enable_relay(client, event, room)
+    await save_destination(client, event, room, key=YOUTUBE_KEY)
+
+    # Bring down the relay service so DELETE /relays/{room.id} fails with 500 (httpx.HTTPError)
+    env["service"]["up"] = False
+
+    resp = await client.put(relay_url(event, room), json={"server_url": YOUTUBE_SERVER, "stream_key": YOUTUBE_KEY})
+    assert resp.status_code == 502
+    assert "Relay service unavailable" in resp.json()["detail"]
+
+    # Destination was still stored so the operator can retry without losing it
+    async with get_session() as session:
+        stored_room = await session.get(Room, room.id)
+        assert stored_room.program_relay_server == YOUTUBE_SERVER
+        assert decrypt_val(stored_room.program_relay_key_enc) == YOUTUBE_KEY
+

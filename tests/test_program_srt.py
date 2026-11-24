@@ -18,6 +18,7 @@ from portal.config import settings
 from portal.crypto import decrypt_val, encrypt_val
 from portal.database import configure, create_user, dispose, get_session, init_db
 from portal.models import Event, Room
+from tests.mediamtx_test_double import MediaMTX121ControlDouble
 
 # Requests carry the token a real page would send.
 pytestmark = pytest.mark.usefixtures("auto_csrf")
@@ -37,47 +38,16 @@ async def srt_env(monkeypatch):
     ingest.health.clear()
     ingest.failures.clear()
     ingest.room_locks.clear()
+    ingest._confirmed_applied_srt_passphrases.clear()
     relay.relay_health.clear()
     relay.list_outage.failures = 0
 
     media: dict[str, dict] = {}
-    calls: list[tuple[str, str, dict]] = []
-    configured_paths: dict[str, str] = {}
+    control_double = MediaMTX121ControlDouble(media=media, record_body=True)
+    calls = control_double.calls
+    configured_paths = control_double
 
-    def control(request: httpx.Request):
-        data = json.loads(request.read()) if request.content else {}
-        calls.append((request.method, str(request.url), data))
-        if "/v3/config/paths/get/" in request.url.path:
-            name = request.url.path.split("/v3/config/paths/get/")[1]
-            if name in configured_paths:
-                return httpx.Response(200, json={"name": name, "srtPublishPassphrase": configured_paths[name]})
-            return httpx.Response(404, json={})
-        if "/v3/config/paths/list" in request.url.path:
-            return httpx.Response(
-                200, json={"items": [{"name": k, "srtPublishPassphrase": v} for k, v in configured_paths.items()]}
-            )
-        if "/v3/config/paths/add/" in request.url.path or "/v3/config/paths/patch/" in request.url.path:
-            name = (
-                request.url.path.split("/v3/config/paths/add/")[1]
-                if "/v3/config/paths/add/" in request.url.path
-                else request.url.path.split("/v3/config/paths/patch/")[1]
-            )
-            configured_paths[name] = data.get("srtPublishPassphrase", "")
-            return httpx.Response(200, json={})
-        if "/v3/config/paths/delete/" in request.url.path:
-            name = request.url.path.split("/v3/config/paths/delete/")[1]
-            configured_paths.pop(name, None)
-            return httpx.Response(200, json={})
-        if "/v3/config/paths/" in request.url.path:
-            return httpx.Response(200, json={})
-        if "/paths/list" in request.url.path:
-            return httpx.Response(200, json={"items": list(media.values())})
-        if "/paths/get/" in request.url.path:
-            name = request.url.path.split("/paths/get/")[1]
-            return httpx.Response(200, json=media[name]) if name in media else httpx.Response(404)
-        return httpx.Response(200, json={})
-
-    async with httpx.AsyncClient(transport=httpx.MockTransport(control)) as control_client:
+    async with httpx.AsyncClient(transport=httpx.MockTransport(control_double.handle_request)) as control_client:
         monkeypatch.setattr(ingest, "get_http_client", lambda: control_client)
         monkeypatch.setattr(relay, "get_http_client", lambda: control_client)
         start, stop = AsyncMock(), AsyncMock()
@@ -516,6 +486,7 @@ async def test_srt_reconcile_recovers_mismatched_passphrase(srt_env):
     event = srt_env["event"]
     room = srt_env["rooms"][0]
     configured_paths = srt_env["configured_paths"]
+    calls = srt_env["calls"]
     primary_path = f"{event.slug}/{room.id}/floor"
 
     async with get_session() as session:
@@ -527,7 +498,163 @@ async def test_srt_reconcile_recovers_mismatched_passphrase(srt_env):
     configured_paths[primary_path] = "stale-outdated-passphrase"
     assert configured_paths[primary_path] != expected_pass
 
+    # Clear confirmed applied generations to simulate restart / unconfirmed state
+    ingest._confirmed_applied_srt_passphrases.clear()
+
     # Reconcile detects mismatch and re-applies current passphrase
     await ingest.reconcile_once()
 
     assert configured_paths[primary_path] == expected_pass
+    assert ingest._confirmed_applied_srt_passphrases.get(primary_path) == expected_pass
+
+    # Second poll with unchanged configuration: must NOT re-apply (zero writes)
+    write_calls_before = len(
+        [c for c in calls if "/v3/config/paths/add/" in c[1] or "/v3/config/paths/patch/" in c[1]]
+    )
+    await ingest.reconcile_once()
+    write_calls_after = len(
+        [c for c in calls if "/v3/config/paths/add/" in c[1] or "/v3/config/paths/patch/" in c[1]]
+    )
+    assert write_calls_after == write_calls_before
+
+
+@pytest.mark.anyio
+async def test_srt_auth_succeeds_with_redacted_mediamtx_api(srt_env):
+    """Verify that MediaMTX 1.21.4 redacting srtPublishPassphrase does not block authorize_publish."""
+    event = srt_env["event"]
+    room = srt_env["rooms"][0]
+    client = srt_env["client"]
+    primary_path = f"{event.slug}/{room.id}/floor"
+
+    async with get_session() as session:
+        stored = await session.get(Room, room.id)
+        assert stored is not None
+        expected_pass = decrypt_val(stored.program_srt_passphrase_enc)
+
+    # First apply passphrase to establish confirmed generation
+    await ingest.apply_srt_passphrase_to_mediamtx(primary_path, expected_pass)
+    assert ingest.is_srt_path_confirmed_in_mediamtx(primary_path, expected_pass) is True
+
+    # Authorize publish from encoder
+    payload = {
+        "action": "publish",
+        "path": primary_path,
+        "protocol": "srt",
+        "id": str(uuid4()),
+        "ip": "198.51.100.10",
+        "password": expected_pass,
+    }
+    resp = await client.post("/internal/media-auth", json=payload)
+    assert resp.status_code == 204
+
+
+@pytest.mark.anyio
+async def test_srt_revoke_returns_202_cleanup_pending_on_mediamtx_delete_failure(srt_env, monkeypatch):
+    """Verify that if MediaMTX delete fails during revoke, 202 cleanup_pending is returned."""
+    event = srt_env["event"]
+    room = srt_env["rooms"][0]
+    client = srt_env["client"]
+
+    def failing_delete_control(request: httpx.Request):
+        if "/v3/config/paths/delete/" in request.url.path:
+            return httpx.Response(503, json={"error": "MediaMTX service unavailable"})
+        if "/paths/get/" in request.url.path:
+            return httpx.Response(404, json={})
+        return httpx.Response(200, json={})
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(failing_delete_control)) as failing_http:
+        monkeypatch.setattr(ingest, "get_http_client", lambda: failing_http)
+        resp = await client.post(
+            f"/admin/events/{event.id}/rooms/{room.id}/program-ingest",
+            json={"action": "revoke"},
+        )
+        assert resp.status_code == 202
+        assert resp.json().get("cleanup_pending") is True
+
+
+@pytest.mark.anyio
+async def test_mediamtx_121_control_api_contract_duplicate_add_and_patch_preservation():
+    """Verify MediaMTX 1.21.4 Control API contract: rejects duplicate add, preserves omitted fields on patch."""
+    double = MediaMTX121ControlDouble()
+    async with httpx.AsyncClient(transport=httpx.MockTransport(double.handle_request)) as client:
+        # 1. Add new path
+        add_resp = await client.post(
+            "http://mediamtx:9997/v3/config/paths/add/test-event/1/floor",
+            json={"srtPublishPassphrase": "my-secret-passphrase", "overridePublisher": False},
+        )
+        assert add_resp.status_code == 200
+
+        # 2. Duplicate add must be rejected with 400
+        dup_resp = await client.post(
+            "http://mediamtx:9997/v3/config/paths/add/test-event/1/floor",
+            json={"srtPublishPassphrase": "another-passphrase"},
+        )
+        assert dup_resp.status_code == 400
+        assert "already exists" in dup_resp.json()["error"]
+
+        # 3. Patch omitting srtPublishPassphrase must preserve the existing passphrase
+        patch_resp = await client.patch(
+            "http://mediamtx:9997/v3/config/paths/patch/test-event/1/floor",
+            json={"overridePublisher": True},
+        )
+        assert patch_resp.status_code == 200
+        assert double.get_passphrase("test-event/1/floor") == "my-secret-passphrase"
+
+        # 4. GET and LIST must redact srtPublishPassphrase
+        get_resp = await client.get("http://mediamtx:9997/v3/config/paths/get/test-event/1/floor")
+        assert get_resp.status_code == 200
+        assert get_resp.json()["srtPublishPassphrase"] == "<redacted>"
+
+        list_resp = await client.get("http://mediamtx:9997/v3/config/paths/list")
+        assert list_resp.status_code == 200
+        items = list_resp.json()["items"]
+        assert len(items) == 1
+        assert items[0]["name"] == "test-event/1/floor"
+        assert items[0]["srtPublishPassphrase"] == "<redacted>"
+
+
+@pytest.mark.anyio
+async def test_pinned_image_mediamtx_api_live_contract():
+    """Verify against live pinned MediaMTX 1.21.4 container when reachable."""
+    api_base = settings.mediamtx_api_base
+    try:
+        async with httpx.AsyncClient(timeout=2.0) as client:
+            resp = await client.get(f"{api_base}/v3/config/paths/list")
+            if resp.status_code != 200:
+                pytest.skip("MediaMTX container not available")
+
+            test_path = "live-pinned-test/floor"
+            # Cleanup in case left over
+            await client.delete(f"{api_base}/v3/config/paths/delete/{test_path}")
+
+            # 1. Add
+            r = await client.post(
+                f"{api_base}/v3/config/paths/add/{test_path}",
+                json={"srtPublishPassphrase": "live-test-secret", "overridePublisher": False},
+            )
+            assert r.status_code == 200
+
+            # 2. Duplicate add rejected with 400
+            r_dup = await client.post(
+                f"{api_base}/v3/config/paths/add/{test_path}",
+                json={"srtPublishPassphrase": "other-secret"},
+            )
+            assert r_dup.status_code == 400
+
+            # 3. Patch preserves omitted passphrase
+            r_patch = await client.patch(
+                f"{api_base}/v3/config/paths/patch/{test_path}",
+                json={"overridePublisher": False},
+            )
+            assert r_patch.status_code == 200
+
+            # 4. Get redacts passphrase
+            r_get = await client.get(f"{api_base}/v3/config/paths/get/{test_path}")
+            assert r_get.status_code == 200
+            assert r_get.json().get("srtPublishPassphrase") == "<redacted>"
+
+            # Cleanup
+            await client.delete(f"{api_base}/v3/config/paths/delete/{test_path}")
+    except (httpx.ConnectError, httpx.TimeoutException):
+        pytest.skip("MediaMTX container not reachable")
+
