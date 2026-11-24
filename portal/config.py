@@ -220,6 +220,11 @@ class Settings(BaseSettings):
     self_hosted_llm_base_url: str = ""
     self_hosted_llm_api_key: str = Field(default="", repr=False)
     self_hosted_llm_models: str = ""
+    # Translation requests in flight at once: to the self-hosted server across all rooms, and
+    # from each event to a hosted provider (OpenAI, Gemini, ...). Further requests
+    # wait, with rooms taking turns. Each local model's limit comes from its CPU threads instead.
+    self_hosted_llm_concurrency: int = Field(default=4, ge=1)
+    translation_api_concurrency: int = Field(default=32, ge=1)
 
     # Built-in translation models this server offers to events (#1191), comma-separated; the
     # first is the default. Models are large, so only the operator chooses what may be downloaded.
@@ -236,6 +241,9 @@ class Settings(BaseSettings):
 
     meeting_analysis_ollama_base_url: str = "http://localhost:11434"
     meeting_analysis_ollama_num_ctx: int = 32768
+    # Automatic meeting reports (#1080): written only for a session with at least this many
+    # transcript lines, so a short sound check or a brief test leaves no report behind.
+    meeting_analysis_auto_min_lines: int = Field(default=20, ge=1)
     # Home-page live demo (/ws/demo/live): visitors speak and get captions, translations and a
     # voice from the server's own models. Public, so its load is capped per server and per IP.
     # Admins switch it on at /admin/live-demo/ (off until then); False forbids it on this server.
