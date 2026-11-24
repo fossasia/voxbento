@@ -1,4 +1,4 @@
-{% extends "admin/base.html" %}
+{% extends "admin/report_panel_base.html" if request.query_params.get("panel") == "1" else "admin/base.html" %}
 {% block title %}Meeting reports — {{ room.display_name }}{% endblock %}
 
 {% block breadcrumb %}
@@ -26,6 +26,8 @@
   <div class="alert alert-warning" role="status">A report is still being written for this room. Wait for it to finish, then try again.</div>
   {% elif error == 'channel' %}
   <div class="alert alert-error" role="status">Choose a channel that has a transcript.</div>
+  {% elif error == 'language' %}
+  <div class="alert alert-error" role="status">None of that session was translated into the language you chose. Pick another language, or write the report from the transcript as spoken.</div>
   {% elif error == 'disabled' %}
   <div class="alert alert-error" role="status">Meeting reports are turned off for this event.</div>
   {% endif %}
@@ -39,7 +41,7 @@
     {% endif %}
   </div>
   {% elif is_event_owner %}
-  <form method="post" action="{{ analysis_url }}" class="room-card analysis-form">
+  <form method="post" target="_self" action="{{ analysis_url }}{% if request.query_params.get('panel') == '1' %}?panel=1{% endif %}" class="room-card analysis-form">
     <input type="hidden" name="csrf_token" value="{{ request.state.admin_csrf_token }}" />
     <h2>Write a report</h2>
     {% if channels %}
@@ -57,6 +59,19 @@
       </select>
       <p class="form-help" id="analysis_session_help">A session is a stretch of transcript with no break longer than 30 minutes. The latest one is selected; pick an earlier one to report on it instead.</p>
     </div>
+    {% if languages %}
+    <div class="field">
+      <label for="analysis_language">Write it from</label>
+      <select id="analysis_language" name="language" aria-describedby="analysis_language_help">
+        <option value="*">Spoken transcript and all available translations</option>
+        <option value="">The transcript as spoken</option>
+        {% for code, name in languages %}
+        <option value="{{ code }}">The {{ name }} translation</option>
+        {% endfor %}
+      </select>
+      <p class="form-help" id="analysis_language_help">A report from a translation is written in that language, from the captions listeners read. Lines that were never translated are left out.</p>
+    </div>
+    {% endif %}
     <div class="room-save-bar">
       <button type="submit" class="btn btn-primary" {% if in_progress %}disabled{% endif %}>Generate report</button>
     </div>
@@ -72,18 +87,25 @@
     <div class="room-card-head">
       <div>
         <h2>{% if report.status == 'done' %}<a href="{{ analysis_url }}{{ report.id }}/">{{ view.title }}</a>{% else %}{{ report.channel_label }}{% endif %}</h2>
-        <p class="room-card-sub">{{ report.channel_label }} · {{ view.session_range or report.created_at.strftime('%b %d, %Y, %H:%M UTC') }} · {{ view.provider_label }} ({{ report.model }}){% if report.segment_count %} · {{ report.segment_count }} {{ 'line' if report.segment_count == 1 else 'lines' }}{% endif %}</p>
+        <p class="room-card-sub">{{ report.channel_label }}{% if report.automatic %} · written automatically{% endif %} · {{ view.session_range or report.created_at.strftime('%b %d, %Y, %H:%M UTC') }} · {{ view.provider_label }} ({{ report.model }}){% if report.segment_count %} · {{ report.segment_count }} {{ 'line' if report.segment_count == 1 else 'lines' }}{% endif %}</p>
       </div>
       {% if report.status == 'done' %}
       <a href="{{ analysis_url }}{{ report.id }}/" class="btn btn-outline btn-sm">Open report</a>
       {% endif %}
     </div>
-    {% if report.status in ('pending', 'running') %}
+    {% if report.status == 'queued' %}
+    <p role="status">Queued for generation.</p>
+    {% elif report.status in ('pending', 'running') %}
     <p class="analysis-progress" role="status">Writing the report. This can take a minute.</p>
     {% elif report.status == 'failed' %}
     <p class="alert alert-error">{{ report.error or "The report couldn't be written." }}</p>
     {% else %}
     <p class="analysis-summary">{{ report.summary }}</p>
+    {% for section in view.sections %}
+    <details><summary>{{ section.heading }}</summary><ul>
+      {% for point in section.points %}<li>{{ point }}</li>{% endfor %}
+    </ul></details>
+    {% endfor %}
     {% endif %}
   </article>
   {% endfor %}

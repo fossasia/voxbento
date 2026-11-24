@@ -97,6 +97,8 @@ class Event(Base):
     meeting_analysis_enabled: Mapped[bool] = mapped_column(Boolean, default=False, server_default="0")
     meeting_analysis_provider: Mapped[str] = mapped_column(String(50), default="local", server_default="local")
     meeting_analysis_model: Mapped[str] = mapped_column(String(100), default="", server_default="")
+    # Write a report on its own when a channel's captions stop (#1080 phase 2).
+    meeting_analysis_auto: Mapped[bool] = mapped_column(Boolean, default=False, server_default="0")
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
     deleted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True, default=None)
 
@@ -898,7 +900,18 @@ class OAuthAuthorizationCode(Base):
     event: Mapped[Event] = relationship()
 
     def __repr__(self) -> str:
+        """Return string representation of OAuthAuthorizationCode."""
         return f"<OAuthAuthorizationCode id={self.id} client_id={self.client_id}>"
+
+    @property
+    def is_expired(self) -> bool:
+        """Check if authorization code is expired, safely normalizing naive datetimes."""
+        now = utc_now()
+        exp = self.expires_at
+        # SQLite strips timezone info; normalise to UTC-aware
+        if exp.tzinfo is None:
+            exp = exp.replace(tzinfo=timezone.utc)
+        return now >= exp
 
 
 class OAuthToken(Base):
@@ -924,7 +937,18 @@ class OAuthToken(Base):
     event: Mapped[Event] = relationship()
 
     def __repr__(self) -> str:
+        """Return string representation of OAuthToken."""
         return f"<OAuthToken id={self.id} client_id={self.client_id} revoked={self.revoked}>"
+
+    @property
+    def is_expired(self) -> bool:
+        """Check if OAuth token is expired, safely normalizing naive datetimes."""
+        now = utc_now()
+        exp = self.expires_at
+        # SQLite strips timezone info; normalise to UTC-aware
+        if exp.tzinfo is None:
+            exp = exp.replace(tzinfo=timezone.utc)
+        return now >= exp
 
 
 class OAuthConsentGrant(Base):
@@ -1151,5 +1175,9 @@ class MeetingReport(Base):
     segment_count: Mapped[int] = mapped_column(Integer, default=0)
     truncated: Mapped[bool] = mapped_column(Boolean, default=False)
     tokens_used: Mapped[int | None] = mapped_column(Integer, nullable=True, default=None)
+    # The translation language read instead of the spoken transcript; None for the transcript itself.
+    transcript_language: Mapped[str | None] = mapped_column(String(20), nullable=True, default=None)
+    # Written when the channel's captions stopped, rather than asked for.
+    automatic: Mapped[bool] = mapped_column(Boolean, default=False, server_default="0")
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
     generated_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True, default=None)
