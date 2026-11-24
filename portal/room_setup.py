@@ -689,10 +689,10 @@ AUDIO_DESK = "desk"
 def room_audio_choice(room: Room) -> str:
     """Which way VoxBento hears the room today, so the Room audio tab opens on it ('' if none yet)."""
     if room.floor_source == "program_ingest":
-        if room.program_key_hash:
-            return AUDIO_ENCODER
         if room.program_session_secret_hash:
             return AUDIO_DESK
+        if room.program_key_hash:
+            return AUDIO_ENCODER
     if room.meeting_agent_enabled:
         return AUDIO_MEETING
     return ""
