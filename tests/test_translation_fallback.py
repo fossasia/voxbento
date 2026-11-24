@@ -234,6 +234,60 @@ async def test_slot_wait_deadline_does_not_shorten_running_inference(pipeline, m
 
 
 @pytest.mark.anyio
+async def test_fallback_starts_within_upstream_lag_budget_when_primary_slot_is_busy(pipeline, monkeypatch):
+    env = pipeline
+    env.backup.result = ""
+    monkeypatch.setattr(worker_module.settings, "translation_max_lag_seconds", 0.2)
+    scheduler = worker_module.scheduler_for("self_hosted", "primary", env.event.id)
+    blocker = scheduler.admit(env.room.id, "busy:fr")
+    await blocker.__aenter__()
+    try:
+        await asyncio.wait_for(run(env), 0.5)
+        assert not env.primary.calls and len(env.backup.calls) == 1
+        assert scheduler.running == 1 and scheduler.waiting() == 0
+        assert next(iter(circuit_module.CIRCUITS.values())).failures == 1
+    finally:
+        blocker.close()
+    assert scheduler.idle()
+
+
+@pytest.mark.anyio
+async def test_slower_resolution_cannot_let_a_later_segment_reserve_delivery_first(pipeline, monkeypatch):
+    env = pipeline
+    env.primary.result = "Bonjour"
+    blocked, release, second_started = asyncio.Event(), asyncio.Event(), asyncio.Event()
+    original = env.worker._resolve_translation_job
+    calls = 0
+
+    async def resolve(*args):
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            blocked.set()
+            await release.wait()
+        else:
+            second_started.set()
+        return await original(*args)
+
+    monkeypatch.setattr(env.worker, "_resolve_translation_job", resolve)
+    first = asyncio.create_task(
+        env.worker.handle_translation(env.room.id, env.segment.id, "First", "fallback-1-floor", "one", 1)
+    )
+    await blocked.wait()
+    second = asyncio.create_task(
+        env.worker.handle_translation(env.room.id, env.segment.id, "Second", "fallback-1-floor", "two", 2)
+    )
+    try:
+        await asyncio.sleep(0)
+        assert not second_started.is_set()
+    finally:
+        release.set()
+        await asyncio.gather(first, second)
+    captions = [call.args[5] for call in env.bundle.await_args_list if call.args[3] == b""]
+    assert captions == [1, 2]
+
+
+@pytest.mark.anyio
 async def test_timeout_falls_back_while_primary_thread_keeps_its_slot(pipeline, monkeypatch):
     env = pipeline
     started, release = threading.Event(), threading.Event()

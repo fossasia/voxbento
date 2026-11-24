@@ -35,6 +35,37 @@ async def drain_pipeline():
         await asyncio.gather(*list(tasks._tasks))
 
 
+@pytest.mark.anyio
+async def test_translation_resolution_preserves_order_when_earlier_transcript_save_is_slow(monkeypatch):
+    first_save_started, release_save, second_saved = asyncio.Event(), asyncio.Event(), asyncio.Event()
+    dispatched = []
+
+    async def save(booth_id, text, room_id):
+        if text == "First":
+            first_save_started.set()
+            await release_save.wait()
+            return 1
+        second_saved.set()
+        return 2
+
+    async def dispatch(self, room_id, segment_id, text, booth_id, uuid, seq, arrived_at, resolution_turn):
+        dispatched.append(seq)
+
+    monkeypatch.setattr(db, "save_transcript_segment", save)
+    monkeypatch.setattr(TranslationWorker, "_resolve_and_dispatch", dispatch)
+    aggregator = CaptionAggregator(AsyncMock(), room_id=12345)
+    await aggregator.publish_final("event-12345-floor", "First", "uuid-1", 1)
+    await first_save_started.wait()
+    await aggregator.publish_final("event-12345-floor", "Second", "uuid-2", 2)
+    try:
+        await asyncio.wait_for(second_saved.wait(), 1)
+        assert dispatched == []
+    finally:
+        release_save.set()
+        await drain_pipeline()
+    assert dispatched == [1, 2]
+
+
 @pytest.fixture
 async def sequence_db(tmp_path, monkeypatch):
     """Isolate each stream's persistent counter and finish its background work on teardown."""

@@ -217,6 +217,19 @@ async def test_disabled_floor_does_not_block_valid_booth_fallback_settings(room_
     assert room.translation_fallback_provider == ("local" if status == 303 else None)
 
 
+async def test_booth_only_translation_displays_fallback_controls(room_form):
+    async with get_session() as session:
+        room = await session.get(Room, room_form[2])
+        room.floor_translation_enabled = False
+    await add_booth(room_form)
+    cookie, event_id, room_id = room_form
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test", cookies=cookie) as client:
+        page = await client.get(f"/admin/events/{event_id}/rooms/{room_id}/")
+    assert page.status_code == 200
+    assert 'id="translation_fallback_provider"' in page.text
+    assert "Booth translators use the fallback configured below." in page.text
+
+
 @pytest.mark.parametrize("source,target", [("az", "fr"), ("en", "az")])
 async def test_fallback_save_validates_enabled_booths(room_form, source, target):
     await add_booth(room_form, source=source, target=target)

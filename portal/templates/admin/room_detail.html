@@ -248,10 +248,11 @@
       </details>
     </div>
 
-    {% if uses_ai or room.translation_fallback_provider %}
+    {% if uses_ai or has_booth_translation or room.translation_fallback_provider %}
     <div class="room-card">
       <h2>Translation</h2>
       {% if uses_ai %}<p class="room-card-sub">The service that translates the captions for {{ ai_language_names | join(', ') }}.</p>
+      {% elif has_booth_translation %}<p class="room-card-sub">Booth translators use the fallback configured below.</p>
       {% else %}<p class="room-card-sub">Translation is off. You can still change or remove its saved fallback.</p>{% endif %}
       <div class="field-row">
         <div class="field">

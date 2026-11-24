@@ -71,3 +71,8 @@ class TranslationDeliveryOrder:
                     del self.rejections[channel]
 
         return DeliveryTurn(previous, done, cleanup)
+
+
+# Reserve before asynchronous transcript persistence, so database lookups cannot reorder
+# translation dispatch. The same per-channel budget bounds pending resolution work.
+RESOLUTION_ORDER = TranslationDeliveryOrder()
