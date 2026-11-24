@@ -281,7 +281,7 @@ class CaptionAggregator:
                 """Persist a sequenced caption and pass its identity to asynchronous translation."""
                 try:
                     db_segment_id = await save_transcript_segment(booth_id, final_text, self.room_id)
-                    if db_segment_id is not None and resolution_turn is not None:
+                    if db_segment_id is not None:
                         from portal.translations.worker import TranslationWorker
 
                         worker = TranslationWorker(self.broadcast_callback)
@@ -294,8 +294,6 @@ class CaptionAggregator:
                             seq,
                             resolution_turn=resolution_turn,
                         )
-                    elif db_segment_id is not None:
-                        logger.warning("[%s] Translation resolution queue full; segment %s skipped.", booth_id, seq)
                 except Exception as e:
                     logger.error(f"[{booth_id}] _save_and_translate failed: {e}", exc_info=True)
                 finally:

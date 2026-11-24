@@ -315,10 +315,14 @@ class TranslationWorker:
                 (room_id, booth_id_str, "resolution"), enabled=True, rejected=True
             )
             if resolution_turn is None:
-                logger.warning("[%s] Translation resolution queue full; segment %s skipped.", booth_id_str, seq)
+                # The existing no-fallback path must keep working even if another
+                # segment's transcript save is stalled. Only ordered failover needs
+                # to drop excess resolution work.
+                await self._resolve_and_dispatch(
+                    room_id, segment_id, text, booth_id_str, uuid_segment_id, seq, arrived_at, None
+                )
                 return
         try:
-            await resolution_turn.wait()
             await self._resolve_and_dispatch(
                 room_id, segment_id, text, booth_id_str, uuid_segment_id, seq, arrived_at, resolution_turn
             )
@@ -334,7 +338,7 @@ class TranslationWorker:
         uuid_segment_id: str,
         seq: int,
         arrived_at: float,
-        resolution_turn: DeliveryTurn,
+        resolution_turn: DeliveryTurn | None,
     ) -> None:
         from sqlalchemy import select
 
@@ -358,6 +362,13 @@ class TranslationWorker:
         # (sessions do not expire them).
         if job is None:
             return
+        if resolution_turn is None and job.fallback is not None:
+            logger.warning("[%s] Translation resolution queue full; segment %s skipped.", booth_id_str, seq)
+            return
+        if resolution_turn is not None and job.fallback is not None:
+            # Resolution itself may run concurrently. Only failover dispatch needs
+            # to wait for earlier source segments to reserve their delivery turns.
+            await resolution_turn.wait()
         sentence = self._accumulate_sentence(text)
         await self._process_completed_sentence(
             job,
@@ -579,7 +590,9 @@ class TranslationWorker:
         from portal.websockets.manager import tts_manager
 
         queue_key = f"{booth_id_str}:{lang_code}"
-        keep_delivery_order = fallback is not None
+        # Also reserve while fallback is disabled, so enabling it during an
+        # in-flight translation cannot let a later caption overtake this one.
+        keep_delivery_order = True
         attempt = None
         primary_choice = (provider, model)
         if fallback is not None:
@@ -610,6 +623,7 @@ class TranslationWorker:
                     delivery_turn.close()
             return
 
+        caption_send_started = False
         try:
             # Resolved before waiting for an engine slot: the glossary is optional context, and a
             # slow lookup must not hold a slot while other rooms wait.
@@ -694,16 +708,19 @@ class TranslationWorker:
                     translated_text, downloading = None, False
                 attempt.finish(None if downloading or nobody_listens else translated_text is not None)
                 if translated_text is None and fallback is not None and not nobody_listens:
-                    job.close()
                     provider, model, api_key = fallback.provider, fallback.model, fallback.api_key
-                    job = scheduler_for(provider, model, event.id).admit(room.id, queue_key, arrived_at=arrived_at)
-                    if job is None:
+                    fallback_job = scheduler_for(provider, model, event.id).admit(
+                        room.id, queue_key, arrived_at=arrived_at
+                    )
+                    if fallback_job is None:
                         if delivery_turn is not None:
                             await delivery_turn.wait()
                         await tts_manager.broadcast_bundle(
                             room.id, lang_code, booth_id_str, b"", uuid_segment_id, seq, text, "", "pipeline_failed"
                         )
                         return
+                    job.close()
+                    job = fallback_job
                     translated_text, downloading = await infer(job, provider, model, api_key)
 
             if delivery_turn is not None:
@@ -743,6 +760,8 @@ class TranslationWorker:
 
             # Broadcast Stage 1 (Text Ready) immediately with empty audio. It says whether speech
             # follows, so a listener who joined after the audience check does not wait for one.
+            # A later socket can fail after earlier listeners have received the caption.
+            caption_send_started = True
             await tts_manager.broadcast_bundle(
                 room.id,
                 lang_code,
@@ -815,11 +834,12 @@ class TranslationWorker:
             await self._drop_stale(room.id, lang_code, booth_id_str, uuid_segment_id, seq, text, stale.waited)
         except Exception as exc:
             logger.warning("[%s] Translation failed for %s (%s)", booth_id_str, lang_code, type(exc).__name__)
-            if delivery_turn is not None:
-                await delivery_turn.wait()
-            await tts_manager.broadcast_bundle(
-                room.id, lang_code, booth_id_str, b"", uuid_segment_id, seq, text, "", "pipeline_failed"
-            )
+            if not caption_send_started:
+                if delivery_turn is not None:
+                    await delivery_turn.wait()
+                await tts_manager.broadcast_bundle(
+                    room.id, lang_code, booth_id_str, b"", uuid_segment_id, seq, text, "", "pipeline_failed"
+                )
         finally:
             # A job that stopped before its result was delivered (dropped, failed or cancelled) leaves its
             # channel here; for the others this does nothing.

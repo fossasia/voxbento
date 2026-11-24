@@ -49,15 +49,16 @@ async def test_translation_resolution_preserves_order_when_earlier_transcript_sa
         return 2
 
     async def dispatch(self, room_id, segment_id, text, booth_id, uuid, seq, arrived_at, resolution_turn):
+        await resolution_turn.wait()
         dispatched.append(seq)
 
     monkeypatch.setattr(db, "save_transcript_segment", save)
     monkeypatch.setattr(TranslationWorker, "_resolve_and_dispatch", dispatch)
     aggregator = CaptionAggregator(AsyncMock(), room_id=12345)
     await aggregator.publish_final("event-12345-floor", "First", "uuid-1", 1)
-    await first_save_started.wait()
-    await aggregator.publish_final("event-12345-floor", "Second", "uuid-2", 2)
     try:
+        await asyncio.wait_for(first_save_started.wait(), 2)
+        await aggregator.publish_final("event-12345-floor", "Second", "uuid-2", 2)
         await asyncio.wait_for(second_saved.wait(), 1)
         assert dispatched == []
     finally:

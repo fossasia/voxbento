@@ -202,7 +202,7 @@
 </section>
 
 <section class="room-panel rs" id="room-panel-ai" role="tabpanel" aria-labelledby="room-tab-ai" data-room-panel="ai">
-{% if not summary.captions and not room.translation_fallback_provider %}
+{% if not summary.captions and not has_booth_translation and not room.translation_fallback_provider %}
   <div class="room-card room-empty">
     <h2>This room doesn't use captions or AI</h2>
     <p class="room-card-sub">Turn on captions, or choose AI voice or AI captions for a language, and their settings appear here.</p>
@@ -288,7 +288,7 @@
             {% if room.translation_fallback_provider and not catalog.find("translation", room.translation_fallback_provider) %}
             <option value="{{ room.translation_fallback_provider }}" selected>{{ room.translation_fallback_provider | replace('_', '-') | capitalize }} — unavailable, choose another or turn off</option>
             {% endif %}
-            {% for engine in catalog.translation if engine.provider not in translation_unfit or engine.provider == room.translation_fallback_provider %}
+            {% for engine in catalog.translation if engine.provider not in fallback_translation_unfit or engine.provider == room.translation_fallback_provider %}
             <option value="{{ engine.provider }}" {% if room.translation_fallback_provider == engine.provider %}selected{% endif %}>{{ engine.label }} — {{ engine.note }}</option>
             {% endfor %}
           </select>

@@ -45,8 +45,8 @@ At most 15 rejection notices per language may wait behind earlier captions. Furt
 overloaded segments are dropped without adding notices to that backlog; accepted
 captions and the queued notices keep their original order.
 Transcript saves and translation dispatch also preserve source order. If more than
-15 segments are waiting to resolve for one source, later transcripts are still saved
-but their translations are skipped until that queue has room.
+15 segments are waiting to resolve for one source, later transcripts are still saved.
+With fallback enabled, their translations are skipped until that queue has room.
 
 After three consecutive failed primary calls, that room uses the fallback directly for
 30 seconds. One call then probes the primary; other calls in that room continue using

@@ -1757,6 +1757,24 @@ async def admin_room_detail(request: Request, event_id: int, room_id: int):
             "catalog": catalog,
             # Services that cannot translate this room's languages are not offered.
             "translation_unfit": catalog.translation_hidden((room.floor_language_code, *snapshot.plan.ai_languages)),
+            "fallback_translation_unfit": catalog.translation_hidden(
+                (
+                    *(
+                        (room.floor_language_code, *snapshot.plan.ai_languages)
+                        if room.floor_translation_enabled
+                        else ()
+                    ),
+                    *(
+                        code
+                        for booth in db_booths
+                        if booth.translation_enabled
+                        for code in (
+                            booth.language_code,
+                            *(lang.language_code for lang in booth.translation_languages if lang.enabled),
+                        )
+                    ),
+                )
+            ),
             "audio_choice": room_audio_choice(room),
             # Sign in with YouTube (#1087): only once the operator configures a Google client, and only
             # for those its routes admit (event owners and Admins).

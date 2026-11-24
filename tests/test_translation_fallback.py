@@ -234,6 +234,67 @@ async def test_slot_wait_deadline_does_not_shorten_running_inference(pipeline, m
 
 
 @pytest.mark.anyio
+async def test_resolution_overflow_still_translates_when_fallback_is_disabled(pipeline, monkeypatch):
+    env = pipeline
+    async with get_session() as session:
+        room = await session.get(Room, env.room.id)
+        room.translation_fallback_provider = None
+        room.translation_fallback_model = None
+    env.primary.result = "Bonjour"
+    order = TranslationDeliveryOrder(rejection_limit=1)
+    held = order.reserve((env.room.id, "fallback-1-floor", "resolution"), enabled=True, rejected=True)
+    monkeypatch.setattr(worker_module, "RESOLUTION_ORDER", order)
+    try:
+        await asyncio.wait_for(run(env), 1)
+        assert env.bundle.await_args.args[7] == "Bonjour"
+        assert len(env.primary.calls) == 1 and not env.backup.calls
+    finally:
+        held.close()
+
+
+@pytest.mark.anyio
+async def test_partial_caption_broadcast_error_does_not_replace_delivered_text(pipeline):
+    env = pipeline
+    env.primary.result = "Bonjour"
+    env.bundle.side_effect = RuntimeError("one listener's socket failed after another received text")
+    await run(env)
+    env.bundle.assert_awaited_once()
+    assert env.bundle.await_args.args[7] == "Bonjour"
+    assert env.bundle.await_args.args[8] is None
+
+
+@pytest.mark.anyio
+async def test_full_fallback_queue_keeps_primary_admission_until_notice_is_delivered(pipeline, monkeypatch):
+    env = pipeline
+    backup = worker_module.scheduler_for("local", "nllb-200-distilled-600M", env.event.id)
+    backup.queue_limit = 1
+    blocker = backup.admit(env.room.id, "fallback-1-floor:fr")
+    fallback_rejected = asyncio.Event()
+    admit = backup.admit
+
+    def observe_admission(*args, **kwargs):
+        result = admit(*args, **kwargs)
+        if result is None:
+            fallback_rejected.set()
+        return result
+
+    monkeypatch.setattr(backup, "admit", observe_admission)
+    primary = worker_module.scheduler_for("self_hosted", "primary", env.event.id)
+    turn = worker_module.DELIVERY_ORDER.reserve((env.room.id, "fallback-1-floor", "fr"), enabled=True)
+    task = asyncio.create_task(run(env))
+    try:
+        await asyncio.wait_for(fallback_rejected.wait(), 1)
+        assert primary.admitted(env.room.id, "fallback-1-floor:fr") == 1
+        assert not task.done()
+    finally:
+        turn.close()
+        blocker.close()
+        await task
+    assert primary.idle() and backup.idle()
+    assert env.bundle.await_args.args[8] == "pipeline_failed"
+
+
+@pytest.mark.anyio
 async def test_fallback_starts_within_upstream_lag_budget_when_primary_slot_is_busy(pipeline, monkeypatch):
     env = pipeline
     env.backup.result = ""
@@ -273,18 +334,69 @@ async def test_slower_resolution_cannot_let_a_later_segment_reserve_delivery_fir
     first = asyncio.create_task(
         env.worker.handle_translation(env.room.id, env.segment.id, "First", "fallback-1-floor", "one", 1)
     )
-    await blocked.wait()
-    second = asyncio.create_task(
-        env.worker.handle_translation(env.room.id, env.segment.id, "Second", "fallback-1-floor", "two", 2)
-    )
+    second = None
     try:
-        await asyncio.sleep(0)
-        assert not second_started.is_set()
+        await asyncio.wait_for(blocked.wait(), 2)
+        second = asyncio.create_task(
+            env.worker.handle_translation(env.room.id, env.segment.id, "Second", "fallback-1-floor", "two", 2)
+        )
+        await asyncio.wait_for(second_started.wait(), 1)
+        assert not env.bundle.await_args_list
     finally:
         release.set()
-        await asyncio.gather(first, second)
+        await asyncio.gather(first, *([second] if second else []))
     captions = [call.args[5] for call in env.bundle.await_args_list if call.args[3] == b""]
     assert captions == [1, 2]
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("fallback_enabled", [True, False])
+async def test_slow_transcript_save_respects_fallback_dispatch_mode(pipeline, monkeypatch, fallback_enabled):
+    import portal.database as database
+    import portal.tasks as background_tasks
+    from portal.transcription.aggregator import CaptionAggregator
+
+    env = pipeline
+    env.primary.result = "Bonjour"
+    if not fallback_enabled:
+        async with get_session() as session:
+            room = await session.get(Room, env.room.id)
+            room.translation_fallback_provider = None
+            room.translation_fallback_model = None
+    first_started, release, second_saved = asyncio.Event(), asyncio.Event(), asyncio.Event()
+
+    async def save(booth_id, text, room_id):
+        if text == "First":
+            first_started.set()
+            await release.wait()
+        else:
+            second_saved.set()
+        return env.segment.id
+
+    monkeypatch.setattr(database, "save_transcript_segment", save)
+    agg = CaptionAggregator(AsyncMock(), room_id=env.room.id)
+    await agg.publish_final("fallback-1-floor", "First", "first", 1)
+    try:
+        await asyncio.wait_for(first_started.wait(), 1)
+        await agg.publish_final("fallback-1-floor", "Second", "second", 2)
+        await asyncio.wait_for(second_saved.wait(), 1)
+        if fallback_enabled:
+            await asyncio.sleep(0)
+            assert not env.bundle.await_args_list
+        else:
+
+            async def wait_for_second():
+                while not env.bundle.await_args_list:
+                    await asyncio.sleep(0)
+
+            await asyncio.wait_for(wait_for_second(), 1)
+            assert env.bundle.await_args_list[0].args[5] == 2
+    finally:
+        release.set()
+        while background_tasks._tasks:
+            await asyncio.gather(*list(background_tasks._tasks))
+    captions = [call.args[5] for call in env.bundle.await_args_list if call.args[3] == b""]
+    assert captions == ([1, 2] if fallback_enabled else [2, 1])
 
 
 @pytest.mark.anyio
@@ -364,9 +476,10 @@ async def test_rejected_segments_have_a_bounded_ordered_notification_backlog(pip
         )
 
     first = asyncio.create_task(publish(1))
-    await entered.wait()
-    rejected = [asyncio.create_task(publish(seq)) for seq in range(2, 102)]
+    rejected = []
     try:
+        await asyncio.wait_for(entered.wait(), 2)
+        rejected = [asyncio.create_task(publish(seq)) for seq in range(2, 102)]
         await asyncio.wait_for(asyncio.gather(*rejected[2:]), 0.5)
         assert all(not task.done() for task in rejected[:2])
         assert not env.bundle.await_args_list
@@ -392,10 +505,11 @@ async def test_parent_cancellation_does_not_fallback_or_count_failure(pipeline, 
 
     monkeypatch.setattr(env.primary, "translate_batch", translate)
     task = asyncio.create_task(run(env))
-    await entered.wait()
-    task.cancel()
-    with pytest.raises(asyncio.CancelledError):
-        await task
+    try:
+        await asyncio.wait_for(entered.wait(), 2)
+    finally:
+        task.cancel()
+        await asyncio.gather(task, return_exceptions=True)
     assert not env.backup.calls
     circuit = next(iter(circuit_module.CIRCUITS.values()))
     assert circuit.failures == 0 and circuit.active == 0
@@ -442,9 +556,9 @@ async def test_only_one_half_open_probe_runs_across_worker_instances(pipeline, m
     monkeypatch.setattr(worker_module, "circuit_for", lambda *args: circuit)
     monkeypatch.setattr(env.primary, "translate_batch", translate)
     probe = asyncio.create_task(run(env))
-    await entered.wait()
     following = None
     try:
+        await asyncio.wait_for(entered.wait(), 2)
         # The real aggregator creates a worker per segment; the circuit must be shared.
         other = SimpleNamespace(**vars(env))
         other.worker = TranslationWorker(MagicMock())
@@ -464,14 +578,16 @@ async def test_only_one_half_open_probe_runs_across_worker_instances(pipeline, m
 
 
 @pytest.mark.anyio
-async def test_missing_primary_key_still_allows_keyless_fallback(pipeline):
+async def test_missing_primary_key_still_allows_keyless_fallback(pipeline, monkeypatch):
     env = pipeline
+    openai = Engine("should not run")
+    monkeypatch.setitem(worker_module.ENGINES, "openai", openai)
     async with get_session() as session:
         room = await session.get(Room, env.room.id)
         room.floor_translation_provider = "openai"
         room.floor_translation_model = "gpt-4o-mini"
     await run(env)
-    assert not env.primary.calls and len(env.backup.calls) == 1
+    assert not openai.calls and len(env.backup.calls) == 1
     assert env.bundle.await_args.args[7] == "Bonjour"
 
 
@@ -611,15 +727,67 @@ async def test_later_primary_result_waits_for_earlier_fallback_before_delivery(p
     monkeypatch.setattr(env.primary, "translate_batch", primary)
     monkeypatch.setattr(env.backup, "translate_batch", backup)
     earlier = asyncio.create_task(publish("earlier", 1))
-    await fallback_started.wait()
-    later = asyncio.create_task(publish("later", 2))
+    later = None
     try:
+        await asyncio.wait_for(fallback_started.wait(), 2)
+        later = asyncio.create_task(publish("later", 2))
         await asyncio.wait_for(later_inferred.wait(), 1)
         await asyncio.sleep(0)
         assert not env.bundle.await_args_list
     finally:
         release.set()
-        await asyncio.gather(earlier, later)
+        await asyncio.gather(earlier, *([later] if later else []))
     captions = [call.args for call in env.bundle.await_args_list if call.args[3] == b""]
     assert [(args[5], args[7]) for args in captions] == [(1, "earlier translated"), (2, "later translated")]
     assert not worker_module.DELIVERY_ORDER.tails
+
+
+@pytest.mark.anyio
+async def test_enabling_fallback_during_inference_keeps_caption_order(pipeline, monkeypatch):
+    env = pipeline
+    env.primary.max_concurrency = 2
+    first_started, release, later_inferred = asyncio.Event(), asyncio.Event(), asyncio.Event()
+
+    async def primary(source, targets, texts, context, **kwargs):
+        if texts[0] == "First":
+            first_started.set()
+            await release.wait()
+        else:
+            later_inferred.set()
+        return [[texts[0] + " translated"]]
+
+    monkeypatch.setattr(env.primary, "translate_batch", primary)
+
+    async def publish(text, seq, fallback):
+        await env.worker._translate_and_broadcast(
+            env.event,
+            env.room,
+            "self_hosted",
+            "primary",
+            None,
+            "fr",
+            "French",
+            "en",
+            "English",
+            env.segment.id,
+            text,
+            "fallback-1-floor",
+            f"uuid-{seq}",
+            seq,
+            synthesize_audio=False,
+            fallback=fallback,
+        )
+
+    first = asyncio.create_task(publish("First", 1, None))
+    second = None
+    try:
+        await asyncio.wait_for(first_started.wait(), 1)
+        second = asyncio.create_task(
+            publish("Second", 2, FallbackTranslation("local", "nllb-200-distilled-600M", None))
+        )
+        await asyncio.wait_for(later_inferred.wait(), 1)
+        assert not env.bundle.await_args_list
+    finally:
+        release.set()
+        await asyncio.gather(first, *([second] if second else []))
+    assert [call.args[5] for call in env.bundle.await_args_list] == [1, 2]
