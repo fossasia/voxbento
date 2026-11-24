@@ -5,7 +5,6 @@ import logging
 import time
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
-from functools import partial
 
 from portal import youtube_captions
 from portal.config import settings
@@ -29,6 +28,9 @@ logger = logging.getLogger(__name__)
 
 #: The glossary is optional context, so its lookup must never eat into the inference budget.
 VOCABULARY_LOOKUP_TIMEOUT = 2.0
+
+# A stalled WebSocket must not retain a shared batch admission indefinitely.
+BATCH_DELIVERY_TIMEOUT = 5.0
 
 openai_provider = OpenAIProvider()
 
@@ -748,22 +750,23 @@ class TranslationWorker:
 
         async def notify_target(target: _BatchTarget, *, downloading: bool = False) -> None:
             try:
-                if downloading:
-                    await self._drop_while_downloading(
-                        resolved.room.id, target.code, booth_id_str, resolved.model, uuid_segment_id, seq, text
-                    )
-                else:
-                    await tts_manager.broadcast_bundle(
-                        resolved.room.id,
-                        target.code,
-                        booth_id_str,
-                        b"",
-                        uuid_segment_id,
-                        seq,
-                        text,
-                        "",
-                        "pipeline_failed",
-                    )
+                async with asyncio.timeout(BATCH_DELIVERY_TIMEOUT):
+                    if downloading:
+                        await self._drop_while_downloading(
+                            resolved.room.id, target.code, booth_id_str, resolved.model, uuid_segment_id, seq, text
+                        )
+                    else:
+                        await tts_manager.broadcast_bundle(
+                            resolved.room.id,
+                            target.code,
+                            booth_id_str,
+                            b"",
+                            uuid_segment_id,
+                            seq,
+                            text,
+                            "",
+                            "pipeline_failed",
+                        )
             except Exception as exc:
                 logger.warning("Batch status notification failed for %s (%s)", target.code, type(exc).__name__)
 
@@ -852,8 +855,15 @@ class TranslationWorker:
                     job.close()
 
             async def deliver_target(index: int, target: _BatchTarget) -> None:
-                try:
-                    await self._deliver_translation(
+                ready = asyncio.get_running_loop().create_future()
+
+                def delivered_target() -> None:
+                    delivered(target.code)
+                    if not ready.done():
+                        ready.set_result(None)
+
+                delivery = asyncio.create_task(
+                    self._deliver_translation(
                         rows[0][index] if rows is not None else None,
                         resolved.room,
                         target.code,
@@ -864,27 +874,30 @@ class TranslationWorker:
                         seq,
                         target.booth_id,
                         target.synthesize_audio,
-                        partial(delivered, target.code),
+                        delivered_target,
                     )
+                )
+                try:
+                    done, _ = await asyncio.wait(
+                        {delivery, ready}, timeout=BATCH_DELIVERY_TIMEOUT, return_when=asyncio.FIRST_COMPLETED
+                    )
+                    if not done:
+                        delivery.cancel()
+                        await asyncio.gather(delivery, return_exceptions=True)
+                        raise TimeoutError("caption delivery timed out")
+                    await delivery
                 except Exception as exc:
                     logger.warning("Batch delivery failed for %s (%s)", target.code, type(exc).__name__)
-                    try:
-                        await tts_manager.broadcast_bundle(
-                            resolved.room.id,
-                            target.code,
-                            booth_id_str,
-                            b"",
-                            uuid_segment_id,
-                            seq,
-                            text,
-                            "",
-                            "pipeline_failed",
-                        )
-                    except Exception as notification_error:
-                        logger.warning(
-                            "Failure notification failed for %s (%s)", target.code, type(notification_error).__name__
-                        )
+                    delivered(target.code)
+                    # Once the caption was delivered, an audio failure must not relabel it.
+                    if not ready.done():
+                        await notify_target(target)
                 finally:
+                    if not delivery.done():
+                        delivery.cancel()
+                        await asyncio.gather(delivery, return_exceptions=True)
+                    if not ready.done():
+                        ready.cancel()
                     delivered(target.code)
 
             await asyncio.gather(*(deliver_target(i, target) for i, target in enumerate(targets)))

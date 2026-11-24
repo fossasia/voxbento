@@ -431,12 +431,24 @@ class LocalProvider(TranslationProvider, TranslationEngine):
                 if not target_tags and tokens and tokens[0] == token:
                     tokens = tokens[1:]
                 ids = tokenizer.convert_tokens_to_ids(tokens)
-                values[index] = tokenizer.decode(ids, skip_special_tokens=True).strip()
+                # Match each model's existing single-target decoder (MADLAD strips
+                # special tokens; NLLB retains them after removing its language prefix).
+                values[index] = tokenizer.decode(ids, skip_special_tokens=target_tags).strip()
+            return values
+        except LocalEntryNotFoundError:
+            logger.error(
+                "[CT2] Model %r is not downloaded. An Admin must download it on the Translation models page.",
+                model_size,
+            )
+            for index, _, _ in active:
+                values[index] = None
             return values
         except (RuntimeError, ValueError, OSError) as exc:
             # Model/native failures fail the call without disclosing transcript or glossary text.
             logger.warning("[CT2] Batch inference failed for model %s (%s)", model_size, type(exc).__name__)
-            return [None for _ in cells]
+            for index, _, _ in active:
+                values[index] = None
+            return values
         finally:
             decrement_model_ref(model_size)
 

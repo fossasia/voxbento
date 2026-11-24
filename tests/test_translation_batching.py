@@ -117,6 +117,37 @@ async def test_native_error_returns_failed_cells_and_releases_model_reference(mo
         [None, None]
     ]
     assert local._active_translations_per_model.get(NLLB, 0) == 0
+    assert await LocalProvider().translate_batch(EN, TARGETS, ["Hello", " "], TranslationContext(), model=NLLB) == [
+        [None, None],
+        ["", ""],
+    ]
+
+
+async def test_batch_and_single_nllb_preserve_the_same_special_tokens(model, monkeypatch):
+    class SpecialTokenizer(Tokenizer):
+        def decode(self, ids, *, skip_special_tokens=False):
+            return " ".join(token for token in ids if not (skip_special_tokens and token == "<unk>"))
+
+    model.translate_batch = lambda sources, **options: [
+        SimpleNamespace(hypotheses=[[prefix[0], "<unk>", "text"]]) for prefix in options["target_prefix"]
+    ]
+    monkeypatch.setattr(local, "get_model_and_tokenizer", lambda _: (model, SpecialTokenizer()))
+    single = await LocalProvider().translate_batch(EN, TARGETS[:1], ["Hello"], TranslationContext(), model=NLLB)
+    batched = await LocalProvider().translate_batch(EN, TARGETS, ["Hello"], TranslationContext(), model=NLLB)
+    assert single == [["<unk> text"]]
+    assert batched == [["<unk> text", "<unk> text"]]
+
+
+async def test_missing_batch_model_logs_download_instructions(monkeypatch, caplog):
+    monkeypatch.setattr(local.settings, "local_translation_models", NLLB)
+
+    def missing(_):
+        raise local.LocalEntryNotFoundError("missing")
+
+    monkeypatch.setattr(local, "get_model_and_tokenizer", missing)
+    rows = await LocalProvider().translate_batch(EN, TARGETS, ["Hello", " "], TranslationContext(), model=NLLB)
+    assert rows == [[None, None], ["", ""]]
+    assert "download it on the Translation models page" in caplog.text
 
 
 class Engine(TranslationEngine):
@@ -195,8 +226,15 @@ async def test_batch_cancellation_holds_slot_until_native_work_ends(worker_env, 
     monkeypatch.setattr(engine, "translate_batch", translate)
     task = asyncio.create_task(worker._process_completed_sentence(job, 10, "Hello", "source"))
     try:
-        while not started.is_set():
-            await asyncio.sleep(0.001)
+
+        async def wait_started():
+            while not started.is_set():
+                if task.done():
+                    await task
+                    pytest.fail("worker finished before inference started")
+                await asyncio.sleep(0.001)
+
+        await asyncio.wait_for(wait_started(), 2)
         scheduler = worker_module.scheduler_for("local", NLLB, 1)
         task.cancel()
         with pytest.raises(asyncio.CancelledError):
@@ -279,8 +317,15 @@ async def test_batch_rechecks_each_listener_after_waiting_for_an_engine_slot(wor
     )
     task = asyncio.create_task(worker._process_completed_sentence(job, 10, "Hello", "source"))
     try:
-        while scheduler.waiting() == 0:
-            await asyncio.sleep(0)
+
+        async def wait_queued():
+            while scheduler.waiting() == 0:
+                if task.done():
+                    await task
+                    pytest.fail("worker finished before requesting a slot")
+                await asyncio.sleep(0)
+
+        await asyncio.wait_for(wait_queued(), 2)
         listeners.remove("fr")
     finally:
         blocker.close()
@@ -332,9 +377,37 @@ async def test_a_cloud_engine_is_not_batched_for_a_model_name_matching_the_local
 
 
 @pytest.mark.parametrize("texts,targets,expected", [([], TARGETS, []), (["Hello"], [], [[]])])
-async def test_empty_grid_does_not_load_a_model(model, texts, targets, expected):
+async def test_empty_grid_does_not_load_a_model(model, monkeypatch, texts, targets, expected):
+    loader = MagicMock(side_effect=AssertionError("empty grid tried to load the model"))
+    monkeypatch.setattr(local, "get_model_and_tokenizer", loader)
     rows = await LocalProvider().translate_batch(EN, targets, texts, TranslationContext(), model=NLLB)
     assert rows == expected and not model.calls
+    loader.assert_not_called()
+
+
+async def test_stalled_caption_releases_batch_admission_for_later_segments(worker_env, monkeypatch):
+    worker, job, engine, _, _ = worker_env
+    scheduler = TranslationScheduler(1, queue_limit=1)
+    monkeypatch.setitem(worker_module.SCHEDULERS, ("local", NLLB), scheduler)
+    monkeypatch.setattr(worker_module, "BATCH_DELIVERY_TIMEOUT", 0.03)
+    blocked, german = asyncio.Event(), asyncio.Event()
+
+    async def deliver(*args):
+        if args[2] == "fr":
+            blocked.set()
+            await asyncio.Event().wait()
+        args[-1]()
+        german.set()
+
+    monkeypatch.setattr(worker, "_deliver_translation", deliver)
+    first = asyncio.create_task(worker._process_completed_sentence(job, 10, "First", "source", "one", 1))
+    await asyncio.wait_for(blocked.wait(), 1)
+    await asyncio.wait_for(german.wait(), 1)
+    await asyncio.wait_for(first, 1)
+    assert scheduler.idle()
+    await asyncio.wait_for(worker._process_completed_sentence(job, 11, "Second", "source", "two", 2), 1)
+    assert [call[2][0] for call in engine.calls] == ["First", "Second"]
+    assert scheduler.idle()
 
 
 async def test_one_slow_glossary_lookup_cannot_multiply_the_batch_lookup_budget(worker_env, monkeypatch):
