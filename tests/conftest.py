@@ -8,6 +8,8 @@ import pytest
 
 os.environ["API_KEY_ENCRYPTION_KEY"] = "test-encryption-key-value-for-all-tests"
 os.environ["BOOTH_ACCESS_TOKEN"] = ""
+os.environ["SECRET_KEY"] = "test-secret-key-at-least-32-chars-long-for-testing"
+os.environ["JWT_SECRET"] = "test-secret-key-at-least-32-chars-long-for-testing"
 # Most tests expect a closed booth socket to leave at once and every app start to
 # begin with empty booths. tests/test_booth_recovery.py turns both on where it tests them.
 os.environ["BOOTH_RECONNECT_GRACE_SECONDS"] = "0"
@@ -18,6 +20,8 @@ ROOT = Path(__file__).resolve().parents[1]
 
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
+
+from portal.webhooks.events import SUPPORTED_EVENT_TYPES  # noqa: E402
 
 pytest_plugins = ("anyio",)
 
@@ -41,7 +45,8 @@ def _reset_shared_http_client():
         pass
 
     async def _dummy_enqueue(event_type: str, payload: dict):
-        pass
+        if event_type not in SUPPORTED_EVENT_TYPES:
+            raise ValueError(f"Unknown webhook event type: {event_type!r}")
 
     portal.webhooks.worker.webhook_worker_loop = _dummy_loop
     portal.webhooks.worker.enqueue_webhook = _dummy_enqueue

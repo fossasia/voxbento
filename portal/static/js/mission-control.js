@@ -8,6 +8,7 @@
  *   - Listen in through a per-booth volume slider (WHEP)
  *   - Turn a booth's broadcast on or off
  *   - Start and stop the floor captions of each room
+ *   - Browse room reports and generate notes for a session
  *   - Open a booth themselves
  *
  * The page passes its data in data-config on #mission-control (no inline script).
@@ -64,6 +65,7 @@ function init() {
     head.appendChild(renderFloorCaptions(room));
     if (room.translation) head.appendChild(renderTranslationHealth(room));
     section.appendChild(head);
+    if (room.reports) section.appendChild(renderReports(room.reports));
 
     const grid = el('div', 'mc-grid');
     grid.id = `booth-grid-${room.id}`;
@@ -100,6 +102,15 @@ const CAPTION_STATES = {
   reconnecting: ['Reconnecting…', 'is-busy'],
   degraded: ['Needs attention', 'is-problem'],
 };
+
+function renderReports(reports) {
+  const panel = document.createElement('iframe');
+  panel.title = 'Meeting reports';
+  panel.loading = 'lazy';
+  panel.className = 'room-reports-frame';
+  panel.src = reports.url + '?panel=1';
+  return panel;
+}
 
 function renderFloorCaptions(room) {
   const box = el('div', 'mc-captions');

@@ -134,6 +134,8 @@ of the encoder key (`program_key_hash`), and is accepted by the publish authoriz
 alongside it. The secret lives only in page memory and is cleared on stop and page
 hide. Apply migration 026 (`uv run alembic upgrade head`) with this feature.
 
+Opening the sender leaves the current source in place. For a room using RTMPS ingest or YouTube relay, confirm the switch on the sender page and click **Start sending**. A successful switch retires the old encoder key. Automatic reconnects cannot authorize a transport switch.
+
 Ownership stays explicit. Starting is rejected with `409` when another program-ingest
 publisher — an external encoder or another browser sender — is live or still
 negotiating on the floor; it never displaces one. The Jitsi floor bot is a deliberate

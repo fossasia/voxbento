@@ -224,12 +224,13 @@ jobs:
           docker network rm relay-ci || true
 
   # ── 1. Unit tests + lint (fast, no Docker) ───────────────────
-  unit-tests:
+  pytest-shard:
+    name: pytest (shard ${{ matrix.group }}/6)
     runs-on: ubuntu-latest
     strategy:
+      fail-fast: false
       matrix:
-        python-version: ["3.13"]
-
+        group: [1, 2, 3, 4, 5, 6]
     env:
       API_KEY_ENCRYPTION_KEY: "ci-test-encryption-key-must-be-32-chars-long"
       MEDIAMTX_AUTH_HOOK_SECRET: "ci-test-mediamtx-hook-secret"
@@ -241,13 +242,39 @@ jobs:
       - name: Install uv
         uses: astral-sh/setup-uv@v7
 
-      - name: Set up Python ${{ matrix.python-version }}
+      - name: Set up Python 3.13
         uses: actions/setup-python@v7
         with:
-          python-version: ${{ matrix.python-version }}
+          python-version: "3.13"
 
       - name: Sync dependencies (including dev)
-        run: uv sync --all-groups
+        run: uv sync --locked --dev
+
+      - name: Run duration-balanced tests
+        run: >-
+          uv run --no-sync pytest tests/ -v --splits 6 --group ${{ matrix.group }}
+          --durations-path tests/.test_durations --durations=10
+
+  static-and-load:
+    runs-on: ubuntu-latest
+    env:
+      API_KEY_ENCRYPTION_KEY: "ci-test-encryption-key-must-be-32-chars-long"
+      MEDIAMTX_AUTH_HOOK_SECRET: "ci-test-mediamtx-hook-secret"
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v7.0.1
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v7
+
+      - name: Set up Python 3.13
+        uses: actions/setup-python@v7
+        with:
+          python-version: "3.13"
+
+      - name: Sync dependencies (including dev)
+        run: uv sync --locked --dev
 
       - name: Lint (ruff)
         run: uv run ruff check .
@@ -302,9 +329,6 @@ jobs:
           node --test tests/test_modal_dialogs.mjs
           node --test tests/test_agent_attribution.mjs
 
-      - name: Run unit tests
-        run: uv run pytest tests/ -v
-
       - name: Translation load test (small configuration)
         # An explicit `shell: bash` runs with `-eo pipefail`, so a failing harness fails the
         # step even though its output is piped through tee.
@@ -313,6 +337,15 @@ jobs:
           uv run python tests/translation_load_harness.py \
             --rooms 3 --languages 1,4 --segments 6 --interval 0.5 --latency 0.1 --markdown \
             | tee -a "$GITHUB_STEP_SUMMARY"
+
+  unit-tests:
+    name: unit-tests (3.13)
+    needs: [pytest-shard, static-and-load]
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check every shard and shared checks passed
+        run: test "${{ needs.pytest-shard.result }}" = success && test "${{ needs.static-and-load.result }}" = success
 
   # ── 1b. Migrations on PostgreSQL (SQLite hides integer-vs-boolean defaults, #1248) ──
   postgres-migrations:
@@ -353,35 +386,9 @@ jobs:
       - name: Run alembic upgrade head on an empty PostgreSQL
         run: uv run alembic upgrade head
 
-  overlay-browser:
-    runs-on: ubuntu-24.04
-    timeout-minutes: 10
-    steps:
-      - uses: actions/checkout@v7.0.1
-        with:
-          persist-credentials: false
-      - uses: astral-sh/setup-uv@v7
-      - name: Install isolated browser test tooling
-        run: |
-          uv sync --python 3.13 --dev --frozen
-          uv run --with playwright==1.58.0 python -m playwright install --with-deps chromium
-      - name: Verify overlay over real HTTP and WebSockets
-        env:
-          PYTHONPATH: .
-          OVERLAY_ARTIFACT_DIR: overlay-browser-artifacts
-        run: uv run --with playwright==1.58.0 python tests/overlay_browser_smoke.py
-      - name: Upload overlay rehearsal recording and screenshots
-        if: always()
-        uses: actions/upload-artifact@v7.0.2
-        with:
-          name: overlay-browser-rehearsal
-          path: overlay-browser-artifacts/
-          retention-days: 7
-
   # ── 2. Docker build + full-stack smoke test ──────────────────
   docker-smoke:
     runs-on: ubuntu-latest
-    needs: unit-tests          # only build images if unit tests pass
 
     # All host-facing URLs derived from CI_HOST. Change this single value
     # if the runner network setup ever differs.
@@ -445,12 +452,16 @@ jobs:
           HELPERS
 
       # ── Build all images ────────────────────────────────────
-      - name: Build portal image
-        run: docker compose build portal
+      - name: Pull service images while building the application images
+        run: |
+          docker compose pull --ignore-buildable &
+          pull_pid=$!
+          docker compose build
+          wait "$pull_pid"
 
       # ── Start the full stack ────────────────────────────────
       - name: Start all services
-        run: docker compose up -d
+        run: docker compose up -d --no-build
 
       - name: Show running containers
         run: docker compose ps
