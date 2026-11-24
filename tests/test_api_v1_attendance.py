@@ -14,7 +14,6 @@ from httpx import ASGITransport, AsyncClient
 from sqlalchemy import select
 
 from fastapi_app import app
-from portal.attendance import Visit
 from portal.database import (
     configure,
     create_event,
@@ -41,17 +40,30 @@ ACCESS_TOKEN = "test_attendance_oauth_token"
 OTHER_ACCESS_TOKEN = "other_attendance_oauth_token"
 
 
+class Clock:
+    def __init__(self, start: datetime | None = None) -> None:
+        self.now = start or datetime(2026, 11, 20, 10, 0, tzinfo=timezone.utc)
+
+    def __call__(self) -> datetime:
+        return self.now
+
+    def advance(self, seconds: float) -> None:
+        self.now += timedelta(seconds=seconds)
+
+
 @pytest.fixture(autouse=True)
 async def setup_db():
     configure("sqlite+aiosqlite://")
     await init_db()
-    # Clean up attendance tracker state between tests
+    # Clean up attendance tracker and booths state between tests
     booths.attendance._open.clear()
     booths.attendance._closed.clear()
+    booths._booths.clear()
     yield
     await dispose()
     booths.attendance._open.clear()
     booths.attendance._closed.clear()
+    booths._booths.clear()
 
 
 def _client():
@@ -229,6 +241,7 @@ async def test_attendance_persisted_records_and_metrics(seeded_attendance_enviro
         res = await client.get(f"/api/v1/events/{env['event_slug']}/attendance", headers=headers)
 
     assert res.status_code == 200
+    assert res.headers["cache-control"] == "no-store"
     data = res.json()
     assert data["summary"]["total_visits"] == 1
     assert data["summary"]["unique_interpreters"] == 1
@@ -248,27 +261,32 @@ async def test_attendance_persisted_records_and_metrics(seeded_attendance_enviro
 
 
 @pytest.mark.anyio
-async def test_attendance_merges_live_in_memory_visits(seeded_attendance_environment):
+async def test_attendance_merges_live_in_memory_visits(seeded_attendance_environment, monkeypatch):
     env = seeded_attendance_environment
-    now = datetime.now(timezone.utc)
+    clock = Clock(datetime(2026, 11, 20, 10, 0, tzinfo=timezone.utc))
+    monkeypatch.setattr(booths.attendance, "clock", clock)
+    booth_id = f"{env['event_slug']}-{env['room_id']}-es"
 
-    # Add a live visit directly to booths.attendance._open
-    live_visit = Visit(
-        id="live_visit_202",
-        booth_id=f"{env['event_slug']}-{env['room_id']}-es",
-        event_slug=env["event_slug"],
-        room_id=env["room_id"],
-        language_code="es",
-        participant_id="part_abc",
-        user_id=env["interpreter_id"],
-        invite_public_id=None,
+    participant, _ = await booths.join_participant(
+        booth_id=booth_id,
         display_name="Live Maria",
         role="interpreter",
-        joined_at=now - timedelta(minutes=30),
-        interpreting_seconds=900,
-        interpreting_since=now - timedelta(minutes=5),
+        language="Spanish",
+        channel_id=f"{booth_id}-audio",
+        user_id=env["interpreter_id"],
     )
-    booths.attendance._open[(live_visit.booth_id, live_visit.participant_id)] = live_visit
+    # 25 minutes present without interpreting
+    clock.advance(1500)
+    # Start interpreting for 5 minutes
+    await booths.update_participant_state(
+        booth_id,
+        participant.participant_id,
+        "Spanish",
+        f"{booth_id}-audio",
+        mic_active=True,
+        ingest_connected=True,
+    )
+    clock.advance(300)
 
     headers = {"Authorization": f"Bearer {env['token']}"}
     async with _client() as client:
@@ -278,54 +296,44 @@ async def test_attendance_merges_live_in_memory_visits(seeded_attendance_environ
     data = res.json()
     assert data["summary"]["total_visits"] == 1
     visit = data["visits"][0]
-    assert visit["id"] == "live_visit_202"
+    assert visit["display_name"] == "Live Maria"
     assert visit["is_active"] is True
     assert visit["left_at"] is None
-    # 30 minutes present = ~1800s
-    assert 1790 <= visit["present_seconds"] <= 1810
-    # 900s + 5m (300s) = ~1200s
-    assert 1190 <= visit["interpreting_seconds"] <= 1210
+    # 25m (1500s) + 5m (300s) = exactly 1800s present
+    assert visit["present_seconds"] == 1800
+    # exactly 5m (300s) interpreting
+    assert visit["interpreting_seconds"] == 300
 
 
 @pytest.mark.anyio
-async def test_attendance_live_visit_deduplicates_against_persisted_row(seeded_attendance_environment):
+async def test_attendance_live_visit_deduplicates_against_persisted_row(seeded_attendance_environment, monkeypatch):
     env = seeded_attendance_environment
-    now = datetime.now(timezone.utc)
+    clock = Clock(datetime(2026, 11, 20, 10, 0, tzinfo=timezone.utc))
+    monkeypatch.setattr(booths.attendance, "clock", clock)
+    booth_id = f"{env['event_slug']}-{env['room_id']}-es"
 
-    # Same ID in both DB and in-memory tracker (flushed earlier while still open)
-    async with get_session() as session:
-        evt = (await session.execute(select(Event).where(Event.slug == env["event_slug"]))).scalars().first()
-        v_db = InterpreterAttendance(
-            id="shared_visit_303",
-            event_id=evt.id,
-            room_id=env["room_id"],
-            language_code="es",
-            user_id=env["interpreter_id"],
-            display_name="Maria Flushed",
-            role="interpreter",
-            joined_at=now - timedelta(minutes=20),
-            left_at=None,
-            last_seen_at=now - timedelta(minutes=5),
-            interpreting_seconds=300,
-        )
-        session.add(v_db)
-        await session.commit()
-
-    live_visit = Visit(
-        id="shared_visit_303",
-        booth_id=f"{env['event_slug']}-{env['room_id']}-es",
-        event_slug=env["event_slug"],
-        room_id=env["room_id"],
-        language_code="es",
-        participant_id="part_shared",
-        user_id=env["interpreter_id"],
-        invite_public_id=None,
+    participant, _ = await booths.join_participant(
+        booth_id=booth_id,
         display_name="Maria Live Updated",
         role="interpreter",
-        joined_at=now - timedelta(minutes=20),
-        interpreting_seconds=600,
+        language="Spanish",
+        channel_id=f"{booth_id}-audio",
+        user_id=env["interpreter_id"],
     )
-    booths.attendance._open[(live_visit.booth_id, live_visit.participant_id)] = live_visit
+    await booths.update_participant_state(
+        booth_id,
+        participant.participant_id,
+        "Spanish",
+        f"{booth_id}-audio",
+        mic_active=True,
+        ingest_connected=True,
+    )
+    clock.advance(600)
+    # Flush to DB mid-visit
+    assert await booths.attendance.flush() == 1
+
+    # Advance another 600 seconds while still active in booth
+    clock.advance(600)
 
     headers = {"Authorization": f"Bearer {env['token']}"}
     async with _client() as client:
@@ -333,11 +341,12 @@ async def test_attendance_live_visit_deduplicates_against_persisted_row(seeded_a
 
     assert res.status_code == 200
     data = res.json()
-    assert data["summary"]["total_visits"] == 1  # Not 2!
+    assert data["summary"]["total_visits"] == 1  # Deduplicated against flushed DB row
     visit = data["visits"][0]
-    assert visit["id"] == "shared_visit_303"
     assert visit["display_name"] == "Maria Live Updated"
-    assert visit["interpreting_seconds"] == 600
+    assert visit["is_active"] is True
+    assert visit["present_seconds"] == 1200
+    assert visit["interpreting_seconds"] == 1200
 
 
 @pytest.mark.anyio
@@ -393,16 +402,39 @@ async def test_attendance_filtering_by_day_room_and_language(seeded_attendance_e
                 interpreting_seconds=3600,
             )
         )
+        # Row 4: Starts on 2026-11-20, ends on 2026-11-21 (tests start-date filtering vs end-date)
+        session.add(
+            InterpreterAttendance(
+                id="cross_day_row",
+                event_id=evt.id,
+                room_id=env["room_id"],
+                language_code="es",
+                display_name="Overnight Interpreter",
+                role="interpreter",
+                joined_at=datetime(2026, 11, 20, 23, 0, tzinfo=timezone.utc),
+                left_at=datetime(2026, 11, 21, 2, 0, tzinfo=timezone.utc),
+                last_seen_at=datetime(2026, 11, 21, 2, 0, tzinfo=timezone.utc),
+                interpreting_seconds=7200,
+            )
+        )
         await session.commit()
 
     headers = {"Authorization": f"Bearer {env['token']}"}
     async with _client() as client:
-        # Filter by day only
+        # Filter by day only: cross_day_row starts on 2026-11-20 so it must match
         r_day = await client.get(
             f"/api/v1/events/{env['event_slug']}/attendance?day=2026-11-20", headers=headers
         )
         assert r_day.status_code == 200
-        assert r_day.json()["summary"]["total_visits"] == 2
+        assert r_day.json()["summary"]["total_visits"] == 3
+        assert {v["id"] for v in r_day.json()["visits"]} == {"match_row", "room_b_row", "cross_day_row"}
+
+        # Filter by next day: cross_day_row ended on 2026-11-21 but started on 20th, so only other_day_row matches
+        r_day2 = await client.get(
+            f"/api/v1/events/{env['event_slug']}/attendance?day=2026-11-21", headers=headers
+        )
+        assert r_day2.status_code == 200
+        assert [v["id"] for v in r_day2.json()["visits"]] == ["other_day_row"]
 
         # Filter by day and room_id
         r_room = await client.get(
@@ -410,8 +442,8 @@ async def test_attendance_filtering_by_day_room_and_language(seeded_attendance_e
             headers=headers,
         )
         assert r_room.status_code == 200
-        assert r_room.json()["summary"]["total_visits"] == 1
-        assert r_room.json()["visits"][0]["id"] == "match_row"
+        assert r_room.json()["summary"]["total_visits"] == 2
+        assert {v["id"] for v in r_room.json()["visits"]} == {"match_row", "cross_day_row"}
 
         # Filter by language_code
         r_lang = await client.get(
@@ -420,6 +452,169 @@ async def test_attendance_filtering_by_day_room_and_language(seeded_attendance_e
         assert r_lang.status_code == 200
         assert r_lang.json()["summary"]["total_visits"] == 1
         assert r_lang.json()["visits"][0]["id"] == "room_b_row"
+
+
+@pytest.mark.anyio
+async def test_attendance_filtering_with_timezone(seeded_attendance_environment, monkeypatch):
+    from zoneinfo import ZoneInfoNotFoundError
+
+    def _safe_zone_info(key: str):
+        if key == "Asia/Kolkata":
+            return timezone(timedelta(hours=5, minutes=30))
+        if key == "UTC":
+            return timezone.utc
+        raise ZoneInfoNotFoundError(f"No time zone found with key {key}")
+
+    monkeypatch.setattr("portal.routers.api_v1.ZoneInfo", _safe_zone_info)
+
+    env = seeded_attendance_environment
+    async with get_session() as session:
+        evt = (await session.execute(select(Event).where(Event.slug == env["event_slug"]))).scalars().first()
+        # 2026-11-20 23:30 UTC is:
+        # - 2026-11-20 in UTC
+        # - 2026-11-21 05:00 in Asia/Kolkata (+5:30)
+        session.add(
+            InterpreterAttendance(
+                id="late_night_row",
+                event_id=evt.id,
+                room_id=env["room_id"],
+                language_code="es",
+                display_name="Late Night Interpreter",
+                role="interpreter",
+                joined_at=datetime(2026, 11, 20, 23, 30, tzinfo=timezone.utc),
+                left_at=datetime(2026, 11, 21, 0, 30, tzinfo=timezone.utc),
+                last_seen_at=datetime(2026, 11, 21, 0, 30, tzinfo=timezone.utc),
+                interpreting_seconds=1800,
+            )
+        )
+        await session.commit()
+
+    headers = {"Authorization": f"Bearer {env['token']}"}
+    async with _client() as client:
+        # In Kolkata timezone, the visit started on the 21st
+        r_kolkata = await client.get(
+            f"/api/v1/events/{env['event_slug']}/attendance?day=2026-11-21&tz=Asia/Kolkata",
+            headers=headers,
+        )
+        assert r_kolkata.status_code == 200
+        assert r_kolkata.json()["summary"]["total_visits"] == 1
+        assert r_kolkata.json()["visits"][0]["id"] == "late_night_row"
+        assert r_kolkata.json()["filters"]["tz"] == "Asia/Kolkata"
+
+        # In Kolkata timezone, it did NOT start on the 20th
+        r_kolkata_prev = await client.get(
+            f"/api/v1/events/{env['event_slug']}/attendance?day=2026-11-20&tz=Asia/Kolkata",
+            headers=headers,
+        )
+        assert r_kolkata_prev.status_code == 200
+        assert r_kolkata_prev.json()["summary"]["total_visits"] == 0
+
+        # In UTC, it started on the 20th
+        r_utc = await client.get(
+            f"/api/v1/events/{env['event_slug']}/attendance?day=2026-11-20&tz=UTC",
+            headers=headers,
+        )
+        assert r_utc.status_code == 200
+        assert r_utc.json()["summary"]["total_visits"] == 1
+        assert r_utc.json()["visits"][0]["id"] == "late_night_row"
+
+        # Invalid timezone returns 422
+        r_invalid = await client.get(
+            f"/api/v1/events/{env['event_slug']}/attendance?tz=Mars/Olympus_Mons",
+            headers=headers,
+        )
+        assert r_invalid.status_code == 422
+
+
+@pytest.mark.anyio
+async def test_attendance_includes_pending_closed_visits_before_flush(
+    seeded_attendance_environment, monkeypatch
+):
+    env = seeded_attendance_environment
+    clock = Clock(datetime(2026, 11, 20, 10, 0, tzinfo=timezone.utc))
+    monkeypatch.setattr(booths.attendance, "clock", clock)
+    booth_id = f"{env['event_slug']}-{env['room_id']}-es"
+
+    participant, _ = await booths.join_participant(
+        booth_id=booth_id,
+        display_name="Maria Leaves Early",
+        role="interpreter",
+        language="Spanish",
+        channel_id=f"{booth_id}-audio",
+        user_id=env["interpreter_id"],
+    )
+    clock.advance(600)
+    # Participant leaves booth before any DB flush occurs
+    await booths.leave_participant(booth_id, participant.participant_id, "Spanish", f"{booth_id}-audio")
+    clock.advance(100)
+
+    # Note: booths.attendance.flush() is NOT called. The visit is queued in _closed.
+    headers = {"Authorization": f"Bearer {env['token']}"}
+    async with _client() as client:
+        res = await client.get(f"/api/v1/events/{env['event_slug']}/attendance", headers=headers)
+
+    assert res.status_code == 200
+    data = res.json()
+    assert data["summary"]["total_visits"] == 1
+    visit = data["visits"][0]
+    assert visit["display_name"] == "Maria Leaves Early"
+    assert visit["is_active"] is False
+    assert visit["left_at"] is not None
+    assert visit["present_seconds"] == 600
+
+
+@pytest.mark.anyio
+async def test_attendance_excludes_coordinators_from_interpreter_summary(seeded_attendance_environment):
+    env = seeded_attendance_environment
+    now = datetime.now(timezone.utc)
+    async with get_session() as session:
+        evt = (await session.execute(select(Event).where(Event.slug == env["event_slug"]))).scalars().first()
+        # Interpreter visit
+        session.add(
+            InterpreterAttendance(
+                id="interpreter_visit",
+                event_id=evt.id,
+                room_id=env["room_id"],
+                language_code="es",
+                user_id=env["interpreter_id"],
+                display_name="Real Interpreter",
+                role="interpreter",
+                joined_at=now - timedelta(hours=1),
+                left_at=now,
+                last_seen_at=now,
+                interpreting_seconds=1800,
+            )
+        )
+        # Room coordinator visit
+        session.add(
+            InterpreterAttendance(
+                id="coordinator_visit",
+                event_id=evt.id,
+                room_id=env["room_id"],
+                language_code="es",
+                user_id=env["owner_id"],
+                display_name="Booth Coordinator",
+                role="room_coordinator",
+                joined_at=now - timedelta(hours=1),
+                left_at=now,
+                last_seen_at=now,
+                interpreting_seconds=0,
+            )
+        )
+        await session.commit()
+
+    headers = {"Authorization": f"Bearer {env['token']}"}
+    async with _client() as client:
+        res = await client.get(f"/api/v1/events/{env['event_slug']}/attendance", headers=headers)
+
+    assert res.status_code == 200
+    data = res.json()
+    # Total visits includes all attendees matching filters
+    assert data["summary"]["total_visits"] == 2
+    # But unique_interpreters and interpreter work duration only count interpreters
+    assert data["summary"]["unique_interpreters"] == 1
+    assert data["summary"]["total_present_seconds"] == 3600
+    assert data["summary"]["total_interpreting_seconds"] == 1800
 
 
 @pytest.mark.anyio

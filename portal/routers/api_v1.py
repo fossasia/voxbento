@@ -3,7 +3,7 @@ from __future__ import annotations
 import csv
 import io
 import logging
-from datetime import date, datetime, timezone
+from datetime import date, datetime, timezone, tzinfo
 from typing import Annotated, Any
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
@@ -1338,8 +1338,12 @@ class AttendanceVisitItem(BaseModel):
 class AttendanceSummary(BaseModel):
     total_visits: int = Field(description="Total visits matching filters")
     unique_interpreters: int = Field(description="Count of distinct interpreters")
-    total_present_seconds: int = Field(description="Sum of non-overlapping present seconds across interpreters")
-    total_interpreting_seconds: int = Field(description="Total on-air interpreting seconds across interpreters")
+    total_present_seconds: int = Field(
+        description="Total presence time in seconds across interpreters (overlapping visits per interpreter are counted once)"
+    )
+    total_interpreting_seconds: int = Field(
+        description="Total on-air interpreting seconds across interpreters"
+    )
 
 
 class AttendancePagination(BaseModel):
@@ -1348,18 +1352,40 @@ class AttendancePagination(BaseModel):
     offset: int = Field(description="Applied pagination offset")
 
 
+class AttendanceFilters(BaseModel):
+    day: str | None = Field(default=None, description="Applied day filter (YYYY-MM-DD)")
+    tz: str = Field(description="Applied IANA timezone name")
+    room_id: int | None = Field(default=None, description="Applied room filter")
+    language_code: str | None = Field(default=None, description="Applied language code filter")
+
+
 class EventAttendanceResponse(BaseModel):
     event_slug: str = Field(description="Event identifier")
     generated_at: str = Field(description="ISO 8601 UTC timestamp of report generation")
-    filters: dict[str, Any] = Field(description="Applied query filters")
+    filters: AttendanceFilters = Field(description="Applied query filters")
     summary: AttendanceSummary = Field(description="Aggregated attendance statistics")
     pagination: AttendancePagination = Field(description="Pagination details")
     visits: list[AttendanceVisitItem] = Field(description="List of visit records")
 
 
-@router.get("/events/{event_slug}/attendance")
+@router.get(
+    "/events/{event_slug}/attendance",
+    response_model=EventAttendanceResponse,
+    responses={
+        200: {
+            "content": {
+                "application/json": {},
+                "text/csv": {
+                    "schema": {"type": "string"},
+                },
+            },
+            "description": "Attendance report in JSON or CSV format.",
+        }
+    },
+)
 async def get_event_attendance(
     event_slug: str,
+    response: Response,
     day: Annotated[date | None, Query(description="Filter visits starting on this date (YYYY-MM-DD)")] = None,
     tz: Annotated[str | None, Query(max_length=64, description="IANA timezone name for day filtering (defaults to UTC)")] = None,
     room_id: Annotated[int | None, Query(description="Filter visits for this room")] = None,
@@ -1369,7 +1395,7 @@ async def get_event_attendance(
     offset: Annotated[int, Query(ge=0, description="Pagination offset in JSON format")] = 0,
     db: AsyncSession = Depends(get_db_session),
     token: OAuthToken = Depends(require_oauth_scope("events:read")),
-):
+) -> EventAttendanceResponse | Response:
     """Retrieve interpreter attendance and working duration metrics for an event.
 
     Combines persisted attendance records from the database with live active visits
@@ -1385,20 +1411,28 @@ async def get_event_attendance(
 
     await _verify_token_rbac(db, token, event, lock_event=True)
 
-    result = await db.execute(
-        select(InterpreterAttendance).where(InterpreterAttendance.event_id == event.id)
-    )
-    db_rows = list(result.scalars())
-    now = datetime.now(tz=timezone.utc)
-    open_visits = booths.attendance.open_visits(event.slug)
-    rows = rows_for_event(db_rows, open_visits, now)
-
-    target_tz = timezone.utc
+    target_tz: tzinfo = timezone.utc
     if tz:
         try:
             target_tz = ZoneInfo(tz)
         except (ZoneInfoNotFoundError, ValueError):
-            target_tz = timezone.utc
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+                detail=f"Invalid IANA timezone: '{tz}'",
+            )
+
+    query = select(InterpreterAttendance).where(InterpreterAttendance.event_id == event.id)
+    if room_id is not None:
+        query = query.where(InterpreterAttendance.room_id == room_id)
+    if language_code:
+        query = query.where(InterpreterAttendance.language_code == language_code)
+    query = query.order_by(InterpreterAttendance.joined_at.asc(), InterpreterAttendance.id.asc())
+
+    result = await db.execute(query)
+    db_rows = list(result.scalars())
+    now = booths.attendance.clock()
+    live_visits = booths.attendance.live_visits(event.slug)
+    rows = rows_for_event(db_rows, live_visits, now)
 
     filtered_rows = [
         row
@@ -1422,7 +1456,9 @@ async def get_event_attendance(
         )
         invite_labels = {pid: label for pid, label in found.all() if label}
 
-    people = summarize(filtered_rows, now, users=users, invite_labels=invite_labels)
+    # Only interpreters contribute to unique_interpreters and interpreter work duration metrics.
+    interpreter_rows = [r for r in filtered_rows if r.role == "interpreter"]
+    people = summarize(interpreter_rows, now, users=users, invite_labels=invite_labels)
 
     if format == "csv":
         output = io.StringIO()
@@ -1440,7 +1476,7 @@ async def get_event_attendance(
             )
         )
         for person in people:
-            for visit in sorted(person.visits, key=lambda v: v.joined_at):
+            for visit in sorted(person.visits, key=lambda v: (v.joined_at, v.room_id or 0, v.language_code)):
                 writer.writerow(
                     (
                         _csv_text(person.name),
@@ -1463,6 +1499,8 @@ async def get_event_attendance(
                 "Cache-Control": "no-store",
             },
         )
+
+    response.headers["Cache-Control"] = "no-store"
 
     summary = AttendanceSummary(
         total_visits=len(filtered_rows),
@@ -1494,20 +1532,20 @@ async def get_event_attendance(
             )
         )
 
-    return {
-        "event_slug": event.slug,
-        "generated_at": _format_timestamp(now),
-        "filters": {
-            "day": day.isoformat() if day else None,
-            "tz": tz if tz else "UTC",
-            "room_id": room_id,
-            "language_code": language_code,
-        },
-        "summary": summary.model_dump(),
-        "pagination": {
-            "total": len(filtered_rows),
-            "limit": limit,
-            "offset": offset,
-        },
-        "visits": [v.model_dump() for v in visits],
-    }
+    return EventAttendanceResponse(
+        event_slug=event.slug,
+        generated_at=_format_timestamp(now),
+        filters=AttendanceFilters(
+            day=day.isoformat() if day else None,
+            tz=tz if tz else "UTC",
+            room_id=room_id,
+            language_code=language_code,
+        ),
+        summary=summary,
+        pagination=AttendancePagination(
+            total=len(filtered_rows),
+            limit=limit,
+            offset=offset,
+        ),
+        visits=visits,
+    )
