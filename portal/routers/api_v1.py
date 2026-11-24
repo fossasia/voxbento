@@ -39,7 +39,7 @@ from portal.models import (
     User,
 )
 from portal.rate_limit import auth_rate_limiter
-from portal.roles import EVENT_OWNER
+from portal.roles import EVENT_OWNER, INTERPRETER
 from portal.transcription.constants import ProviderEnum
 from portal.transcription.worker import active_workers, start_transcription_worker, stop_transcription_worker
 from portal.translations.constants import TranslationProviderEnum
@@ -1511,7 +1511,7 @@ async def export_transcript(
             if media_type == "text/vtt":
                 resolved_format = "vtt"
                 break
-            if media_type in ("application/x-subrip", "text/srt"):
+            if media_type in ("application/x-subrip", "text/srt", "text/plain"):
                 resolved_format = "srt"
                 break
             if media_type == "application/json":
@@ -1763,7 +1763,7 @@ async def get_event_attendance(
         invite_labels = {pid: label for pid, label in found.all() if label}
 
     # Only interpreters contribute to unique_interpreters and interpreter work duration metrics.
-    interpreter_rows = [r for r in filtered_rows if r.role == "interpreter"]
+    interpreter_rows = [r for r in filtered_rows if r.role == INTERPRETER]
     people = summarize(interpreter_rows, now, users=users, invite_labels=invite_labels)
 
     if format == "csv":
