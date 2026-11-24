@@ -12,6 +12,7 @@ import hashlib
 import hmac
 import logging
 import re
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from urllib.parse import urlsplit
@@ -166,7 +167,11 @@ async def start_relay(room_id: int, source: str, url: str) -> dict:
     return response.json()
 
 
-async def sync(wanted: dict[int, tuple[str, str]], relay_rooms: set[int]) -> None:
+async def sync(
+    wanted: dict[int, tuple[str, str]],
+    relay_rooms: set[int],
+    start_current: Callable[[int, str, str], Awaitable[dict | None]],
+) -> None:
     """Converge the relay service on ``wanted`` ({room_id: (source path, destination)}).
 
     Fails closed: relays beyond ``PROGRAM_RELAY_MAX`` are not started, relays for rooms
@@ -200,7 +205,9 @@ async def sync(wanted: dict[int, tuple[str, str]], relay_rooms: set[int]) -> Non
         current = live.get(str(room_id))
         try:
             if current is None or current.get("fingerprint") != fingerprint(source, url):
-                current = await start_relay(room_id, source, url)
+                current = await start_current(room_id, source, url)
+                if current is None:
+                    continue
         except Exception:  # noqa: BLE001
             relay_health[room_id] = RelayHealth(
                 "degraded", "Relay service rejected the request; retrying automatically."

@@ -16,6 +16,7 @@ from portal.transcription.providers.elevenlabs import ElevenLabsProvider
 from portal.transcription.providers.local import LocalProvider
 from portal.transcription.providers.nvidia import NVIDIAProvider
 from portal.transcription.providers.openai import OpenAIProvider
+from portal.webhooks.events import BOOTH_TRANSCRIPTION_STARTED, BOOTH_TRANSCRIPTION_STOPPED
 
 logger = logging.getLogger(__name__)
 
@@ -114,7 +115,7 @@ class TranscriptionWorkerSession:
                 logger.error(f"[{self.booth_id}][{self.session_id}] Task ended with exception: {e}")
 
     async def _run_loop(self):
-        """Run provider retries and finish process, webhook, and model cleanup on exit."""
+        """Run provider retries, audio capture, and webhook/model cleanup on exit."""
         self.loop_entered = True
         retry_count = 0
         try:
@@ -125,7 +126,7 @@ class TranscriptionWorkerSession:
 
                 self.state = State.RUNNING
                 await _wh_worker.enqueue_webhook(
-                    "booth.transcription.started",
+                    BOOTH_TRANSCRIPTION_STARTED,
                     {"booth_id": self.booth_id, "session_id": self.session_id, "event_slug": self.event_slug},
                 )
 
@@ -198,7 +199,7 @@ class TranscriptionWorkerSession:
             self.ready.set()
             self.state = State.STOPPED
             await _wh_worker.enqueue_webhook(
-                "booth.transcription.stopped",
+                BOOTH_TRANSCRIPTION_STOPPED,
                 {"booth_id": self.booth_id, "session_id": self.session_id, "event_slug": self.event_slug},
             )
             if self.provider_name == "local":
@@ -312,3 +313,10 @@ async def stop_transcription_worker(booth_id: str):
         async with active_workers_lock:
             if active_workers.get(booth_id) is session:
                 active_workers.pop(booth_id)
+        if session.room_id is not None:
+            # Imported here: meeting analysis reads room setup, which imports this package.
+            from portal.meeting_analysis.auto import schedule_auto_report
+
+            # The session may have ended: its event can ask for a meeting report on it. Captions that
+            # start again within the wait carry on the same session, so no report is written then.
+            schedule_auto_report(session.room_id, session.language_code, lambda: booth_id in active_workers)
