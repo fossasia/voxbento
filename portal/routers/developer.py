@@ -218,9 +218,17 @@ async def developer_dashboard(
     new_client = None
     new_secret = None
     is_rotation = False
+    remaining_secrets: dict[str, str] = {}
     if flash_data and clients:
+        raw_secrets = flash_data.get("secrets")
+        if isinstance(raw_secrets, dict):
+            remaining_secrets = {k: v for k, v in raw_secrets.items() if isinstance(k, str) and isinstance(v, str)}
+
         target_client_id = flash_data.get("latest_client_id")
-        candidate_secret = flash_data.get("secrets", {}).get(target_client_id)
+        if not target_client_id or target_client_id not in remaining_secrets:
+            target_client_id = next(iter(remaining_secrets)) if remaining_secrets else None
+
+        candidate_secret = remaining_secrets.get(target_client_id) if target_client_id else None
         if target_client_id and candidate_secret:
             for c in clients:
                 if c.client_id == target_client_id:
@@ -229,6 +237,7 @@ async def developer_dashboard(
                         new_client = c
                         new_secret = candidate_secret
                         is_rotation = True
+                        remaining_secrets.pop(target_client_id, None)
                     break
 
     response = templates.TemplateResponse(
@@ -252,7 +261,27 @@ async def developer_dashboard(
             "dashboard_csrf", csrf_token, httponly=True, secure=is_cookie_secure(request), samesite="lax"
         )
     if flash_cookie or new_secret:
-        response.delete_cookie("dev_flash_secret", path="/developer")
+        if remaining_secrets:
+            next_target = next(iter(remaining_secrets))
+            updated_payload = json.dumps(
+                {
+                    "user_id": int(user["sub"]),
+                    "latest_client_id": next_target,
+                    "secrets": remaining_secrets,
+                }
+            )
+            encrypted_flash = _get_flash_fernet().encrypt(updated_payload.encode("utf-8")).decode("utf-8")
+            response.set_cookie(
+                "dev_flash_secret",
+                encrypted_flash,
+                max_age=60,
+                httponly=True,
+                secure=is_cookie_secure(request),
+                samesite="lax",
+                path="/",
+            )
+        else:
+            response.delete_cookie("dev_flash_secret", path="/")
         response.headers["Cache-Control"] = "no-store"
     return response
 
@@ -292,7 +321,10 @@ async def apply_for_developer(
         db,
         "developer_account",
         str(user["email"]),
-        {"message": "We received your developer account request.", "login_url": f"{settings.public_base_url.rstrip('/')}/developer"},
+        {
+            "message": "We received your developer account request.",
+            "login_url": f"{settings.public_base_url.rstrip('/')}/developer",
+        },
         idempotency_key=f"developer-account:{account.id}:received",
     )
 
@@ -368,7 +400,9 @@ async def rotate_oauth_client_secret(
             return RedirectResponse(url="/developer", status_code=status.HTTP_303_SEE_OTHER)
 
         client_result = await db.execute(
-            select(OAuthClient).where(OAuthClient.client_id == client_id, OAuthClient.developer_account_id == account.id)
+            select(OAuthClient).where(
+                OAuthClient.client_id == client_id, OAuthClient.developer_account_id == account.id
+            )
         )
         client = client_result.scalars().first()
         if not client:
@@ -423,11 +457,13 @@ async def rotate_oauth_client_secret(
         existing_secrets[client.client_id] = raw_secret
 
         # Post-Redirect-Get: deliver one-time flash secret through an encrypted short-lived cookie
-        flash_payload = json.dumps({
-            "user_id": int(user["sub"]),
-            "latest_client_id": client.client_id,
-            "secrets": existing_secrets,
-        })
+        flash_payload = json.dumps(
+            {
+                "user_id": int(user["sub"]),
+                "latest_client_id": client.client_id,
+                "secrets": existing_secrets,
+            }
+        )
         encrypted_flash = _get_flash_fernet().encrypt(flash_payload.encode("utf-8")).decode("utf-8")
 
         response = RedirectResponse(url="/developer", status_code=status.HTTP_303_SEE_OTHER)
@@ -439,7 +475,7 @@ async def rotate_oauth_client_secret(
             httponly=True,
             secure=is_cookie_secure(request),
             samesite="lax",
-            path="/developer",
+            path="/",
         )
         return response
 

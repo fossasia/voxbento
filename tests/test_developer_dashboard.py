@@ -57,7 +57,10 @@ async def _developer_cookies(account_status: str | None = "approved") -> dict[st
     """Create a user, optionally with a developer account, and return its dashboard cookies."""
     async with get_session() as s:
         user = await create_user(
-            s, email=f"dev_{secrets.token_hex(4)}@test.com", display_name="Dev", password_hash=hash_password("securepass123")
+            s,
+            email=f"dev_{secrets.token_hex(4)}@test.com",
+            display_name="Dev",
+            password_hash=hash_password("securepass123"),
         )
         if account_status is not None:
             s.add(DeveloperAccount(user_id=user.id, status=account_status, organization_name="Acme"))
@@ -228,7 +231,11 @@ async def test_register_client_requires_approved_account(account_status, setup_d
             c.cookies.set(k, v)
         resp = await c.post(
             "/api/developer/clients",
-            data={"app_name": "My Plugin", "redirect_uris": "https://app.example/cb", "csrf_token": cookies["dashboard_csrf"]},
+            data={
+                "app_name": "My Plugin",
+                "redirect_uris": "https://app.example/cb",
+                "csrf_token": cookies["dashboard_csrf"],
+            },
             follow_redirects=False,
         )
 
@@ -403,18 +410,18 @@ async def test_developer_dashboard_apps_table_has_four_headers_and_cells(setup_d
     assert "dev-client-name" in apps_table_html
 
     # Verify header has 4 columns matching data row cells
-    thead_match = re.search(r'<thead>(.*?)</thead>', apps_table_html, re.DOTALL)
+    thead_match = re.search(r"<thead>(.*?)</thead>", apps_table_html, re.DOTALL)
     assert thead_match is not None
-    headers = re.findall(r'<th\b[^>]*>(.*?)</th>', thead_match.group(1), re.DOTALL)
-    header_texts = [re.sub(r'<[^>]+>', '', h).strip() for h in headers]
+    headers = re.findall(r"<th\b[^>]*>(.*?)</th>", thead_match.group(1), re.DOTALL)
+    header_texts = [re.sub(r"<[^>]+>", "", h).strip() for h in headers]
     assert header_texts == ["Name", "Client ID", "Status", "Actions"]
     assert len(headers) == 4
 
-    tbody_match = re.search(r'<tbody>(.*?)</tbody>', apps_table_html, re.DOTALL)
+    tbody_match = re.search(r"<tbody>(.*?)</tbody>", apps_table_html, re.DOTALL)
     assert tbody_match is not None
     rows = re.findall(r'<tr class="dev-row">(.*?)</tr>', tbody_match.group(1), re.DOTALL)
     assert len(rows) == 1
-    cells = re.findall(r'<td\b[^>]*>', rows[0])
+    cells = re.findall(r"<td\b[^>]*>", rows[0])
     assert len(cells) == 4
 
 
@@ -555,13 +562,17 @@ async def test_rotate_client_secret_success(setup_db):
     # Verify audit log entry
     async with get_session() as s:
         audit = (
-            await s.execute(
-                select(OAuthAuditLog).where(
-                    OAuthAuditLog.client_id == client.id,
-                    OAuthAuditLog.action == "client.secret_rotated",
+            (
+                await s.execute(
+                    select(OAuthAuditLog).where(
+                        OAuthAuditLog.client_id == client.id,
+                        OAuthAuditLog.action == "client.secret_rotated",
+                    )
                 )
             )
-        ).scalars().first()
+            .scalars()
+            .first()
+        )
         assert audit is not None
         assert audit.status_code == 303
         assert audit.request_path == f"/api/developer/clients/{client.client_id}/rotate-secret"
@@ -814,3 +825,47 @@ async def test_rotate_client_secret_refresh_does_not_rotate_again(setup_db):
         assert updated_client_2.client_secret_hash == hash_after_first
 
 
+@pytest.mark.anyio
+async def test_rotate_client_secret_overlapping_rotations_preserve_both_secrets(setup_db):
+    cookies = await _developer_cookies()
+    reg1 = await _register(cookies, "App 1", "https://app1.example/cb")
+    reg2 = await _register(cookies, "App 2", "https://app2.example/cb")
+    assert reg1.status_code == 200 and reg2.status_code == 200
+
+    clients = await _stored_clients()
+    client1 = next(c for c in clients if c.name == "App 1")
+    client2 = next(c for c in clients if c.name == "App 2")
+
+    # Rotate client 1 without following redirect
+    async with _client() as c:
+        for k, v in cookies.items():
+            c.cookies.set(k, v)
+        r1 = await c.post(
+            f"/api/developer/clients/{client1.client_id}/rotate-secret",
+            data={"csrf_token": cookies["dashboard_csrf"]},
+            follow_redirects=False,
+        )
+        assert r1.status_code == 303
+
+        # Rotate client 2 in the same session before visiting /developer
+        r2 = await c.post(
+            f"/api/developer/clients/{client2.client_id}/rotate-secret",
+            data={"csrf_token": cookies["dashboard_csrf"]},
+            follow_redirects=False,
+        )
+        assert r2.status_code == 303
+
+        # First GET /developer: shows client 2 (latest rotated) and consumes it
+        get1 = await c.get("/developer")
+        assert get1.status_code == 200
+        assert f"The secret for OAuth Client <strong>{client2.name}</strong> has been rotated." in get1.text
+
+        # Second GET /developer: shows client 1 (earlier rotation preserved) and consumes it
+        get2 = await c.get("/developer")
+        assert get2.status_code == 200
+        assert f"The secret for OAuth Client <strong>{client1.name}</strong> has been rotated." in get2.text
+
+        # Third GET /developer: both have been consumed, neither is shown
+        get3 = await c.get("/developer")
+        assert get3.status_code == 200
+        assert "Client Secret Rotated" not in get3.text
