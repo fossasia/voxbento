@@ -46,6 +46,10 @@ class Channel:
     language_code: str
     sessions: list[Session]
 
+    def __post_init__(self) -> None:
+        if not self.sessions:
+            raise ValueError(f"Channel {self.id!r} must have at least one session")
+
 
 async def _channels(session, room) -> list[Channel]:
     rows: dict[str, list] = defaultdict(list)

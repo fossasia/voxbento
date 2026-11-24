@@ -3,6 +3,9 @@
 import { closeDialog, initDialog, openDialog } from './modal-dialog.js';
 
 const COPIED_MS = 2000;
+// Per-button feedback state: maps each button to the state object owned by its latest copy attempt.
+// An older attempt that resolves late checks whether it still owns the button before mutating the DOM.
+const copyFeedbackByButton = new WeakMap();
 
 // navigator.clipboard is missing on plain http outside localhost, so copy through a hidden textarea.
 // It goes next to the button because the page behind an open modal dialog cannot take focus.
@@ -41,20 +44,38 @@ async function writeText(button, text) {
 }
 
 export async function copyToClipboard(button) {
+  // Cancel any pending feedback reset for this button so the new attempt starts clean.
+  const previous = copyFeedbackByButton.get(button);
+  if (previous?.timerId) clearTimeout(previous.timerId);
+
+  const state = {};
+  copyFeedbackByButton.set(button, state);
+
+  // Clear both states before setting the new one so a failed copy followed by a
+  // successful one never leaves the button in the wrong colour.
+  button.classList.remove('copied');
+  button.classList.remove('copy-failed');
+
   const copied = await writeText(button, button.dataset.copyText);
-  const state = copied ? 'copied' : 'copy-failed';
-  button.classList.add(state);
+
+  // A second click can replace our state entry while writeText was running.
+  // If that happened, let the newer attempt own the DOM.
+  if (copyFeedbackByButton.get(button) !== state) return;
+
+  const outcome = copied ? 'copied' : 'copy-failed';
+  button.classList.add(outcome);
   const tooltip = button.querySelector('.copy-tooltip');
   if (tooltip) {
     tooltip.textContent = copied ? 'Copied!' : 'Copy failed';
     if (copied) tooltip.classList.add('copied-tooltip');
   }
-  setTimeout(() => {
-    button.classList.remove(state);
+  state.timerId = setTimeout(() => {
+    button.classList.remove(outcome);
     if (tooltip) {
       tooltip.textContent = 'Copy to clipboard';
       tooltip.classList.remove('copied-tooltip');
     }
+    copyFeedbackByButton.delete(button);
   }, COPIED_MS);
 }
 
