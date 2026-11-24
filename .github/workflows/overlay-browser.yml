@@ -65,6 +65,11 @@ jobs:
         with:
           persist-credentials: false
       - uses: astral-sh/setup-uv@v7
+        with:
+          enable-cache: true
+          cache-dependency-glob: |
+            uv.lock
+            .github/workflows/overlay-browser.yml
       - name: Install project dependencies
         run: uv sync --python 3.13 --dev --frozen
       - name: Verify overlay over real HTTP and WebSockets
