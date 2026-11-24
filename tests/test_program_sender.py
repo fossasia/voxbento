@@ -138,6 +138,30 @@ async def test_start_rejected_when_program_ingest_source_is_live(environment):
 
 
 @pytest.mark.anyio
+@pytest.mark.parametrize("mode", ["rtmps", "rtmps_relay"])
+async def test_confirmed_transport_switch_requires_an_idle_floor(environment, mode):
+    client, event, room, media = environment
+    async with get_session() as session:
+        stored = await session.get(Room, room.id)
+        stored.floor_source = "program_ingest"
+        stored.program_ingest_mode = mode
+        stored.program_key_hash = "old-encoder-key"
+    path = f"sender-test/{room.id}/floor"
+    media[path] = {"name": path, "source": {"type": "rtmpsConn", "id": str(uuid4())}}
+    url = sender_url(event, room)
+    assert (await client.post(url, json={"switch_from": mode})).status_code == 409
+    media.clear()
+    started = await client.post(url, json={"switch_from": mode})
+    assert started.status_code == 200, started.text
+    async with get_session() as session:
+        stored = await session.get(Room, room.id)
+        assert stored.program_ingest_mode == "whip"
+        assert stored.program_key_hash is None
+    auth = await client.post("/internal/media-auth", json=whip_credentials(room, started.json()["secret"]))
+    assert auth.status_code == 204
+
+
+@pytest.mark.anyio
 async def test_start_takes_over_idle_jitsi_bot(environment, monkeypatch):
     client, event, room, _ = environment
     stop_calls = []

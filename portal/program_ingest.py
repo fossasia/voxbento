@@ -483,22 +483,23 @@ async def ensure_floor_path(path: str) -> None:
     response.raise_for_status()
 
 
-async def open_sender_session(room: Room, event: Event, offset_ms: int, ttl_secs: int) -> str:
+async def open_sender_session(
+    room: Room, event: Event, offset_ms: int, ttl_secs: int, *, switch_from: str | None = None
+) -> str:
     """Claim a free floor for the browser sender and mint a short-lived publish secret.
 
     Caller holds the room lock and DB transaction. Starting is rejected with 409 when
     an external encoder or another sender owns the floor; the Jitsi floor bot is an
-    explicit takeover on the owner's click. Never touches the encoder credential.
+    explicit takeover on the owner's click. A transport switch retires the previous encoder credential.
     """
     path = make_mediamtx_path(event.slug, room.id, "floor")
-    if room.floor_source == "program_ingest" and room.program_ingest_mode == program_relay.RELAY_MODE:
-        raise HTTPException(
-            409, "YouTube relay mode owns the floor; switch the room to independent outputs (WHIP) first."
-        )
-    if room.floor_source == "program_ingest" and room.program_ingest_mode == program_relay.RTMPS_MODE:
-        raise HTTPException(
-            409, "An RTMPS encoder owns the floor; switch the room to independent outputs (WHIP) first."
-        )
+    switching_transport = (
+        room.floor_source == "program_ingest" and room.program_ingest_mode in program_relay.RTMPS_MODES
+    )
+    if switch_from and (not switching_transport or switch_from != room.program_ingest_mode):
+        raise HTTPException(409, "The room audio source changed. Reload the sender before starting.")
+    if switching_transport and not switch_from:
+        raise HTTPException(409, "Reload the sender to confirm switching from RTMPS or YouTube relay.")
     if room.floor_source == "program_ingest":
         # Floor already owned by program ingest; never displace a connected or
         # still-negotiating publisher (external encoder or another sender).
@@ -530,11 +531,15 @@ async def open_sender_session(room: Room, event: Event, offset_ms: int, ttl_secs
     # Clear a lingering bot source on takeover, or a stale program-ingest reservation.
     await kick(path, current_path.source if current_path else None)
     if room.program_session_id:
-        await kick(path, MediaSource(type="webRTCSession", id=room.program_session_id))
+        await kick(path, reserved_source(room))
         room.program_session_id = None
     await stop_transcription_worker(make_booth_id(event.slug, room.id, "floor"))
     room.program_sync_offset_ms = offset_ms
     room.floor_source = "program_ingest"
+    if switching_transport:
+        # A transport-bound RTMPS key must never become a valid WHIP credential.
+        room.program_key_hash = None
+        room.program_key_expires_at = None
     room.program_ingest_mode = program_relay.WHIP_MODE
     secret = secrets.token_urlsafe(32)
     room.program_session_secret_hash = await asyncio.to_thread(digest_program_secret, secret)
