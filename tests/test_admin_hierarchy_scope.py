@@ -1343,6 +1343,36 @@ class TestSiblingSubresourceSecurity:
             assert room.relay_booth_id is None
 
     @pytest.mark.anyio
+    async def test_monitor_settings_filter_configured_booth_sources(self, booth_scope):
+        from portal.database import get_room_by_id, get_session
+
+        scope = booth_scope
+        room_id = scope["room_a1"]
+        cookies = scope["owner_cookie"]
+        async with get_session() as session:
+            room = await get_room_by_id(session, room_id)
+            room.floor_source = "program_ingest"
+            room.jitsi_url = "https://meet.example/room"
+            room.relay_booth_id = scope["booth_a2"]
+
+        async with _client() as client:
+            url = f"/interpreter/scope-a/{room_id}/en"
+            edit = f"/workspace/events/{scope['event_a']}/rooms/{room_id}/edit"
+            for floor, meeting in [(True, True), (False, True), (True, False), (False, False)]:
+                form = {"form_section": "monitor"}
+                if floor:
+                    form["monitor_floor_enabled"] = "on"
+                if meeting:
+                    form["monitor_meeting_enabled"] = "on"
+                saved = await client.post(edit, data=form, cookies=cookies, follow_redirects=False)
+                assert saved.status_code == 303
+                booth = await client.get(url, cookies=cookies)
+                assert booth.status_code == 200
+                assert ("<option value='floor'" in booth.text) == floor
+                assert ("<option value='jitsi'" in booth.text) == meeting
+                assert "<option value='relay'>Relay (German)" in booth.text
+
+    @pytest.mark.anyio
     async def test_room_edit_transcription_section_updates_fields(self, booth_scope):
         """Updating room with form_section='transcription' updates transcription settings independently of relay."""
         from portal.database import get_room_by_id, get_session

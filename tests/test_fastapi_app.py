@@ -318,6 +318,44 @@ def test_interpreter_booth_relay_attr_is_empty_when_unconfigured():
     assert b"data-relay-whep-url=''" in res.content
 
 
+@pytest.mark.parametrize(
+    ("source", "mode", "label"),
+    [
+        ("jitsi_bot", "whip", "meeting feed"),
+        ("program_ingest", "whip", "audio desk"),
+        ("program_ingest", "rtmps", "encoder"),
+        ("program_ingest", "rtmps_relay", "encoder"),
+    ],
+)
+def test_interpreter_monitors_room_floor(source, mode, label):
+    import anyio
+
+    from portal.database import create_booth, create_event, create_room, get_session
+
+    async def configure_room():
+        async with get_session() as session:
+            event = await create_event(session, slug="conference", display_name="Conference")
+            room = await create_room(session, event_id=event.id, display_name="Main")
+            room.floor_source = source
+            room.meeting_agent_enabled = source == "jitsi_bot"
+            if label == "audio desk":
+                room.program_session_secret_hash = "configured"
+            elif label == "encoder":
+                room.program_key_hash = "configured"
+            room.program_ingest_mode = mode
+            await create_booth(session, event_id=event.id, room_id=room.id, language_code="fr", language_name="French")
+            await session.commit()
+
+    anyio.run(configure_room)
+    res = client.get("/interpreter/conference/1/fr", cookies=_interpreter_cookie("conference", "fr"))
+    assert res.status_code == 200
+    assert f"<option value='floor' selected>Room floor audio ({label})</option>" in res.text
+    if mode == "whip":
+        assert "/conference/1/floor/whep'" in res.text
+    else:
+        assert "/conference/1/floor/?muted=false'" in res.text
+
+
 def test_interpreter_booth_status_changes_are_announced():
     """Connection, broadcast and handover changes must reach screen readers.
 
