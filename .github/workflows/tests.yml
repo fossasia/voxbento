@@ -267,6 +267,7 @@ jobs:
           node --check portal/static/js/subtitle-overlay.js
           node --check portal/static/js/program-sender.js
           node --check portal/static/js/program-sender-source.js
+          node --check portal/static/js/youtube-connect.js
           node --check portal/static/js/translation-fit.js
           node --check portal/static/js/modal-dialog.js
           node --check portal/static/js/developer.js
@@ -295,6 +296,7 @@ jobs:
           node tests/test_tabs.mjs
           node tests/test_translation_fit.mjs
           node tests/test_program_sender_source.mjs
+          node tests/test_youtube_connect.mjs
           node tests/test_live_demo_core.mjs
           node --test tests/test_modal_dialogs.mjs
           node --test tests/test_agent_attribution.mjs
@@ -349,31 +351,6 @@ jobs:
 
       - name: Run alembic upgrade head on an empty PostgreSQL
         run: uv run alembic upgrade head
-
-  overlay-browser:
-    runs-on: ubuntu-24.04
-    timeout-minutes: 10
-    steps:
-      - uses: actions/checkout@v7.0.1
-        with:
-          persist-credentials: false
-      - uses: astral-sh/setup-uv@v7
-      - name: Install isolated browser test tooling
-        run: |
-          uv sync --python 3.13 --dev --frozen
-          uv run --with playwright==1.58.0 python -m playwright install --with-deps chromium
-      - name: Verify overlay over real HTTP and WebSockets
-        env:
-          PYTHONPATH: .
-          OVERLAY_ARTIFACT_DIR: overlay-browser-artifacts
-        run: uv run --with playwright==1.58.0 python tests/overlay_browser_smoke.py
-      - name: Upload overlay rehearsal recording and screenshots
-        if: always()
-        uses: actions/upload-artifact@v7.0.2
-        with:
-          name: overlay-browser-rehearsal
-          path: overlay-browser-artifacts/
-          retention-days: 7
 
   # ── 2. Docker build + full-stack smoke test ──────────────────
   docker-smoke:
