@@ -7,6 +7,7 @@ import { createBackoff } from '../portal/static/js/booth-reconnect.js'
 import {
   createBoothPublisher,
   isRetryable,
+  PUBLISH_CONNECT_TIMEOUT_MS,
   PUBLISH_DISCONNECT_GRACE_MS,
   PUBLISH_RETRY_INITIAL_DELAY_MS,
   PUBLISH_RETRY_MAX_DELAY_MS,
@@ -89,16 +90,20 @@ class FakePeer extends EventTarget {
  * 'connected' (the peer connects at once), 'new' (it connects later), an Error to
  * throw, or a Promise for a slow publish.
  */
-function setup({ results = [], shouldPublish = () => true } = {}) {
+function setup({ results = [], shouldPublish = () => true, release = async () => {} } = {}) {
   const clock = makeClock()
   const peers = []
   const closed = []
   const statuses = []
   const changes = []
+  const warnings = []
   let opens = 0
+  let opensDuringRelease = 0
+  let releasing = 0
   const publisher = createBoothPublisher({
     async openSession() {
       opens += 1
+      if (releasing) opensDuringRelease += 1
       const next = results.length ? results.shift() : 'connected'
       const outcome = next instanceof Promise ? await next : next
       if (outcome instanceof Error) throw outcome
@@ -109,8 +114,15 @@ function setup({ results = [], shouldPublish = () => true } = {}) {
     },
     async closeSession(session) {
       session.pc.close()
+      releasing += 1
+      try {
+        await release(session)
+      } finally {
+        releasing -= 1
+      }
       closed.push(session.pc)
     },
+    log: { warn: (...args) => warnings.push(args) },
     shouldPublish,
     onChange(change) {
       statuses.push(change.status)
@@ -124,7 +136,11 @@ function setup({ results = [], shouldPublish = () => true } = {}) {
     setTimer: clock.setTimer,
     clearTimer: clock.clearTimer,
   })
-  return { publisher, clock, peers, closed, statuses, changes, opens: () => opens }
+  return {
+    publisher, clock, peers, closed, statuses, changes, warnings,
+    opens: () => opens,
+    opensDuringRelease: () => opensDuringRelease,
+  }
 }
 
 // ── Starting ─────────────────────────────────────────────────────────────────
@@ -196,6 +212,80 @@ function setup({ results = [], shouldPublish = () => true } = {}) {
   assert(t.opens() === 2 && t.publisher.status === 'live', 'the rebuilt publish goes live')
 }
 
+{
+  // A replacement peer that reports disconnected before it ever connected.
+  const t = setup({ results: ['connected', 'new', 'connected'] })
+  t.publisher.start()
+  await t.clock.advance(0)
+  t.peers[0].set('failed')
+  await t.clock.advance(0)
+  t.peers[1].set('disconnected')
+  assert(t.publisher.status === 'reconnecting', 'a replacement peer that disconnects stays reconnecting, never live')
+  assert(!t.publisher.publishing, 'and does not count as publishing')
+  await t.clock.advance(PUBLISH_DISCONNECT_GRACE_MS)
+  assert(t.publisher.status === 'reconnecting' && t.peers[1].closed, 'it is dropped after the grace period')
+  // It never connected, so the next attempt backs off instead of retrying at once.
+  await t.clock.advance(PUBLISH_RETRY_INITIAL_DELAY_MS)
+  assert(t.opens() === 3, 'and rebuilt after the back-off')
+  assert(t.publisher.status === 'live', 'and the next peer goes live')
+}
+
+{
+  // The first peer disconnects before it ever connected.
+  const t = setup({ results: ['new', 'connected'] })
+  t.publisher.start()
+  await t.clock.advance(0)
+  t.peers[0].set('disconnected')
+  assert(t.publisher.status === 'connecting', 'a first peer that disconnects stays connecting')
+  await t.clock.advance(PUBLISH_DISCONNECT_GRACE_MS)
+  assert(t.opens() === 2 && t.publisher.status === 'live', 'it is rebuilt after the grace period too')
+}
+
+{
+  // MediaMTX accepted the offer but the peer never connects or fails.
+  const t = setup({ results: ['new', 'connected'] })
+  t.publisher.start()
+  await t.clock.advance(0)
+  await t.clock.advance(PUBLISH_CONNECT_TIMEOUT_MS - 1)
+  assert(t.opens() === 1 && t.publisher.status === 'connecting', 'a slow peer is given the connect timeout')
+  await t.clock.advance(1)
+  assert(t.peers[0].closed, 'a peer that never connects is closed after the timeout')
+  assert(t.opens() === 2 && t.publisher.status === 'live', 'and published again')
+}
+
+{
+  const t = setup({ results: ['connected'] })
+  t.publisher.start()
+  await t.clock.advance(0)
+  await t.clock.advance(PUBLISH_CONNECT_TIMEOUT_MS * 2)
+  assert(t.opens() === 1 && t.publisher.status === 'live', 'the connect timeout never touches a live peer')
+}
+
+{
+  // MediaMTX is slow to drop the old session: the replacement waits for it.
+  let finishRelease
+  const slowRelease = () => new Promise((resolve) => { finishRelease = resolve })
+  const t = setup({ results: ['connected', 'connected'], release: slowRelease })
+  t.publisher.start()
+  await t.clock.advance(0)
+  t.peers[0].set('failed')
+  await t.clock.advance(0)
+  assert(t.opens() === 1, 'the replacement is not published while the old session is still being released')
+  finishRelease()
+  await flush()
+  assert(t.opens() === 2 && t.opensDuringRelease() === 0, 'it is published once the old session is released')
+  assert(t.publisher.status === 'live', 'and goes live')
+}
+
+{
+  const t = setup({ results: ['connected'], release: async () => { throw new Error('DELETE answered 500') } })
+  t.publisher.start()
+  await t.clock.advance(0)
+  await t.publisher.stop()
+  assert(t.publisher.status === 'idle', 'a failed release still stops the publisher')
+  assert(t.warnings.some(([message]) => /release/.test(message)), 'a failed release is logged')
+}
+
 // ── Failed attempts ─────────────────────────────────────────────────────────
 
 {
@@ -212,6 +302,7 @@ function setup({ results = [], shouldPublish = () => true } = {}) {
   await t.clock.advance(PUBLISH_RETRY_INITIAL_DELAY_MS * 2)
   assert(t.opens() === 3 && t.publisher.status === 'reconnecting', 'a 409 (path still held) is retried')
   assert(t.changes.at(-1).attempt === 3, 'each failed attempt is counted')
+  assert(t.warnings.length === 3, 'each failed attempt is logged')
   await t.clock.advance(PUBLISH_RETRY_INITIAL_DELAY_MS * 4)
   assert(t.publisher.status === 'live', 'goes live once an attempt succeeds')
 }
@@ -231,6 +322,8 @@ for (const [error, label] of [
   [new PublishRefusedError('Only the active interpreter can go live.'), 'a refused ticket'],
   [new WhipError(401, 'unauthorized'), 'a WHIP 401'],
   [new WhipError(403, 'forbidden'), 'a WHIP 403'],
+  [new WhipError(413, 'too large'), 'a WHIP 413'],
+  [Object.assign(new Error('Permission denied'), { name: 'NotAllowedError' }), 'a refused microphone'],
 ]) {
   const t = setup({ results: [error] })
   t.publisher.start()
@@ -300,9 +393,20 @@ for (const [error, label] of [
   t.publisher.retryNow()
   await t.clock.advance(0)
   assert(t.publisher.status === 'live', 'retryNow() skips the remaining back-off')
+  await t.clock.advance(PUBLISH_RETRY_MAX_DELAY_MS)
+  assert(t.opens() === 3 && t.publisher.status === 'live', 'the skipped back-off timer never fires later')
   t.publisher.retryNow()
   await t.clock.advance(0)
   assert(t.opens() === 3, 'retryNow() does nothing while live')
+}
+
+{
+  const t = setup({ results: ['new'] })
+  t.publisher.start()
+  await t.clock.advance(0)
+  t.publisher.retryNow()
+  await t.clock.advance(0)
+  assert(t.opens() === 1, 'retryNow() leaves a peer that is still connecting alone')
 }
 
 // ── Which errors are worth retrying ─────────────────────────────────────────
@@ -312,10 +416,16 @@ assert(isRetryable(new Error('Timed out waiting for a publish ticket')), 'ticket
 for (const status of [409, 429, 500, 502, 503]) {
   assert(isRetryable(new WhipError(status, '')), `WHIP ${status}: retry`)
 }
-for (const status of [400, 401, 403, 404]) {
+for (const status of [400, 401, 403, 404, 405, 413, 415, 422]) {
   assert(!isRetryable(new WhipError(status, '')), `WHIP ${status}: refused`)
 }
 assert(!isRetryable(new PublishRefusedError('no')), 'refused ticket: refused')
+for (const name of ['NotAllowedError', 'SecurityError', 'NotFoundError', 'OverconstrainedError']) {
+  assert(!isRetryable(Object.assign(new Error(name), { name })), `microphone ${name}: refused`)
+}
+for (const name of ['NotReadableError', 'AbortError']) {
+  assert(isRetryable(Object.assign(new Error(name), { name })), `microphone ${name}: retry`)
+}
 
 console.log(`\n${passed} passed, ${failed} failed`)
 if (failed) process.exit(1)

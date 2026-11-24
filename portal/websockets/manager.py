@@ -463,6 +463,10 @@ class ConnectionManager:
 # inside the booth.
 _LISTENER_STATE_KEYS = ("booth_id", "event_slug", "room_id", "language_code", "broadcast_unlocked", "ingest_status")
 
+# Largest booth:request-publish-ticket request_id echoed back: the largest integer
+# a browser can count to exactly (Number.MAX_SAFE_INTEGER).
+PUBLISH_TICKET_REQUEST_ID_MAX = 2**53 - 1
+
 
 def listener_booth_state(state: dict) -> dict:
     """Return the listener-safe subset of a booth state dict."""
@@ -948,8 +952,13 @@ async def _handle_request_publish_ticket(ws: WebSocket, session: Session, data: 
 
     Always answers with ``booth:publish-ticket`` so the client can match the reply
     to its pending request; a refusal carries ``error`` instead of ``ticket``.
+    A non-negative integer ``request_id`` is echoed back, so a reply to a request
+    the client already gave up on cannot settle a newer one (#1357).
     """
     reply: dict = {"type": "booth:publish-ticket"}
+    request_id = data.get("request_id")
+    if type(request_id) is int and 0 <= request_id <= PUBLISH_TICKET_REQUEST_ID_MAX:
+        reply["request_id"] = request_id
     if not session.participant_id:
         reply["error"] = "Join the booth before going live."
     else:

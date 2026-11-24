@@ -40,7 +40,10 @@ function harness({ getUserMedia = async () => ({ getAudioTracks: () => [] }) } =
     document: { getElementById: (id) => id === 'interpreter-portal'
       ? { dataset: { boothId: 'test-1-en', eventSlug: 'test', roomId: '1' } } : null },
     localStorage: { getItem: () => null },
-    window: { location: { protocol: 'https:', host: 'example.test' } },
+    window: {
+      location: { protocol: 'https:', host: 'example.test' },
+      setTimeout: (fn, delay) => { timers.set(++timerId, { fn, delay }); return timerId },
+    },
     setTimeout: (fn, delay) => { timers.set(++timerId, { fn, delay }); return timerId },
     clearTimeout: (id) => timers.delete(id),
     navigator: { mediaDevices: { getUserMedia } },
@@ -59,7 +62,10 @@ function harness({ getUserMedia = async () => ({ getAudioTracks: () => [] }) } =
     stopLiveIngest = async () => { events.push('publish-stopped'); state.ingestConnected = false; };
     renderMicControls = () => {};
     startMicMeter = () => {};
-    globalThis.api = { state, connectWebSocket, reconnectBackoff, watchMicDevice, currentMicActive, ensureMicStream };
+    globalThis.api = {
+      state, connectWebSocket, reconnectBackoff, watchMicDevice, currentMicActive, ensureMicStream,
+      requestPublishTicket, handleServerMessage, startPublishingIfAllowed,
+    };
   `, context)
   return { ...context.api, timers, sockets, events, publisher }
 }
@@ -90,13 +96,21 @@ h.sockets[1].message({ type: 'booth:joined', participant_id: 'original', state: 
 } })
 assert.equal(h.sockets[1].sent.at(-1).ingest_connected, true, 'surviving ingest is reported again')
 assert.equal(h.events.filter((e) => e === 'monitor-started').length, 1, 'monitor is not reloaded')
+const retries = () => h.events.filter((e) => e === 'publish-retry').length
+assert.equal(retries(), 0, 'a publish that survived the reconnect is not retried')
 
-// The publish dropped while the socket was down: rejoining lets it ask for a ticket at once.
+// The publish dropped while the socket was down: the rejoin clears the on-air
+// report the server kept, and lets the publisher ask for a ticket at once.
 h.publisher.publishing = false
 h.sockets[1].message({ type: 'booth:joined', participant_id: 'original', state: {
   active_interpreter_id: 'original', broadcast_unlocked: true,
 } })
-assert.ok(h.events.includes('publish-retry'), 'a dropped publish retries as soon as the booth is rejoined')
+assert.equal(retries(), 1, 'a dropped publish retries once as soon as the booth is rejoined')
+assert.deepEqual(
+  { mic_active: h.sockets[1].sent.at(-1).mic_active, ingest_connected: h.sockets[1].sent.at(-1).ingest_connected },
+  { mic_active: false, ingest_connected: false },
+  'the rejoin reports the dropped publish as off air',
+)
 h.publisher.publishing = true
 
 h.sockets[0].message({ type: 'booth:joined', participant_id: 'stale', state: {} })
@@ -229,6 +243,52 @@ for (let attempt = 0; attempt < 3; attempt++) {
   assert.equal(requests.length, 3, 'a refused request can be tried again')
   requests.at(-1).resolve(stream)
   assert.equal(await retry, stream)
+}
+
+// A publish ticket reply settles only the request it answers (#1357).
+{
+  const t = harness()
+  const opening = t.connectWebSocket()
+  t.sockets[0].open()
+  await opening
+  const first = t.requestPublishTicket()
+  const firstId = t.sockets[0].sent.at(-1).request_id
+  assert.equal(t.sockets[0].sent.at(-1).type, 'booth:request-publish-ticket')
+  const second = t.requestPublishTicket()
+  await assert.rejects(first, /superseded/, 'a newer request supersedes the pending one')
+  const secondId = t.sockets[0].sent.at(-1).request_id
+  assert.notEqual(firstId, secondId, 'each request carries its own id')
+  // The late refusal of the superseded request must not settle the current one.
+  t.handleServerMessage({ type: 'booth:publish-ticket', request_id: firstId, error: 'Broadcast is stopped by Mission Control.' })
+  t.handleServerMessage({ type: 'booth:publish-ticket', request_id: secondId, ticket: 'fresh-ticket' })
+  assert.equal(await second, 'fresh-ticket', 'the matching reply settles the request')
+
+  // A server that does not echo request_id still works.
+  const legacy = t.requestPublishTicket()
+  t.handleServerMessage({ type: 'booth:publish-ticket', ticket: 'legacy-ticket' })
+  assert.equal(await legacy, 'legacy-ticket', 'a reply without request_id settles the pending request')
+
+  // Closing the socket fails the pending request at once instead of after the timeout.
+  const orphaned = t.requestPublishTicket()
+  t.sockets[0].close()
+  await assert.rejects(orphaned, /closed before a publish ticket arrived/, 'a socket close fails the pending request')
+  await assert.rejects(t.requestPublishTicket(), /Not connected/, 'no request is sent without a socket')
+}
+
+// A publish the server refused is not restarted by the next booth state, until the grant changes.
+{
+  const t = harness()
+  Object.assign(t.state, { joined: true, participantId: 'p1', activeInterpreterId: 'p1', broadcastUnlocked: true })
+  t.state.publishRefused = true
+  t.startPublishingIfAllowed()
+  assert.ok(!t.events.includes('publish-started'), 'a refused grant is not retried')
+  t.state.publishRefused = false
+  t.state.relayingOut = true
+  t.startPublishingIfAllowed()
+  assert.ok(!t.events.includes('publish-started'), 'no start while the previous publish is still being released')
+  t.state.relayingOut = false
+  t.startPublishingIfAllowed()
+  assert.equal(t.events.filter((e) => e === 'publish-started').length, 1, 'starts once allowed again')
 }
 
 console.log('Booth socket lifecycle checks passed')

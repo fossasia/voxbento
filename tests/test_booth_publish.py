@@ -118,6 +118,34 @@ async def test_backup_interpreter_and_unjoined_socket_get_no_ticket(booth):
 
 
 @pytest.mark.anyio
+@pytest.mark.parametrize(
+    ("request_id", "echoed"),
+    [
+        (0, True),
+        (42, True),
+        (2**53 - 1, True),
+        (2**53, False),
+        (-1, False),
+        (True, False),
+        (1.0, False),
+        ("7", False),
+        (None, False),
+    ],
+)
+async def test_ticket_reply_echoes_a_valid_request_id(booth, request_id, echoed):
+    """A grant or a refusal carries back the client's integer request_id, and nothing else (#1357)."""
+    _, (active, backup) = booth
+    for participant in (active, backup):
+        ws = MockWebSocket()
+        await _handle_request_publish_ticket(ws, session_for(participant), {"request_id": request_id})
+        [reply] = ws.sent
+        if echoed:
+            assert reply["request_id"] == request_id
+        else:
+            assert "request_id" not in reply
+
+
+@pytest.mark.anyio
 async def test_ticket_is_bound_to_server_path_not_client_channel(booth):
     """The ticket path comes from booth_id, never from the client's channel_id."""
     client, (active, _) = booth

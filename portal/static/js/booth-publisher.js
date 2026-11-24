@@ -10,12 +10,14 @@ import { createBackoff } from './booth-reconnect.js'
 
 /** How long a `disconnected` peer may take to recover on its own before it is rebuilt. */
 export const PUBLISH_DISCONNECT_GRACE_MS = 3000
+/** How long a new peer may take to connect after MediaMTX accepted its offer. */
+export const PUBLISH_CONNECT_TIMEOUT_MS = 15000
 export const PUBLISH_RETRY_INITIAL_DELAY_MS = 250
 export const PUBLISH_RETRY_MAX_DELAY_MS = 15000
 
 /**
- * A publish the server refused: the ticket was denied, or MediaMTX answered
- * 400, 401, 403 or 404. Trying again would get the same answer.
+ * A publish the server refused: the ticket was denied or the configuration is
+ * missing. Trying again would get the same answer.
  */
 export class PublishRefusedError extends Error {
   constructor(message) {
@@ -33,12 +35,19 @@ export class WhipError extends Error {
   }
 }
 
-const REFUSED_WHIP_STATUSES = new Set([400, 401, 403, 404])
+// The microphone is refused or missing; the interpreter has to act, so retrying only hides it.
+// NotReadableError (device busy) and AbortError stay retryable, since they can clear by themselves.
+const FINAL_MEDIA_ERRORS = new Set(['NotAllowedError', 'SecurityError', 'NotFoundError', 'OverconstrainedError'])
 
-/** Whether another attempt could succeed. Network errors, timeouts, 409, 429 and 5xx can. */
+/**
+ * Whether another attempt could succeed. Network errors, timeouts and the WHIP
+ * answers 409 (path still held), 429 and 5xx can; any other WHIP 4xx, a refused
+ * ticket and a refused or missing microphone cannot.
+ */
 export function isRetryable(error) {
   if (error instanceof PublishRefusedError) return false
-  if (error instanceof WhipError) return !REFUSED_WHIP_STATUSES.has(error.status)
+  if (error instanceof WhipError) return error.status === 409 || error.status === 429 || error.status >= 500
+  if (FINAL_MEDIA_ERRORS.has(error?.name)) return false
   return true
 }
 
@@ -53,7 +62,7 @@ export function isRetryable(error) {
  * - `onChange({ status, attempt, error, delayMs })` runs on every status change.
  *
  * Statuses: `idle` (not publishing), `connecting` (first attempt), `live`,
- * `unstable` (the peer reported `disconnected`; waiting to see if it recovers),
+ * `unstable` (a live peer reported `disconnected`; waiting to see if it recovers),
  * `reconnecting` (publishing again after a drop or a failed attempt) and
  * `refused` (stopped because the server refused the publish).
  */
@@ -63,9 +72,11 @@ export function createBoothPublisher({
   shouldPublish = () => true,
   onChange = () => {},
   graceMs = PUBLISH_DISCONNECT_GRACE_MS,
+  connectTimeoutMs = PUBLISH_CONNECT_TIMEOUT_MS,
   backoff = createBackoff({ initialMs: PUBLISH_RETRY_INITIAL_DELAY_MS, maxMs: PUBLISH_RETRY_MAX_DELAY_MS }),
   setTimer = (fn, ms) => setTimeout(fn, ms),
   clearTimer = (id) => clearTimeout(id),
+  log = console,
 } = {}) {
   let running = false
   let status = 'idle'
@@ -76,27 +87,44 @@ export function createBoothPublisher({
   let attempt = 0
   let retryTimer = null
   let graceTimer = null
+  let connectTimer = null
   let sessionListener = null
+  // The previous session's release, which a new attempt waits for so MediaMTX frees the path first.
+  let releasing = Promise.resolve()
 
   function setStatus(next, extra = {}) {
     status = next
     onChange({ status: next, attempt, ...extra })
   }
 
-  function clearTimers() {
-    if (retryTimer !== null) clearTimer(retryTimer)
-    if (graceTimer !== null) clearTimer(graceTimer)
-    retryTimer = null
-    graceTimer = null
+  function cancelTimer(id) {
+    if (id !== null) clearTimer(id)
+    return null
   }
 
-  async function release(old) {
-    if (!old) return
+  function clearPeerTimers() {
+    graceTimer = cancelTimer(graceTimer)
+    connectTimer = cancelTimer(connectTimer)
+  }
+
+  function clearTimers() {
+    retryTimer = cancelTimer(retryTimer)
+    clearPeerTimers()
+  }
+
+  async function closeQuietly(old) {
     try {
       await closeSession(old)
     } catch (error) {
-      console.warn('Could not release the previous booth publish:', error)
+      log.warn('Could not release the previous booth publish:', error)
     }
+  }
+
+  /** Close a session and remember the release, so the next attempt waits for it. */
+  function release(old) {
+    if (!old) return releasing
+    releasing = closeQuietly(old)
+    return releasing
   }
 
   function takeSession() {
@@ -104,25 +132,24 @@ export function createBoothPublisher({
     session = null
     if (old && sessionListener) old.pc.removeEventListener('connectionstatechange', sessionListener)
     sessionListener = null
+    clearPeerTimers()
     return old
   }
 
   function schedule(delayMs) {
-    if (retryTimer !== null) clearTimer(retryTimer)
+    cancelTimer(retryTimer)
     retryTimer = setTimer(() => {
       retryTimer = null
       connect()
     }, delayMs)
   }
 
-  /** The peer connection dropped: publish again, at once the first time, then backing off. */
-  function peerLost() {
-    if (!running) return
-    if (graceTimer !== null) clearTimer(graceTimer)
-    graceTimer = null
+  /** The peer connection dropped or never connected: publish again, at once the first time, then backing off. */
+  function peerLost(owned) {
+    if (!running || owned !== session) return
     const delayMs = attempt === 0 ? 0 : backoff.next()
     attempt += 1
-    // Stop sending the dead session now; connect() would also release it, but only after the delay.
+    // Stop sending the dead session now; connect() waits for this release before publishing again.
     release(takeSession())
     setStatus('reconnecting', { delayMs })
     schedule(delayMs)
@@ -132,21 +159,21 @@ export function createBoothPublisher({
     if (owned !== session) return
     const state = owned.pc.connectionState
     if (state === 'connected') {
-      if (graceTimer !== null) clearTimer(graceTimer)
-      graceTimer = null
+      clearPeerTimers()
       if (status !== 'live') {
         attempt = 0
         backoff.reset()
         setStatus('live')
       }
     } else if (state === 'failed') {
-      peerLost()
-    } else if (state === 'disconnected' && status === 'live') {
+      peerLost(owned)
+    } else if (state === 'disconnected' && graceTimer === null) {
       // ICE often recovers from a short blip by itself; only rebuild if it does not.
-      setStatus('unstable')
+      // A peer that has not connected yet stays connecting or reconnecting, never live.
+      if (status === 'live') setStatus('unstable')
       graceTimer = setTimer(() => {
         graceTimer = null
-        if (owned === session) peerLost()
+        peerLost(owned)
       }, graceMs)
     }
   }
@@ -171,11 +198,17 @@ export function createBoothPublisher({
       session = opened
       sessionListener = () => onPeerState(opened)
       opened.pc.addEventListener('connectionstatechange', sessionListener)
+      // MediaMTX accepted the offer; a peer that never connects is treated as dropped.
+      connectTimer = setTimer(() => {
+        connectTimer = null
+        if (opened === session && status !== 'live' && status !== 'unstable') peerLost(opened)
+      }, connectTimeoutMs)
       // The peer may already be connected by the time the WHIP answer is applied.
       onPeerState(opened)
     } catch (error) {
       if (gen !== generation) return
       if (!isRetryable(error)) {
+        log.warn('Booth publish refused:', error)
         running = false
         generation += 1
         clearTimers()
@@ -184,6 +217,7 @@ export function createBoothPublisher({
       }
       const delayMs = backoff.next()
       attempt += 1
+      log.warn(`Booth publish attempt ${attempt} failed; retrying in ${Math.round(delayMs)} ms:`, error)
       setStatus('reconnecting', { error, delayMs })
       schedule(delayMs)
     } finally {
@@ -217,7 +251,7 @@ export function createBoothPublisher({
 
   /** Skip the remaining back-off, for example when the network or the booth socket comes back. */
   function retryNow() {
-    if (!running || status === 'live' || status === 'unstable') return
+    if (!running || session !== null) return
     if (connectingGeneration === generation) return
     schedule(0)
   }
