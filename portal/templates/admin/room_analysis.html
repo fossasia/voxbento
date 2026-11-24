@@ -41,7 +41,7 @@
     {% endif %}
   </div>
   {% elif is_event_owner %}
-  <form method="post" action="{{ analysis_url }}" class="room-card analysis-form">
+  <form method="post" target="_self" action="{{ analysis_url }}{% if request.query_params.get('panel') == '1' %}?panel=1{% endif %}" class="room-card analysis-form">
     <input type="hidden" name="csrf_token" value="{{ request.state.admin_csrf_token }}" />
     <h2>Write a report</h2>
     {% if channels %}

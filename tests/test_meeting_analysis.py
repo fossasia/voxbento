@@ -1193,6 +1193,20 @@ async def test_a_report_can_be_written_from_a_translation(world, monkeypatch):
 
 
 @pytest.mark.anyio
+async def test_embedded_generation_stays_in_panel(world, monkeypatch):
+    await _enable(world)
+    monkeypatch.setattr(analysis_router, "start_analysis", lambda report_id: None)
+    url = f"/admin/events/{world['event']}/rooms/{world['room']}/analysis/?panel=1"
+    async with _client() as client:
+        page = await client.get(url, cookies=world["admin"])
+        assert f'target="_self" action="{url}"' in page.text
+        for channel, expected in [("missing", "&error=channel"), ("floor", ""), ("floor", "&error=busy")]:
+            response = await client.post(url, data={"channel": channel}, headers=ORIGIN, cookies=world["admin"])
+            assert response.status_code == 303
+            assert response.headers["location"] == url + expected
+
+
+@pytest.mark.anyio
 async def test_batch_promotion_conflict_marks_each_waiting_report_failed(world):
     active = await _report(world, status="running")
     queued = [await _report(world, status="queued") for _ in range(2)]

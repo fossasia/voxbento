@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from urllib.parse import urlencode
+
 from fastapi import APIRouter, Depends, Form, HTTPException, Request, status
 from fastapi.responses import JSONResponse, Response
 from sqlalchemy.exc import IntegrityError
@@ -129,16 +131,20 @@ async def room_analysis_generate(
     if not verify_same_origin(request):
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Invalid request origin.")
     page = f"events/{event_id}/rooms/{room_id}/analysis/"
+    query = {"panel": "1"} if request.query_params.get("panel") == "1" else {}
     try:
         report_ids = await _create_reports(event_id, room_id, stretch or channel, language.strip())
     except IntegrityError:
-        return safe_redirect(url=management_url(request, f"{page}?error=busy"), status_code=303)
+        query["error"] = "busy"
     except _Refused as refused:
-        return safe_redirect(url=management_url(request, f"{page}?error={refused.reason}"), status_code=303)
-    if len(report_ids) == 1:
-        start_analysis(report_ids[0])
+        query["error"] = refused.reason
     else:
-        start_batch(report_ids)
+        if len(report_ids) == 1:
+            start_analysis(report_ids[0])
+        else:
+            start_batch(report_ids)
+    if query:
+        page += "?" + urlencode(query)
     return safe_redirect(url=management_url(request, page), status_code=status.HTTP_303_SEE_OTHER)
 
 
