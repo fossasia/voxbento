@@ -166,6 +166,7 @@ body {
   margin-top: 6px;
   font-size: 13px;
   color: #0284c7;
+  overflow-wrap: anywhere;
 }
 
 .auth-account-separator {
