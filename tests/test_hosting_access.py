@@ -1063,6 +1063,33 @@ async def test_admin_users_table_layout_and_flash_alerts():
 
 
 @pytest.mark.anyio
+async def test_hosting_access_email_uses_wrapping_class():
+    email = f"{'longlocalpart' * 8}@example.org"
+    async with get_session() as session:
+        admin = await create_user(
+            session,
+            email="admin_wrapping@example.org",
+            display_name="Admin",
+            password_hash=hash_password("pw123"),
+            is_admin=True,
+        )
+        await create_user(
+            session,
+            email=email,
+            display_name="Long email",
+            password_hash=hash_password("pw123"),
+            can_host=True,
+        )
+    admin_token = create_user_token(user_id=admin.id, email=admin.email, is_admin=True)
+
+    async with client() as http:
+        response = await http.get("/admin/hosting-access/", cookies={"user_token": admin_token})
+
+    assert response.status_code == 200
+    assert f'<td class="ha-email-cell">{email}</td>' in response.text
+
+
+@pytest.mark.anyio
 async def test_demo_request_template_renders_from_the_notification_registry():
     """Demo requests use the same validated template registry as every other email."""
     from portal.notifications import _render, _source_for_default, get_definition

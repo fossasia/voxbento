@@ -28,7 +28,14 @@ from portal.database import get_session
 from portal.globals import get_http_client
 from portal.models import Event, Room
 from portal.outage_log import OutageLog
-from portal.program_ingest import MediaPath, configure_source, media_paths, pipeline_problem, room_lock
+from portal.program_ingest import (
+    MediaPath,
+    configure_source,
+    deleted_floor_workers,
+    media_paths,
+    pipeline_problem,
+    room_lock,
+)
 from portal.transcription.process import audio_progress
 from portal.transcription.providers.base import ProviderConfig, ProviderEnum, get_api_key
 from portal.transcription.worker import start_transcription_worker, stop_transcription_worker
@@ -487,21 +494,25 @@ async def _stop_stale_agents(agents: dict[str, dict]) -> None:
 
 
 async def _stop_deleted_event_workers(room_ids: set[int]) -> None:
-    """Stop the floor worker of rooms whose event was deleted.
+    """Stop the floor worker of rooms that were deleted, or whose event was.
 
     A delete can commit after a reconcile pass already read the room and started its worker, so
-    the reconciler cleans up rather than the delete: once the event is deleted it no longer sees the room.
+    the reconciler cleans up rather than the delete: once the room or its event is deleted it no longer sees the room.
+    The running workers are checked too, since ``health`` can lose the room and a reused room id can stay enabled.
     """
-    if not room_ids:
-        return
-    async with get_session() as session:
-        rows = (
-            await session.execute(
-                select(Room.id, Event.slug).join(Event).where(Room.id.in_(room_ids), Event.deleted_at.is_not(None))
-            )
-        ).all()
-    for room_id, slug in rows:
-        await _stop_worker(health.get(room_id) or AgentHealth(), make_booth_id(slug, room_id, "floor"))
+    rows = []
+    if room_ids:
+        async with get_session() as session:
+            rows = (
+                await session.execute(
+                    select(Room.id, Event.slug).join(Event).where(Room.id.in_(room_ids), Event.deleted_at.is_not(None))
+                )
+            ).all()
+    booth_ids = {make_booth_id(slug, room_id, "floor"): (room_id, False) for room_id, slug in rows}
+    booth_ids.update((booth_id, (room_id, reused)) for room_id, booth_id, reused in await deleted_floor_workers())
+    for booth_id, (room_id, reused) in booth_ids.items():
+        # A reused room id's health record is the new room's, so leave its worker settings alone.
+        await _stop_worker(AgentHealth() if reused else health.get(room_id) or AgentHealth(), booth_id)
 
 
 async def reconcile_once() -> None:
