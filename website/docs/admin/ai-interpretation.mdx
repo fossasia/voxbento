@@ -34,10 +34,15 @@ Choose a different service or model from every enabled primary translator in the
 including booth translators. The fallback must support their source and target languages.
 
 On a primary error, failed result or inference timeout, the same segment is sent to the
-fallback before captions and speech are delivered. Caption delivery keeps the original
+fallback before captions and speech are delivered. A primary waiting over 12 seconds
+for an engine slot also falls back; its inference timeout starts only after a slot is available.
+Caption delivery keeps the original
 segment order even when a fallback call is slower than the next primary call. An intentionally empty translation
 is not retried. Each engine retains its own bounded, fair scheduler; a timed-out native
 model keeps its slot until its thread actually finishes.
+At most 15 rejection notices per language may wait behind earlier captions. Further
+overloaded segments are dropped without adding notices to that backlog; accepted
+captions and the queued notices keep their original order.
 
 After three consecutive failed primary calls, that room uses the fallback directly for
 30 seconds. One call then probes the primary; other calls in that room continue using

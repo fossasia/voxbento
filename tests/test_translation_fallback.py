@@ -16,6 +16,7 @@ from portal.models import Event, Room, RoomTranslationLanguage, TranscriptSegmen
 from portal.translations import circuit as circuit_module
 from portal.translations import worker as worker_module
 from portal.translations.circuit import CircuitBreaker, circuit_for
+from portal.translations.delivery import TranslationDeliveryOrder
 from portal.translations.engine import EngineKind, TranslationEngine
 from portal.translations.providers.local import _in_thread
 from portal.translations.worker import FallbackTranslation, TranslationWorker
@@ -139,6 +140,7 @@ async def pipeline(monkeypatch):
     monkeypatch.setitem(worker_module.ENGINES, "self_hosted", primary)
     monkeypatch.setitem(worker_module.ENGINES, "local", backup)
     monkeypatch.setattr(worker_module, "SCHEDULERS", {})
+    monkeypatch.setattr(worker_module, "DELIVERY_ORDER", TranslationDeliveryOrder())
     monkeypatch.setattr(circuit_module, "CIRCUITS", {})
     monkeypatch.setattr(worker_module, "_inference_timeout", lambda *args: 1)
     bundle = AsyncMock()
@@ -217,6 +219,21 @@ async def test_empty_or_successful_primary_does_not_use_fallback(pipeline, value
 
 
 @pytest.mark.anyio
+async def test_slot_wait_deadline_does_not_shorten_running_inference(pipeline, monkeypatch):
+    env = pipeline
+    monkeypatch.setattr(worker_module, "PRIMARY_SLOT_WAIT_TIMEOUT", 0.01)
+
+    async def translate(*args, **kwargs):
+        await asyncio.sleep(0.03)
+        return [["Bonjour primaire"]]
+
+    monkeypatch.setattr(env.primary, "translate_batch", translate)
+    await run(env)
+    assert not env.backup.calls
+    assert env.bundle.await_args.args[7] == "Bonjour primaire"
+
+
+@pytest.mark.anyio
 async def test_timeout_falls_back_while_primary_thread_keeps_its_slot(pipeline, monkeypatch):
     env = pipeline
     started, release = threading.Event(), threading.Event()
@@ -233,12 +250,20 @@ async def test_timeout_falls_back_while_primary_thread_keeps_its_slot(pipeline, 
     monkeypatch.setattr(
         worker_module, "_inference_timeout", lambda provider, model: 0.02 if provider == "self_hosted" else 1
     )
+    monkeypatch.setattr(worker_module, "PRIMARY_SLOT_WAIT_TIMEOUT", 0.02)
     try:
         await run(env)
         assert started.is_set() and len(env.backup.calls) == 1
         scheduler = worker_module.scheduler_for("self_hosted", "primary", env.event.id)
         assert scheduler.running == 1
         assert env.bundle.await_args.args[7] == "Bonjour"
+        # A second segment cannot acquire the slot still held by the native thread.
+        # Its queue deadline must reach fallback without releasing that thread early.
+        await asyncio.wait_for(run(env), 0.5)
+        assert len(env.backup.calls) == 2 and scheduler.running == 1
+        assert scheduler.waiting() == 0
+        assert scheduler.admitted(env.room.id, "fallback-1-floor:fr") == 0
+        assert next(iter(circuit_module.CIRCUITS.values())).failures == 2
     finally:
         release.set()
     for _ in range(100):
@@ -246,6 +271,60 @@ async def test_timeout_falls_back_while_primary_thread_keeps_its_slot(pipeline, 
             break
         await asyncio.sleep(0.001)
     assert scheduler.idle()
+
+
+@pytest.mark.anyio
+async def test_rejected_segments_have_a_bounded_ordered_notification_backlog(pipeline, monkeypatch):
+    env = pipeline
+    order = TranslationDeliveryOrder(rejection_limit=2)
+    monkeypatch.setattr(worker_module, "DELIVERY_ORDER", order)
+    scheduler = worker_module.scheduler_for("self_hosted", "primary", env.event.id)
+    scheduler.queue_limit = 1
+    entered, release = asyncio.Event(), asyncio.Event()
+
+    async def translate(*args, **kwargs):
+        entered.set()
+        await release.wait()
+        return [["Bonjour"]]
+
+    monkeypatch.setattr(env.primary, "translate_batch", translate)
+
+    async def publish(seq):
+        await env.worker._translate_and_broadcast(
+            env.event,
+            env.room,
+            "self_hosted",
+            "primary",
+            None,
+            "fr",
+            "French",
+            "en",
+            "English",
+            env.segment.id,
+            "Hello",
+            "fallback-1-floor",
+            f"uuid-{seq}",
+            seq,
+            synthesize_audio=False,
+            fallback=FallbackTranslation("local", "nllb-200-distilled-600M", None),
+        )
+
+    first = asyncio.create_task(publish(1))
+    await entered.wait()
+    rejected = [asyncio.create_task(publish(seq)) for seq in range(2, 102)]
+    try:
+        await asyncio.wait_for(asyncio.gather(*rejected[2:]), 0.5)
+        assert all(not task.done() for task in rejected[:2])
+        assert not env.bundle.await_args_list
+    finally:
+        release.set()
+        await asyncio.gather(first, *rejected)
+    assert [(call.args[5], call.args[8]) for call in env.bundle.await_args_list] == [
+        (1, None),
+        (2, "pipeline_failed"),
+        (3, "pipeline_failed"),
+    ]
+    assert scheduler.idle() and not order.tails and not order.rejections
 
 
 @pytest.mark.anyio

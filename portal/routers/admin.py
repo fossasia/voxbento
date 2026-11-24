@@ -1953,9 +1953,10 @@ def _apply_ai_settings(room: Room, form: FormData, catalog: EngineCatalog) -> No
                 raise TranslationLanguageError(
                     status_code=400, detail="Choose a fallback service or model different from the primary translator."
                 )
-            _require_translatable(
-                provider, model, (room.floor_language_code, *_enabled_codes(room.translation_languages))
-            )
+            if room.floor_translation_enabled:
+                _require_translatable(
+                    provider, model, (room.floor_language_code, *_enabled_codes(room.translation_languages))
+                )
             room.translation_fallback_provider = provider
             room.translation_fallback_model = model
     elif room.translation_fallback_provider and (

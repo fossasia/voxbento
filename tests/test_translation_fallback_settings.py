@@ -21,6 +21,13 @@ NLLB = "nllb-200-distilled-600M"
 pytestmark = [pytest.mark.anyio, pytest.mark.usefixtures("auto_csrf")]
 
 
+@pytest.fixture(autouse=True)
+def operator_catalog(monkeypatch):
+    # These cases check unavailable services, independently of a developer's local server.
+    monkeypatch.setattr(admin_routes.settings, "self_hosted_llm_base_url", "")
+    monkeypatch.setattr(admin_routes.settings, "self_hosted_llm_models", "")
+
+
 async def seed_room_form():
     async with get_session() as session:
         admin = User(email="fallback-admin@example.com", display_name="Admin", is_admin=True, email_verified=True)
@@ -195,6 +202,19 @@ async def add_booth(room_form, *, source="en", target="fr", enabled=True, provid
             BoothTranslationLanguage(booth_id=booth.id, language_code=target, language_name=target, enabled=True)
         )
         return booth.id
+
+
+@pytest.mark.parametrize("booth_source,status", [("en", 303), ("az", 400)])
+async def test_disabled_floor_does_not_block_valid_booth_fallback_settings(room_form, booth_source, status):
+    async with get_session() as session:
+        room = await session.get(Room, room_form[2])
+        room.floor_translation_enabled = False
+        room.floor_language_code = "az"  # Unsupported by NLLB, but unused while the floor is disabled.
+    await add_booth(room_form, source=booth_source)
+    response = await post({"translation_fallback_provider": "local", "translation_fallback_model": NLLB}, room_form)
+    assert response.status_code == status
+    room = await read_room(room_form[2])
+    assert room.translation_fallback_provider == ("local" if status == 303 else None)
 
 
 @pytest.mark.parametrize("source,target", [("az", "fr"), ("en", "az")])

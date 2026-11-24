@@ -28,6 +28,9 @@ logger = logging.getLogger(__name__)
 #: The glossary is optional context, so its lookup must never eat into the inference budget.
 VOCABULARY_LOOKUP_TIMEOUT = 2.0
 
+#: A busy primary must not prevent a configured fallback from being reached.
+PRIMARY_SLOT_WAIT_TIMEOUT = 12.0
+
 openai_provider = OpenAIProvider()
 
 
@@ -487,7 +490,7 @@ class TranslationWorker:
         from portal.websockets.manager import tts_manager
 
         queue_key = f"{booth_id_str}:{lang_code}"
-        delivery_turn = DELIVERY_ORDER.reserve((room.id, booth_id_str, lang_code), enabled=fallback is not None)
+        keep_delivery_order = fallback is not None
         attempt = None
         primary_choice = (provider, model)
         if fallback is not None:
@@ -497,11 +500,16 @@ class TranslationWorker:
                 fallback = None
         # Rooms take turns for the engine, and so do the languages within a room.
         job = scheduler_for(provider, model, event.id).admit(room.id, queue_key)
+        delivery_turn = DELIVERY_ORDER.reserve(
+            (room.id, booth_id_str, lang_code), enabled=keep_delivery_order, rejected=job is None
+        )
 
         if job is None:
             if attempt is not None:
                 attempt.finish(None)
             logger.warning(f"[{booth_id_str}] Queue full for {lang_code}. Dropping segment {seq}.")
+            if delivery_turn is None:
+                return
             try:
                 if delivery_turn is not None:
                     await delivery_turn.wait()
@@ -542,7 +550,12 @@ class TranslationWorker:
                 current_model: str,
                 current_key: str | None,
             ) -> tuple[str | None, bool]:
-                async with current_job:
+                wait_timeout = (
+                    PRIMARY_SLOT_WAIT_TIMEOUT
+                    if fallback is not None and (current_provider, current_model) == primary_choice
+                    else None
+                )
+                async with current_job.slot(wait_timeout=wait_timeout):
                     if attempt is not None and attempt.generation != attempt.circuit.generation:
                         if (current_provider, current_model) == primary_choice:
                             return None, False

@@ -54,3 +54,21 @@ async def test_disabling_fallback_does_not_overtake_an_existing_turn():
     await asyncio.wait_for(task, 1)
     following.close()
     assert order.reserve((1, "floor", "fr"), enabled=False) is None
+
+
+async def test_cancelled_rejection_keeps_its_budget_until_the_predecessor_finishes():
+    order = TranslationDeliveryOrder(rejection_limit=1)
+    channel = (1, "floor", "fr")
+    first = order.reserve(channel, enabled=True)
+    rejected = order.reserve(channel, enabled=True, rejected=True)
+    rejected.close()
+    assert order.reserve(channel, enabled=True, rejected=True) is None
+    # The limit belongs to one channel, so another language remains usable.
+    other = order.reserve((1, "floor", "de"), enabled=True, rejected=True)
+    other.close()
+    first.close()
+    await asyncio.sleep(0)
+    assert not order.tails and not order.rejections
+    replacement = order.reserve(channel, enabled=True, rejected=True)
+    replacement.close()
+    assert not order.tails and not order.rejections

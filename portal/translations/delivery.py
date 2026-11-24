@@ -5,6 +5,8 @@ from __future__ import annotations
 import asyncio
 from collections.abc import Callable
 
+from portal.translations.scheduler import QUEUE_LIMIT
+
 Channel = tuple[int, str, str]
 
 
@@ -38,18 +40,34 @@ class DeliveryTurn:
 
 
 class TranslationDeliveryOrder:
-    def __init__(self) -> None:
+    def __init__(self, *, rejection_limit: int = QUEUE_LIMIT) -> None:
+        if rejection_limit < 1:
+            raise ValueError("rejection_limit must be at least 1")
         self.tails: dict[Channel, asyncio.Future[None]] = {}
+        self.rejection_limit = rejection_limit
+        self.rejections: dict[Channel, int] = {}
 
-    def reserve(self, channel: Channel, *, enabled: bool) -> DeliveryTurn | None:
+    def reserve(self, channel: Channel, *, enabled: bool, rejected: bool = False) -> DeliveryTurn | None:
+        # A rejected segment has no scheduler admission keeping its notification bounded.
+        # Omit excess rejection notices instead of growing a chain behind a stalled caption.
+        if rejected and self.rejections.get(channel, 0) >= self.rejection_limit:
+            return None
         previous = self.tails.get(channel)
-        if not enabled and previous is None:
+        if not enabled and not rejected and previous is None:
             return None
         done = asyncio.get_running_loop().create_future()
         self.tails[channel] = done
+        if rejected:
+            self.rejections[channel] = self.rejections.get(channel, 0) + 1
 
         def cleanup() -> None:
             if self.tails.get(channel) is done:
                 del self.tails[channel]
+            if rejected:
+                remaining = self.rejections[channel] - 1
+                if remaining:
+                    self.rejections[channel] = remaining
+                else:
+                    del self.rejections[channel]
 
         return DeliveryTurn(previous, done, cleanup)
