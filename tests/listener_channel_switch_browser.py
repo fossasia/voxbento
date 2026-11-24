@@ -24,6 +24,7 @@ import os
 import time
 import uuid
 from pathlib import Path
+from typing import TypedDict
 from urllib.parse import urlparse
 
 from browser_harness import CHROMIUM_ARGS, live_portal, offline_cdn, runs_requested, until
@@ -35,21 +36,36 @@ from portal.database import create_booth, create_event, create_room, get_session
 from portal.globals import booths
 from portal.join_code_limit import _join_code_attempts
 from portal.models import BoothTranslationLanguage, Event, RoomTranslationLanguage
+from portal.transcription.timing import SegmentTiming, segment_timing
 from portal.websockets.manager import listener_manager, tts_manager
 
 JOIN_CODE = "SWITCH1"
 TRANSLATIONS = [("fr", "French"), ("de", "German")]
 SOURCES = {"en": "English", "es": "Spanish", "floor": "Floor Audio (Original)"}
 
-# Records every peer connection and WebSocket the page creates, and lets the fake
-# media server answer WHEP offers with a loopback peer that sends a tone.
+# Records every peer connection, WebSocket and scheduled TTS buffer the page creates,
+# and lets the fake media server answer WHEP offers with a loopback peer that sends a tone.
 PROBE_SCRIPT = r"""
 (() => {
   const NativePeer = window.RTCPeerConnection;
   const NativeSocket = window.WebSocket;
-  const probe = { peers: [], sockets: [], answerers: new Map() };
+  const probe = { peers: [], sockets: [], speech: [], answerers: new Map() };
   window.__probe = probe;
   window.__NativeWebSocket = NativeSocket;
+
+  // TTS speech is played through AudioBufferSourceNodes; the buffer length identifies the segment.
+  const nativeStart = AudioBufferSourceNode.prototype.start;
+  const nativeStop = AudioBufferSourceNode.prototype.stop;
+  AudioBufferSourceNode.prototype.start = function (...args) {
+    this.__speech = { frames: this.buffer ? this.buffer.length : 0, stopped: false, ended: false };
+    this.addEventListener('ended', () => { this.__speech.ended = true; });
+    probe.speech.push(this.__speech);
+    return nativeStart.apply(this, args);
+  };
+  AudioBufferSourceNode.prototype.stop = function (...args) {
+    if (this.__speech) this.__speech.stopped = true;
+    return nativeStop.apply(this, args);
+  };
 
   window.RTCPeerConnection = class extends NativePeer {
     constructor(...args) {
@@ -131,18 +147,63 @@ SNAPSHOT_SCRIPT = """
     audioLive: Boolean(track) && track.readyState === 'live' && !audio.paused,
     status: document.getElementById('status').textContent.trim(),
     lines: Array.from(document.querySelectorAll('#caption-history .untrusted-text')).map((el) => el.textContent),
+    speech: probe.speech.map((item) => ({ ...item })),
   };
 }
 """
 
-# Opens a socket outside the probe and reports its close code, or "open" if the server kept it.
+# Opens a socket outside the probe and reports its close code, "open" if the server
+# accepted it and kept it open, or "timeout" if the handshake never finished. A refused
+# socket is accepted and then closed at once, so "open" waits a moment after onopen.
 SOCKET_VERDICT_SCRIPT = """
 (path) => new Promise((resolve) => {
   const ws = new window.__NativeWebSocket('ws://' + location.host + path);
-  const timer = setTimeout(() => { ws.close(); resolve('open'); }, 1500);
-  ws.onclose = (event) => { clearTimeout(timer); resolve(event.code); };
+  let settled = false;
+  const finish = (verdict) => {
+    if (settled) return;
+    settled = true;
+    clearTimeout(deadline);
+    if (ws.readyState === WebSocket.CONNECTING || ws.readyState === WebSocket.OPEN) ws.close();
+    resolve(verdict);
+  };
+  const deadline = setTimeout(() => finish('timeout'), 5000);
+  ws.onopen = () => setTimeout(() => {
+    if (ws.readyState === WebSocket.OPEN) finish('open');
+  }, 750);
+  ws.onclose = (event) => finish(event.code);
 })
 """
+
+
+class PeerState(TypedDict):
+    channel: str | None
+    state: str
+    ice: str
+    signaling: str
+    playing: bool
+
+
+class SocketState(TypedDict):
+    path: str
+    readyState: int
+    closeCode: int | None
+
+
+class SpeechState(TypedDict):
+    frames: int
+    stopped: bool
+    ended: bool
+
+
+class Snapshot(TypedDict):
+    """What the probe reports about the page at one moment."""
+
+    peers: list[PeerState]
+    sockets: list[SocketState]
+    audioLive: bool
+    status: str
+    lines: list[str]
+    speech: list[SpeechState]
 
 
 class FakeMediaServer:
@@ -171,7 +232,7 @@ class FakeMediaServer:
     async def handle(self, route: Route) -> None:
         try:
             await self._handle(route)
-        except Exception as exc:
+        except PlaywrightError as exc:
             # Playwright swallows handler errors and leaves the request hanging; make them visible.
             self.errors.append(f"{route.request.method} {route.request.url}: {exc!r}")
             raise
@@ -252,8 +313,20 @@ async def choose(page: Page, label: str, option: str) -> None:
     await page.get_by_role("listbox", name=label).get_by_role("option", name=option, exact=True).click()
 
 
-async def snapshot(page: Page) -> dict:
+async def snapshot(page: Page) -> Snapshot:
     return await page.evaluate(SNAPSHOT_SCRIPT)
+
+
+async def speech_playing(page: Page, frames: int) -> bool:
+    """A TTS buffer of this length is scheduled and has neither been stopped nor finished."""
+    items = [item for item in (await snapshot(page))["speech"] if item["frames"] == frames]
+    return bool(items) and not any(item["stopped"] or item["ended"] for item in items)
+
+
+async def speech_stopped(page: Page, frames: int) -> bool:
+    """Every TTS buffer of this length was stopped by the page rather than left to play out."""
+    items = [item for item in (await snapshot(page))["speech"] if item["frames"] == frames]
+    return bool(items) and all(item["stopped"] for item in items)
 
 
 async def expect_only_channel(page: Page, media: FakeMediaServer, ch: Channels, code: str, target: str | None) -> None:
@@ -320,21 +393,32 @@ class Feeds:
         self.seqs[code] = self.seqs.get(code, 0) + 1
         return self.seqs[code]
 
-    async def caption(self, code: str, text: str, seq: int) -> None:
+    async def caption(self, code: str, text: str, seq: int, delay_ms: int = 0) -> None:
         message = {"type": "caption", "status": "final", "segment_id": uuid.uuid4().hex, "seq": seq, "text": text}
+        if delay_ms:
+            # Program-stream timing: the page holds the caption back by sync_offset_ms.
+            now_ms = int(time.time() * 1000)
+            message |= {"source_received_at_ms": now_ms, "sync_offset_ms": delay_ms, "server_sent_at_ms": now_ms}
         await listener_manager.broadcast(self.ch.booth(code), message)
 
-    async def translation(self, code: str, target: str, text: str, seq: int) -> None:
-        await tts_manager.broadcast_bundle(
-            self.ch.room_id,
-            target,
-            self.ch.booth(code),
-            b"",
-            segment_id=uuid.uuid4().hex,
-            seq=seq,
-            translation=text,
-            audio_pending=False,
-        )
+    async def translation(
+        self, code: str, target: str, text: str, seq: int, *, delay_ms: int = 0, speech_frames: int = 0
+    ) -> None:
+        """Send a TTS bundle; ``speech_frames`` of silent 24 kHz PCM make it a spoken segment."""
+        token = segment_timing.set(SegmentTiming(int(time.time() * 1000), delay_ms) if delay_ms else None)
+        try:
+            await tts_manager.broadcast_bundle(
+                self.ch.room_id,
+                target,
+                self.ch.booth(code),
+                bytes(2 * speech_frames),
+                segment_id=uuid.uuid4().hex,
+                seq=seq,
+                translation=text,
+                audio_pending=False,
+            )
+        finally:
+            segment_timing.reset(token)
 
     async def translated_caption(self, code: str, target: str, text: str, seq: int) -> None:
         message = {
@@ -346,6 +430,12 @@ class Feeds:
             "text": text,
         }
         await listener_manager.broadcast(self.ch.booth(code), message)
+
+    async def silent_bundles(self, code: str, seq: int, skip: str | None = None) -> None:
+        """TTS bundles with nothing to say, which the server sends for every segment and language."""
+        for lang, _ in TRANSLATIONS:
+            if lang != skip:
+                await self.translation(code, lang, "", seq)
 
     async def segment(self, code: str, caption: str, translations: dict[str, str]) -> int:
         seq = self.next_seq(code)
@@ -375,6 +465,13 @@ class Feeds:
                     text = f"stale {lang} translated_caption from {source} #{self.sent}"
                     stale.append(text)
                     await self.translated_caption(source, lang, text, seq)
+        if target:
+            # The chosen language's translated_caption arrives on its own, without a TTS bundle.
+            text = f"live {target} translated_caption from {code} #{self.sent}"
+            fresh.append(text)
+            seq = self.next_seq(code)
+            await self.translated_caption(code, target, text, seq)
+            await self.silent_bundles(code, seq)
         for text in fresh:
             await expect(page.locator("#caption-history")).to_contain_text(text)
         await asyncio.sleep(0.3)
@@ -458,12 +555,49 @@ async def rehearse(browser, origin: str, run: int, artifacts: Path | None) -> No
         await expect_only_channel(page, media, ch, "es", "de")
         await feeds.expect_routing(page, "es", "de")
 
+        # Captions and translations held back for the program delay arrive late on the current
+        # channel, and are dropped if the listener switches before they are due.
+        delay_ms = 1500
+        due = f"delayed caption on es #{run}"
+        due_seq = feeds.next_seq("es")
+        await feeds.caption("es", due, due_seq, delay_ms)
+        await feeds.silent_bundles("es", due_seq)
+        await asyncio.sleep(0.5)
+        assert due not in (await snapshot(page))["lines"], "delayed caption shown before it was due"
+        await expect(page.locator("#caption-history")).to_contain_text(due, timeout=5000)
+        held = [f"held caption on es #{run}", f"held de translation on es #{run}"]
+        held_seq = feeds.next_seq("es")
+        await feeds.caption("es", held[0], held_seq, delay_ms)
+        await feeds.translation("es", "de", held[1], held_seq, delay_ms=delay_ms)
+        await feeds.silent_bundles("es", held_seq, skip="de")
+        held_due = time.monotonic() + delay_ms / 1000
+
         # Floor audio starts WHEP without waiting for a booth to go live.
         await choose(page, "Source Audio", SOURCES["floor"])
         await expect_only_channel(page, media, ch, "floor", "de")
         await feeds.expect_routing(page, "floor", "de")
         await expect_no_retries(media, ch, page, ["es"])
+        await asyncio.sleep(max(0.0, held_due + 0.5 - time.monotonic()))
+        leaked = [text for text in held if text in (await snapshot(page))["lines"]]
+        assert not leaked, f"feed held for the old channel was shown after the switch: {leaked}"
+
+        # Speech already scheduled for the old language stops when the listener switches.
+        # The buffer length tells the segments apart: 4 s of German, 3 s of French at 24 kHz.
+        german, french = 96000, 72000
+        await page.get_by_text("Read translation aloud").click()
+        await expect(page.locator("#status")).to_contain_text("German TTS")
+        await until(lambda: ch.server_tts_sockets() == {ch.tts_key("floor", "de"): 1}, "TTS socket for read-aloud")
+        await feeds.translation("floor", "de", f"spoken de #{run}", feeds.next_seq("floor"), speech_frames=german)
+        await until(lambda: speech_playing(page, german), "German speech scheduled")
+        await choose(page, "Target Language", "French")
+        await until(lambda: speech_stopped(page, german), "German speech stopped after switching to French")
+        await until(lambda: ch.server_tts_sockets() == {ch.tts_key("floor", "fr"): 1}, "TTS socket moved to French")
+        await feeds.translation("floor", "fr", f"spoken fr #{run}", feeds.next_seq("floor"), speech_frames=french)
+        await until(lambda: speech_playing(page, french), "French speech scheduled")
         await choose(page, "Source Audio", "Spanish")
+        await until(lambda: speech_stopped(page, french), "French speech stopped after switching to Spanish")
+        await expect_only_channel(page, media, ch, "es", "fr")
+        await choose(page, "Target Language", "German")
         await expect_only_channel(page, media, ch, "es", "de")
         await shot("2-spanish")
 
