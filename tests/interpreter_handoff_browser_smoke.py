@@ -149,6 +149,11 @@ class Tab:
             "window.__pcs.filter((pc) => !pc.__closed && pc.getSenders().some((s) => s.track)).length"
         )
 
+    async def mic_source_count(self) -> int:
+        """Microphone source nodes this tab created, so the speaker check is not vacuous."""
+        kinds = await self.page.evaluate("window.__audioKinds")
+        return sum(1 for kind in kinds.values() if kind == "MediaStreamAudioSourceNode")
+
     async def mic_reaches_speakers(self) -> bool:
         """True if any microphone source node is wired, directly or not, to AudioContext.destination."""
         edges = await self.page.evaluate("window.__audioEdges")
@@ -206,7 +211,9 @@ async def main() -> None:
     async with get_session() as s:
         event = await create_event(s, slug="handoff-demo", display_name="Handoff rehearsal")
         room = await create_room(s, event_id=event.id, display_name="Main stage")
-        db_booth = await create_booth(s, event_id=event.id, room_id=room.id, language_code="en", language_name="English")
+        db_booth = await create_booth(
+            s, event_id=event.id, room_id=room.id, language_code="en", language_name="English"
+        )
         event_slug, room_id, booth_pk = event.slug, room.id, db_booth.id
     booth_id = make_booth_id(event_slug, room_id, "en")
     media_path = booth_id_to_mediamtx_path(booth_id)
@@ -335,7 +342,11 @@ async def main() -> None:
                 try:
                     joined_frame = await wait_for(f"{name} joined the booth", joined)
                 except AssertionError:
-                    banner = await page.locator("#error-banner").inner_text() if await page.locator("#error-banner").count() else ""
+                    banner = (
+                        await page.locator("#error-banner").inner_text()
+                        if await page.locator("#error-banner").count()
+                        else ""
+                    )
                     raise AssertionError(
                         f"{name} never joined: url={page.url} banner={banner!r} errors={tab.errors} failed={tab.failed_requests} "
                         f"frames={await tab.raw()}"
@@ -374,6 +385,30 @@ async def main() -> None:
             assert first_ticket["redeemed"] and first_ticket["entitled"], first_ticket
             assert first_ticket["participant_id"] == a.participant_id
             assert redeem_ticket(first_ticket["secret"], media_path) is None, "a publish ticket must be single-use"
+
+            # The role comes from the server-side session, not from what the client claims.
+            # A join that asks for a higher role than the session grants is refused.
+            forged_mark = await c.mark()
+            for claimed in ("room_coordinator", "admin"):
+                await c.send(
+                    {
+                        "type": "booth:join",
+                        "role": claimed,
+                        "participant_id": c.participant_id,
+                        "display_name": "Forged",
+                        "event_slug": event_slug,
+                        "room_id": room_id,
+                    }
+                )
+
+            async def forged_joins_refused():
+                errors = await c.frames("in", "booth:error", forged_mark)
+                return len(errors) >= 2 and all("does not permit joining as" in e["message"] for e in errors[:2])
+
+            await wait_for("forged-role joins are refused", forged_joins_refused)
+            state_c = await c.state()
+            me_c = next(p for p in state_c["participants"] if p["participant_id"] == c.participant_id)
+            assert me_c["role"] == "interpreter", f"a forged join changed C's role: {me_c}"
 
             # Interpreters who are not coordinators cannot take or hand out the slot, whatever role they claim.
             before = {t.name: await t.mark() for t in everyone}
@@ -451,6 +486,9 @@ async def main() -> None:
             assert booths.get_booth_sync(booth_id).active_interpreter_id == b.participant_id
 
             # No state any tab ever received had two live publishers, and no mic reached the speakers.
+            # The speaker check only means something if the tabs that held the mic built a mic audio graph.
+            for publisher in (a, b):
+                assert await publisher.mic_source_count() > 0, f"{publisher.name}: no mic audio graph was observed"
             for t in everyone:
                 for frame in await t.raw():
                     if frame["dir"] != "in":
@@ -458,7 +496,9 @@ async def main() -> None:
                     data = json.loads(frame["data"])
                     if data.get("type") in {"booth:state", "booth:joined"} and data.get("state"):
                         assert_one_active_publisher(data["state"], t.name)
-                assert not await t.mic_reaches_speakers(), f"{t.name}: microphone audio reached AudioContext.destination"
+                assert not await t.mic_reaches_speakers(), (
+                    f"{t.name}: microphone audio reached AudioContext.destination"
+                )
                 assert not t.errors, f"{t.name}: {t.errors}"
             if artifacts:
                 for t in everyone:
