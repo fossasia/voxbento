@@ -202,7 +202,7 @@ async def developer_dashboard(
             if parsed.get("user_id") == int(user["sub"]):
                 flash_data = parsed
         except (InvalidToken, ValueError, json.JSONDecodeError):
-            pass
+            logger.debug("Failed to decrypt dev_flash_secret cookie")
 
     clients = []
     webhooks = []
@@ -418,8 +418,8 @@ async def rotate_oauth_client_secret(
                 parsed = json.loads(decrypted.decode("utf-8"))
                 if parsed.get("user_id") == int(user["sub"]) and isinstance(parsed.get("secrets"), dict):
                     existing_secrets = parsed["secrets"]
-            except Exception:
-                pass
+            except (InvalidToken, ValueError, json.JSONDecodeError):
+                logger.debug("Failed to decrypt existing dev_flash_secret cookie")
         existing_secrets[client.client_id] = raw_secret
 
         # Post-Redirect-Get: deliver one-time flash secret through an encrypted short-lived cookie
