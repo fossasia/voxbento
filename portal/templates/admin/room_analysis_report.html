@@ -32,7 +32,7 @@
 </div>
 
 <div class="room-panel rs" id="analysis-report">
-  {% if report.status in ('pending', 'running') %}
+  {% if report.status in ('queued', 'pending', 'running') %}
   <div class="room-card" data-report-id="{{ report.id }}" data-report-status="{{ report.status }}">
     <p class="analysis-progress" role="status">Writing the report. This can take a minute.</p>
   </div>

@@ -146,6 +146,15 @@ def _assert_running(booth_id: str, changes: dict) -> None:
     assert booth_id not in changes
 
 
+def _assert_kept_after_a_failed_delete(booth_id: str, changes: dict) -> None:
+    # The revoke before the commit already closed its sessions and stopped its broadcast,
+    # but the booth keeps its state and captions since the delete never happened.
+    booth = booths.get_booth_sync(booth_id)
+    assert booth is not None and not booth.broadcast_unlocked and booth.chat_messages
+    assert booth_id in active_workers
+    assert changes[booth_id] is not None
+
+
 async def test_deleting_a_booth_ends_only_that_booth(site):
     ids = site["booth_ids"]
     async with _client() as c:
@@ -245,8 +254,9 @@ async def test_booths_keep_running_until_the_event_delete_succeeds(site, monkeyp
         )
         assert failed.headers["location"].endswith("events/?error=delete_failed")
         changes = await booths.take_changes()
-        for code in ("es", "fr", "de", "it"):
-            _assert_running(ids[code], changes)
+        for code in ("es", "fr", "de"):
+            _assert_kept_after_a_failed_delete(ids[code], changes)
+        _assert_running(ids["it"], changes)
 
         retried = await c.post(
             f"/admin/events/{site['main']}/delete", headers=ORIGIN, cookies=site["cookies"], follow_redirects=False
@@ -349,7 +359,7 @@ async def test_api_v1_room_delete_that_fails_leaves_its_booths_running(site, mon
     assert resp.status_code == 500
     changes = await booths.take_changes()
     for code in ("es", "fr"):
-        _assert_running(ids[code], changes)
+        _assert_kept_after_a_failed_delete(ids[code], changes)
 
 
 async def test_a_booth_still_leaves_memory_when_stopping_its_captions_fails(site, monkeypatch):
@@ -397,6 +407,22 @@ async def test_api_v1_room_update_ends_the_booths_of_dropped_languages(site):
         _assert_running(ids[code], changes)
 
 
+async def test_api_v1_room_update_closes_the_sockets_of_dropped_languages(site, monkeypatch):
+    from portal.websockets import revocation
+
+    closed = []
+
+    async def close(booth_id):
+        closed.append(booth_id)
+
+    monkeypatch.setattr(revocation.manager, "close_booth_sessions", close)
+    async with _client() as c:
+        resp = await c.put("/api/v1/events/main/rooms/hall", json={"target_languages": ["fr"]}, headers=API_HEADERS)
+    assert resp.status_code == 200, resp.text
+    ids = site["booth_ids"]
+    assert sorted(closed) == sorted([ids["es"], ids["nl"]])
+
+
 async def test_api_v1_room_update_refused_for_one_language_leaves_every_booth_running(site):
     """es comes before fr, so a check made booth by booth would end es before refusing fr."""
     ids = site["booth_ids"]
@@ -412,7 +438,7 @@ async def test_api_v1_room_update_refused_for_one_language_leaves_every_booth_ru
     assert ids["fr"] in active_workers
 
 
-async def test_api_v1_room_update_ends_the_booths_only_after_the_commit(site, monkeypatch):
+async def test_api_v1_room_update_stops_captions_only_after_the_commit(site, monkeypatch):
     order = []
     real_commit = AsyncSession.commit
 
