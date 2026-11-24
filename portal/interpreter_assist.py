@@ -46,6 +46,9 @@ MAX_CACHED_GLOSSARIES = 1024
 MAX_PENDING_CAPTIONS = 50
 #: Longest one booth's send may take. A stalled socket then delays only its own booth, by this much.
 DELIVERY_TIMEOUT_SECONDS = 5.0
+#: Longest a caption or a join waits for a glossary read; a slower read finishes in the background
+#: and the caption goes out with the last glossary known (or none).
+GLOSSARY_LOOKUP_TIMEOUT_SECONDS = 2.0
 #: Longest caption text forwarded; a forced finalisation stops near 50 words.
 MAX_CAPTION_CHARS = 2000
 #: Caption statuses forwarded to the booth.
@@ -248,12 +251,54 @@ class GlossaryCache:
         self._entries: dict[str, tuple[float, BoothGlossary]] = {}
         # Bumped by every invalidation: a read that overlaps one must not be cached.
         self._generation = 0
+        # One background read per booth, shared by everyone waiting for it.
+        self._inflight: dict[str, asyncio.Task[BoothGlossary | None]] = {}
         self._outage = OutageLog(logger, "interpreter_assist_glossary_unavailable")
 
     def peek(self, booth_id: str) -> BoothGlossary | None:
         """The last glossary read for this booth, fresh or not, without reading the database."""
         entry = self._entries.get(booth_id)
         return entry[1] if entry is not None else None
+
+    def read(self, booth_id: str) -> asyncio.Task[BoothGlossary | None]:
+        """The booth's glossary read running in the background, started if none is.
+
+        It finishes and fills the cache even when whoever started it stops waiting.
+        """
+        task = self._inflight.get(booth_id)
+        if task is None:
+            task = asyncio.create_task(self.refresh(booth_id))
+            self._inflight[booth_id] = task
+
+            def finished(done: asyncio.Task[BoothGlossary | None]) -> None:
+                if self._inflight.get(booth_id) is done:
+                    del self._inflight[booth_id]
+
+            task.add_done_callback(finished)
+            track_task(task)
+        return task
+
+    def pending(self, booth_id: str) -> asyncio.Task[BoothGlossary | None] | None:
+        """The booth's glossary read that is still running, if any."""
+        task = self._inflight.get(booth_id)
+        return task if task is not None and not task.done() else None
+
+    async def get_within(self, booth_id: str, timeout: float) -> BoothGlossary:
+        """Like ``get``, but never waits longer than ``timeout`` for the database.
+
+        A slower read keeps running in the background; meanwhile the last glossary read (or an
+        empty one) is returned, so captions and joins are never held up by it.
+        """
+        entry = self._entries.get(booth_id)
+        if entry is not None and self._clock() < entry[0]:
+            return entry[1]
+        try:
+            glossary = await asyncio.wait_for(asyncio.shield(self.read(booth_id)), timeout)
+        except TimeoutError:
+            glossary = None
+        if glossary is not None:
+            return glossary
+        return self.peek(booth_id) or EMPTY_GLOSSARY
 
     async def get(self, booth_id: str) -> BoothGlossary:
         entry = self._entries.get(booth_id)
@@ -314,8 +359,9 @@ class FloorCaptionRelay:
     ``offer`` never waits: listener captions must not slow down because a booth is slow. Each
     booth has its own queue and sender task, so captions reach it in the order they were made,
     and a booth whose socket stalls delays only itself (each send is bounded by
-    ``DELIVERY_TIMEOUT_SECONDS``). A partial still waiting when a newer caption arrives is
-    replaced, since only the newest partial matters on screen.
+    ``DELIVERY_TIMEOUT_SECONDS``, each glossary read by ``GLOSSARY_LOOKUP_TIMEOUT_SECONDS``).
+    A partial still waiting when a newer caption arrives is replaced, since only the newest
+    partial matters on screen.
     """
 
     def __init__(
@@ -325,12 +371,14 @@ class FloorCaptionRelay:
         glossary: GlossaryCache,
         max_pending: int = MAX_PENDING_CAPTIONS,
         delivery_timeout: float = DELIVERY_TIMEOUT_SECONDS,
+        glossary_timeout: float = GLOSSARY_LOOKUP_TIMEOUT_SECONDS,
     ) -> None:
         self._send = send
         self._booth_ids_in_room = booth_ids_in_room
         self._glossary = glossary
         self._max_pending = max_pending
         self._delivery_timeout = delivery_timeout
+        self._glossary_timeout = glossary_timeout
         self._queues: dict[str, deque[dict]] = {}
         self._workers: dict[str, asyncio.Task] = {}
         self._outage = OutageLog(logger, "interpreter_assist_floor_caption_failed")
@@ -370,25 +418,26 @@ class FloorCaptionRelay:
         try:
             queue = self._queues.get(booth_id)
             while queue:
-                payload = queue.popleft()
-                try:
-                    await asyncio.wait_for(self._deliver(booth_id, payload), self._delivery_timeout)
-                except TimeoutError:
-                    self._outage.failed()
-                    logger.debug("Floor caption to %s timed out", booth_id)
+                await self._deliver(booth_id, queue.popleft())
         finally:
             self._workers.pop(booth_id, None)
             if not self._queues.get(booth_id):
                 self._queues.pop(booth_id, None)
 
     async def _deliver(self, booth_id: str, payload: dict) -> None:
-        # The glossary read and manager.broadcast handle database and socket failures themselves;
-        # these are the ones that can still reach here. Anything else is a bug and is raised.
+        # A slow glossary read and a slow socket are bounded separately: the read can never use
+        # up the send's time, so a healthy socket still gets the caption, marked with the last
+        # glossary known. The glossary read and manager.broadcast handle database and socket
+        # failures themselves; these are the ones that can still reach here. Anything else is a
+        # bug and is raised.
         try:
-            glossary = await self._glossary.get(booth_id)
+            glossary = await self._glossary.get_within(booth_id, self._glossary_timeout)
             message = floor_caption_message(payload, glossary.terms)
             if message is not None:
-                await self._send(booth_id, dict(message))
+                await asyncio.wait_for(self._send(booth_id, dict(message)), self._delivery_timeout)
+        except TimeoutError:
+            self._outage.failed()
+            logger.debug("Floor caption to %s timed out", booth_id)
         except (SQLAlchemyError, OSError, RuntimeError):
             self._outage.failed()
             logger.debug("Floor caption not delivered to %s", booth_id, exc_info=True)

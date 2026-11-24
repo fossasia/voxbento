@@ -22,8 +22,9 @@ from portal.booth_publish import TICKET_TTL_SECS, issue_ticket
 from portal.config import settings
 from portal.globals import booths
 from portal.interpreter_assist import (
-    EMPTY_GLOSSARY,
     FLOOR_LANGUAGE,
+    GLOSSARY_LOOKUP_TIMEOUT_SECONDS,
+    BoothGlossary,
     FloorCaptionRelay,
     GlossaryCache,
     GlossaryMessage,
@@ -722,7 +723,7 @@ tts_manager = TTSConnectionManager()
 # a role in the receiving booth get the room's glossary and floor captions.
 glossary_cache = GlossaryCache()
 #: Longest a join waits for the booth's glossary; a slower read follows as booth:glossary.
-JOIN_GLOSSARY_TIMEOUT = 2.0
+JOIN_GLOSSARY_TIMEOUT = GLOSSARY_LOOKUP_TIMEOUT_SECONDS
 floor_caption_relay = FloorCaptionRelay(
     send=manager.broadcast, booth_ids_in_room=manager.booth_ids_in_room, glossary=glossary_cache
 )
@@ -741,16 +742,17 @@ async def notify_glossary_changed(event_slug: str, room_id: int) -> None:
 
 async def _join_glossary(ws: WebSocket, booth_id: str) -> GlossaryMessage:
     """The glossary for booth:joined, never holding the join up for longer than JOIN_GLOSSARY_TIMEOUT."""
-    try:
-        return (await asyncio.wait_for(glossary_cache.get(booth_id), JOIN_GLOSSARY_TIMEOUT)).message()
-    except TimeoutError:
-        track_task(asyncio.create_task(_send_glossary_when_read(ws, booth_id)))
-        return (glossary_cache.peek(booth_id) or EMPTY_GLOSSARY).message()
+    glossary = await glossary_cache.get_within(booth_id, JOIN_GLOSSARY_TIMEOUT)
+    pending = glossary_cache.pending(booth_id)
+    if pending is not None:
+        # The read was too slow for the join; it keeps running and its result follows.
+        track_task(asyncio.create_task(_send_glossary_when_read(ws, pending)))
+    return glossary.message()
 
 
-async def _send_glossary_when_read(ws: WebSocket, booth_id: str) -> None:
+async def _send_glossary_when_read(ws: WebSocket, pending: asyncio.Task[BoothGlossary | None]) -> None:
     """Follow a join that went out without its glossary once the slow read finishes."""
-    glossary = await glossary_cache.refresh(booth_id)
+    glossary = await asyncio.shield(pending)
     session = manager.get_session(ws)
     if glossary is None or session is None or session.revoked:
         return

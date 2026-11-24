@@ -206,12 +206,13 @@ async def test_a_database_failure_keeps_the_last_glossary():
 
 
 class _StaticGlossary(GlossaryCache):
-    def __init__(self, glossaries: dict[str, BoothGlossary]) -> None:
-        super().__init__()
-        self._glossaries = glossaries
+    """A real cache whose reads return fixed glossaries instead of reading the database."""
 
-    async def get(self, booth_id: str) -> BoothGlossary:
-        return self._glossaries.get(booth_id, BoothGlossary())
+    def __init__(self, glossaries: dict[str, BoothGlossary]) -> None:
+        async def load(booth_id: str) -> BoothGlossary:
+            return glossaries.get(booth_id, BoothGlossary())
+
+        super().__init__(loader=load)
 
 
 def _caption(status: str, text: str = "", **extra) -> dict:
@@ -670,3 +671,42 @@ async def test_a_slow_glossary_read_does_not_hold_up_the_join(monkeypatch):
         await asyncio.sleep(0.01)
     assert ws.sent and ws.sent[0]["type"] == "booth:glossary"
     assert ws.sent[0]["terms"][0]["target_term"] == "discours"
+
+
+@pytest.mark.anyio
+async def test_a_slow_glossary_read_does_not_cost_a_healthy_booth_its_captions():
+    release = asyncio.Event()
+    reads = 0
+
+    async def slow_loader(_booth_id: str) -> BoothGlossary:
+        nonlocal reads
+        reads += 1
+        await release.wait()
+        return BoothGlossary(terms=(_term(1, "keynote", "discours"),))
+
+    sent: list[dict] = []
+
+    async def send(_booth_id: str, message: dict) -> None:
+        sent.append(message)
+
+    relay = FloorCaptionRelay(
+        send,
+        lambda slug, room: ["conf-3-fr"],
+        GlossaryCache(loader=slow_loader),
+        delivery_timeout=0.2,
+        glossary_timeout=0.05,
+    )
+    relay.offer("conf-3-floor", _caption("final", "The keynote starts.", segment_id="a"))
+    relay.offer("conf-3-floor", _caption("final", "The keynote ends.", segment_id="b"))
+    await relay.idle()
+
+    # Both captions went out, without marks, while the read was still running; one read was shared.
+    assert [(m["text"], m["hits"]) for m in sent] == [("The keynote starts.", []), ("The keynote ends.", [])]
+    assert reads == 1
+
+    release.set()
+    await asyncio.sleep(0.01)  # the background read finishes and fills the cache
+    relay.offer("conf-3-floor", _caption("final", "Another keynote.", segment_id="c"))
+    await relay.idle()
+    assert sent[-1]["hits"][0]["target_term"] == "discours"
+    assert reads == 1
