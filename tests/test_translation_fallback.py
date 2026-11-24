@@ -313,6 +313,60 @@ async def test_fallback_starts_within_upstream_lag_budget_when_primary_slot_is_b
 
 
 @pytest.mark.anyio
+async def test_listener_departure_during_primary_slot_wait_does_not_trip_circuit(pipeline, monkeypatch):
+    env = pipeline
+    monkeypatch.setattr(worker_module, "PRIMARY_SLOT_WAIT_TIMEOUT", 0.03)
+    listening = True
+    monkeypatch.setattr("portal.websockets.manager.tts_manager.has_listeners", lambda *args: listening)
+    monkeypatch.setattr("portal.websockets.manager.listener_manager.has_listeners", lambda *args: False)
+    scheduler = worker_module.scheduler_for("self_hosted", "primary", env.event.id)
+    blocker = scheduler.admit(env.room.id, "busy:fr")
+    await blocker.__aenter__()
+    task = asyncio.create_task(
+        env.worker._translate_and_broadcast(
+            env.event,
+            env.room,
+            "self_hosted",
+            "primary",
+            None,
+            "fr",
+            "French",
+            "en",
+            "English",
+            env.segment.id,
+            "Hello",
+            "fallback-1-floor",
+            "uuid",
+            1,
+            "fallback-1-fr",
+            fallback=FallbackTranslation("local", "nllb-200-distilled-600M", None),
+            recheck_audience=True,
+        )
+    )
+    try:
+
+        async def wait_for_slot_request():
+            while scheduler.waiting() == 0:
+                if task.done():
+                    await task
+                    pytest.fail("worker finished before waiting for the primary slot")
+                await asyncio.sleep(0)
+
+        await asyncio.wait_for(wait_for_slot_request(), 1)
+        listening = False
+        await asyncio.wait_for(task, 1)
+        circuit = next(iter(circuit_module.CIRCUITS.values()))
+        assert circuit.failures == 0 and circuit.active == 0
+        assert not env.primary.calls and not env.backup.calls and not env.bundle.await_args_list
+    finally:
+        blocker.close()
+        if not task.done():
+            task.cancel()
+            await asyncio.gather(task, return_exceptions=True)
+    assert scheduler.idle()
+
+
+@pytest.mark.anyio
 async def test_slower_resolution_cannot_let_a_later_segment_reserve_delivery_first(pipeline, monkeypatch):
     env = pipeline
     env.primary.result = "Bonjour"

@@ -703,6 +703,12 @@ class TranslationWorker:
                     translated_text, downloading = await infer(job, provider, model, api_key)
                 except StaleTranslationJob:
                     raise
+                except TimeoutError:
+                    if recheck_audience and target_booth_id:
+                        nobody_listens = _audience(room.id, lang_code, booth_id_str, target_booth_id) is None
+                    if not nobody_listens:
+                        logger.warning("Primary translation slot wait timed out for room %s", room.id)
+                    translated_text, downloading = None, False
                 except Exception as exc:
                     logger.warning("Primary translation failed for room %s (%s)", room.id, type(exc).__name__)
                     translated_text, downloading = None, False
