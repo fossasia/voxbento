@@ -659,7 +659,8 @@ async def test_editing_changes_booths_but_keeps_live_ones(admin_cookie, event_ro
 
 
 @pytest.mark.anyio
-async def test_editing_keeps_a_fine_tuned_model_for_the_same_provider(admin_cookie, event_room):
+async def test_editing_keeps_a_fine_tuned_model_for_the_same_provider(admin_cookie, event_room, monkeypatch):
+    monkeypatch.setattr(settings, "local_translation_models", "nllb-200-distilled-600M,custom-local-model")
     event, room = event_room
     async with get_session() as s:
         db_room = await s.get(Room, room.id)
@@ -1114,6 +1115,10 @@ async def test_ai_settings_tab_explains_a_room_without_ai(admin_cookie, event_ro
 @pytest.mark.parametrize(
     ("fields", "choice"),
     [
+        (
+            {"floor_source": "program_ingest", "program_key_hash": "k", "program_session_secret_hash": "s"},
+            room_setup.AUDIO_DESK,
+        ),
         ({}, ""),
         ({"meeting_agent_enabled": True}, room_setup.AUDIO_MEETING),
         ({"floor_source": "program_ingest", "program_key_hash": "k"}, room_setup.AUDIO_ENCODER),

@@ -17,6 +17,7 @@ from portal.booth_identity import (
 )
 from portal.roles import Role, can_go_live, can_set_active, role_label
 from portal.tasks import track_task
+from portal.webhooks.events import SESSION_STATUS_CHANGED
 
 # Booth roles come from portal.roles, the one place roles are defined (#757).
 ParticipantRole = Role
@@ -578,6 +579,12 @@ class BoothRegistry:
         language: str,
         channel_id: str,
     ) -> dict:
+        """Update broadcast unlock state for a booth and notify webhooks.
+
+        When unlocked is False, disconnects all active participants and sets
+        the ingest status to disconnected. Asynchronously enqueues a
+        session.status_changed webhook event.
+        """
         async with self._lock:
             booth = self._get_or_create_booth(booth_id, language, channel_id)
             booth.broadcast_unlocked = unlocked
@@ -601,7 +608,7 @@ class BoothRegistry:
 
             track_task(
                 asyncio.create_task(
-                    _wh.enqueue_webhook("session.status_changed", {"booth_id": booth_id, "is_active": unlocked})
+                    _wh.enqueue_webhook(SESSION_STATUS_CHANGED, {"booth_id": booth_id, "is_active": unlocked})
                 )
             )
 
@@ -879,6 +886,18 @@ class BoothRegistry:
             booth = self._booths.get(booth_id)
             return booth.as_public_dict() if booth is not None else None
 
+    def lock_broadcast_sync(self, booth_id: str) -> None:
+        """Stop the booth's broadcast at once, without awaiting the lock.
+
+        Booth deletion calls this before it awaits anything, so a publish ticket
+        issued just before (e.g. to a participant in reconnect grace) is refused.
+        Safe without the lock: nothing here awaits, so no other coroutine runs meanwhile.
+        """
+        booth = self._booths.get(booth_id)
+        if booth is not None and booth.broadcast_unlocked:
+            booth.broadcast_unlocked = False
+            self._changed(booth)
+
     def get_booth_sync(self, booth_id: str) -> Booth | None:
         """Return the raw Booth dataclass without locking.
 
@@ -905,6 +924,24 @@ class BoothRegistry:
             self._booths.pop(booth_id, None)
             self.attendance.forget_booth(booth_id)
             self._mark_dirty(booth_id)
+
+    async def remove_idle_booths(self, event_slug: str, room_id: int, language_codes: list[str]) -> str | None:
+        """Remove the booths for *language_codes* in one step, unless one of them is live.
+
+        Returns the first live language code and removes nothing, or None once all are removed.
+        Checking and removing under one lock leaves no gap for a booth to go live in between.
+        """
+        booth_ids = [make_booth_id(event_slug, room_id, code) for code in language_codes]
+        async with self._lock:
+            for code, booth_id in zip(language_codes, booth_ids, strict=True):
+                booth = self._booths.get(booth_id)
+                if booth is not None and booth.ingest_status == "connected":
+                    return code
+            for booth_id in booth_ids:
+                self._booths.pop(booth_id, None)
+                self.attendance.forget_booth(booth_id)
+                self._mark_dirty(booth_id)
+        return None
 
     async def validate_booth_event(self, booth_id: str, expected_event: str) -> None:
         """Raise PermissionError if *booth_id* does not belong to *expected_event*.

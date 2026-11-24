@@ -163,7 +163,9 @@ async def test_switch_states_and_safeguards(admin):
     assert "You can&#39;t deactivate your own account" in switch(html, "active", admin["id"])
     assert "You can&#39;t unverify your own email address" in switch(html, "verified", admin["id"])
     assert 'aria-checked="true"' in switch(html, "verified", host)
+    assert 'title="Deactivate this user account"' in switch(html, "active", host)
     assert 'aria-checked="false"' in switch(html, "verified", stub)
+    assert 'title="Reactivate this user account"' in switch(html, "active", off)
     # Accounts that aren't set up or are deactivated can't be granted access from the list.
     assert "disabled" in switch(html, "hosting", stub)
     assert "disabled" in switch(html, "hosting", off) and "disabled" in switch(html, "admin", off)
@@ -482,6 +484,13 @@ async def test_user_page_sections_roles_and_owned_events(admin):
     assert "Event owner" not in html.split(">Roles in events</h2>")[1].split("</section>")[0]
     assert "Grant hosting access" in html and "Make Admin" in html
     assert "Deactivate" in html and 'data-confirm-match="lukas@example.org"' in html
+    assert 'title="Deactivate this user account"' in html
+    assert 'title="Permanently delete this user"' in html
+    grant_button = re.search(
+        r'<button type="submit" class="btn btn-outline ud-btn"[^>]*>Grant hosting access</button>',
+        html,
+    )
+    assert grant_button and "title=" not in grant_button.group(0)
     assert "toggle-owner" not in html
 
 
