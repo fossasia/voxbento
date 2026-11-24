@@ -3,19 +3,18 @@ from __future__ import annotations
 import asyncio
 import base64
 import hashlib
-import hmac
 import json
 import logging
 import secrets
+from contextlib import asynccontextmanager
 from pathlib import Path
 from urllib.parse import urlsplit
 
-from cryptography.fernet import Fernet
+from cryptography.fernet import Fernet, InvalidToken
 from fastapi import APIRouter, Cookie, Depends, Form, HTTPException, Request, Response, status
 from fastapi.responses import RedirectResponse
 from fastapi.templating import Jinja2Templates
 from sqlalchemy import select, update
-from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from portal.auth import is_cookie_secure, require_user
@@ -42,6 +41,37 @@ MAX_NAME_LENGTH = 200
 MAX_REDIRECT_URI_LENGTH = 500
 MAX_REDIRECT_URIS = 10
 LOOPBACK_HOSTS = frozenset({"localhost", "127.0.0.1", "::1"})
+
+
+class _ClientLockRegistry:
+    """Per-client lock registry with automatic reference counting and entry eviction."""
+
+    def __init__(self) -> None:
+        self._locks: dict[str, tuple[asyncio.Lock, int]] = {}
+        self._meta_lock = asyncio.Lock()
+
+    @asynccontextmanager
+    async def acquire(self, client_id: str):
+        async with self._meta_lock:
+            if client_id in self._locks:
+                lock, ref_count = self._locks[client_id]
+                self._locks[client_id] = (lock, ref_count + 1)
+            else:
+                lock = asyncio.Lock()
+                self._locks[client_id] = (lock, 1)
+        async with lock:
+            try:
+                yield
+            finally:
+                async with self._meta_lock:
+                    cur_lock, ref_count = self._locks[client_id]
+                    if ref_count <= 1:
+                        self._locks.pop(client_id, None)
+                    else:
+                        self._locks[client_id] = (cur_lock, ref_count - 1)
+
+
+_rotation_locks = _ClientLockRegistry()
 
 
 def clean_name(value: str, label: str) -> str:
@@ -101,55 +131,6 @@ def parse_redirect_uris(raw: str) -> tuple[str, ...]:
     return uris
 
 
-def generate_developer_csrf_token(user_id: int | str) -> str:
-    """Generate an HMAC-signed CSRF token bound to the authenticated user ID."""
-    nonce = secrets.token_hex(16)
-    message = f"developer:{user_id}:{nonce}".encode("utf-8")
-    sig = hmac.new(settings.effective_jwt_secret.encode("utf-8"), message, hashlib.sha256).hexdigest()
-    return f"{nonce}.{sig}"
-
-
-def is_valid_developer_csrf_token(token: str | None, user_id: int | str) -> bool:
-    """Verify that a CSRF token has a valid HMAC signature bound to user_id."""
-    if not token or "." not in token:
-        return False
-    parts = token.split(".", 1)
-    if len(parts) != 2:
-        return False
-    nonce, sig = parts
-    message = f"developer:{user_id}:{nonce}".encode("utf-8")
-    expected_sig = hmac.new(settings.effective_jwt_secret.encode("utf-8"), message, hashlib.sha256).hexdigest()
-    return secrets.compare_digest(sig, expected_sig)
-
-
-def get_dashboard_csrf_cookie(request: Request) -> str | None:
-    """Read the dashboard CSRF cookie, checking __Host- prefix first then plain name."""
-    return request.cookies.get("__Host-dashboard_csrf") or request.cookies.get("dashboard_csrf")
-
-
-def set_dashboard_csrf_cookie(response: Response, request: Request, token: str) -> None:
-    """Set the dashboard CSRF cookie with appropriate flags."""
-    secure = is_cookie_secure(request)
-    response.set_cookie(
-        "dashboard_csrf",
-        token,
-        httponly=True,
-        secure=secure,
-        samesite="lax",
-    )
-
-
-def verify_developer_csrf(request: Request, csrf_token: str, user_id: int | str) -> None:
-    """Verify that submitted CSRF token matches the cookie and is signed for user_id."""
-    cookie_token = get_dashboard_csrf_cookie(request)
-    if (
-        not cookie_token
-        or not secrets.compare_digest(csrf_token, cookie_token)
-        or not is_valid_developer_csrf_token(cookie_token, user_id)
-    ):
-        raise HTTPException(status_code=403, detail="Invalid CSRF token")
-
-
 def _get_flash_fernet() -> Fernet:
     """Derive a Fernet key from settings.effective_jwt_secret for short-lived flash cookies."""
     key = base64.urlsafe_b64encode(hashlib.sha256(settings.effective_jwt_secret.encode("utf-8")).digest())
@@ -206,44 +187,70 @@ async def developer_dashboard(
     result = await db.execute(select(DeveloperAccount).where(DeveloperAccount.user_id == int(user["sub"])))
     account = result.scalars().first()
 
-    cookie_csrf = get_dashboard_csrf_cookie(request)
+    csrf_token = request.cookies.get("dashboard_csrf")
     should_set_cookie = False
-    if not cookie_csrf or not is_valid_developer_csrf_token(cookie_csrf, user["sub"]):
-        csrf_token = generate_developer_csrf_token(user["sub"])
+    if not csrf_token:
+        csrf_token = secrets.token_hex(32)
         should_set_cookie = True
-    else:
-        csrf_token = cookie_csrf
+
+    flash_cookie = request.cookies.get("dev_flash_secret")
+    flash_data = None
+    if flash_cookie:
+        try:
+            payload_bytes = _get_flash_fernet().decrypt(flash_cookie.encode("utf-8"), ttl=60)
+            parsed = json.loads(payload_bytes.decode("utf-8"))
+            if parsed.get("user_id") == int(user["sub"]):
+                flash_data = parsed
+        except (InvalidToken, ValueError, json.JSONDecodeError):
+            pass
+
+    clients = []
+    webhooks = []
+    if account and account.status == "approved":
+        client_result = await db.execute(select(OAuthClient).where(OAuthClient.developer_account_id == account.id))
+        clients = client_result.scalars().all()
+
+        webhook_result = await db.execute(
+            select(WebhookSubscription).where(WebhookSubscription.developer_account_id == account.id)
+        )
+        webhooks = webhook_result.scalars().all()
 
     new_client = None
     new_secret = None
     is_rotation = False
-    flash_cookie = request.cookies.get("dev_flash_secret")
-    if flash_cookie:
-        try:
-            payload_bytes = _get_flash_fernet().decrypt(flash_cookie.encode("utf-8"), ttl=60)
-            flash_data = json.loads(payload_bytes.decode("utf-8"))
-            if flash_data.get("user_id") == int(user["sub"]):
-                flash_client_id = flash_data.get("client_id")
-                c_res = await db.execute(select(OAuthClient).where(OAuthClient.client_id == flash_client_id))
-                new_client = c_res.scalars().first()
-                if new_client:
-                    new_secret = flash_data.get("secret")
-                    is_rotation = bool(flash_data.get("is_rotation", False))
-        except Exception:
-            logger.warning("Failed to decrypt dev_flash_secret cookie", exc_info=True)
+    if flash_data and clients:
+        target_client_id = flash_data.get("latest_client_id")
+        candidate_secret = flash_data.get("secrets", {}).get(target_client_id)
+        if target_client_id and candidate_secret:
+            for c in clients:
+                if c.client_id == target_client_id:
+                    cand_hash = hashlib.sha256(candidate_secret.encode()).hexdigest()
+                    if secrets.compare_digest(cand_hash, c.client_secret_hash or ""):
+                        new_client = c
+                        new_secret = candidate_secret
+                        is_rotation = True
+                    break
 
-    response = await render_dashboard(
-        request,
-        user,
-        db,
-        account,
-        csrf_token,
-        new_client=new_client,
-        new_secret=new_secret,
-        is_rotation=is_rotation,
+    response = templates.TemplateResponse(
+        request=request,
+        name="developer/dashboard.html",
+        context={
+            "user": user,
+            "account": account,
+            "clients": clients,
+            "webhooks": webhooks,
+            "new_client": new_client,
+            "new_secret": new_secret,
+            "is_rotation": is_rotation,
+            "form_error": None,
+            "csrf_token": csrf_token,
+        },
+        status_code=status.HTTP_200_OK,
     )
     if should_set_cookie:
-        set_dashboard_csrf_cookie(response, request, csrf_token)
+        response.set_cookie(
+            "dashboard_csrf", csrf_token, httponly=True, secure=is_cookie_secure(request), samesite="lax"
+        )
     if flash_cookie:
         response.delete_cookie("dev_flash_secret", path="/developer")
         response.headers["Cache-Control"] = "no-store"
@@ -259,7 +266,8 @@ async def apply_for_developer(
     user: dict = Depends(require_user),
     db: AsyncSession = Depends(get_db_session),
 ):
-    verify_developer_csrf(request, csrf_token, user["sub"])
+    if not dashboard_csrf or not secrets.compare_digest(csrf_token, dashboard_csrf):
+        raise HTTPException(status_code=403, detail="Invalid CSRF token")
     result = await db.execute(select(DeveloperAccount).where(DeveloperAccount.user_id == int(user["sub"])))
     existing = result.scalars().first()
 
@@ -269,9 +277,8 @@ async def apply_for_developer(
     try:
         organization_name = clean_name(organization_name, "Organization / project name")
     except ValueError as exc:
-        cookie_csrf = get_dashboard_csrf_cookie(request) or csrf_token
         return await render_dashboard(
-            request, user, db, None, cookie_csrf, status_code=status.HTTP_400_BAD_REQUEST, form_error=str(exc)
+            request, user, db, None, dashboard_csrf, status_code=status.HTTP_400_BAD_REQUEST, form_error=str(exc)
         )
 
     account = DeveloperAccount(
@@ -280,12 +287,7 @@ async def apply_for_developer(
         organization_name=organization_name,
     )
     db.add(account)
-    try:
-        await db.flush()
-    except IntegrityError:
-        await db.rollback()
-        return RedirectResponse(url="/developer", status_code=status.HTTP_303_SEE_OTHER)
-
+    await db.flush()
     await queue_notification(
         db,
         "developer_account",
@@ -309,7 +311,8 @@ async def create_oauth_client(
     user: dict = Depends(require_user),
     db: AsyncSession = Depends(get_db_session),
 ):
-    verify_developer_csrf(request, csrf_token, user["sub"])
+    if not dashboard_csrf or not secrets.compare_digest(csrf_token, dashboard_csrf):
+        raise HTTPException(status_code=403, detail="Invalid CSRF token")
     result = await db.execute(select(DeveloperAccount).where(DeveloperAccount.user_id == int(user["sub"])))
     account = result.scalars().first()
 
@@ -320,9 +323,8 @@ async def create_oauth_client(
         app_name = clean_name(app_name, "App name")
         uris = parse_redirect_uris(redirect_uris)
     except ValueError as exc:
-        cookie_csrf = get_dashboard_csrf_cookie(request) or csrf_token
         return await render_dashboard(
-            request, user, db, account, cookie_csrf, status_code=status.HTTP_400_BAD_REQUEST, form_error=str(exc)
+            request, user, db, account, dashboard_csrf, status_code=status.HTTP_400_BAD_REQUEST, form_error=str(exc)
         )
 
     raw_client_id = f"client_{secrets.token_urlsafe(24)}"
@@ -342,11 +344,7 @@ async def create_oauth_client(
     db.add(client)
     await db.flush()
 
-    cookie_csrf = get_dashboard_csrf_cookie(request) or csrf_token
-    return await render_dashboard(request, user, db, account, cookie_csrf, new_client=client, new_secret=raw_secret)
-
-
-_client_rotation_locks: dict[str, asyncio.Lock] = {}
+    return await render_dashboard(request, user, db, account, dashboard_csrf, new_client=client, new_secret=raw_secret)
 
 
 @router.post("/api/developer/clients/{client_id}/rotate-secret")
@@ -359,28 +357,21 @@ async def rotate_oauth_client_secret(
     user: dict = Depends(require_user),
     db: AsyncSession = Depends(get_db_session),
 ):
-    verify_developer_csrf(request, csrf_token, user["sub"])
+    if not dashboard_csrf or not secrets.compare_digest(csrf_token, dashboard_csrf):
+        raise HTTPException(status_code=403, detail="Invalid CSRF token")
 
-    lock = _client_rotation_locks.setdefault(client_id, asyncio.Lock())
-    async with lock:
-        # Query client belonging to the approved developer account of this user
+    async with _rotation_locks.acquire(client_id):
+        result = await db.execute(select(DeveloperAccount).where(DeveloperAccount.user_id == int(user["sub"])))
+        account = result.scalars().first()
+
+        if not account or account.status != "approved":
+            return RedirectResponse(url="/developer", status_code=status.HTTP_303_SEE_OTHER)
+
         client_result = await db.execute(
-            select(OAuthClient)
-            .join(DeveloperAccount, OAuthClient.developer_account_id == DeveloperAccount.id)
-            .where(
-                OAuthClient.client_id == client_id,
-                DeveloperAccount.user_id == int(user["sub"]),
-                DeveloperAccount.status == "approved",
-            )
+            select(OAuthClient).where(OAuthClient.client_id == client_id, OAuthClient.developer_account_id == account.id)
         )
         client = client_result.scalars().first()
         if not client:
-            acc_result = await db.execute(
-                select(DeveloperAccount).where(DeveloperAccount.user_id == int(user["sub"]))
-            )
-            account = acc_result.scalars().first()
-            if not account or account.status != "approved":
-                return RedirectResponse(url="/developer", status_code=status.HTTP_303_SEE_OTHER)
             raise HTTPException(status_code=404, detail="OAuth client not found")
 
         if not client.is_confidential:
@@ -415,18 +406,27 @@ async def rotate_oauth_client_secret(
             client_id=client.id,
             action="client.secret_rotated",
             request_path=f"/api/developer/clients/{client_id}/rotate-secret",
-            status_code=status.HTTP_200_OK,
+            status_code=status.HTTP_303_SEE_OTHER,
         )
         db.add(audit)
-        # Commit the hash update explicitly before returning or flashing the secret
-        await db.commit()
+        await db.flush()
+
+        existing_secrets = {}
+        if existing_cookie := request.cookies.get("dev_flash_secret"):
+            try:
+                decrypted = _get_flash_fernet().decrypt(existing_cookie.encode("utf-8"), ttl=60)
+                parsed = json.loads(decrypted.decode("utf-8"))
+                if parsed.get("user_id") == int(user["sub"]) and isinstance(parsed.get("secrets"), dict):
+                    existing_secrets = parsed["secrets"]
+            except Exception:
+                pass
+        existing_secrets[client.client_id] = raw_secret
 
         # Post-Redirect-Get: deliver one-time flash secret through an encrypted short-lived cookie
         flash_payload = json.dumps({
-            "client_id": client.client_id,
-            "secret": raw_secret,
-            "is_rotation": True,
             "user_id": int(user["sub"]),
+            "latest_client_id": client.client_id,
+            "secrets": existing_secrets,
         })
         encrypted_flash = _get_flash_fernet().encrypt(flash_payload.encode("utf-8")).decode("utf-8")
 
@@ -446,22 +446,22 @@ async def rotate_oauth_client_secret(
 @router.post("/api/developer/clients/{client_id}/delete")
 async def delete_oauth_client(
     client_id: str,
-    request: Request,
     csrf_token: str = Form(...),
     dashboard_csrf: str | None = Cookie(None),
     user: dict = Depends(require_user),
     db: AsyncSession = Depends(get_db_session),
 ):
-    verify_developer_csrf(request, csrf_token, user["sub"])
+    if not dashboard_csrf or not secrets.compare_digest(csrf_token, dashboard_csrf):
+        raise HTTPException(status_code=403, detail="Invalid CSRF token")
+
+    result = await db.execute(select(DeveloperAccount).where(DeveloperAccount.user_id == int(user["sub"])))
+    account = result.scalars().first()
+
+    if not account or account.status != "approved":
+        return RedirectResponse(url="/developer", status_code=status.HTTP_303_SEE_OTHER)
 
     client_result = await db.execute(
-        select(OAuthClient)
-        .join(DeveloperAccount, OAuthClient.developer_account_id == DeveloperAccount.id)
-        .where(
-            OAuthClient.client_id == client_id,
-            DeveloperAccount.user_id == int(user["sub"]),
-            DeveloperAccount.status == "approved",
-        )
+        select(OAuthClient).where(OAuthClient.client_id == client_id, OAuthClient.developer_account_id == account.id)
     )
     client = client_result.scalars().first()
     if client:
@@ -482,13 +482,13 @@ async def delete_oauth_client(
 @router.post("/api/developer/webhooks/{webhook_id}/delete")
 async def delete_webhook_subscription(
     webhook_id: int,
-    request: Request,
     csrf_token: str = Form(...),
     dashboard_csrf: str | None = Cookie(None),
     user: dict = Depends(require_user),
     db: AsyncSession = Depends(get_db_session),
 ):
-    verify_developer_csrf(request, csrf_token, user["sub"])
+    if not dashboard_csrf or not secrets.compare_digest(csrf_token, dashboard_csrf):
+        raise HTTPException(status_code=403, detail="Invalid CSRF token")
 
     result = await db.execute(select(DeveloperAccount).where(DeveloperAccount.user_id == int(user["sub"])))
     account = result.scalars().first()

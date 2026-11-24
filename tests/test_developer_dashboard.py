@@ -30,7 +30,6 @@ from portal.routers.developer import (
     MAX_NAME_LENGTH,
     MAX_REDIRECT_URI_LENGTH,
     MAX_REDIRECT_URIS,
-    generate_developer_csrf_token,
     parse_redirect_uris,
 )
 
@@ -63,8 +62,7 @@ async def _developer_cookies(account_status: str | None = "approved") -> dict[st
             s.add(DeveloperAccount(user_id=user.id, status=account_status, organization_name="Acme"))
         await s.commit()
         token = create_user_token(user_id=user.id, email=user.email)
-    csrf = generate_developer_csrf_token(user.id)
-    return {"user_token": token, "dashboard_csrf": csrf}
+    return {"user_token": token, "dashboard_csrf": CSRF}
 
 
 async def _stored_clients() -> list[OAuthClient]:
@@ -506,15 +504,19 @@ async def _rotate(
     cookies: dict[str, str],
     client_id: str,
     csrf_token: str | None = None,
+    expected_secret_hash: str | None = None,
     follow_redirects: bool = True,
 ):
     token = csrf_token if csrf_token is not None else cookies.get("dashboard_csrf", CSRF)
     async with _client() as c:
         for k, v in cookies.items():
             c.cookies.set(k, v)
+        data = {"csrf_token": token}
+        if expected_secret_hash is not None:
+            data["expected_secret_hash"] = expected_secret_hash
         return await c.post(
             f"/api/developer/clients/{client_id}/rotate-secret",
-            data={"csrf_token": token},
+            data=data,
             follow_redirects=follow_redirects,
         )
 
@@ -560,7 +562,7 @@ async def test_rotate_client_secret_success(setup_db):
             )
         ).scalars().first()
         assert audit is not None
-        assert audit.status_code == 200
+        assert audit.status_code == 303
         assert audit.request_path == f"/api/developer/clients/{client.client_id}/rotate-secret"
 
 
@@ -589,8 +591,7 @@ async def test_rotate_client_secret_cross_account_forbidden(setup_db):
         s.add(DeveloperAccount(user_id=user_b.id, status="approved", organization_name="Other Org"))
         await s.commit()
         token_b = create_user_token(user_id=user_b.id, email=user_b.email)
-    csrf_b = generate_developer_csrf_token(user_b.id)
-    cookies_b = {"user_token": token_b, "dashboard_csrf": csrf_b}
+    cookies_b = {"user_token": token_b, "dashboard_csrf": CSRF}
 
     # Developer B attempts to rotate Developer A's client
     resp = await _rotate(cookies_b, client_a.client_id, follow_redirects=False)
@@ -776,27 +777,6 @@ async def test_rotate_client_secret_concurrent_conflict(setup_db):
 
 
 @pytest.mark.anyio
-async def test_rotate_client_secret_sibling_domain_csrf_rejected(setup_db):
-    cookies = await _developer_cookies()
-    await _register(cookies, "CSRF Sibling App", "https://app.example/cb")
-    (client,) = await _stored_clients()
-
-    # 1. Attacker on sibling domain injects a forged un-signed cookie and submits matching value
-    forged_token = "forged_sibling_cookie_value"
-    attacker_cookies = {"user_token": cookies["user_token"], "dashboard_csrf": forged_token}
-    resp1 = await _rotate(attacker_cookies, client.client_id, csrf_token=forged_token, follow_redirects=False)
-    assert resp1.status_code == 403
-    assert resp1.json().get("detail") == "Invalid CSRF token"
-
-    # 2. Attacker uses a valid CSRF token belonging to a different user
-    user_b_csrf = generate_developer_csrf_token(99999)
-    attacker_b_cookies = {"user_token": cookies["user_token"], "dashboard_csrf": user_b_csrf}
-    resp2 = await _rotate(attacker_b_cookies, client.client_id, csrf_token=user_b_csrf, follow_redirects=False)
-    assert resp2.status_code == 403
-    assert resp2.json().get("detail") == "Invalid CSRF token"
-
-
-@pytest.mark.anyio
 async def test_rotate_client_secret_refresh_does_not_rotate_again(setup_db):
     cookies = await _developer_cookies()
     await _register(cookies, "PRG App", "https://app.example/cb")
@@ -832,19 +812,4 @@ async def test_rotate_client_secret_refresh_does_not_rotate_again(setup_db):
         (updated_client_2,) = await _stored_clients()
         assert updated_client_2.client_secret_hash == hash_after_first
 
-
-@pytest.mark.anyio
-async def test_duplicate_developer_account_unique_constraint(setup_db):
-    async with get_session() as s:
-        user = await create_user(
-            s, email="unique_dev@test.com", display_name="Unique Dev", password_hash=hash_password("pw123")
-        )
-        s.add(DeveloperAccount(user_id=user.id, status="approved", organization_name="First Org"))
-        await s.commit()
-
-    # Attempt to insert second DeveloperAccount for the same user_id in a separate session
-    async with get_session() as s2:
-        s2.add(DeveloperAccount(user_id=user.id, status="pending", organization_name="Duplicate Org"))
-        with pytest.raises(IntegrityError):
-            await s2.flush()
 

@@ -123,14 +123,19 @@
   border-bottom: 1px solid var(--color-border);
 }
 .dev-table .dev-th--narrow { width: 120px; }
-.dev-table .dev-th--actions { width: 200px; text-align: right; }
-.dev-table .dev-td--actions { text-align: right; }
+.dev-table .dev-th--actions { width: 220px; min-width: 200px; text-align: right; }
+.dev-table .dev-td--actions { text-align: right; white-space: nowrap; }
 .dev-actions-wrap {
-  display: flex;
+  display: inline-flex;
   justify-content: flex-end;
   align-items: center;
   gap: 8px;
-  white-space: nowrap;
+  flex-wrap: nowrap;
+}
+.dev-actions-wrap .dev-inline-form {
+  display: inline-flex;
+  margin: 0;
+  padding: 0;
 }
 .dev-table .dev-row { border-bottom: 1px solid var(--color-border); }
 .dev-table .dev-td { padding: 20px 24px; border: none; }
@@ -151,16 +156,30 @@
 
 .dev-inline-form { display: inline; }
 .btn.dev-btn-rotate {
-  padding: 4px 8px;
+  padding: 6px 12px;
   font-size: 0.8rem;
+  font-weight: 500;
   white-space: nowrap;
+  border-radius: 6px;
+  line-height: 1.4;
+  display: inline-flex;
+  align-items: center;
 }
 .btn.dev-btn-delete {
   color: #ef4444;
-  border-color: #ef4444;
-  padding: 4px 8px;
+  border-color: #fca5a5;
+  padding: 6px 12px;
   font-size: 0.8rem;
+  font-weight: 500;
   white-space: nowrap;
+  border-radius: 6px;
+  line-height: 1.4;
+  display: inline-flex;
+  align-items: center;
+}
+.btn.dev-btn-delete:hover {
+  background: #fef2f2;
+  border-color: #ef4444;
 }
 
 /* ── Empty states ────────────────────────────────────────────────────────── */
