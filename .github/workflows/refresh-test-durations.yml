@@ -1,0 +1,88 @@
+name: Refresh stable test durations
+
+on:
+  schedule:
+    - cron: "17 3 * * 1"
+  workflow_dispatch:
+    inputs:
+      force:
+        description: Open a PR even when the predicted gain is under ten seconds
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+concurrency:
+  group: refresh-stable-test-durations
+  cancel-in-progress: false
+
+jobs:
+  measure:
+    if: github.repository == 'fossasia/voxbento' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    outputs:
+      refresh: ${{ steps.compare.outputs.refresh }}
+      baseline: ${{ steps.compare.outputs.baseline }}
+    env:
+      MEDIAMTX_AUTH_HOOK_SECRET: ci-test-mediamtx-hook-secret
+      API_KEY_ENCRYPTION_KEY: ci-test-encryption-key-must-be-32-chars-long
+    steps:
+      - uses: actions/checkout@v7.0.1
+        with:
+          ref: dev
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@v7
+      - run: uv sync --locked --python 3.13 --dev
+      - name: Measure the complete suite on Linux
+        run: uv run pytest tests/ -q --store-durations --clean-durations --durations-path "$RUNNER_TEMP/durations.json"
+      - name: Compare the predicted slowest shards
+        id: compare
+        shell: bash
+        run: |
+          uv run pytest tests/ --collect-only -q -p no:warnings > "$RUNNER_TEMP/collection"
+          uv run python .github/scripts/duration-gain.py tests/.test_durations "$RUNNER_TEMP/durations.json" "$RUNNER_TEMP/collection" 6 | tee "$RUNNER_TEMP/comparison"
+          cat "$RUNNER_TEMP/comparison" >> "$GITHUB_STEP_SUMMARY"
+          echo "baseline=$(git rev-parse HEAD:tests/.test_durations)" >> "$GITHUB_OUTPUT"
+          grep '^refresh=' "$RUNNER_TEMP/comparison" >> "$GITHUB_OUTPUT"
+      - uses: actions/upload-artifact@v7.0.2
+        if: steps.compare.outputs.refresh == 'true' || inputs.force
+        with:
+          name: stable-test-durations
+          path: ${{ runner.temp }}/durations.json
+
+  open-pr:
+    needs: measure
+    if: needs.measure.outputs.refresh == 'true' || inputs.force
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pull-requests: write
+    steps:
+      - uses: actions/checkout@v7.0.1
+        with:
+          ref: dev
+      - uses: actions/download-artifact@v7
+        with:
+          name: stable-test-durations
+          path: ${{ runner.temp }}/measured
+      - name: Check dev still uses the measured baseline
+        id: current
+        env:
+          BASELINE: ${{ needs.measure.outputs.baseline }}
+        run: |
+          if [ "$(git rev-parse HEAD:tests/.test_durations)" = "$BASELINE" ]; then
+            cp "$RUNNER_TEMP/measured/durations.json" tests/.test_durations
+            echo "apply=true" >> "$GITHUB_OUTPUT"
+          fi
+      - uses: peter-evans/create-pull-request@3ffccacd46053766916f087ce41d627c0b8cf2d1 # v8
+        if: steps.current.outputs.apply == 'true'
+        with:
+          token: ${{ secrets.DURATIONS_PR_TOKEN || github.token }}
+          base: dev
+          branch: chore/refresh-test-durations
+          add-paths: tests/.test_durations
+          commit-message: Refresh stable pytest durations
+          title: Refresh stable pytest durations
+          body: Updates the six pytest shards using the [Linux timing run](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}).
+          delete-branch: true
