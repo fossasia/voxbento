@@ -291,7 +291,7 @@ async def rotate_oauth_client_secret(
     db.add(audit)
     await db.flush()
 
-    return await render_dashboard(
+    response = await render_dashboard(
         request,
         user,
         db,
@@ -301,6 +301,8 @@ async def rotate_oauth_client_secret(
         new_secret=raw_secret,
         is_rotation=True,
     )
+    response.headers["Cache-Control"] = "no-store"
+    return response
 
 
 @router.post("/api/developer/clients/{client_id}/delete")

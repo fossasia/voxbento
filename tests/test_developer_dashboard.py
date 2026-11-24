@@ -516,6 +516,7 @@ async def test_rotate_client_secret_success(setup_db):
     # Rotate the secret
     resp = await _rotate(cookies, client.client_id)
     assert resp.status_code == 200
+    assert resp.headers["Cache-Control"] == "no-store"
     assert "Client Secret Rotated" in resp.text
     assert f"The secret for OAuth Client <strong>{client.name}</strong> has been rotated." in resp.text
 
@@ -691,7 +692,8 @@ async def test_active_access_tokens_survive_secret_rotation(setup_db):
     assert resp_before.status_code == 200
 
     # Rotate client secret
-    await _rotate(cookies, client.client_id)
+    rotation_response = await _rotate(cookies, client.client_id)
+    assert rotation_response.status_code == 200
 
     # Verify token still works after rotation
     async with _client() as http:
