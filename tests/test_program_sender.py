@@ -139,7 +139,7 @@ async def test_start_rejected_when_program_ingest_source_is_live(environment):
 
 @pytest.mark.anyio
 @pytest.mark.parametrize("mode", ["rtmps", "rtmps_relay"])
-async def test_confirmed_transport_switch_requires_an_idle_floor(environment, mode):
+async def test_confirmed_transport_switch_requires_an_idle_floor(environment, monkeypatch, mode):
     client, event, room, media = environment
     async with get_session() as session:
         stored = await session.get(Room, room.id)
@@ -151,8 +151,20 @@ async def test_confirmed_transport_switch_requires_an_idle_floor(environment, mo
     url = sender_url(event, room)
     assert (await client.post(url, json={"switch_from": mode})).status_code == 409
     media.clear()
+    stop_relay = AsyncMock(side_effect=httpx.ConnectError("unavailable"))
+    monkeypatch.setattr(ingest.program_relay, "stop_relay", stop_relay)
+    if mode == "rtmps_relay":
+        assert (await client.post(url, json={"switch_from": mode})).status_code == 502
+        async with get_session() as session:
+            stored = await session.get(Room, room.id)
+            assert stored.program_ingest_mode == mode
+            assert stored.program_session_secret_hash is None
+            assert stored.program_key_hash == "old-encoder-key"
+    stop_relay.side_effect = None
     started = await client.post(url, json={"switch_from": mode})
     assert started.status_code == 200, started.text
+    assert stop_relay.await_count == (2 if mode == "rtmps_relay" else 0)
+    assert await ingest.start_current_relay(room.id, path, "obsolete") is None
     async with get_session() as session:
         stored = await session.get(Room, room.id)
         assert stored.program_ingest_mode == "whip"

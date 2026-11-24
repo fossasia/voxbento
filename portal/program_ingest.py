@@ -527,6 +527,9 @@ async def open_sender_session(
         except httpx.RequestError:
             logger.warning("program_ingest floor_bot_unreachable room_id=%s", room.id)
         current_path = await media_path(path)
+    if switching_transport and room.program_ingest_mode == program_relay.RELAY_MODE:
+        # Require the relay stop to succeed before issuing any browser credential.
+        await program_relay.stop_relay(room.id)
     await ensure_floor_path(path)
     # Clear a lingering bot source on takeover, or a stale program-ingest reservation.
     await kick(path, current_path.source if current_path else None)
@@ -850,6 +853,15 @@ async def stop_deleted_event_relays() -> None:
             logger.warning("program_ingest deleted_event_relay_stop_failed room_id=%s", room_id)
 
 
+async def start_current_relay(room_id: int, source: str, url: str) -> dict | None:
+    # The room can switch to WHIP between collecting wanted relays and starting them.
+    async with room_lock(room_id), get_session() as session:
+        room = await session.get(Room, room_id)
+        if not room or room.floor_source != "program_ingest" or room.program_ingest_mode != program_relay.RELAY_MODE:
+            return None
+        return await program_relay.start_relay(room_id, source, url)
+
+
 async def reconcile_once() -> None:
     async with get_session() as session:
         rows = (
@@ -908,7 +920,7 @@ async def reconcile_once() -> None:
             logger.warning("program_ingest reconcile_failed room_id=%s", room_id)
     if settings.program_relay_enabled:
         # Also runs with no relay rooms so orphaned relays from a restart or switch are stopped.
-        await program_relay.sync(wanted, relay_rooms)
+        await program_relay.sync(wanted, relay_rooms, start_current_relay)
     for room_id in set(health) - set(ids):
         health.pop(room_id, None)
 

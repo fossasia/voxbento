@@ -503,6 +503,7 @@ function scheduleReconnect(delayMs) {
 async function connect(switchFrom) {
   if (!sending || connecting) return;
   const gen = generation;
+  let switchPending = Boolean(switchFrom);
   connecting = true;
   if (attempt > 0) setState('reconnecting', `Connection dropped. Reconnecting (attempt ${attempt})…`);
   else setState('connecting', 'Connecting to the floor…');
@@ -511,6 +512,7 @@ async function connect(switchFrom) {
     await releaseSession();
     if (gen !== generation) return;
     const session = await mintSession(switchFrom);
+    switchPending = false;
     if (switchFrom) document.getElementById('sender-switch-label').hidden = true;
     if (gen !== generation) {
       // Stopped while minting: give back the session nobody will use.
@@ -532,6 +534,11 @@ async function connect(switchFrom) {
         : error.message;
       await stop(true);
       setState('error', hint);
+      return;
+    }
+    if (switchPending) {
+      await stop(true);
+      setState('error', `${error.message} Click Start sending to try again.`);
       return;
     }
     attempt += 1;
