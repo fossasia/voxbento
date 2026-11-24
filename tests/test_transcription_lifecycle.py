@@ -260,6 +260,30 @@ async def test_without_glossary_terms_the_provider_gets_the_callers_config(mock_
 
 
 @pytest.mark.anyio
+async def test_providers_other_than_local_skip_the_glossary_lookup(mock_providers):
+    """Only local Whisper reads the terms, so the others must not wait for the database (#1164)."""
+    booth_id = "test_booth_cloud_no_glossary"
+    seen_configs = []
+
+    async def mock_run_stream(process, language, model, config, *args):
+        seen_configs.append(config)
+        await asyncio.sleep(1000)
+
+    mock_providers["local"].run_stream = mock_run_stream
+    lookup = AsyncMock(return_value=("MediaMTX",))
+    original = ProviderConfig(api_key="key")
+
+    with patch("portal.transcription.worker.load_vocabulary_terms", lookup):
+        await start_transcription_worker("evt", "fr", booth_id, None, "openai", "base", original, room_id=5)
+        await asyncio.sleep(0.2)
+        await stop_transcription_worker(booth_id)
+
+    lookup.assert_not_awaited()
+    assert seen_configs == [original]
+    assert seen_configs[0] is original
+
+
+@pytest.mark.anyio
 async def test_a_failing_glossary_lookup_does_not_stop_the_worker(mock_providers):
     """A broken glossary read means captions without terms, not a dead caption worker (#1164)."""
     booth_id = "test_booth_glossary_error"

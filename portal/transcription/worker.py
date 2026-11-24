@@ -120,7 +120,13 @@ class TranscriptionWorkerSession:
         retry_count = 0
         try:
             # Looked up once for the whole session: ffmpeg retries below reuse the same terms.
-            terms = await load_vocabulary_terms(self.event_slug, self.room_id, self.language_code)
+            # Only the local Whisper provider reads them. For the others the lookup would just delay
+            # the start of ffmpeg and the captions (more so when the database is busy).
+            terms = (
+                await load_vocabulary_terms(self.event_slug, self.room_id, self.language_code)
+                if self.provider_name == "local"
+                else ()
+            )
             if terms:
                 self.config = dataclasses.replace(self.config, terms=terms)
                 logger.info(
