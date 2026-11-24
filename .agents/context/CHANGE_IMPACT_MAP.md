@@ -93,6 +93,9 @@
 2. `portal/static/js/interpreter-booth.js` — client `sendMessage`, `onMessage` handling
 3. `portal/booth_state.py` — if new state fields added to `Booth.as_public_dict()`
 4. `tests/test_booth_state.py` — if new state operations added
+5. `tests/listener_channel_switch_browser.py` — if caption, TTS or WHEP behaviour on the
+   listener page changes. It switches channels in real Chromium and checks that only the
+   chosen channel's peer and sockets remain (CI: `.github/workflows/listener-browser.yml`).
 
 ---
 
