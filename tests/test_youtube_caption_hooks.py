@@ -141,8 +141,9 @@ async def translate(data, booth_id_str: str) -> list[str]:
     with (
         patch.object(worker, "_call_llm", new=fake_llm),
         patch("portal.tts.worker.synthesize", new=synth),
-        patch("portal.websockets.manager.TTSConnectionManager.broadcast_bundle", new_callable=AsyncMock),
+        patch("portal.websockets.manager.TTSConnectionManager.broadcast_bundle", new_callable=AsyncMock) as bundle,
     ):
+        data["bundle"] = bundle
         await worker.handle_translation(
             room_id=data["room"].id,
             segment_id=data["segment"].id,
@@ -196,6 +197,9 @@ async def test_a_language_only_youtube_needs_gets_no_speech_synthesis(room_with_
     booth = f"{data['event'].slug}-{data['room'].id}-floor"
     assert await translate(data, booth) == ["French"]
     data["synth"].assert_not_awaited()
+    # The text bundle says no speech follows, so a listener who joins now does not wait for one.
+    (text_bundle,) = [call for call in data["bundle"].await_args_list if call.args[1] == "fr"]
+    assert text_bundle.kwargs["audio_pending"] is False
 
 
 @pytest.mark.anyio
@@ -205,6 +209,13 @@ async def test_a_language_with_a_tts_listener_still_gets_speech(room_with_langua
     with patch("portal.websockets.manager.TTSConnectionManager.has_listeners", return_value=True):
         assert sorted(await translate(data, booth)) == ["French", "Spanish"]
     assert data["synth"].await_count == 2
+    # Each text bundle says speech follows.
+    text_bundles = [
+        call
+        for call in data["bundle"].await_args_list
+        if call.args[1] in ("fr", "es") and "audio_pending" in call.kwargs
+    ]
+    assert [call.kwargs["audio_pending"] for call in text_bundles] == [True, True]
 
 
 @pytest.mark.anyio

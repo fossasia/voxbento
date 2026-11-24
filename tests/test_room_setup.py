@@ -1154,6 +1154,10 @@ async def test_ai_settings_tab_explains_a_room_without_ai(admin_cookie, event_ro
 @pytest.mark.parametrize(
     ("fields", "choice"),
     [
+        (
+            {"floor_source": "program_ingest", "program_key_hash": "k", "program_session_secret_hash": "s"},
+            room_setup.AUDIO_DESK,
+        ),
         ({}, ""),
         ({"meeting_agent_enabled": True}, room_setup.AUDIO_MEETING),
         ({"floor_source": "program_ingest", "program_key_hash": "k"}, room_setup.AUDIO_ENCODER),

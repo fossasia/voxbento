@@ -235,7 +235,8 @@ function make(tagName, id) {
 );
 
 const roomSelect = document.getElementById('room-select');
-roomSelect.innerHTML = '<option value="">-- Select Room --</option><option value="1">Main Hall</option>';
+roomSelect.innerHTML =
+  '<option value="">-- Select Room --</option><option value="1">Main Hall</option><option value="2">Recovery Hall</option>';
 const captionModeSelect = document.getElementById('caption-mode-select');
 captionModeSelect.innerHTML =
   '<option value="original">Original</option><option value="translated">Translated</option>';
@@ -265,10 +266,20 @@ const listenerData = make('script', 'listener-data');
 listenerData.textContent = JSON.stringify({
   eventSlug: 'demo',
   shareUrl: 'https://example.test/listener/demo',
-  rooms: [{ id: 1, floor_tts_enabled: false }],
+  rooms: [{ id: 1, floor_tts_enabled: true }, { id: 2, floor_tts_enabled: true }],
   booths: [
     { id: 'floor_1', room_id: 1, language_code: 'floor', language_name: 'Floor Audio', whep_url: 'http://mtx/floor/whep', audio_delay_ms: 0 },
     { id: 2, room_id: 1, language_code: 'es', language_name: 'Spanish', whep_url: 'http://mtx/es/whep', audio_delay_ms: 0 },
+    {
+      id: 'floor_2',
+      room_id: 2,
+      language_code: 'floor',
+      language_name: 'Floor Audio',
+      whep_url: 'http://mtx/floor2/whep',
+      audio_delay_ms: 0,
+      translation_enabled: true,
+      translation_languages: [{ code: 'fr', name: 'French', tts_enabled: true }],
+    },
   ],
 });
 
@@ -307,10 +318,32 @@ function captionsSocket() {
 }
 
 let boothState = { ingest_status: 'disconnected' };
+const realSetTimeout = setTimeout;
+const realClearTimeout = clearTimeout;
 function fetch(url) {
   const body = url.includes('/audio-delay') ? { audio_delay_ms: 0 } : boothState;
   return Promise.resolve({ ok: true, json: () => Promise.resolve(body) });
 }
+
+// Translated speech: each decoded segment is recorded in the order the
+// listener hands it to the scheduler. A segment's PCM length identifies it.
+const scheduledSegments = [];
+class FakeAudioContext {
+  constructor() {
+    this.state = 'running';
+  }
+  createBuffer(channels, length) {
+    return { length, copyToChannel() {} };
+  }
+}
+const AudioScheduler = {
+  create: () => ({
+    scheduleBuffer(buffer) {
+      scheduledSegments.push(buffer.length / 10);
+    },
+    reset() {},
+  }),
+};
 
 Object.assign(globalThis, {
   document,
@@ -327,14 +360,11 @@ Object.assign(globalThis, {
     setTimeout,
     setInterval: () => 0,
     addEventListener: () => {},
-    AudioContext: class {
-      constructor() {
-        this.state = 'running';
-      }
-    },
-    AudioScheduler: { create: () => ({ reset() {} }) },
+    AudioContext: FakeAudioContext,
+    AudioScheduler,
   },
 });
+require(path.join(__dirname, '..', 'portal', 'static', 'js', 'tts-parser.js'));
 
 // A translation bundle as the server frames it: version byte, header length, JSON header, no audio.
 function bundleFrame(header) {
@@ -360,7 +390,80 @@ function choose(select, value) {
 }
 
 function flush() {
-  return new Promise((resolve) => setTimeout(resolve, 0));
+  return new Promise((resolve) => realSetTimeout(resolve, 0));
+}
+
+// Timers the test runs by hand, so retry delays are checked without waiting.
+const fakeTimers = new Set();
+function useFakeTimers() {
+  globalThis.setTimeout = (fn, ms) => {
+    const timer = { fn, ms: ms || 0 };
+    fakeTimers.add(timer);
+    return timer;
+  };
+  globalThis.clearTimeout = (timer) => {
+    if (!fakeTimers.delete(timer)) realClearTimeout(timer);
+  };
+}
+function pendingTimers(ms) {
+  return [...fakeTimers].filter((t) => t.ms === ms).length;
+}
+function runAllTimers() {
+  for (const timer of [...fakeTimers]) {
+    fakeTimers.delete(timer);
+    timer.fn();
+  }
+}
+function runTimers(ms) {
+  for (const timer of [...fakeTimers]) {
+    if (timer.ms !== ms) continue;
+    fakeTimers.delete(timer);
+    timer.fn();
+  }
+}
+
+function sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+// Poll until the listener reaches the expected state. Gives up after the
+// timeout so the assertion that follows reports the failure instead of hanging.
+async function waitFor(predicate, timeoutMs = 2000) {
+  const deadline = Date.now() + timeoutMs;
+  while (!predicate() && Date.now() < deadline) await sleep(10);
+}
+
+function ttsSocket() {
+  return sockets.filter((s) => s.url.includes('/ws/tts/')).pop();
+}
+
+// A binary TTS bundle as the server frames it: version byte, big-endian JSON
+// header length, JSON header, then 16-bit PCM. A segment carries seq * 10
+// samples so the scheduler stub can tell which segment it received.
+function ttsFrame(header, withAudio) {
+  const json = Buffer.from(JSON.stringify(header));
+  const pcm = Buffer.alloc(withAudio ? header.seq * 10 * 2 : 0, 1);
+  const frame = Buffer.alloc(5 + json.length + pcm.length);
+  frame[0] = 1;
+  frame.writeUInt32BE(json.length, 1);
+  json.copy(frame, 5);
+  pcm.copy(frame, 5 + json.length);
+  return frame.buffer.slice(frame.byteOffset, frame.byteOffset + frame.length);
+}
+
+// The floor pipeline sends each final sentence on the captions feed and then
+// as two TTS bundles: text-ready (audio pending) and audio-ready.
+function sendFloorSegment(seq, segmentId, text, translation, stage) {
+  const header = { seq, segment_id: segmentId, caption: text, translation, error: null };
+  if (stage === 'caption') {
+    captionsSocket().onmessage({
+      data: JSON.stringify({ type: 'caption', status: 'final', seq, segment_id: segmentId, text }),
+    });
+  } else if (stage === 'text') {
+    ttsSocket().onmessage({ data: ttsFrame({ ...header, audio_pending: true }, false) });
+  } else {
+    ttsSocket().onmessage({ data: ttsFrame({ ...header, audio_pending: false }, true) });
+  }
 }
 
 async function run() {
@@ -506,6 +609,68 @@ async function run() {
   choose(roomSelect, '');
   assert(!waitingText.classList.contains('listener-hidden'), 'the placeholder comes back after clearing the room');
 
+  console.log('\n── Floor transcription recovery (#1061) ──');
+
+  // A listener stays on floor audio with French speech while the room's floor
+  // transcription restarts. The restarted worker continues the room's stored
+  // sequence, so new sentences arrive as 3, 4, 5 with new segment IDs.
+  choose(roomSelect, '2');
+  choose(languageSelect, 'http://mtx/floor2/whep');
+  const ttsToggle = document.getElementById('tts-sync-toggle');
+  ttsToggle.checked = true;
+  ttsToggle.dispatchEvent(new Event('change'));
+  choose(document.getElementById('translation-lang-select'), 'fr');
+  assert(Boolean(ttsSocket()) && ttsSocket().url.endsWith('/ws/tts/2/fr/demo-2-floor'), 'French speech opens the room TTS feed');
+
+  // Before the restart: sentence 1 plays; sentence 2's audio is still being synthesized.
+  for (const stage of ['caption', 'text', 'audio']) sendFloorSegment(1, 'before-1', 'Before 1', 'Avant 1', stage);
+  for (const stage of ['caption', 'text']) sendFloorSegment(2, 'before-2', 'Before 2', 'Avant 2', stage);
+  await waitFor(() => scheduledSegments.length >= 1);
+  assert(JSON.stringify(scheduledSegments) === '[1]', 'the first sentence plays before the restart, got ' + JSON.stringify(scheduledSegments));
+
+  // After the restart, then the delayed audio for sentence 2 from the old worker.
+  for (const seq of [3, 4, 5]) {
+    for (const stage of ['caption', 'text', 'audio']) {
+      sendFloorSegment(seq, 'after-' + seq, 'After ' + seq, 'Après ' + seq, stage);
+    }
+  }
+  await sleep(60); // fixed wait: this checks that nothing plays yet
+  assert(JSON.stringify(scheduledSegments) === '[1]', 'recovered sentences wait for the delayed pre-restart audio');
+  sendFloorSegment(2, 'before-2', 'Before 2', 'Avant 2', 'audio');
+  await waitFor(() => scheduledSegments.length >= 5);
+  assert(
+    JSON.stringify(scheduledSegments) === '[1,2,3,4,5]',
+    'speech continues across the restart in sentence order, got ' + JSON.stringify(scheduledSegments),
+  );
+
+  // A late copy of already played audio must not replay or reorder speech.
+  sendFloorSegment(1, 'before-1', 'Before 1', 'Avant 1', 'audio');
+  sendFloorSegment(3, 'after-3', 'After 3', 'Après 3', 'audio');
+  await sleep(60); // fixed wait: this checks that nothing is replayed
+  assert(JSON.stringify(scheduledSegments) === '[1,2,3,4,5]', 'late audio from expired sentences is not replayed');
+
+  const rows = historyBox.children.map((row) => ({
+    id: row.id,
+    source: row.querySelector('.caption-src-text').textContent,
+    translation: row.querySelector('.translation-text').textContent,
+  }));
+  assert(rows.length === 5, 'every sentence keeps its own history row, got ' + rows.length);
+  [
+    ['Before 1', 'Avant 1'],
+    ['Before 2', 'Avant 2'],
+    ['After 3', 'Après 3'],
+    ['After 4', 'Après 4'],
+    ['After 5', 'Après 5'],
+  ].forEach(([source, translation], index) => {
+    const row = rows[index] || {};
+    assert(
+      row.id === 'segment-seq-' + (index + 1) &&
+        (row.source || '').endsWith(source) &&
+        (row.translation || '').endsWith(translation),
+      'history row ' + (index + 1) + ' still shows "' + source + '" / "' + translation + '", got ' + JSON.stringify(row),
+    );
+  });
+
   console.log('\n── Empty translations (#1184) ──');
 
   await import(pathToFileURL(path.join(__dirname, '..', 'portal', 'static', 'js', 'tts-parser.js')).href);
@@ -526,15 +691,225 @@ async function run() {
     'an empty translation shows no message, got "' + historyBox.textContent + '"',
   );
 
-  // The queue must already be past the empty segment, or this one would wait behind it.
+  // Skipped so the language catches up with the speaker (#1189): no message either.
   bundles.onmessage({
-    data: bundleFrame({ segment_id: 'b', seq: 2, caption: 'Hello', translation: '', error: 'pipeline_failed' }),
+    data: bundleFrame({ segment_id: 'b', seq: 2, caption: 'So.', translation: '', error: 'stale' }),
+  });
+  assert(historyBox.textContent.includes('So.'), 'the original caption of a skipped segment still shows');
+  assert(
+    !historyBox.textContent.includes('(Translation'),
+    'a skipped segment shows no message, got "' + historyBox.textContent + '"',
+  );
+
+  // The queue must already be past the empty and skipped segments, or this one would wait behind them.
+  bundles.onmessage({
+    data: bundleFrame({ segment_id: 'c', seq: 3, caption: 'Hello', translation: '', error: 'pipeline_failed' }),
   });
   assert(
     !historyBox.textContent.includes('(Translation'),
     'a failed translation shows nothing, got "' + historyBox.textContent + '"',
   );
-  assert(historyBox.textContent.includes('Hello'), 'the original caption of a failed translation still shows');
+  assert(
+    historyBox.textContent.includes('Hello'),
+    'the original caption of a failed translation still shows, right after an empty and a skipped one',
+  );
+
+  console.log('\n── Translation feed reconnects ──');
+
+  useFakeTimers();
+  const feedSockets = () => sockets.filter((s) => s.url.includes('/ws/tts/'));
+
+  // Count new audio contexts and schedulers from here on, and keep the page's context.
+  let audioContexts = 0;
+  let schedulerCreates = 0;
+  let schedulerResets = 0;
+  let pageContext = null;
+  const BaseAudioContext = window.AudioContext;
+  window.AudioContext = class extends BaseAudioContext {
+    constructor() {
+      super();
+      audioContexts++;
+    }
+  };
+  const baseCreate = window.AudioScheduler.create;
+  window.AudioScheduler.create = (context, options) => {
+    schedulerCreates++;
+    pageContext = context;
+    const scheduler = baseCreate(context, options);
+    scheduler.reset = () => {
+      schedulerResets++;
+    };
+    return scheduler;
+  };
+  choose(translationSelect, 'fr');
+  pageContext.resume = () => Promise.resolve();
+  const feed = feedSockets().pop();
+  const feedUrl = feed.url;
+  const contextsBefore = audioContexts;
+  const schedulersBefore = schedulerCreates;
+
+  // The queue is at segment 7 when the feed drops.
+  feed.onmessage({
+    data: bundleFrame({ segment_id: 's7', seq: 7, caption: 'Seven', translation: 'Sept', error: null, audio_pending: false }),
+  });
+  // A frame held for the program's sync delay (3s), sent just before the drop.
+  feed.onmessage({
+    data: bundleFrame({ segment_id: 'held', seq: 50, caption: '', translation: 'Held', error: null, audio_pending: false,
+      source_received_at_ms: 5000, server_sent_at_ms: 2000 }),
+  });
+  const socketsBefore = feedSockets().length;
+  feed.onclose({ code: 1006 });
+  assert(feedSockets().length === socketsBefore, 'a dropped feed waits before reconnecting');
+  assert(pendingTimers(1000) === 1, 'the first retry waits 1s');
+  runTimers(1000);
+  const first = feedSockets().pop();
+  assert(feedSockets().length === socketsBefore + 1 && first.url === feedUrl, 'a dropped translation feed reopens the same feed');
+  assert(
+    audioContexts === contextsBefore && schedulerCreates === schedulersBefore && schedulerResets === 0,
+    'reconnecting keeps the audio context and the speech already scheduled on it',
+  );
+
+  // A restarted server numbers a booth's segments from 1 again, and the held frame from before the drop must not get in the way.
+  runTimers(3000);
+  assert(!historyBox.textContent.includes('Held'), 'a frame held from before the drop is dropped with the old feed');
+  first.onmessage({
+    data: bundleFrame({ segment_id: 'r1', seq: 1, caption: 'Restarted', translation: 'Redémarré', error: null, audio_pending: false }),
+  });
+  assert(historyBox.textContent.includes('Redémarré'), 'the first segment after a server restart shows, though its number went back to 1');
+  assert(historyBox.textContent.includes('Restarted'), 'and the queue plays it at once');
+
+  // Segment 2 is lost in the next drop, so the queue is left waiting up to 65s for it.
+  first.onmessage({
+    data: bundleFrame({ segment_id: 'r3', seq: 3, caption: 'Three', translation: 'Trois', error: null, audio_pending: false }),
+  });
+  runTimers(2500);
+  assert(pendingTimers(65000) === 1, 'the queue waits for the missing segment 2');
+
+  first.onclose({ code: 1006 });
+  assert(pendingTimers(1000) === 1, 'a feed that sent data before it dropped retries after 1s again');
+  runTimers(1000);
+  const second = feedSockets().pop();
+  assert(second !== first && second.url === feedUrl, 'the feed reopens again');
+  assert(pendingTimers(65000) === 0, 'reconnecting drops the wait for a segment the old feed never sent');
+  second.onopen();
+
+  // Segments 2 to 4 were sent while the feed was down; 5 must not wait 65s for them.
+  second.onmessage({
+    data: bundleFrame({ segment_id: 'r5', seq: 5, caption: 'Five', translation: 'Cinq', error: null, audio_pending: false }),
+  });
+  assert(historyBox.textContent.includes('Five'), 'after a gap the queue moves on to the first new segment');
+
+  second.onclose({ code: 1006 });
+  assert(pendingTimers(1000) === 1, 'the wait is back at 1s');
+  runTimers(1000);
+  // A feed that opens but drops before any data counts as a failed try.
+  const quiet = feedSockets().pop();
+  quiet.onopen();
+  quiet.onclose({ code: 1006 });
+  assert(pendingTimers(2000) === 1 && pendingTimers(1000) === 0, 'a feed that drops again before any data waits twice as long');
+  assert(!statusText().includes('Access ended'), 'a dropped feed does not say access ended');
+  runTimers(2000);
+
+  // 1008 is a throttled join code, which clears on its own, so the feed keeps retrying.
+  // The server accepts before it closes, so the socket opens first; that must not reset the wait.
+  const throttled = feedSockets().pop();
+  throttled.onopen();
+  throttled.onclose({ code: 1008 });
+  assert(pendingTimers(4000) === 1, 'a feed closed with 1008 (throttled) retries');
+  assert(!statusText().includes('Access ended'), 'a throttled feed does not say access ended');
+  runTimers(4000);
+  const throttledAgain = feedSockets().pop();
+  throttledAgain.onopen();
+  throttledAgain.onclose({ code: 1008 });
+  assert(pendingTimers(8000) === 1 && pendingTimers(1000) === 0, 'a feed refused again with 1008 keeps backing off');
+  runTimers(8000);
+  assert(schedulerResets === 0, 'none of the reconnects reset the speech already scheduled');
+
+  for (const code of [4001, 4003]) {
+    const socket = feedSockets().pop();
+    const count = feedSockets().length;
+    const timers = fakeTimers.size;
+    socket.onclose({ code: code });
+    assert(fakeTimers.size === timers, 'a feed closed with ' + code + ' schedules no reconnect');
+    assert(statusText() === 'Access ended. Reload the page to join again.', 'a ' + code + ' close tells the listener access ended');
+    runAllTimers();
+    assert(feedSockets().length === count, 'no new feed opens after a ' + code + ' close');
+    choose(translationSelect, 'fr');
+  }
+
+  // Autoplay is blocked: Tap to listen shows while the feed is up and goes once the server refuses it.
+  pageContext.state = 'suspended';
+  choose(translationSelect, 'fr');
+  assert(tapButton.hidden === false, 'a feed waiting on a blocked audio context asks the listener to tap');
+  feedSockets().pop().onclose({ code: 4003 });
+  assert(tapButton.hidden === true, 'a refused feed no longer asks the listener to tap');
+  pageContext.state = 'running';
+  choose(translationSelect, 'fr');
+
+  // Switching language closes the old feed ourselves; its late close event must not reopen it.
+  const switched = feedSockets().pop();
+  choose(translationSelect, 'fr');
+  const count = feedSockets().length;
+  switched.onclose({ code: 1006 });
+  assert(pendingTimers(1000) === 0 && feedSockets().length === count, 'a feed we closed ourselves is not reopened');
+
+  // The last feed never opened and dropped once, but a newly chosen feed starts over at 1s.
+  feedSockets().pop().onclose({ code: 1006 });
+  assert(pendingTimers(1000) === 1, 'a newly started feed retries after 1s again');
+  choose(languageSelect, '');
+  assert(pendingTimers(1000) === 0, 'stopping the stream cancels a pending reconnect');
+  const afterStop = feedSockets().length;
+  runTimers(1000);
+  assert(feedSockets().length === afterStop, 'no feed opens after the stream was stopped');
+
+  console.log('\n── AI voice status while the feed reconnects ──');
+
+  choose(languageSelect, 'http://mtx/floor/whep');
+  const voiceToggle = document.getElementById('tts-sync-toggle');
+  voiceToggle.checked = true;
+  voiceToggle.dispatchEvent(new Event('change'));
+  translationSelect.innerHTML = '<option value="fr">French</option>';
+  choose(translationSelect, 'fr');
+  assert(statusText() === 'Live (French TTS)', 'the AI voice shows as live, got "' + statusText() + '"');
+  const voice = feedSockets().pop();
+  voice.onopen();
+  runTimers(500);
+  voice.onclose({ code: 1006 });
+  assert(statusText() === 'Reconnecting...', 'a dropped AI voice feed shows Reconnecting, got "' + statusText() + '"');
+  whepOpts.onState({ peerConnection: 'connected', ice: 'connected', audioActive: true });
+  assert(statusText() === 'Reconnecting...', 'a WebRTC update does not replace Reconnecting, got "' + statusText() + '"');
+  runTimers(1000);
+  // The server accepts a throttled socket before refusing it: that must never show Live.
+  const refused = feedSockets().pop();
+  refused.onopen();
+  assert(statusText() === 'Reconnecting...', 'a socket that just opened is not called live yet');
+  refused.onclose({ code: 1008 });
+  runTimers(500);
+  assert(statusText() === 'Reconnecting...', 'a socket refused right after opening never shows Live, got "' + statusText() + '"');
+  runTimers(2000);
+  const voiceBack = feedSockets().pop();
+  voiceBack.onopen();
+  runTimers(500);
+  assert(statusText() === 'Live (French TTS)', 'the AI voice shows as live again once the feed stays open');
+
+  voiceBack.onclose({ code: 4003 });
+  whepOpts.onState({ peerConnection: 'connected', ice: 'connected', audioActive: true });
+  assert(
+    statusText() === 'Access ended. Reload the page to join again.',
+    'a WebRTC update does not hide that access ended, got "' + statusText() + '"',
+  );
+  choose(translationSelect, 'fr');
+  assert(statusText() === 'Live (French TTS)', 'choosing the voice again starts a new feed');
+  whepOpts.onState({ peerConnection: 'connected', ice: 'connected', audioActive: true });
+  assert(statusText() === 'Live (WebRTC)', 'WebRTC updates the badge again once a new feed starts');
+
+  // Without the AI voice the badge is WebRTC's, so a translation feed drop leaves it alone.
+  voiceToggle.checked = false;
+  voiceToggle.dispatchEvent(new Event('change'));
+  assert(statusText() === 'Live (WebRTC + Translation)', 'without the AI voice the badge is WebRTC with translation');
+  feedSockets().pop().onclose({ code: 1006 });
+  assert(pendingTimers(1000) === 1, 'the translation-only feed still reconnects');
+  assert(statusText() === 'Live (WebRTC + Translation)', 'a translation-only feed drop leaves the WebRTC badge alone, got "' + statusText() + '"');
 
   console.log('\n' + passed + ' passed, ' + failed + ' failed');
   process.exit(failed > 0 ? 1 : 0);

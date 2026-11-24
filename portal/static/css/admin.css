@@ -418,6 +418,7 @@ code { font-family: var(--font-mono); font-size: 0.85em; background: var(--color
 .mc-captions-label { font-size: 0.875rem; font-weight: 600; color: var(--color-text); }
 .mc-captions-reason { flex-basis: 100%; text-align: right; font-size: 0.8125rem; color: var(--color-text-secondary); }
 .mc-captions-reason:empty { display: none; }
+.room-reports-frame { width: 100%; height: 26rem; border: 0; }
 
 .mc-pill { display: inline-flex; align-items: center; padding: 3px 10px; border-radius: 999px; font-size: 0.75rem; font-weight: 600; background: #eef1f6; color: #475467; white-space: nowrap; }
 .mc-pill.is-on { background: #dcfce7; color: #166534; }
@@ -2108,3 +2109,5 @@ th[aria-sort='descending'] .att-sort::after { content: '↓'; opacity: 1; }
 .live-demo-glossary textarea { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: .8125rem; line-height: 1.5; resize: vertical; }
 .live-demo-check { display: inline-flex; align-items: center; gap: 8px; font-weight: 600; font-size: .9375rem; }
 .live-demo-actions { display: flex; gap: 8px; margin: 0 0 20px; }
+.live-demo-choice { display: grid; gap: 10px; margin: 0; padding: 0; border: 0; min-width: 0; }
+.live-demo-indent { margin: 0 0 12px 26px !important; }
