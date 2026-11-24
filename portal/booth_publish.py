@@ -158,6 +158,25 @@ def take_departed_publishers(booth_id: str, state: dict) -> list[Publisher]:
     return departed
 
 
+def take_replaced_publishers(booth_id: str, active_id: str | None) -> list[Publisher]:
+    """Claim the booth's recorded sessions opened by anyone but *active_id*.
+
+    Call it right after choosing who is live, before awaiting anything. The
+    interpreter taken off air may have no booth socket to hear the change (it
+    can be inside the reconnect grace), so their audio is ended here instead
+    of overlapping the new interpreter's until the grace runs out.
+    """
+    sessions = _publishers.get(booth_id)
+    if not sessions:
+        return []
+    replaced = [publisher for publisher in sessions.values() if publisher.participant_id != active_id]
+    for publisher in replaced:
+        del sessions[publisher.session_id]
+    if not sessions:
+        del _publishers[booth_id]
+    return replaced
+
+
 def take_booth_publishers(booth_id: str) -> list[Publisher]:
     """Claim every recorded session of the booth (Mission Control Stop, booth deletion)."""
     return list(_publishers.pop(booth_id, {}).values())

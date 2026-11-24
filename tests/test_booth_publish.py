@@ -17,12 +17,14 @@ from portal import booth_publish
 from portal import program_ingest as ingest
 from portal.config import settings
 from portal.globals import booths
+from portal.roles import ROOM_COORDINATOR
 from portal.websockets import manager as manager_module
 from portal.websockets.manager import (
     Session,
     _handle_join,
     _handle_leave,
     _handle_request_publish_ticket,
+    _handle_set_active,
     _handle_set_broadcast_unlocked,
     manager,
     release_participant,
@@ -614,3 +616,49 @@ async def test_deleting_a_booth_refuses_a_ticket_issued_during_reconnect_grace(m
 
     assert active in participant_ids()  # the grace itself is unchanged
     assert await publish(client, token=reply["ticket"], id=str(uuid4())) == 401
+
+
+# ── Choosing who is live ends the outgoing audio (#1338) ─────────────────────
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("from_mission_control", [True, False])
+async def test_making_someone_else_live_ends_the_outgoing_session(media, from_mission_control):
+    """The interpreter taken off air stops sending, even while their socket is down."""
+    client, (active, backup), paths, kicks, _ = media
+    session_id = await go_live(client, active, paths)
+    # Their booth socket dropped: they would not hear the change until the grace ran out.
+    await booths.disconnect_participant(BOOTH_ID, active, "Active-socket")
+    if from_mission_control:
+        requester = session_for(None, granted_role=ROOM_COORDINATOR)
+    else:
+        await booths.join_participant(
+            BOOTH_ID, "Coordinator", ROOM_COORDINATOR, "English", PATH, room_id=ROOM, connection_id="coord-socket"
+        )
+        coordinator = next(
+            p for p, r in booths.get_booth_sync(BOOTH_ID).participants.items() if r.role == ROOM_COORDINATOR
+        )
+        requester = session_for(coordinator)
+    ws = MockWebSocket()
+
+    await _handle_set_active(ws, requester, {"type": "booth:set-active", "target_id": backup})
+
+    assert ws.sent[-1]["state"]["active_interpreter_id"] == backup
+    assert kicks == [session_id]
+    assert PATH not in paths
+
+
+@pytest.mark.anyio
+async def test_the_new_live_interpreters_session_is_kept(media):
+    """Only sessions of interpreters who are no longer live are ended."""
+    client, (active, backup), paths, kicks, _ = media
+    older = await go_live(client, active, paths)
+    requester = session_for(None, granted_role=ROOM_COORDINATOR)
+    await _handle_set_active(MockWebSocket(), requester, {"type": "booth:set-active", "target_id": backup})
+    newer = await go_live(client, backup, paths)
+
+    # Choosing the interpreter who is already live changes nothing.
+    await _handle_set_active(MockWebSocket(), requester, {"type": "booth:set-active", "target_id": backup})
+
+    assert kicks == [older]
+    assert paths[PATH]["source"]["id"] == newer

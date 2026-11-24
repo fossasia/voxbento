@@ -25,6 +25,7 @@ from portal.booth_publish import (
     stop_booth_publish,
     take_booth_publishers,
     take_departed_publishers,
+    take_replaced_publishers,
 )
 from portal.booth_state import ANY_ACTIVE
 from portal.config import settings
@@ -974,6 +975,9 @@ async def _handle_set_active(ws: WebSocket, session: Session, data: dict) -> Non
     except (ValueError, PermissionError) as exc:
         await ws.send_text(json.dumps({"type": "booth:error", "message": str(exc)}))
         return
+    # End the audio of whoever was taken off air, even if their socket is down.
+    replaced = take_replaced_publishers(session.booth_id, state.get("active_interpreter_id"))
+    await end_publishers(replaced)
     # Broadcast first, so a requester that drops now cannot keep the booth from
     # hearing about the change. Then answer it directly: the broadcast skips
     # sockets whose membership check fails, and it would wait with no reply.
@@ -991,8 +995,11 @@ async def _handle_get_state(ws: WebSocket, session: Session, _data: dict) -> Non
     if session.granted_role not in ALL_ROLES:
         await ws.send_text(json.dumps({"type": "booth:error", "message": "You can't view this booth."}))
         return
-    state = await booths.snapshot(session.booth_id, session.language, session.channel_id)
-    await ws.send_text(json.dumps({"type": "booth:state", "state": state}))
+    # Never create the booth here: nobody has joined, so there is nothing to
+    # choose between, and a booth made now could keep a missing language.
+    state = await booths.get_booth(session.booth_id)
+    if state is not None:
+        await ws.send_text(json.dumps({"type": "booth:state", "state": state}))
 
 
 async def _handle_update_state(ws: WebSocket, session: Session, data: dict) -> None:

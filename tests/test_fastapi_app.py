@@ -3714,3 +3714,16 @@ def test_ws_get_state_is_refused_without_a_booth_role():
         msg = json.loads(ws.receive_text())
 
     assert msg["type"] == "booth:error"
+
+
+def test_ws_get_state_does_not_create_a_booth_nobody_joined():
+    from portal.globals import booths
+
+    booth = "mcghost-1-fr"  # not in the booth registry
+    with client.websocket_connect(f"/ws/booth/{booth}", cookies=_ws_auth()) as ws:
+        ws.send_text(json.dumps({"type": "booth:get-state"}))
+        # The ready check is answered first, so get-state sent nothing.
+        ws.send_text(json.dumps({"type": "booth:ready-check"}))
+        assert json.loads(ws.receive_text())["type"] == "booth:error"
+
+    assert booths.get_booth_sync(booth) is None
