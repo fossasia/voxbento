@@ -270,6 +270,7 @@ def test_interpreter_booth_jitsi_url_uses_base_url():
 
     expected = _make_jitsi_url(settings.effective_jitsi_base_url, settings.default_jitsi_room)
     assert expected.encode() in res.content
+    assert b"<option value='jitsi'>" in res.content
 
 
 def test_make_jitsi_url_bare_room():

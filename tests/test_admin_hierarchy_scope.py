@@ -1352,7 +1352,7 @@ class TestSiblingSubresourceSecurity:
         async with get_session() as session:
             room = await get_room_by_id(session, room_id)
             room.floor_source = "program_ingest"
-            room.jitsi_url = "https://meet.example/room"
+            room.jitsi_url = None  # The deployment default is also subject to the room monitor setting.
             room.relay_booth_id = scope["booth_a2"]
 
         async with _client() as client:

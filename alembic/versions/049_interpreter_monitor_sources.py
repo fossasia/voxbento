@@ -14,9 +14,10 @@ depends_on = None
 
 def upgrade() -> None:
     existing = {column["name"] for column in sa.inspect(op.get_bind()).get_columns("rooms")}
-    for name in ("monitor_floor_enabled", "monitor_meeting_enabled"):
-        if name not in existing:
-            op.add_column("rooms", sa.Column(name, sa.Boolean(), nullable=False, server_default=sa.true()))
+    with op.batch_alter_table("rooms") as batch:
+        for name in ("monitor_floor_enabled", "monitor_meeting_enabled"):
+            if name not in existing:
+                batch.add_column(sa.Column(name, sa.Boolean(), nullable=False, server_default=sa.true()))
 
 
 def downgrade() -> None:

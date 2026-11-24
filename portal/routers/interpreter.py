@@ -212,7 +212,7 @@ async def interpreter_booth_by_identity(
     floor_path = make_mediamtx_path(event_slug, room_id, "floor")
     floor_hls_url = None
     offer_floor = False
-    offer_meeting = False
+    meeting_monitor_enabled = True
     floor_label = "Room floor audio"
     room_jitsi_url = None
     async with get_session() as session:
@@ -240,7 +240,7 @@ async def interpreter_booth_by_identity(
                 floor_label = f"Room floor audio ({source_label})"
             program_floor = room.floor_source == "program_ingest"
             offer_floor = room.monitor_floor_enabled and (program_floor or room.meeting_agent_enabled)
-            offer_meeting = room.monitor_meeting_enabled and bool(room.jitsi_url)
+            meeting_monitor_enabled = room.monitor_meeting_enabled
             if program_floor and room.program_ingest_mode in RTMPS_MODES:
                 floor_hls_url = f"{settings.mediamtx_hls_base.rstrip('/')}/{floor_path}/?muted=false"
             if db_booth.room.jitsi_url:
@@ -276,7 +276,7 @@ async def interpreter_booth_by_identity(
             "floor_hls_url": floor_hls_url,
             "floor_whep_url": f"{settings.mediamtx_whip_base}/{floor_path}/whep",
             "offer_floor": offer_floor,
-            "offer_meeting": offer_meeting,
+            "offer_meeting": meeting_monitor_enabled and bool(final_jitsi_url),
             "relay_whep_url": relay_whep_url,
             "relay_language_name": relay_language_name,
             "granted_role": granted_role,
