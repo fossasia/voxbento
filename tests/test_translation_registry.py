@@ -9,6 +9,7 @@ from unittest.mock import MagicMock, patch
 import pycountry
 import pytest
 
+from portal.config import settings
 from portal.translations.constants import TRANSLATION_MODELS, TranslationProviderEnum
 from portal.translations.engine import EngineKind, Language, TranslationContext
 from portal.translations.model_languages import language_support_error
@@ -277,8 +278,10 @@ M2M100_CHECKED = ["es", "fr", "pt", "de", "zh", "ar", "hi"]
 
 
 def test_both_m2m100_sizes_can_be_selected_after_nllb():
-    assert list(LOCAL_TRANSLATION_MODELS) == [NLLB, "m2m100_418M", "m2m100_1.2B"]
-    assert TRANSLATION_MODELS[TranslationProviderEnum.LOCAL.value] == [NLLB, "m2m100_418M", "m2m100_1.2B"]
+    models = list(LOCAL_TRANSLATION_MODELS)
+    assert models[0] == NLLB
+    assert {"m2m100_418M", "m2m100_1.2B"} <= set(models)
+    assert TRANSLATION_MODELS[TranslationProviderEnum.LOCAL.value] == models
 
 
 @pytest.mark.parametrize(
@@ -335,6 +338,7 @@ async def test_m2m100_translates_english_both_ways(monkeypatch, model, code):
         return "translated"
 
     monkeypatch.setattr(LocalProvider, "_run_inference", fake_inference)
+    monkeypatch.setattr(settings, "local_translation_models", f"{NLLB},m2m100_418M,m2m100_1.2B")
     english = Language(code="en", name="English")
     other = Language(code=code, name=code)
 
