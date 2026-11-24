@@ -98,11 +98,12 @@ ANSWERER_SCRIPT = """
 async (offerSdp) => {
   window.__answerers = window.__answerers || [];
   const pc = new RTCPeerConnection({ iceServers: [] });
-  window.__answerers.push(pc);
+  // push() returns the new length, so take the index here, before any await lets another offer append.
+  const index = window.__answerers.push(pc) - 1;
   await pc.setRemoteDescription({ type: 'offer', sdp: offerSdp });
   const answer = await pc.createAnswer();
   await pc.setLocalDescription(answer);
-  return { sdp: pc.localDescription.sdp, index: window.__answerers.length - 1 };
+  return { sdp: pc.localDescription.sdp, index };
 }
 """
 
