@@ -457,6 +457,25 @@ async def test_api_v1_room_update_stops_captions_only_after_the_commit(site, mon
     assert "stop" in order and order.index("commit") < order.index("stop")
 
 
+async def test_api_v1_room_update_ends_a_booth_brought_back_before_the_commit(site, monkeypatch):
+    """A join landing before the update commits brings the dropped booth back in memory."""
+    ids = site["booth_ids"]
+    real_commit = AsyncSession.commit
+
+    async def commit(self):
+        channel = make_mediamtx_path("main", site["hall"], "es")
+        await booths.join_participant(
+            ids["es"], "Ben", INTERPRETER, "es", channel, room_id=site["hall"], joined_by="session-late"
+        )
+        await real_commit(self)
+
+    monkeypatch.setattr(AsyncSession, "commit", commit)
+    async with _client() as c:
+        resp = await c.put("/api/v1/events/main/rooms/hall", json={"target_languages": ["fr"]}, headers=API_HEADERS)
+    assert resp.status_code == 200, resp.text
+    assert booths.get_booth_sync(ids["es"]) is None
+
+
 @pytest.mark.parametrize(
     "path", ["/api/v1/events/main/rooms/hall/booths/es", "/api/v1/events/main/rooms/hall", "/api/v1/events/main"]
 )

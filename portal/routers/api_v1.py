@@ -905,6 +905,9 @@ async def upsert_room(
 
     # Commit first, so a failed update leaves the removed booths' transcription running.
     await db.commit()
+    # A join before the commit can bring a removed booth back in memory, so clear it again.
+    for code in removed_codes:
+        await booths.remove_booth(event_slug, room.id, code)
     for code in removed_codes:
         await stop_transcription_worker(make_booth_id(event_slug, room.id, code))
     return {"status": "success", "room_id": room.id, "booths": returned_booths}
