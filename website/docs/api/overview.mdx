@@ -18,7 +18,7 @@ Every REST endpoint is prefixed with `/api/`. For example, the token endpoint is
 
 ## Content Type
 
-All request bodies must be sent as `application/json`, and all successful responses are returned as `application/json`. Make sure to include the `Content-Type: application/json` header on any request that carries a body.
+All request bodies must be sent as `application/json`. Successful responses are returned as `application/json` by default, unless an alternative format is explicitly requested (such as `format=csv` for attendance, or WebVTT/SRT for transcript exports). Make sure to include the `Content-Type: application/json` header on any request that carries a body.
 
 ## Available Endpoints
 
@@ -37,6 +37,7 @@ The tables below list every REST and WebSocket endpoint exposed by the Voxbento 
 | `/api/events/{event_slug}/booths/{language_code}/whip-url` | `GET` | Bearer | Get event-scoped WHIP URL |
 | `/api/interpreter/status/{channel_id}` | `GET` | Open | Check MediaMTX stream reachability |
 | `/api/v1/events/{event_slug}` | `GET` | Bearer (OAuth access token with `events:read` scope) | Retrieve event details via REST API v1 |
+| `/api/v1/events/{event_slug}/attendance` | `GET` | Bearer (OAuth access token with `events:read` scope) | Retrieve interpreter attendance and working duration metrics (JSON or CSV) |
 | `/api/v1/events/{event_slug}/rooms` | `GET` | Bearer | List event rooms and configurations |
 | `/api/v1/events/{event_slug}/rooms/{room_id}/booths` | `GET` | Bearer | List booths configured for a specific room |
 | `/api/v1/events/{event_slug}/rooms/{room_id}/status` | `GET` | Bearer | Operational status of room media and transcription |

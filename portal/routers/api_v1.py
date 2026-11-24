@@ -4,7 +4,7 @@ import csv
 import io
 import logging
 import re
-from datetime import date, datetime, timezone, tzinfo
+from datetime import date, datetime, timedelta, timezone, tzinfo
 from types import SimpleNamespace
 from typing import Annotated, Any
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
@@ -1716,17 +1716,25 @@ async def get_event_attendance(
                 detail=f"Invalid IANA timezone: '{tz}'",
             )
 
+    now = booths.attendance.clock()
+    live_visits = booths.attendance.live_visits(event.slug)
+
     query = select(InterpreterAttendance).where(InterpreterAttendance.event_id == event.id)
     if room_id is not None:
         query = query.where(InterpreterAttendance.room_id == room_id)
     if language_code:
         query = query.where(InterpreterAttendance.language_code == language_code)
+    if day is not None:
+        start_local = datetime(day.year, day.month, day.day, 0, 0, 0, tzinfo=target_tz)
+        end_local = start_local + timedelta(days=1)
+        query = query.where(
+            InterpreterAttendance.joined_at >= start_local.astimezone(timezone.utc),
+            InterpreterAttendance.joined_at < end_local.astimezone(timezone.utc),
+        )
     query = query.order_by(InterpreterAttendance.joined_at.asc(), InterpreterAttendance.id.asc())
 
     result = await db.execute(query)
     db_rows = list(result.scalars())
-    now = booths.attendance.clock()
-    live_visits = booths.attendance.live_visits(event.slug)
     rows = rows_for_event(db_rows, live_visits, now)
 
     filtered_rows = [
@@ -1737,13 +1745,16 @@ async def get_event_attendance(
         and (language_code is None or row.language_code == language_code)
     ]
 
-    user_ids = {r.user_id for r in filtered_rows if r.user_id is not None}
+    user_ids = frozenset(r.user_id for r in filtered_rows if r.user_id is not None)
     users: dict[int, tuple[str, str]] = {}
     if user_ids:
         found = await db.execute(select(User.id, User.display_name, User.email).where(User.id.in_(user_ids)))
         users = {uid: (name or email, email) for uid, name, email in found.all()}
+        for r in filtered_rows:
+            if r.user_id is not None and r.user_id not in users:
+                r.user_id = None
 
-    public_ids = {r.invite_public_id for r in filtered_rows if r.invite_public_id}
+    public_ids = frozenset(r.invite_public_id for r in filtered_rows if r.invite_public_id)
     invite_labels: dict[str, str] = {}
     if public_ids:
         found = await db.execute(

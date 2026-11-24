@@ -709,3 +709,40 @@ async def test_attendance_csv_export_and_formula_sanitization(seeded_attendance_
     # Formula prefix '=' must be escaped with single quote "'"
     data_line = lines[1]
     assert data_line.startswith("'=cmd")
+
+
+@pytest.mark.anyio
+async def test_attendance_deleted_account_clears_user_id(seeded_attendance_environment, monkeypatch):
+    env = seeded_attendance_environment
+    clock = Clock(datetime(2026, 11, 20, 10, 0, tzinfo=timezone.utc))
+    monkeypatch.setattr(booths.attendance, "clock", clock)
+    booth_id = f"{env['event_slug']}-{env['room_id']}-es"
+
+    # User joins booth while account exists
+    participant, _ = await booths.join_participant(
+        booth_id=booth_id,
+        display_name="Temporary Interpreter",
+        role="interpreter",
+        language="Spanish",
+        channel_id=f"{booth_id}-audio",
+        user_id=env["interpreter_id"],
+    )
+    clock.advance(300)
+
+    # Account is deleted before flush
+    async with get_session() as session:
+        user = await session.get(User, env["interpreter_id"])
+        await session.delete(user)
+        await session.commit()
+
+    headers = {"Authorization": f"Bearer {env['token']}"}
+    async with _client() as client:
+        res = await client.get(f"/api/v1/events/{env['event_slug']}/attendance", headers=headers)
+
+    assert res.status_code == 200
+    data = res.json()
+    assert data["summary"]["total_visits"] == 1
+    visit = data["visits"][0]
+    # user_id must be cleared to None because account was deleted
+    assert visit["user_id"] is None
+    assert visit["display_name"] == "Temporary Interpreter"
