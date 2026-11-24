@@ -225,6 +225,43 @@ async def test_full_segment_queue_drops_each_target_without_calling_engine(worke
     assert scheduler.idle()
 
 
+@pytest.mark.parametrize("reason", ["queue_full", "downloading", "batch_error"])
+async def test_status_notices_reach_other_languages_while_one_connection_stalls(worker_env, monkeypatch, reason):
+    worker, job, engine, bundle, _ = worker_env
+    entered, healthy, release = asyncio.Event(), asyncio.Event(), asyncio.Event()
+    blocker = None
+    if reason == "queue_full":
+        scheduler = TranslationScheduler(1, queue_limit=1)
+        blocker = scheduler.admit(job.room.id, "source:batch")
+        monkeypatch.setitem(worker_module.SCHEDULERS, ("local", NLLB), scheduler)
+    elif reason == "downloading":
+        monkeypatch.setattr(worker_module, "_inference_timeout", lambda *args: None)
+    else:
+        engine.rows = [["Only one target"]]
+
+    async def broadcast(*args, **kwargs):
+        if args[1] == "fr":
+            entered.set()
+            await release.wait()
+            raise RuntimeError("connection closed")
+        if args[1] == "de":
+            healthy.set()
+
+    bundle.side_effect = broadcast
+    task = asyncio.create_task(worker._process_completed_sentence(job, 10, "Hello", "source"))
+    try:
+        await asyncio.wait_for(entered.wait(), 0.5)
+        await asyncio.wait_for(healthy.wait(), 0.5)
+        assert not task.done()
+    finally:
+        release.set()
+        await task
+        if blocker is not None:
+            blocker.close()
+    assert [call.args[1] for call in bundle.await_args_list].count("de") == 1
+    assert worker_module.scheduler_for("local", NLLB, 1).idle()
+
+
 @pytest.mark.parametrize("rows", [[[None, "Hallo"]], [["", "Hallo"]]])
 async def test_batch_keeps_failed_or_empty_result_in_its_own_column(worker_env, rows):
     worker, job, engine, _, delivery = worker_env

@@ -688,24 +688,34 @@ class TranslationWorker:
     ) -> None:
         from portal.websockets.manager import tts_manager
 
+        async def notify_target(target: _BatchTarget, *, downloading: bool = False) -> None:
+            try:
+                if downloading:
+                    await self._drop_while_downloading(
+                        resolved.room.id, target.code, booth_id_str, resolved.model, uuid_segment_id, seq, text
+                    )
+                else:
+                    await tts_manager.broadcast_bundle(
+                        resolved.room.id,
+                        target.code,
+                        booth_id_str,
+                        b"",
+                        uuid_segment_id,
+                        seq,
+                        text,
+                        "",
+                        "pipeline_failed",
+                    )
+            except Exception as exc:
+                logger.warning("Batch status notification failed for %s (%s)", target.code, type(exc).__name__)
+
         # Every local segment (even with one listener) uses this source-stream queue. A batch
         # takes one engine slot, and all its languages share the same bounded segment budget.
         job = scheduler_for(resolved.provider, resolved.model, resolved.event.id).admit(
             resolved.room.id, f"{booth_id_str}:batch"
         )
         if job is None:
-            for target in targets:
-                await tts_manager.broadcast_bundle(
-                    resolved.room.id,
-                    target.code,
-                    booth_id_str,
-                    b"",
-                    uuid_segment_id,
-                    seq,
-                    text,
-                    "",
-                    "pipeline_failed",
-                )
+            await asyncio.gather(*(notify_target(target) for target in targets))
             return
         try:
             vocabulary = {}
@@ -764,10 +774,7 @@ class TranslationWorker:
                             call.cancel()
                             job.keep_slot_until(call)
             if timeout is None:
-                for target in targets:
-                    await self._drop_while_downloading(
-                        resolved.room.id, target.code, booth_id_str, resolved.model, uuid_segment_id, seq, text
-                    )
+                await asyncio.gather(*(notify_target(target, downloading=True) for target in targets))
                 return
             if rows is not None and (len(rows) != 1 or len(rows[0]) != len(targets)):
                 raise ValueError("Translation engine returned an invalid batch shape")
@@ -818,18 +825,7 @@ class TranslationWorker:
 
         except Exception as exc:
             logger.warning("Batch translation failed for room %s (%s)", resolved.room.id, type(exc).__name__)
-            for target in targets:
-                await tts_manager.broadcast_bundle(
-                    resolved.room.id,
-                    target.code,
-                    booth_id_str,
-                    b"",
-                    uuid_segment_id,
-                    seq,
-                    text,
-                    "",
-                    "pipeline_failed",
-                )
+            await asyncio.gather(*(notify_target(target) for target in targets))
         finally:
             job.close()
 
