@@ -745,3 +745,21 @@ async def test_a_slow_join_read_overtaken_by_an_edit_is_not_sent(monkeypatch):
     assert [m["terms"][0]["target_term"] for m in pushed] == ["new"]
     assert ws.sent == []  # the overtaken "old" read is never sent after it
     assert manager_module.glossary_cache.peek("conf-1-de").terms[0].target_term == "new"
+
+
+@pytest.mark.anyio
+async def test_an_edit_in_another_room_does_not_suppress_a_slow_read():
+    release = asyncio.Event()
+
+    async def loader(_booth_id: str) -> BoothGlossary:
+        await release.wait()
+        return BoothGlossary(terms=(_term(1, "keynote", "Hauptvortrag"),))
+
+    cache = GlossaryCache(loader=loader, ttl=60, clock=_Clock())
+    pending = cache.read("conf-2-de")
+    await asyncio.sleep(0)
+    cache.invalidate_room("conf", 1)  # a different room's glossary is edited meanwhile
+    release.set()
+
+    assert (await pending).terms[0].target_term == "Hauptvortrag"
+    assert cache.peek("conf-2-de") is not None  # and it was cached

@@ -249,11 +249,23 @@ class GlossaryCache:
         self._max_entries = max_entries
         # booth_id -> (reuse until, glossary)
         self._entries: dict[str, tuple[float, BoothGlossary]] = {}
-        # Bumped by every invalidation: a read that overlaps one must not be cached.
-        self._generation = 0
+        # Bumped per room by each invalidation: a read that overlaps an edit of its own room must
+        # not be cached or delivered; edits in other rooms leave it alone.
+        self._room_generations: dict[tuple[str, int] | None, int] = {}
         # One background read per booth, shared by everyone waiting for it.
         self._inflight: dict[str, asyncio.Task[BoothGlossary | None]] = {}
         self._outage = OutageLog(logger, "interpreter_assist_glossary_unavailable")
+
+    @staticmethod
+    def _room_key(booth_id: str) -> tuple[str, int] | None:
+        try:
+            slug, room_id, _ = parse_booth_id(booth_id)
+        except ValueError:
+            return None
+        return slug, room_id
+
+    def _generation(self, booth_id: str) -> int:
+        return self._room_generations.get(self._room_key(booth_id), 0)
 
     def peek(self, booth_id: str) -> BoothGlossary | None:
         """The last glossary read for this booth, fresh or not, without reading the database."""
@@ -284,9 +296,9 @@ class GlossaryCache:
         A read that an edit overtook must not reach a booth: the edit's own push already sent
         the newer glossary, and the cache never stores the older one.
         """
-        generation = self._generation
+        generation = self._generation(booth_id)
         glossary = await self.refresh(booth_id)
-        return glossary if generation == self._generation else None
+        return glossary if generation == self._generation(booth_id) else None
 
     def pending(self, booth_id: str) -> asyncio.Task[BoothGlossary | None] | None:
         """The booth's glossary read that is still running, if any."""
@@ -322,7 +334,7 @@ class GlossaryCache:
 
     async def refresh(self, booth_id: str) -> BoothGlossary | None:
         """Read the glossary again; None when the read failed (the last one stays cached)."""
-        generation = self._generation
+        generation = self._generation(booth_id)
         try:
             glossary = await self._loader(booth_id)
         except (SQLAlchemyError, OSError):
@@ -336,7 +348,7 @@ class GlossaryCache:
         return glossary
 
     def _store(self, booth_id: str, glossary: BoothGlossary, until: float, generation: int) -> None:
-        if generation != self._generation:
+        if generation != self._generation(booth_id):
             # The room's glossary changed while this read ran; the next request reads it again.
             return
         self._entries[booth_id] = (until, glossary)
@@ -349,7 +361,8 @@ class GlossaryCache:
                 del self._entries[next(iter(self._entries))]
 
     def invalidate_room(self, event_slug: str, room_id: int) -> None:
-        self._generation += 1
+        key = (event_slug, room_id)
+        self._room_generations[key] = self._room_generations.get(key, 0) + 1
         for booth_id, (_, glossary) in list(self._entries.items()):
             try:
                 slug, booth_room_id, _ = parse_booth_id(booth_id)
