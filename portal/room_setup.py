@@ -289,12 +289,12 @@ def engine_catalog(event: Event) -> EngineCatalog:
             locked_translation.append(_BRANDS[provider])
     default_local_model = settings.local_translation_model_or_default(None)
     if default_local_model:
-        translation.append(Engine("local", default_local_model, "NLLB (built in)", _ADMIN_DOWNLOADS))
+        translation.append(Engine("local", default_local_model, "Built-in translator", _ADMIN_DOWNLOADS))
     else:
-        reason = "NLLB (built in) needs LOCAL_TRANSLATION_MODELS"
+        reason = "Built-in translator needs LOCAL_TRANSLATION_MODELS"
         unavailable.append(reason)
         unavailable_reasons["local"] = reason
-    # After NLLB so new rooms keep the built-in default; the operator's server may be slow or stopped.
+    # After the built-in translator so new rooms keep it as the default; the operator's server may be slow or stopped.
     if settings.self_hosted_llm_enabled:
         translation.append(
             Engine("self_hosted", settings.self_hosted_llm_model_list[0], "Self-hosted LLM", _SERVER_MODEL)
