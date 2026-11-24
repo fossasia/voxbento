@@ -267,7 +267,7 @@ class GlossaryCache:
         """
         task = self._inflight.get(booth_id)
         if task is None:
-            task = asyncio.create_task(self.refresh(booth_id))
+            task = asyncio.create_task(self._current_read(booth_id))
             self._inflight[booth_id] = task
 
             def finished(done: asyncio.Task[BoothGlossary | None]) -> None:
@@ -277,6 +277,16 @@ class GlossaryCache:
             task.add_done_callback(finished)
             track_task(task)
         return task
+
+    async def _current_read(self, booth_id: str) -> BoothGlossary | None:
+        """A background read; None when it failed or the room's glossary changed while it ran.
+
+        A read that an edit overtook must not reach a booth: the edit's own push already sent
+        the newer glossary, and the cache never stores the older one.
+        """
+        generation = self._generation
+        glossary = await self.refresh(booth_id)
+        return glossary if generation == self._generation else None
 
     def pending(self, booth_id: str) -> asyncio.Task[BoothGlossary | None] | None:
         """The booth's glossary read that is still running, if any."""
@@ -348,6 +358,14 @@ class GlossaryCache:
             if slug == event_slug and booth_room_id == room_id:
                 # Expired, but kept as the fallback should the next read fail.
                 self._entries[booth_id] = (-math.inf, glossary)
+        for booth_id in list(self._inflight):
+            try:
+                slug, booth_room_id, _ = parse_booth_id(booth_id)
+            except ValueError:
+                continue
+            if slug == event_slug and booth_room_id == room_id:
+                # The running read is out of date; whoever asks next starts a new one.
+                del self._inflight[booth_id]
 
     def forget(self, booth_id: str) -> None:
         self._entries.pop(booth_id, None)

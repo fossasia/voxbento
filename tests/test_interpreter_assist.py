@@ -710,3 +710,38 @@ async def test_a_slow_glossary_read_does_not_cost_a_healthy_booth_its_captions()
     await relay.idle()
     assert sent[-1]["hits"][0]["target_term"] == "discours"
     assert reads == 1
+
+
+@pytest.mark.anyio
+async def test_a_slow_join_read_overtaken_by_an_edit_is_not_sent(monkeypatch):
+    from portal.websockets import manager as manager_module
+
+    release_old = asyncio.Event()
+    versions = ["old", "new"]
+
+    async def loader(_booth_id: str) -> BoothGlossary:
+        version = versions.pop(0)
+        if version == "old":
+            await release_old.wait()
+        return BoothGlossary(terms=(_term(1, "keynote", version),))
+
+    ws = _MockWebSocket()
+    pushed: list[dict] = []
+
+    async def broadcast(_booth_id: str, message: dict) -> None:
+        pushed.append(message)
+
+    monkeypatch.setattr(manager_module, "glossary_cache", GlossaryCache(loader=loader))
+    monkeypatch.setattr(manager_module, "JOIN_GLOSSARY_TIMEOUT", 0.05)
+    monkeypatch.setattr(manager_module.manager, "get_session", lambda _ws: _booth_session("conf-1-de"))
+    monkeypatch.setattr(manager_module.manager, "booth_ids_in_room", lambda slug, room: ["conf-1-de"])
+    monkeypatch.setattr(manager_module.manager, "broadcast", broadcast)
+
+    await manager_module._join_glossary(ws, "conf-1-de")  # the "old" read is too slow and is deferred
+    await manager_module.notify_glossary_changed("conf", 1)  # an edit pushes the "new" glossary
+    release_old.set()
+    await asyncio.sleep(0.05)
+
+    assert [m["terms"][0]["target_term"] for m in pushed] == ["new"]
+    assert ws.sent == []  # the overtaken "old" read is never sent after it
+    assert manager_module.glossary_cache.peek("conf-1-de").terms[0].target_term == "new"
