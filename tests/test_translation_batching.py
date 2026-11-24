@@ -386,11 +386,11 @@ async def test_empty_grid_does_not_load_a_model(model, monkeypatch, texts, targe
 
 
 async def test_stalled_caption_releases_batch_admission_for_later_segments(worker_env, monkeypatch):
-    worker, job, engine, _, _ = worker_env
+    worker, job, engine, bundle, _ = worker_env
     scheduler = TranslationScheduler(1, queue_limit=1)
     monkeypatch.setitem(worker_module.SCHEDULERS, ("local", NLLB), scheduler)
     monkeypatch.setattr(worker_module, "BATCH_DELIVERY_TIMEOUT", 0.03)
-    blocked, german = asyncio.Event(), asyncio.Event()
+    blocked, german, failure_notice, release_notice = (asyncio.Event() for _ in range(4))
 
     async def deliver(*args):
         if args[2] == "fr":
@@ -400,12 +400,23 @@ async def test_stalled_caption_releases_batch_admission_for_later_segments(worke
         german.set()
 
     monkeypatch.setattr(worker, "_deliver_translation", deliver)
+
+    async def broadcast(*args, **kwargs):
+        if args[1] == "fr" and args[5] == 1:
+            failure_notice.set()
+            await release_notice.wait()
+
+    bundle.side_effect = broadcast
     first = asyncio.create_task(worker._process_completed_sentence(job, 10, "First", "source", "one", 1))
     await asyncio.wait_for(blocked.wait(), 1)
     await asyncio.wait_for(german.wait(), 1)
-    await asyncio.wait_for(first, 1)
-    assert scheduler.idle()
-    await asyncio.wait_for(worker._process_completed_sentence(job, 11, "Second", "source", "two", 2), 1)
+    try:
+        await asyncio.wait_for(failure_notice.wait(), 1)
+        assert not first.done() and scheduler.idle()
+        await asyncio.wait_for(worker._process_completed_sentence(job, 11, "Second", "source", "two", 2), 1)
+    finally:
+        release_notice.set()
+        await first
     assert [call[2][0] for call in engine.calls] == ["First", "Second"]
     assert scheduler.idle()
 
