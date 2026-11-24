@@ -30,7 +30,8 @@
   data-granted-role='{{ granted_role | default("") }}'
   data-can-go-live="{{ 'true' if can_go_live else 'false' }}"
   data-display-name='{{ display_name | default("") }}'
-  data-relay-whep-url='{{ relay_whep_url | default("", true) }}'
+  data-relay-whep-url='{{ relay.whep_url if relay else "" }}'
+  data-relay='{{ {"relay_booth_id": relay_booth_id, "relay": relay} | tojson }}'
 >
 
   <!-- ── Top Bar: brand, booth identity, connection, leave ──────────── -->
@@ -149,36 +150,32 @@
         </div>
       </section>
 
-      <!-- 4. Relay audio -->
+      <!-- 4. Relay audio: follows Mission Control's relay choice live (booth:relay, #1382) -->
       <details class='card card--collapsible'>
         <summary class='card-head card-head--summary'>
           <h2 class='card-title'><span class='card-icon'>🎧</span> Relay Audio</h2>
-          {% if relay_whep_url %}
-            <span id='relay-status' class='status-badge'>Not Listening</span>
-          {% else %}
-            <span class='status-badge warning'>Unconfigured</span>
-          {% endif %}
+          <span id='relay-status' class='status-badge'></span>
         </summary>
         <div class='card-body'>
-          {% if relay_whep_url %}
-          <button id='pass-relay' type='button' class='btn btn-block' title='Listen to Relay'>
-            Listen to Relay ({{ relay_language_name }})
-          </button>
-          <div class='field'>
-            <label class='field-label' for='relay-device-select'>Output Device</label>
-            <select id='relay-device-select' class='input input-sm device-select'><option value=''>Default output</option></select>
-            <div class='checkbox-row'>
-              <input type='checkbox' id='show-virtual-relay-devices'>
-              <label for='show-virtual-relay-devices'>Show virtual devices</label>
+          <p id='relay-source' class='card-empty'></p>
+          <div id='relay-controls'{% if not relay %} hidden{% endif %}>
+            <button id='pass-relay' type='button' class='btn btn-block' aria-pressed='false'>
+              Listen to the relay
+            </button>
+            <div class='field'>
+              <label class='field-label' for='relay-device-select'>Output Device</label>
+              <select id='relay-device-select' class='input input-sm device-select'><option value=''>Default output</option></select>
+              <div class='checkbox-row'>
+                <input type='checkbox' id='show-virtual-relay-devices'>
+                <label for='show-virtual-relay-devices'>Show virtual devices</label>
+              </div>
+            </div>
+            <div class='field'>
+              <label class='field-label' for='relay-volume'>Volume</label>
+              <input type='range' id='relay-volume' class='volume-slider' min='0' max='1' step='0.01' value='0.8'>
             </div>
           </div>
-          <div class='field'>
-            <label class='field-label' for='relay-volume'>Volume</label>
-            <input type='range' id='relay-volume' class='volume-slider' min='0' max='1' step='0.01' value='0.8'>
-          </div>
-          {% else %}
-          <p class='card-empty'>No relay booth is configured for this room.</p>
-          {% endif %}
+          <span id='relay-announcer' class='sr-only' role='status'></span>
         </div>
       </details>
 

@@ -321,6 +321,15 @@ the admin CSRF token (`require_admin_csrf`, `X-CSRF-Token`).
   meaning: `stage` is the raw floor-bot stage (`launching`, `in_meeting`, `dead`, …;
   `unknown` when the service is unreachable); the managed lifecycle is in `state`.
 
+## Relay interpreting (#1382)
+
+- `POST /api/rooms/{room_id}/relay` (Admins, owners of the room's event, coordinators
+  of the room; CSRF): body `{language_code: str | null}` sets `rooms.relay_booth_id` to
+  that booth of the room, or clears it. 404 for a booth outside the room. Returns
+  `{relay_booth_id}` and pushes `booth:relay` to the room's open booth sockets
+  (`portal/booth_relay.py`, `push_room_relay` in `portal/websockets/manager.py`).
+  The room page's relay form, booth edits and booth deletes push the same message.
+
 `POST /oauth/token` accepts an optional `event` slug for the authorization-code
 grant. A mismatch is rejected before code consumption or membership grants.
 Successful code and refresh responses include `event`. Clients must send the

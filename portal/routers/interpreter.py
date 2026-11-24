@@ -8,12 +8,12 @@ from fastapi.templating import Jinja2Templates
 from sqlalchemy import or_, select
 from sqlalchemy.orm import joinedload
 
+from portal import booth_relay
 from portal.auth import get_booth_sessions, is_invite_token_revoked, resolve_booth_role, resolve_session_user
 from portal.booth_identity import make_booth_id, make_mediamtx_path
 from portal.booth_state import DISPLAY_NAME_MAX_LENGTH
 from portal.config import settings
 from portal.database import (
-    get_booth_by_id,
     get_session,
     list_booth_memberships_for_user,
     list_memberships_for_user,
@@ -223,17 +223,14 @@ async def interpreter_booth_by_identity(
         event_name = db_booth.event.display_name if db_booth and db_booth.event else event_slug
         room_name = db_booth.room.display_name if db_booth and db_booth.room else ""
         language_name = db_booth.language_name if db_booth else display_language
-        relay_whep_url = None
-        relay_language_name = None
-        if db_booth and db_booth.room:
-            if db_booth.room.jitsi_url:
-                room_jitsi_url = db_booth.room.jitsi_url
-            if db_booth.room.relay_booth_id:
-                relay_b = await get_booth_by_id(session, db_booth.room.relay_booth_id)
-                if relay_b:
-                    relay_channel = make_mediamtx_path(event_slug, relay_b.room_id, relay_b.language_code)
-                    relay_whep_url = f"{settings.mediamtx_whip_base}/{relay_channel}/whep"
-                    relay_language_name = relay_b.language_name
+        if db_booth and db_booth.room and db_booth.room.jitsi_url:
+            room_jitsi_url = db_booth.room.jitsi_url
+    # The relay booth gets no relay of its own: it would play its own interpretation back (#1382).
+    relay_source = None
+    if db_booth is not None:
+        loaded = await booth_relay.load_room_relay(room_id, event_slug=event_slug)
+        relay_source = loaded[1] if loaded else None
+    relay = booth_relay.relay_fields(relay_source, booth_id)
     default_jitsi_url = _make_jitsi_url(settings.effective_jitsi_base_url, settings.default_jitsi_room)
     final_jitsi_url = room_jitsi_url or default_jitsi_url
     user_sess = sessions.get("user_token", {})
@@ -255,8 +252,8 @@ async def interpreter_booth_by_identity(
             "language_code": language_code,
             "whip_url": whip_url,
             "whep_url": whep_url,
-            "relay_whep_url": relay_whep_url,
-            "relay_language_name": relay_language_name,
+            "relay": relay["relay"],
+            "relay_booth_id": relay["relay_booth_id"],
             "granted_role": granted_role,
             "can_go_live": can_go_live(granted_role),
             "display_name": display_name,

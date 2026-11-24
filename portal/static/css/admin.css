@@ -413,6 +413,11 @@ code { font-family: var(--font-mono); font-size: 0.85em; background: var(--color
 .mc-room-title { margin: 0; font-size: 1.2rem; font-weight: 700; color: var(--color-text); }
 .mc-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(min(300px, 100%), 1fr)); gap: 14px; }
 
+.mc-room-controls { display: flex; flex-wrap: wrap; align-items: center; gap: 12px 20px; }
+.mc-relay { display: flex; align-items: center; gap: 8px; }
+.mc-relay-label { font-size: 0.875rem; font-weight: 600; color: var(--color-text); }
+.mc-relay select { min-width: 10rem; padding: 4px 8px; border: 1px solid var(--color-border); border-radius: 6px; background: var(--color-surface, #fff); color: var(--color-text); font-size: 0.875rem; }
+.mc-relay select:focus-visible { outline: none; border-color: var(--color-primary); box-shadow: 0 0 0 3px var(--color-primary-subtle); }
 .mc-captions { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
 .mc-captions [hidden] { display: none; }
 .mc-captions-label { font-size: 0.875rem; font-weight: 600; color: var(--color-text); }

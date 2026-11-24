@@ -53,7 +53,8 @@ The server pushes JSON objects to every connected participant. You do not need t
 
 | `type` | Description |
 | --- | --- |
-| `booth:joined` | Sent only to the new participant confirming a successful join. Contains their `participant_id` and the current booth state. |
+| `booth:joined` | Sent only to the new participant confirming a successful join. Contains their `participant_id`, the current booth state and the room's relay (`relay_booth_id`, `relay`). |
+| `booth:relay` | Sent to every booth of a room when its relay booth changes or the relay booth goes on or off air. Carries `relay_booth_id` and `relay`, as in `booth:joined`. |
 | `booth:state` | Full booth state broadcast to all participants after any change (join, leave, chat, handoff, flag update). |
 | `booth:chat` | A chat message broadcast to all participants when anyone sends `booth:chat`. |
 | `booth:error` | An error message sent to the originating client (e.g. permission denied, unknown message type). |
@@ -240,6 +241,19 @@ The examples below show the exact JSON structure for the most common messages.
   **`participant_id`** *(string)* — Your participant ID in this booth. Use it to find yourself in `participants`; other clients use it as `target_id` in `booth:set-active`.
 
   **`state`** *(object)* — The current booth state, in the same shape as `booth:state`.
+
+  **`relay_booth_id`** *(string | null)* — The room's relay booth, or `null` when the room has none. It equals your own `booth_id` when your booth is the relay.
+
+  **`relay`** *(object | null)* — What this booth can listen to instead of the floor: `booth_id`, `language_code`, `language_name`, `whep_url` and `on_air` (`true` while someone publishes to the relay booth). `null` when there is no relay, and for the relay booth itself, which never gets its own channel back.
+
+</details>
+
+<details>
+<summary>booth:relay (server → client)</summary>
+
+**`type`** *(string)* — Always `"booth:relay"`.
+
+  **`relay_booth_id`**, **`relay`** — As in `booth:joined`. Sent when an Admin, event owner or room coordinator changes the room's relay, when the relay booth is renamed or deleted, and when it goes on or off air.
 
 </details>
 

@@ -87,6 +87,7 @@ VoxBento is a production-grade **browser-first interpretation booth console** fo
 | `portal/youtube_account.py` | Google OAuth and YouTube Live API metadata (no media): Sign in with YouTube, broadcast linking, YouTube status |
 | `portal/outage_log.py` | `OutageLog` — reconcile loops log a repeating failure once per outage, not per tick |
 | `portal/booth_recovery.py` | Saves each booth's Go Live switch and active interpreter to `booth_live_state` and restores them at startup (TD-03) |
+| `portal/booth_relay.py` | Relay interpreting (#1382): room → relay booth cache, the `booth:relay` payload (never a booth's own channel), relay on-air tracking |
 | `portal/attendance.py` | `AttendanceTracker` — interpreter visits and interpreting time from booth state, batched writes to `interpreter_attendance` (#1215) |
 | `portal/live_demo.py` | Home-page live demo (`/ws/demo/live`): local Whisper → NLLB → Supertonic pipeline, site + visitor glossary, admission limits, and the admin-edited `live_demo_settings` row (`/admin/live-demo/`) |
 | `portal/live_demo_ai.py` | Independent live demo speech, translation and voice settings and encrypted keys; no event or room dependency |
@@ -135,7 +136,7 @@ role name elsewhere; `tests/test_roles.py` fails if you do.
 | Manage users, Admins, hosting access, developer apps | ✓ | | | |
 | See all events / create events (or hosting access) | ✓ | | | |
 | Edit/delete event; manage rooms, booths, team, keys | ✓ | ✓ | | |
-| Mission Control, floor transcription, choose active interpreter | ✓ | ✓ | ✓ | |
+| Mission Control, floor transcription, relay booth, choose active interpreter | ✓ | ✓ | ✓ | |
 | Go live, booth chat, view booths | ✓ | ✓ | ✓ | ✓ |
 | Can be given per | account | event | event, room, booth | event, booth |
 
@@ -189,7 +190,7 @@ Validation: `portal/booth_identity.py` — slug: `^[a-z0-9]+(?:-[a-z0-9]+)*$`; l
 | `booth:update-state` | `_handle_update_state` | `mic_active`, `ingest_connected` |
 | `booth:request-publish-ticket` | `_handle_request_publish_ticket` | — (participant from the WS session) |
 
-Server → Client: `booth:joined`, `booth:state`, `booth:chat`, `booth:error`, `booth:publish-ticket`
+Server → Client: `booth:joined`, `booth:state`, `booth:chat`, `booth:error`, `booth:publish-ticket`, `booth:relay`
 
 Booth WHIP publishing is authenticated (#783): MediaMTX forwards the `Authorization: Bearer` ticket to
 `/internal/media-auth`, which redeems it once (`portal/booth_publish.py`, 30 s TTL, bound to the booth's

@@ -14,6 +14,7 @@ lets in (for example "owner of this event" or "coordinator of this room").
 | Manage AI provider keys and API keys of their event       |   ✓   |      ✓      |                  |             |
 | Use Mission Control for their event or rooms              |   ✓   |      ✓      |        ✓         |             |
 | Start and stop floor transcription in their rooms         |   ✓   |      ✓      |        ✓         |             |
+| Choose the relay booth of their rooms                     |   ✓   |      ✓      |        ✓         |             |
 | Choose the active interpreter in a booth                  |   ✓   |      ✓      |        ✓         |             |
 | Go live in a booth                                        |   ✓   |      ✓      |        ✓         |      ✓      |
 | Use the booth chat                                        |   ✓   |      ✓      |        ✓         |      ✓      |
@@ -76,6 +77,7 @@ class Permission(Enum):
     MANAGE_EVENT_KEYS = "event.manage_keys"
     USE_MISSION_CONTROL = "room.mission_control"
     CONTROL_FLOOR_TRANSCRIPTION = "room.floor_transcription"
+    CHOOSE_RELAY = "room.relay"
     BOOTH_SET_ACTIVE = "booth.set_active"
     BOOTH_GO_LIVE = "booth.go_live"
     BOOTH_CHAT_SEND = "booth.chat_send"
@@ -86,6 +88,7 @@ _INTERPRETER_PERMISSIONS = frozenset({Permission.BOOTH_GO_LIVE, Permission.BOOTH
 _COORDINATOR_PERMISSIONS = _INTERPRETER_PERMISSIONS | {
     Permission.USE_MISSION_CONTROL,
     Permission.CONTROL_FLOOR_TRANSCRIPTION,
+    Permission.CHOOSE_RELAY,
     Permission.BOOTH_SET_ACTIVE,
 }
 _OWNER_PERMISSIONS = _COORDINATOR_PERMISSIONS | {
