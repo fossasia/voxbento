@@ -180,6 +180,44 @@ async def test_the_scan_limit_drops_event_rows_before_a_booth_row(setup_db, monk
 
 
 @pytest.mark.anyio
+async def test_many_high_priority_event_rows_cannot_push_out_a_booth_override(setup_db, monkeypatch):
+    """The scan limit must keep the entry that would win the de-duplication (#1164)."""
+    seeded = await seed_event_with_glossary()
+    async with get_session() as session:
+        booth_id = await session.scalar(
+            select(DBBooth.id).where(DBBooth.room_id == seeded.room.id, DBBooth.language_code == "fr")
+        )
+        session.add_all(
+            [
+                AIVocabularyEntry(event_id=seeded.event.id, source_term=f"Hp{i}", target_term="x", priority=95)
+                for i in range(4)
+            ]
+        )
+        await session.flush()
+        # Added last, so the highest id: with the old high-priority-first scan order this event row was
+        # kept while the booth row that should replace it was cut off.
+        session.add_all(
+            [
+                AIVocabularyEntry(event_id=seeded.event.id, source_term="VOXBENTO", target_term="x", priority=95),
+                AIVocabularyEntry(
+                    event_id=seeded.event.id,
+                    room_id=seeded.room.id,
+                    booth_id=booth_id,
+                    source_term="VoxBento",
+                    target_term="x",
+                    priority=5,
+                ),
+            ]
+        )
+    monkeypatch.setattr(vocabulary, "MAX_ENTRIES_SCANNED", 4)
+
+    terms = await load_vocabulary_terms("glossary-event", seeded.room.id, "fr")
+
+    assert "VoxBento" in terms
+    assert "VOXBENTO" not in terms
+
+
+@pytest.mark.anyio
 async def test_the_floor_has_no_booth_so_it_gets_event_and_room_terms(setup_db):
     seeded = await seed_event_with_glossary()
 

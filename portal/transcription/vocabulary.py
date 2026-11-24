@@ -103,14 +103,21 @@ def select_terms(
 
 
 def _scan_order(room_id: int, booth_id: int | None) -> tuple[ColumnElement, ...]:
-    """SQL ordering that mirrors ``select_terms``, so the scan limit drops the least important rows."""
+    """SQL ordering that mirrors how ``select_terms`` picks the winner of a repeated term.
+
+    Booth entries come before room entries, and those before event-wide ones; priority and id break
+    ties. That is the order in which ``select_terms`` de-duplicates, so a row the scan limit drops can
+    never be the entry that should have overridden one that was kept. Ordering by high priority first
+    would let a large number of high-priority event-wide entries push a booth or room override out of
+    the scan. A high-priority event-wide entry is only dropped when the booth and room have more than
+    ``MAX_ENTRIES_SCANNED`` entries of their own.
+    """
     scope = case(
         (AIVocabularyEntry.booth_id == booth_id, 2) if booth_id is not None else (false(), 2),
         (AIVocabularyEntry.booth_id.is_(None) & (AIVocabularyEntry.room_id == room_id), 1),
         else_=0,
     )
     return (
-        case((AIVocabularyEntry.priority >= HIGH_PRIORITY_THRESHOLD, 1), else_=0).desc(),
         scope.desc(),
         AIVocabularyEntry.priority.desc(),
         AIVocabularyEntry.id.desc(),
