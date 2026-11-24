@@ -4,12 +4,16 @@ from __future__ import annotations
 
 import hashlib
 import os
+import re
 import secrets
+import shutil
 import time
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
 
 os.environ["BOOTH_ACCESS_TOKEN"] = ""
 
+import anyio
 import pytest
 
 from portal.auth import (
@@ -518,6 +522,71 @@ class TestUserLogin:
         assert b"Sign in" in resp.content
         assert b'type="button" id="forgot-password-link"' in resp.content
         assert b'href="#" id="forgot-password-link"' not in resp.content
+
+    @pytest.mark.anyio
+    async def test_login_page_renders_accessible_password_toggle(self, setup_db):
+        async with _client() as c:
+            resp = await c.get("/login")
+        assert resp.status_code == 200
+        content = resp.text
+
+        # 1. Password input is hidden by default and wrapped in password-input-wrapper
+        assert 'class="password-input-wrapper"' in content
+        assert (
+            '<input type="password" id="password" name="password" placeholder="Enter your password" required' in content
+        )
+
+        # 2. Toggle button has type="button", accessible name, and aria-controls
+        toggle_btn_match = re.search(r'<button\b[^>]*id=["\']toggle-password["\'][^>]*>', content)
+        assert toggle_btn_match is not None, "Toggle button #toggle-password not found in rendered HTML"
+        assert re.search(r'\btype=["\']button["\']', toggle_btn_match.group(0)) is not None, (
+            "Rendered toggle button must have type='button' to prevent form submission"
+        )
+        assert 'class="password-toggle-btn"' in content
+        assert 'aria-label="Show password"' in content
+        assert 'title="Show password"' in content
+        assert 'aria-controls="password"' in content
+
+        # 3. Eye icons are rendered with aria-hidden="true" and hide icon starts hidden
+        assert "password-toggle-icon--show" in content
+        assert "password-toggle-icon--hide hidden" in content
+
+        # 4. Edge / IE duplicate password reveal controls are suppressed in CSS
+        auth_css = (Path(__file__).resolve().parent.parent / "portal" / "static" / "css" / "auth.css").read_text(
+            encoding="utf-8"
+        )
+        assert "::-ms-reveal" in auth_css
+        assert "::-ms-clear" in auth_css
+        assert ".password-input-wrapper" in auth_css
+        assert ".password-toggle-btn" in auth_css
+
+        # 5. JS module contains setupPasswordToggle
+        login_js = (Path(__file__).resolve().parent.parent / "portal" / "static" / "js" / "login.js").read_text(
+            encoding="utf-8"
+        )
+        assert "setupPasswordToggle" in login_js
+        assert "toggle-password" in login_js
+
+        # 6. Execute the Node unit test suite for interactive toggle behavior
+        node_bin = shutil.which("node")
+        if not node_bin:
+            pytest.skip("Node.js not found")
+        test_file = Path(__file__).resolve().parent / "test_password_toggle.js"
+        result = await anyio.run_process([node_bin, str(test_file)], check=False)
+        stdout_text = result.stdout.decode()
+        stderr_text = result.stderr.decode()
+        match = re.search(r"Password Toggle tests completed: (\d+) passed, (\d+) failed", stdout_text)
+        assert match is not None, (
+            f"Node test summary not found in output:\nstdout:\n{stdout_text}\nstderr:\n{stderr_text}"
+        )
+        passed_count = int(match.group(1))
+        failed_count = int(match.group(2))
+        assert passed_count > 0, (
+            f"Expected at least one passed assertion, got {passed_count}\nstdout:\n{stdout_text}\nstderr:\n{stderr_text}"
+        )
+        assert failed_count == 0, (
+            f"Expected 0 failed assertions, got {failed_count}\nstdout:\n{stdout_text}\nstderr:\n{stderr_text}"
+        )
 
     @pytest.mark.anyio
     async def test_login_with_correct_credentials(self, setup_db):
@@ -1128,6 +1197,50 @@ class TestLastSignIn:
 
         assert response.status_code == 303
         assert attempts == 2
+
+    @pytest.mark.anyio
+    @pytest.mark.parametrize(
+        ("error_message", "error_kind", "expected_attempts"),
+        [
+            ("database is locked", "operational", 3),
+            ("disk I/O error", "operational", 1),
+            ("QueuePool limit reached, connection timed out", "pool_timeout", 1),
+            ("Can't reconnect until invalid transaction is rolled back", "other_sqlalchemy", 1),
+        ],
+        ids=["retries-exhausted", "non-retryable", "pool-timeout", "other-sqlalchemy-error"],
+    )
+    async def test_password_login_succeeds_when_sign_in_write_fails(
+        self, setup_db, monkeypatch, caplog, error_message, error_kind, expected_attempts
+    ):
+        from sqlalchemy.exc import InvalidRequestError, OperationalError
+        from sqlalchemy.exc import TimeoutError as PoolTimeoutError
+
+        import portal.routers.auth as auth_router
+
+        user = await _create_test_user(email=f"{error_kind}-{expected_attempts}@example.com")
+        attempts = 0
+
+        async def always_fail(*args, **kwargs):
+            nonlocal attempts
+            attempts += 1
+            if error_kind == "pool_timeout":
+                raise PoolTimeoutError(error_message)
+            if error_kind == "other_sqlalchemy":
+                raise InvalidRequestError(error_message)
+            raise OperationalError(error_message, {}, Exception())
+
+        monkeypatch.setattr(auth_router, "update_user", always_fail)
+        with caplog.at_level("WARNING", logger="portal.routers.auth"):
+            async with _client() as client:
+                response = await client.post("/login", data={"email": user.email, "password": "securepass123"})
+                assert response.status_code == 303
+                # The issued cookie must be a valid session: it has to authenticate a real request.
+                assert client.cookies.get("user_token")
+                account = await client.get("/account", follow_redirects=False)
+                assert account.status_code == 200
+
+        assert attempts == expected_attempts
+        assert f"Failed to record last_sign_in_at for user {user.id}" in caplog.text
 
     @pytest.mark.anyio
     async def test_inactive_password_reset_does_not_sign_in(self, setup_db):

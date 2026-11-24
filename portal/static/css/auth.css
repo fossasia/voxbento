@@ -160,9 +160,10 @@ body:has(.login-page) .portal-footer {
 .login-subtitle { font-size: 0.875rem; color: var(--color-text-secondary); display: block; margin-top: 4px; }
 .login-card--centered { text-align: center; }
 .login-card--centered h2 { margin: 20px 0; }
-.login-card--centered .login-message { color: #aaa; margin-bottom: 20px; }
+.login-card--centered .login-message { color: #aaa; margin-bottom: 20px; overflow-wrap: anywhere; }
 .login-footer--spaced { margin-top: 30px; }
 .login-email-display {
+  overflow-wrap: anywhere;
   text-align: center;
   margin-bottom: 15px;
   color: #aaa;
@@ -315,7 +316,7 @@ body:has(.login-page) .portal-footer {
 .account-hosting-banner-content { display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 12px; }
 .account-hosting-banner-title { margin: 0; color: #1e40af; font-weight: 600; font-size: 0.95rem; }
 .account-hosting-banner-text { margin: 6px 0 0 0; color: #1e3a8a; font-size: 0.875rem; line-height: 1.5; }
-.login-prompt { margin-bottom: 20px; line-height: 1.5; }
+.login-prompt { margin-bottom: 20px; line-height: 1.5; overflow-wrap: anywhere; }
 .login-prompt p { margin: 0 0 8px 0; }
 .login-prompt p:last-child { margin-bottom: 0; }
 .login-footer--spaced { margin-top: 24px; }
@@ -369,6 +370,64 @@ body:has(.login-page) .portal-footer {
   border-color: var(--color-primary); 
   box-shadow: 4px 4px 0px var(--color-primary);
   transform: translate(-2px, -2px); 
+}
+
+/* Password visibility toggle */
+.password-input-wrapper {
+  position: relative;
+  display: flex;
+  align-items: center;
+  width: 100%;
+}
+
+.password-input-wrapper input {
+  width: 100%;
+  box-sizing: border-box;
+  padding-right: 44px;
+}
+
+.password-toggle-btn {
+  position: absolute;
+  right: 8px;
+  top: 50%;
+  transform: translateY(-50%);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 32px;
+  height: 32px;
+  padding: 0;
+  border: none;
+  background: transparent;
+  color: var(--color-text-secondary, #5b6577);
+  border-radius: 4px;
+  cursor: pointer;
+  transition: transform 0.2s ease, color 0.15s ease, background-color 0.15s ease;
+  z-index: 1;
+}
+
+.password-toggle-btn:hover {
+  color: var(--color-text);
+  background-color: color-mix(in srgb, var(--color-text) 6%, transparent);
+}
+
+.password-toggle-btn:focus {
+  outline: none;
+}
+
+.password-toggle-btn:focus-visible {
+  outline: 2px solid var(--color-primary, #2563eb);
+  outline-offset: 2px;
+}
+
+.password-input-wrapper:has(input:focus) .password-toggle-btn {
+  transform: translateY(-50%) translate(-2px, -2px);
+}
+
+/* Prevent duplicate eye icons in Edge / IE */
+.login-form input[type="password"]::-ms-reveal,
+.login-form input[type="password"]::-ms-clear {
+  display: none;
 }
 
 /* Brutalist Button Styles for Login/Register */

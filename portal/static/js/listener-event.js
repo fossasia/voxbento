@@ -411,8 +411,11 @@ function startTtsWs(roomId, langCode, boothId, audioDelayMs) {
           caption: frame.header.caption || "",
           translation: frame.header.translation || "",
           error: frame.header.error || (frame.header.audio_pending === false && !frame.audioBytes.byteLength ? 'no_audio' : null),
-          // The translator ran and had nothing to say: the segment is finished, with nothing to show.
-          empty: !frame.header.translation && !frame.header.error && frame.header.audio_pending === false,
+          // The translator ran and had nothing to say, or the segment was skipped so the language could
+          // catch up with the speaker ("stale"): the segment is finished, with nothing to show.
+          empty:
+            !frame.header.translation &&
+            (frame.header.error === 'stale' || (!frame.header.error && frame.header.audio_pending === false)),
           audioBuffer: null,
           receivedAt: segmentStore[seq]?.receivedAt || Date.now(),
         };
@@ -693,14 +696,8 @@ function pumpSegmentQueue() {
   var isTranslationActive =
     Boolean(translationLangSelect.value) && mode !== "original";
   if (isTranslationActive) {
+    // Failed, pending or downloading translations show nothing; only real text renders.
     var tText = nextSeg.translation;
-    if (!tText && nextSeg.error === "pipeline_failed") {
-      tText = "(Translation failed)";
-    } else if (!tText && nextSeg.error === "model_downloading") {
-      tText = "(Downloading translation model...)";
-    } else if (!tText && !nextSeg.empty) {
-      tText = "(Translation pending...)";
-    }
     if (tText) {
       var fakeData = {
         type: "translation",
