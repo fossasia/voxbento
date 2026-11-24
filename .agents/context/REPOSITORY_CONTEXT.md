@@ -137,7 +137,7 @@ Client → Server messages:
 | `type` | Handler | Effect |
 |---|---|---|
 | `booth:join` | `_handle_join` | Adds participant; first interpreter auto-assigned active |
-| `booth:leave` | `_handle_leave` | Removes participant; triggers handoff if active leaves |
+| `booth:leave` | `_handle_leave` | Removes participant; triggers handoff if active leaves; ends the WHIP session they opened |
 | `booth:chat` | `_handle_chat` | Appends message; broadcasts `booth:chat` + `booth:state` |
 | `booth:set-active` | `_handle_set_active` | Changes active interpreter (coordinator roles, or the current active interpreter); works without joining for Mission Control; optional `expected_active_id`; replies to the requester and broadcasts `booth:state` |
 | `booth:get-state` | `_handle_get_state` | Replies `booth:state` to this socket only (any role in the booth); Mission Control asks after (re)connecting |
