@@ -3,8 +3,10 @@ from __future__ import annotations
 import asyncio
 import logging
 from dataclasses import dataclass
+from datetime import datetime
 
-from sqlalchemy import select, update
+from sqlalchemy import func, select, update
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from portal.database import get_session
@@ -15,6 +17,7 @@ from portal.meeting_analysis.constants import (
     STATUS_DONE,
     STATUS_FAILED,
     STATUS_PENDING,
+    STATUS_QUEUED,
     STATUS_RUNNING,
     AnalysisProviderEnum,
 )
@@ -22,16 +25,18 @@ from portal.meeting_analysis.prompts import (
     build_analysis_messages,
     build_merge_messages,
     build_transcript,
+    fit_glossary,
     merge_batches,
     split_transcript,
     transcript_lines,
 )
 from portal.meeting_analysis.providers import get_provider
 from portal.meeting_analysis.schema import AnalysisError, AnalysisResult, UnreadableAnswer, parse_analysis
-from portal.models import Event, MeetingReport, Room, TranscriptSegment, utc_now
+from portal.models import DBBooth, Event, MeetingReport, Room, TranscriptSegment, TranscriptTranslation, utc_now
 from portal.room_setup import language_name
 from portal.tasks import track_task
 from portal.translations.keys import get_translation_api_key
+from portal.translations.vocabulary import mentioned_glossary_terms
 
 logger = logging.getLogger(__name__)
 
@@ -83,6 +88,53 @@ def session_filter(report: MeetingReport, *, covered_only: bool = False) -> list
     return conditions
 
 
+@dataclass(frozen=True)
+class ReportLine:
+    """One transcript line a report reads: the spoken text, or its translation for a report from one."""
+
+    id: int
+    text: str
+    created_at: datetime
+    spoken: str
+
+
+async def report_lines(session: AsyncSession, report: MeetingReport, *, covered_only: bool = False) -> list[ReportLine]:
+    order = (TranscriptSegment.created_at, TranscriptSegment.id)
+    conditions = session_filter(report, covered_only=covered_only)
+    if report.transcript_language:
+        # A line that was never translated (no listeners for that language then) is left out.
+        rows = await session.execute(
+            select(
+                TranscriptSegment.id, TranscriptTranslation.text, TranscriptSegment.created_at, TranscriptSegment.text
+            )
+            .join(TranscriptTranslation, TranscriptTranslation.segment_id == TranscriptSegment.id)
+            .where(*conditions, TranscriptTranslation.language_code == report.transcript_language)
+            .order_by(*order)
+        )
+    else:
+        rows = await session.execute(
+            select(TranscriptSegment.id, TranscriptSegment.text, TranscriptSegment.created_at, TranscriptSegment.text)
+            .where(*conditions)
+            .order_by(*order)
+        )
+    return [ReportLine(*row) for row in rows]
+
+
+async def _glossary(session: AsyncSession, report: MeetingReport, room: Room, spoken: str) -> tuple[str, ...]:
+    """The glossary terms the report names, when the room uses its glossary."""
+    if not room.floor_ai_vocabulary_enabled:
+        return ()
+    booth_id = None
+    if report.channel_id != "floor":
+        booth_id = await session.scalar(
+            select(DBBooth.id).where(DBBooth.room_id == room.id, DBBooth.language_code == report.channel_id)
+        )
+    terms = await mentioned_glossary_terms(
+        session, report.event_id, room.id, booth_id, spoken, target_language=report.transcript_language
+    )
+    return fit_glossary(terms)
+
+
 async def _prepare(report_id: int) -> _Job | None:
     async with get_session() as session:
         report = await session.get(MeetingReport, report_id)
@@ -94,17 +146,15 @@ async def _prepare(report_id: int) -> _Job | None:
             report.status = STATUS_FAILED
             report.error = "The event or room no longer exists."
             return None
-        segments = (
-            await session.scalars(
-                select(TranscriptSegment)
-                .where(*session_filter(report))
-                .order_by(TranscriptSegment.created_at, TranscriptSegment.id)
-            )
-        ).all()
-        lines = transcript_lines(segments)
+        segments = await report_lines(session, report)
+        lines = transcript_lines(segments, report.session_started_at)
         if not lines:
             report.status = STATUS_FAILED
-            report.error = "There is no transcript for this channel yet."
+            report.error = (
+                "No lines of this session were translated into that language."
+                if report.transcript_language
+                else "There is no transcript for this channel yet."
+            )
             return None
         api_key = None
         if report.provider != AnalysisProviderEnum.LOCAL.value:
@@ -123,6 +173,8 @@ async def _prepare(report_id: int) -> _Job | None:
             "room_name": room.display_name,
             "channel_label": report.channel_label,
             "language_name": language_name(report.language_code) if report.language_code != "floor" else "",
+            "glossary": await _glossary(session, report, room, "\n".join(line.spoken for line in segments)),
+            "translated": bool(report.transcript_language),
         }
         chunks = split_transcript(transcript)
         if len(chunks) == 1:
@@ -206,6 +258,46 @@ def start_analysis(report_id: int) -> None:
     track_task(asyncio.create_task(run_analysis(report_id), name=f"meeting-report-{report_id}"))
 
 
+# The portal runs one process. A live batch can take longer than the stale-report timeout.
+_batch_ids: set[int] = set()
+
+
+def start_batch(ids: list[int]) -> None:
+    _batch_ids.update(ids)
+    track_task(asyncio.create_task(_run_batch(ids), name=f"meeting-report-batch-{ids[0]}"))
+
+
+async def _run_batch(ids: list[int]) -> None:
+    try:
+        for report_id in ids:
+            try:
+                async with get_session() as session:
+                    await session.execute(
+                        update(MeetingReport)
+                        .where(MeetingReport.id == report_id, MeetingReport.status == STATUS_QUEUED)
+                        .values(status=STATUS_PENDING)
+                    )
+            except IntegrityError:
+                await _fail(report_id, "Another report is being written for this room. Generate this report again.")
+                continue
+            try:
+                await run_analysis(report_id)
+            except Exception:
+                logger.exception("Meeting report %s failed during batch generation", report_id)
+    finally:
+        _batch_ids.difference_update(ids)
+
+
+async def room_busy(session: AsyncSession, room_id: int) -> bool:
+    """Whether a report of the room is being written; only one is, at a time."""
+    count = await session.scalar(
+        select(func.count())
+        .select_from(MeetingReport)
+        .where(MeetingReport.room_id == room_id, MeetingReport.status.in_(IN_PROGRESS))
+    )
+    return bool(count)
+
+
 async def mark_interrupted_reports(session: AsyncSession, room_id: int) -> None:
     await session.execute(
         update(MeetingReport)
@@ -213,6 +305,7 @@ async def mark_interrupted_reports(session: AsyncSession, room_id: int) -> None:
             MeetingReport.room_id == room_id,
             MeetingReport.status.in_(IN_PROGRESS),
             MeetingReport.created_at < utc_now() - STALE_AFTER,
+            MeetingReport.id.not_in(_batch_ids),
         )
         .values(status=STATUS_FAILED, error=INTERRUPTED)
     )

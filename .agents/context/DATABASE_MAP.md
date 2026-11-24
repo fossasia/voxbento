@@ -413,6 +413,13 @@ No links or email content are shown in the administration history.
 `show_logo` (default true) and an optional https `logo_url` (empty means the
 VoxBento logo served by the site). No row means the defaults.
 
+## Migration 048 — meeting reports phase 2 (#1080)
+
+Adds `events.meeting_analysis_auto` (default false: write a report when a channel's
+captions stop), `meeting_reports.transcript_language` (nullable: the translation a
+report read from `transcript_translations`; NULL for the spoken transcript) and
+`meeting_reports.automatic` (default false). See `docs/meeting-analysis.md`.
+
 ## Migration 045 — meeting reports (#1080)
 
 Adds `events.meeting_analysis_enabled` (default false),
