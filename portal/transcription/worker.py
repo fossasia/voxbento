@@ -30,11 +30,12 @@ PROVIDERS = {
 }
 
 active_workers_lock = asyncio.Lock()
-MAX_TOTAL_WORKERS = 10
+# Backward-compatibility alias; live capacity checks read settings.max_transcription_workers
+MAX_TOTAL_WORKERS = settings.max_transcription_workers
 
 
 class WorkerCapacityError(ValueError):
-    """Raised when starting a worker would exceed MAX_TOTAL_WORKERS."""
+    """Raised when starting a worker would exceed max_transcription_workers."""
 
 
 class State(Enum):
@@ -227,9 +228,10 @@ async def start_transcription_worker(
         async with active_workers_lock:
             existing_session = active_workers.get(booth_id)
             if not existing_session:
-                if len(active_workers) >= MAX_TOTAL_WORKERS:
+                limit = settings.max_transcription_workers
+                if len(active_workers) >= limit:
                     raise WorkerCapacityError(
-                        f"System at maximum capacity ({MAX_TOTAL_WORKERS} concurrent transcription booths)."
+                        f"System at maximum capacity ({limit} concurrent transcription booths)."
                     )
 
                 if provider == "local":
@@ -307,3 +309,10 @@ async def stop_transcription_worker(booth_id: str):
         async with active_workers_lock:
             if active_workers.get(booth_id) is session:
                 active_workers.pop(booth_id)
+        if session.room_id is not None:
+            # Imported here: meeting analysis reads room setup, which imports this package.
+            from portal.meeting_analysis.auto import schedule_auto_report
+
+            # The session may have ended: its event can ask for a meeting report on it. Captions that
+            # start again within the wait carry on the same session, so no report is written then.
+            schedule_auto_report(session.room_id, session.language_code, lambda: booth_id in active_workers)

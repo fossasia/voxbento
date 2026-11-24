@@ -659,7 +659,8 @@ async def test_editing_changes_booths_but_keeps_live_ones(admin_cookie, event_ro
 
 
 @pytest.mark.anyio
-async def test_editing_keeps_a_fine_tuned_model_for_the_same_provider(admin_cookie, event_room):
+async def test_editing_keeps_a_fine_tuned_model_for_the_same_provider(admin_cookie, event_room, monkeypatch):
+    monkeypatch.setattr(settings, "local_translation_models", "nllb-200-distilled-600M,custom-local-model")
     event, room = event_room
     async with get_session() as s:
         db_room = await s.get(Room, room.id)

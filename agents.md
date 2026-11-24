@@ -74,7 +74,7 @@ VoxBento is a production-grade **browser-first interpretation booth console** fo
 | `portal/config.py` | `Settings` — pydantic-settings; all env vars / `.env` |
 | `portal/models.py` | SQLAlchemy declarative models: `Event`, `Room`, `DBBooth`, `InviteToken`, `User`, `EventMembership`, `RoomMembership`, `BoothMembership`, `HostingRequest`, `AIVocabularyEntry`, etc. |
 | `portal/database.py` | Async engine, session factory (`get_session`), all CRUD helpers |
-| `portal/booth_publish.py` | Single-use WHIP publish tickets for interpreter booth paths; checked by the MediaMTX auth hook |
+| `portal/booth_publish.py` | Single-use WHIP publish tickets for interpreter booth paths; checked by the MediaMTX auth hook. Records the session a ticket opened and kicks it when its interpreter leaves the booth |
 | `portal/booth_identity.py` | `make_booth_id`, `make_mediamtx_path`, `parse_booth_id`, `validate_event_slug`, `validate_language_code` |
 | `portal/roles.py` | `Permission` enum, `ROLE_PERMISSIONS` dict, `ALL_ROLES` set, `_ROLE_RANK` |
 | `portal/crypto.py` | `encrypt_val` / `decrypt_val` (Fernet, SHA-256 key derivation) |
@@ -84,10 +84,12 @@ VoxBento is a production-grade **browser-first interpretation booth console** fo
 | `portal/meeting_source.py` | Managed Jitsi floor agent lifecycle reconciler |
 | `portal/program_ingest.py` | Floor authorization and reconciliation for Program Stream Ingest |
 | `portal/program_relay.py` | YouTube RTMPS destination management and relay health convergence |
+| `portal/youtube_account.py` | Google OAuth and YouTube Live API metadata (no media): Sign in with YouTube, broadcast linking, YouTube status |
 | `portal/outage_log.py` | `OutageLog` — reconcile loops log a repeating failure once per outage, not per tick |
 | `portal/booth_recovery.py` | Saves each booth's Go Live switch and active interpreter to `booth_live_state` and restores them at startup (TD-03) |
 | `portal/attendance.py` | `AttendanceTracker` — interpreter visits and interpreting time from booth state, batched writes to `interpreter_attendance` (#1215) |
 | `portal/live_demo.py` | Home-page live demo (`/ws/demo/live`): local Whisper → NLLB → Supertonic pipeline, site + visitor glossary, admission limits, and the admin-edited `live_demo_settings` row (`/admin/live-demo/`) |
+| `portal/live_demo_ai.py` | Independent live demo speech, translation and voice settings and encrypted keys; no event or room dependency |
 | `portal/user_admin.py` | Administrative access rules, user flags (`can_host`, `is_admin`, `is_active`, `email_verified`) |
 | `portal/templates/` | Jinja2 HTML — `base.html`, `interpreter_booth.html`, `listener-event.html`, `admin/` |
 | `portal/static/css/tokens.css` | Shared design tokens (`--vb-*` colours, radii, shadows, fonts), linked first on every page; new CSS uses these instead of new hex values |
@@ -96,7 +98,7 @@ VoxBento is a production-grade **browser-first interpretation booth console** fo
 | `portal/static/js/admin.js` | Admin panel JS helpers |
 | `mediamtx.yml` | MediaMTX config — WHIP/WHEP paths, RTSP, Control API, `overridePublisher` |
 | `docker-compose.yml` | portal + mediamtx + jitsi-web/prosody/jicofo/jvb |
-| `alembic/versions/` | 38 migrations (001–038); run `uv run alembic upgrade head` |
+| `alembic/versions/` | 44 migrations (001–044); run `uv run alembic upgrade head` |
 
 ---
 
@@ -193,6 +195,13 @@ Booth WHIP publishing is authenticated (#783): MediaMTX forwards the `Authorizat
 `/internal/media-auth`, which redeems it once (`portal/booth_publish.py`, 30 s TTL, bound to the booth's
 server-derived path) and re-checks that the holder is still the active interpreter and that Mission Control has
 broadcast unlocked. Anonymous publishes get 401. A `booth:join` naming another socket's `participant_id` gets a fresh ID.
+The ticket is only checked when the session starts, so the hook also records the MediaMTX session `id` per booth (#1285).
+When that interpreter is removed (access revoked, `booth:leave`, reconnect grace expired) the portal kicks that session by
+id, so a newer publisher on the path is untouched; Mission Control Stop and booth deletion kick the path's current source.
+A socket that only drops keeps its audio for `BOOTH_RECONNECT_GRACE_SECONDS`. Kicks are best effort and run after the
+booth state change, before its broadcast: a MediaMTX failure is logged and never blocks revocation. Session records are
+in memory only: after a portal restart, revocation cannot kick a session opened before the restart (Stop and booth deletion
+still end the path's current source).
 
 Caption feed: `/ws/captions/{booth_id}` receives `caption`, `translated_caption` and public `booth:state`. `ws_captions` validates query JWTs: listener tokens are event-scoped, participant tokens are booth-scoped, and user tokens require a currently active account. Without a query token, events with a listener join code require that code, an active user session, or a scoped invite. Code attempts share a bounded pre-verification budget across listener/overlay HTTP, caption WS and TTS WS paths (`portal/join_code_limit.py`); excess caption guesses close with 1008, and excess TTS guesses are refused like any other TTS authorization failure. The audio-delay poll clears a listener code cookie that no longer matches, so tabs left open across a code regenerate do not spend the budget on every poll. Events without a join code retain public caption access with the anonymous connection cap. Rejections are accepted then closed with 4001 (missing/invalid credentials) or 4003 (scope mismatch), so browsers can distinguish them from transport failures. `booth:state` carries only `booth_id`, `event_slug`, `room_id`, `language_code`, `broadcast_unlocked` and `ingest_status`, never participants or booth chat. Overlay reconnects obtain a fresh listener token through `/overlay/.../session`, which rechecks the account/code and channel.
 
@@ -208,7 +217,7 @@ MediaMTX RTSP (8554) → ffmpeg PCM → TranscriptionProvider → CaptionAggrega
 
 Providers: `local` (faster-whisper, CPU), `openai` (whisper-1/realtime), `deepgram` (nova-3/nova-2), `atlascloud` (Seed ASR 2.0 async predictions), `nvidia` (Parakeet), `elevenlabs` (scribe_v2).
 Worker lifecycle: `start_transcription_worker` / `stop_transcription_worker` in `portal/transcription/worker.py`.
-Max concurrent workers: 10 (`MAX_TOTAL_WORKERS`).
+Max concurrent workers: default 10 (`MAX_TOTAL_WORKERS`, configurable via `settings.max_transcription_workers` / `MAX_TRANSCRIPTION_WORKERS`).
 
 ---
 

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import importlib.util
 import os
+import re
 import sqlite3
 import tempfile
 from pathlib import Path
@@ -153,3 +154,19 @@ def test_migration_018_downgrade_backfills_passwordless_accounts():
         assert hashes["grace@example.org"] == migration.UNUSABLE_PASSWORD_HASH
     finally:
         os.unlink(db_path)
+
+
+def test_boolean_columns_use_portable_server_defaults() -> None:
+    """PostgreSQL rejects integer defaults on boolean columns (#1248).
+
+    SQLite accepts server_default="0"/"1", so only sa.true()/sa.false() keep the
+    chain runnable on both databases.
+    """
+    integer_default = re.compile(r"""server_default=(?:sa\.text\(\s*)?["'][01]["']""")
+    offenders = [
+        f"{path.name}:{number}"
+        for path in sorted(VERSIONS_DIR.glob("*.py"))
+        for number, line in enumerate(path.read_text().splitlines(), start=1)
+        if "sa.Boolean()" in line and integer_default.search(line)
+    ]
+    assert not offenders, f"use sa.true()/sa.false() for Boolean server_default: {offenders}"

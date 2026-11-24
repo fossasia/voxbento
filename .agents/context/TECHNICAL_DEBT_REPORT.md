@@ -39,11 +39,9 @@
 
 ---
 
-### TD-06: Transcription worker MAX_TOTAL_WORKERS is hardcoded
+### TD-06: [RESOLVED] Transcription worker MAX_TOTAL_WORKERS is hardcoded
 **File:** `portal/transcription/worker.py` — `MAX_TOTAL_WORKERS = 10`
-**Problem:** Not configurable via settings. Large events with many language channels may hit the limit.
-**Impact:** Low for typical deployments (≤10 booths).
-**Fix:** Add `max_transcription_workers: int` to `Settings` in `portal/config.py`.
+**Resolution:** Made operator-configurable via `Settings.max_transcription_workers` in `portal/config.py` and the `MAX_TRANSCRIPTION_WORKERS` environment variable (default: 10, range: 1–100).
 
 ---
 
@@ -79,7 +77,7 @@
 
 ### TD-11: [RESOLVED] No WebSocket reconnection handling on the server
 **File:** `portal/booth_state.py`, `portal/websockets/manager.py`
-**Resolution:** A dropped booth socket marks the participant `connected: false` and keeps their place, including the active slot, for `BOOTH_RECONNECT_GRACE_SECONDS`. A reconnect from the same session (`booth_session_key`) with the same `participant_id` reclaims it; any other session gets a fresh ID. A socket that still holds the participant is closed with 4009, which the client treats as final. Revoked access removes the participant at once.
+**Resolution:** A dropped booth socket marks the participant `connected: false` and keeps their place, including the active slot, for `BOOTH_RECONNECT_GRACE_SECONDS`. A reconnect from the same session (`booth_session_key`) with the same `participant_id` reclaims it; any other session gets a fresh ID. A socket that still holds the participant is closed with 4009, which the client treats as final. Revoked access removes the participant at once and kicks the WHIP session they opened in MediaMTX; a participant whose grace runs out is kicked the same way (#1285). Session records are kept in memory only, so after a portal restart revocation cannot kick a session opened before the restart.
 
 ---
 

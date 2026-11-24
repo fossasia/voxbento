@@ -10,9 +10,21 @@ from __future__ import annotations
 
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
+from enum import Enum
 from types import MappingProxyType
 
 from portal.translations.engine import EngineKind
+
+
+class LanguageTagging(str, Enum):
+    """How a sequence-to-sequence model is told which languages to translate between."""
+
+    #: The source text starts with the source language's token and the output is forced to start
+    #: with the target language's token (NLLB-200, M2M100).
+    LANGUAGE_TOKENS = "language_tokens"
+    #: The source text is prefixed with a ``<2xx>`` target tag and the model detects the source
+    #: language itself (MADLAD-400, a T5 model).
+    TARGET_TAG = "target_tag"
 
 
 @dataclass(frozen=True, slots=True)
@@ -35,6 +47,7 @@ class TranslationModel:
     supports_multi_target_batch: bool
     #: SPDX identifier of the model's licence.
     licence: str
+    language_tagging: LanguageTagging = LanguageTagging.LANGUAGE_TOKENS
 
     def engine_code(self, language_code: str) -> str | None:
         """The model's own code for an ISO 639-1 language, or None when it lacks the language."""
@@ -82,9 +95,40 @@ NLLB_200_DISTILLED_600M = TranslationModel(
     licence="CC-BY-NC-4.0",
 )
 
+# MADLAD-400 marks the target language with a "<2xx>" tag in front of the source text. These are
+# its tags that are ISO 639-1 codes; it has several hundred more, for languages without one. VoxBento
+# names languages by ISO 639-1 code everywhere (booths, rooms, listeners), so only these are reachable.
+_MADLAD_400_LANGUAGES = {
+    code: f"<2{code}>"
+    for code in (
+        "af ak am an ar as av ay az ba be bg bi bm bn bo br bs ca ce ch co cs cv cy da de dv dz ee el en "
+        "eo es et eu fa ff fi fj fo fr fy ga gd gl gn gu gv ha he hi ho hr ht hu hy id ig io is it iu ja "
+        "jv ka kg kj kk kl km kn ko kr ks ku kv kw ky la lb lg li ln lo lt lu lv mg mh mi mk ml mn mr ms "
+        "mt my ne nl nn no nr nv ny oc oj om or os pa pl ps pt qu rm rn ro ru rw sa sc sd se sg sh si sk "
+        "sl sm sn so sq sr ss st su sv sw ta te tg th ti tk tn to tr ts tt ug uk ur uz ve vi wa wo xh yi "
+        "yo zh zu"
+    ).split()
+}
+# Tagalog has no MADLAD-400 tag of its own: MADLAD tags it "fil" (Filipino, its standard form).
+_MADLAD_400_LANGUAGES["tl"] = "<2fil>"
+
+MADLAD_400_3B = TranslationModel(
+    id="madlad400-3b-mt",
+    engine_kind=EngineKind.CT2_SEQ2SEQ,
+    hf_repo="Nextcloud-AI/madlad400-3b-mt-ct2-int8",
+    hf_revision="aa32bbdeba7880eff2096ec044cb155a340a9400",
+    languages=MappingProxyType(_MADLAD_400_LANGUAGES),
+    approx_ram_mb=3200,
+    supports_prompt=False,
+    # Each input carries its own target tag, so one batch can hold a text for several languages.
+    supports_multi_target_batch=True,
+    licence="Apache-2.0",
+    language_tagging=LanguageTagging.TARGET_TAG,
+)
+
 #: Every self-hosted model, by id. The first one is the default.
 LOCAL_TRANSLATION_MODELS: Mapping[str, TranslationModel] = MappingProxyType(
-    {model.id: model for model in (NLLB_200_DISTILLED_600M,)}
+    {model.id: model for model in (NLLB_200_DISTILLED_600M, MADLAD_400_3B)}
 )
 
 
