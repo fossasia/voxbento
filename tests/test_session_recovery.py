@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import threading
 from contextlib import asynccontextmanager
 from datetime import datetime, timedelta, timezone
 
@@ -34,6 +35,30 @@ from portal.user_admin import set_user_access
 from portal.websockets.manager import tts_manager
 
 _PASSWORD_HASH = hash_password("old-recovery-password")
+
+
+def _expect_refusal(ws, timeout: float = 5.0) -> None:
+    """Read a socket the server should refuse, raising its WebSocketDisconnect.
+
+    The refusal comes after accept(), so it is the first frame. Fail instead of
+    hanging if the server let the socket in.
+    """
+    outcome: list[BaseException] = []
+
+    def read() -> None:
+        try:
+            ws.receive_bytes()
+        except BaseException as exc:  # handed to the test thread below
+            outcome.append(exc)
+        else:
+            outcome.append(AssertionError("the server sent data instead of refusing the socket"))
+
+    reader = threading.Thread(target=read, daemon=True)
+    reader.start()
+    reader.join(timeout)
+    if not outcome:
+        pytest.fail("the server kept the socket open instead of refusing it")
+    raise outcome[0]
 
 
 @pytest.fixture
@@ -147,7 +172,7 @@ def test_revoked_admin_cannot_open_tts(recovery, change, transport):
         client.cookies.set("user_token", token)
     with pytest.raises(WebSocketDisconnect) as exc:
         with client.websocket_connect(path) as ws:
-            ws.receive_text()
+            _expect_refusal(ws)
     assert exc.value.code == 4003
 
 
@@ -303,7 +328,7 @@ def test_tts_rejects_a_listener_code_cookie_the_event_does_not_have(recovery, ev
     try:
         with pytest.raises(WebSocketDisconnect) as exc:
             with client.websocket_connect(tts_path(room)) as ws:
-                ws.receive_text()
+                _expect_refusal(ws)
         assert exc.value.code == 4003
     finally:
         _join_code_attempts.clear()
@@ -506,7 +531,7 @@ def test_revoked_account_cookie_does_not_override_valid_invite(recovery, channel
     if revoked_invite:
         with pytest.raises(WebSocketDisconnect) as exc:
             with client.websocket_connect(path) as ws:
-                ws.receive_text()
+                _expect_refusal(ws)
         assert exc.value.code == 4003
         return
     with client.websocket_connect(path) as socket:
@@ -713,9 +738,9 @@ def test_unrelated_active_account_does_not_shadow_tts_invite(recovery, revoked):
     client.cookies.set("user_token", old_token(target))
     client.cookies.set("session_token", participant)
     if revoked:
-        with client.websocket_connect(tts_path(room)) as ws:
-            with pytest.raises(WebSocketDisconnect) as exc:
-                ws.receive_text()
+        with pytest.raises(WebSocketDisconnect) as exc:
+            with client.websocket_connect(tts_path(room)) as ws:
+                _expect_refusal(ws)
         assert exc.value.code == 4003
     else:
         with client.websocket_connect(tts_path(room)) as socket:
