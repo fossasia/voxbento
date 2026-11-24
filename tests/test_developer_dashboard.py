@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import hashlib
 import os
+import secrets
 
 os.environ["BOOTH_ACCESS_TOKEN"] = ""
 
@@ -18,7 +19,8 @@ from datetime import datetime, timedelta, timezone
 from html.parser import HTMLParser
 
 import pytest
-from sqlalchemy import select
+from sqlalchemy import select, update
+from sqlalchemy.exc import IntegrityError
 
 from portal.auth import create_user_token, hash_password
 from portal.config import settings
@@ -28,6 +30,7 @@ from portal.routers.developer import (
     MAX_NAME_LENGTH,
     MAX_REDIRECT_URI_LENGTH,
     MAX_REDIRECT_URIS,
+    generate_developer_csrf_token,
     parse_redirect_uris,
 )
 
@@ -54,13 +57,14 @@ async def _developer_cookies(account_status: str | None = "approved") -> dict[st
     """Create a user, optionally with a developer account, and return its dashboard cookies."""
     async with get_session() as s:
         user = await create_user(
-            s, email="dev@test.com", display_name="Dev", password_hash=hash_password("securepass123")
+            s, email=f"dev_{secrets.token_hex(4)}@test.com", display_name="Dev", password_hash=hash_password("securepass123")
         )
         if account_status is not None:
             s.add(DeveloperAccount(user_id=user.id, status=account_status, organization_name="Acme"))
         await s.commit()
         token = create_user_token(user_id=user.id, email=user.email)
-    return {"user_token": token, "dashboard_csrf": CSRF}
+    csrf = generate_developer_csrf_token(user.id)
+    return {"user_token": token, "dashboard_csrf": csrf}
 
 
 async def _stored_clients() -> list[OAuthClient]:
@@ -68,12 +72,14 @@ async def _stored_clients() -> list[OAuthClient]:
         return list((await s.execute(select(OAuthClient))).scalars().all())
 
 
-async def _register(cookies: dict[str, str], app_name: str, redirect_uris: str, csrf_token: str = CSRF):
+async def _register(cookies: dict[str, str], app_name: str, redirect_uris: str, csrf_token: str | None = None):
+    token = csrf_token if csrf_token is not None else cookies.get("dashboard_csrf", CSRF)
     async with _client() as c:
+        for k, v in cookies.items():
+            c.cookies.set(k, v)
         return await c.post(
             "/api/developer/clients",
-            data={"app_name": app_name, "redirect_uris": redirect_uris, "csrf_token": csrf_token},
-            cookies=cookies,
+            data={"app_name": app_name, "redirect_uris": redirect_uris, "csrf_token": token},
         )
 
 
@@ -219,10 +225,11 @@ async def test_register_client_requires_approved_account(account_status, setup_d
     cookies = await _developer_cookies(account_status)
 
     async with _client() as c:
+        for k, v in cookies.items():
+            c.cookies.set(k, v)
         resp = await c.post(
             "/api/developer/clients",
-            data={"app_name": "My Plugin", "redirect_uris": "https://app.example/cb", "csrf_token": CSRF},
-            cookies=cookies,
+            data={"app_name": "My Plugin", "redirect_uris": "https://app.example/cb", "csrf_token": cookies["dashboard_csrf"]},
             follow_redirects=False,
         )
 
@@ -237,11 +244,13 @@ async def test_register_client_requires_approved_account(account_status, setup_d
 
 
 async def _apply(cookies: dict[str, str], organization_name: str):
+    csrf_token = cookies.get("dashboard_csrf", CSRF)
     async with _client() as c:
+        for k, v in cookies.items():
+            c.cookies.set(k, v)
         return await c.post(
             "/api/developer/apply",
-            data={"organization_name": organization_name, "csrf_token": CSRF},
-            cookies=cookies,
+            data={"organization_name": organization_name, "csrf_token": csrf_token},
             follow_redirects=False,
         )
 
@@ -493,12 +502,20 @@ async def test_new_secret_popup_is_a_dialog_with_copy_buttons(setup_db):
 # ---------------------------------------------------------------------------
 
 
-async def _rotate(cookies: dict[str, str], client_id: str, csrf_token: str = CSRF):
+async def _rotate(
+    cookies: dict[str, str],
+    client_id: str,
+    csrf_token: str | None = None,
+    follow_redirects: bool = True,
+):
+    token = csrf_token if csrf_token is not None else cookies.get("dashboard_csrf", CSRF)
     async with _client() as c:
+        for k, v in cookies.items():
+            c.cookies.set(k, v)
         return await c.post(
             f"/api/developer/clients/{client_id}/rotate-secret",
-            data={"csrf_token": csrf_token},
-            cookies=cookies,
+            data={"csrf_token": token},
+            follow_redirects=follow_redirects,
         )
 
 
@@ -553,7 +570,7 @@ async def test_rotate_client_secret_invalid_csrf(setup_db):
     await _register(cookies, "App 1", "https://app.example/cb")
     (client,) = await _stored_clients()
 
-    resp = await _rotate(cookies, client.client_id, csrf_token="wrong-csrf")
+    resp = await _rotate(cookies, client.client_id, csrf_token="wrong-csrf", follow_redirects=False)
     assert resp.status_code == 403
     assert resp.json().get("detail") == "Invalid CSRF token"
 
@@ -572,10 +589,11 @@ async def test_rotate_client_secret_cross_account_forbidden(setup_db):
         s.add(DeveloperAccount(user_id=user_b.id, status="approved", organization_name="Other Org"))
         await s.commit()
         token_b = create_user_token(user_id=user_b.id, email=user_b.email)
-    cookies_b = {"user_token": token_b, "dashboard_csrf": CSRF}
+    csrf_b = generate_developer_csrf_token(user_b.id)
+    cookies_b = {"user_token": token_b, "dashboard_csrf": csrf_b}
 
     # Developer B attempts to rotate Developer A's client
-    resp = await _rotate(cookies_b, client_a.client_id)
+    resp = await _rotate(cookies_b, client_a.client_id, follow_redirects=False)
     assert resp.status_code == 404
     assert resp.json().get("detail") == "OAuth client not found"
 
@@ -583,7 +601,7 @@ async def test_rotate_client_secret_cross_account_forbidden(setup_db):
 @pytest.mark.anyio
 async def test_rotate_client_secret_unapproved_account_redirects(setup_db):
     cookies = await _developer_cookies(account_status="pending")
-    resp = await _rotate(cookies, "client_any")
+    resp = await _rotate(cookies, "client_any", follow_redirects=False)
     assert resp.status_code == 303
     assert resp.headers["location"] == "/developer"
 
@@ -691,9 +709,16 @@ async def test_active_access_tokens_survive_secret_rotation(setup_db):
         resp_before = await http.get(f"/api/v1/events/{event.slug}", headers={"Authorization": f"Bearer {raw_token}"})
     assert resp_before.status_code == 200
 
+    old_hash = client.client_secret_hash
+    assert old_hash is not None
+
     # Rotate client secret
     rotation_response = await _rotate(cookies, client.client_id)
     assert rotation_response.status_code == 200
+
+    # Assert secret hash actually changed during rotation (#1368 review comment 5)
+    (updated_client,) = await _stored_clients()
+    assert updated_client.client_secret_hash != old_hash
 
     # Verify token still works after rotation
     async with _client() as http:
@@ -714,8 +739,112 @@ async def test_dashboard_ui_shows_rotate_secret_button_for_confidential_client(s
     assert f'action="/api/developer/clients/{client.client_id}/rotate-secret"' in resp.text
     assert "Rotate Secret" in resp.text
     assert "onclick=" not in resp.text
+    assert "onsubmit=" not in resp.text
 
     scripts = _InlineScripts()
     scripts.feed(resp.text)
     assert scripts.found == [], "no inline scripts"
+
+
+@pytest.mark.anyio
+async def test_rotate_client_secret_concurrent_conflict(setup_db):
+    cookies = await _developer_cookies()
+    await _register(cookies, "Conflict App", "https://app.example/cb")
+    (client,) = await _stored_clients()
+    old_hash = client.client_secret_hash
+
+    # Simulate concurrent modification to client_secret_hash in DB before CAS update executes
+    async with get_session() as s:
+        await s.execute(
+            update(OAuthClient)
+            .where(OAuthClient.id == client.id)
+            .values(client_secret_hash="concurrently_updated_hash")
+        )
+        await s.commit()
+
+    # The CAS update expects the old hash, which no longer matches, raising HTTP 409 Conflict
+    async with _client() as c:
+        for k, v in cookies.items():
+            c.cookies.set(k, v)
+        resp = await c.post(
+            f"/api/developer/clients/{client.client_id}/rotate-secret",
+            data={"csrf_token": cookies["dashboard_csrf"], "expected_secret_hash": old_hash},
+            follow_redirects=False,
+        )
+    assert resp.status_code == 409
+    assert "conflict" in resp.json().get("detail", "").lower()
+
+
+@pytest.mark.anyio
+async def test_rotate_client_secret_sibling_domain_csrf_rejected(setup_db):
+    cookies = await _developer_cookies()
+    await _register(cookies, "CSRF Sibling App", "https://app.example/cb")
+    (client,) = await _stored_clients()
+
+    # 1. Attacker on sibling domain injects a forged un-signed cookie and submits matching value
+    forged_token = "forged_sibling_cookie_value"
+    attacker_cookies = {"user_token": cookies["user_token"], "dashboard_csrf": forged_token}
+    resp1 = await _rotate(attacker_cookies, client.client_id, csrf_token=forged_token, follow_redirects=False)
+    assert resp1.status_code == 403
+    assert resp1.json().get("detail") == "Invalid CSRF token"
+
+    # 2. Attacker uses a valid CSRF token belonging to a different user
+    user_b_csrf = generate_developer_csrf_token(99999)
+    attacker_b_cookies = {"user_token": cookies["user_token"], "dashboard_csrf": user_b_csrf}
+    resp2 = await _rotate(attacker_b_cookies, client.client_id, csrf_token=user_b_csrf, follow_redirects=False)
+    assert resp2.status_code == 403
+    assert resp2.json().get("detail") == "Invalid CSRF token"
+
+
+@pytest.mark.anyio
+async def test_rotate_client_secret_refresh_does_not_rotate_again(setup_db):
+    cookies = await _developer_cookies()
+    await _register(cookies, "PRG App", "https://app.example/cb")
+    (client,) = await _stored_clients()
+
+    # First: perform rotation (POST) which returns 303 Redirect to /developer with dev_flash_secret cookie
+    async with _client() as c:
+        for k, v in cookies.items():
+            c.cookies.set(k, v)
+        post_resp = await c.post(
+            f"/api/developer/clients/{client.client_id}/rotate-secret",
+            data={"csrf_token": cookies["dashboard_csrf"]},
+            follow_redirects=False,
+        )
+        assert post_resp.status_code == 303
+        assert post_resp.headers["location"] == "/developer"
+        assert "dev_flash_secret" in post_resp.cookies
+
+        # Follow redirect (GET /developer) carrying the flash cookie
+        get_resp1 = await c.get("/developer")
+        assert get_resp1.status_code == 200
+        assert "Client Secret Rotated" in get_resp1.text
+
+        (updated_client_1,) = await _stored_clients()
+        hash_after_first = updated_client_1.client_secret_hash
+
+        # Refresh /developer (second GET request): flash cookie was consumed, secret is not re-shown
+        get_resp2 = await c.get("/developer")
+        assert get_resp2.status_code == 200
+        assert "Client Secret Rotated" not in get_resp2.text
+
+        # The secret in DB must NOT have been rotated again
+        (updated_client_2,) = await _stored_clients()
+        assert updated_client_2.client_secret_hash == hash_after_first
+
+
+@pytest.mark.anyio
+async def test_duplicate_developer_account_unique_constraint(setup_db):
+    async with get_session() as s:
+        user = await create_user(
+            s, email="unique_dev@test.com", display_name="Unique Dev", password_hash=hash_password("pw123")
+        )
+        s.add(DeveloperAccount(user_id=user.id, status="approved", organization_name="First Org"))
+        await s.commit()
+
+    # Attempt to insert second DeveloperAccount for the same user_id in a separate session
+    async with get_session() as s2:
+        s2.add(DeveloperAccount(user_id=user.id, status="pending", organization_name="Duplicate Org"))
+        with pytest.raises(IntegrityError):
+            await s2.flush()
 

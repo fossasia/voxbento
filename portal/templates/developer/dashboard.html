@@ -130,12 +130,13 @@
                 <td class="dev-td dev-td--actions">
                   <div class="dev-actions-wrap">
                     {% if client.is_confidential %}
-                    <form method="POST" action="/api/developer/clients/{{ client.client_id }}/rotate-secret" onsubmit="return confirm('Rotate this client secret? The old secret will stop working immediately for token exchanges and refreshes.');" class="dev-inline-form">
+                    <form method="POST" action="/api/developer/clients/{{ client.client_id }}/rotate-secret" data-confirm="Rotate this client secret? The old secret will stop working immediately for token exchanges and refreshes." class="dev-inline-form dev-rotate-form">
                       <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+                      <input type="hidden" name="expected_secret_hash" value="{{ client.client_secret_hash or '' }}">
                       <button type="submit" class="btn btn-outline dev-btn-rotate">Rotate Secret</button>
                     </form>
                     {% endif %}
-                    <form method="POST" action="/api/developer/clients/{{ client.client_id }}/delete" onsubmit="return confirm('Are you sure you want to delete this app? This will break any integrations using it.');" class="dev-inline-form">
+                    <form method="POST" action="/api/developer/clients/{{ client.client_id }}/delete" data-confirm="Are you sure you want to delete this app? This will break any integrations using it." class="dev-inline-form dev-delete-form">
                       <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
                       <button type="submit" class="btn btn-outline dev-btn-delete">Delete</button>
                     </form>
@@ -187,7 +188,7 @@
                   {% endif %}
                 </td>
                 <td class="dev-td dev-td--right">
-                  <form method="POST" action="/api/developer/webhooks/{{ webhook.id }}/delete" onsubmit="return confirm('Are you sure you want to delete this webhook subscription?');" class="dev-inline-form">
+                  <form method="POST" action="/api/developer/webhooks/{{ webhook.id }}/delete" data-confirm="Are you sure you want to delete this webhook subscription?" class="dev-inline-form">
                     <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
                     <button type="submit" class="btn btn-outline dev-btn-delete">Delete</button>
                   </form>
