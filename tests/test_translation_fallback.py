@@ -559,11 +559,18 @@ async def test_parent_cancellation_does_not_fallback_or_count_failure(pipeline, 
 
     monkeypatch.setattr(env.primary, "translate_batch", translate)
     task = asyncio.create_task(run(env))
+    checkpoint = asyncio.create_task(entered.wait())
     try:
-        await asyncio.wait_for(entered.wait(), 2)
+        done, _ = await asyncio.wait({checkpoint, task}, timeout=2, return_when=asyncio.FIRST_COMPLETED)
+        if task in done:
+            await task
+            pytest.fail("translation finished before entering the primary engine")
+        assert checkpoint in done, "translation did not enter the primary engine"
     finally:
-        task.cancel()
-        await asyncio.gather(task, return_exceptions=True)
+        checkpoint.cancel()
+        if not task.done():
+            task.cancel()
+        await asyncio.gather(checkpoint, task, return_exceptions=True)
     assert not env.backup.calls
     circuit = next(iter(circuit_module.CIRCUITS.values()))
     assert circuit.failures == 0 and circuit.active == 0
