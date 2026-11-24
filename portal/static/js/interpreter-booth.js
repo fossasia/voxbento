@@ -55,6 +55,9 @@ const state = {
   reconnectTimer: null,
   /** Set by boot() once the booth should be joined on every socket that opens. */
   joinRequested: false,
+  /** Timestamp when the current active interpreter turn started while live. */
+  turnStartedAt: null,
+  turnTimerInterval: null,
 }
 
 const reconnectBackoff = createBackoff()
@@ -77,6 +80,7 @@ const elements = {
   handoverAnnouncer: document.getElementById('handover-announcer'),
   liveBadge: document.getElementById('live-badge'),
   liveBadgeText: document.getElementById('live-badge-text'),
+  turnTimer: document.getElementById('turn-timer'),
   passRelay: document.getElementById('pass-relay'),
   relayAudio: document.getElementById('relay-audio'),
   relayDeviceSelect: document.getElementById('relay-device-select'),
@@ -460,6 +464,10 @@ function bindEventHandlers() {
 
   window.addEventListener('beforeunload', () => {
     state.stopReconnecting = true
+    if (state.turnTimerInterval) {
+      clearInterval(state.turnTimerInterval)
+      state.turnTimerInterval = null
+    }
     if (state.joined && state.participantId) {
       wsSend({ type: 'booth:leave' })
     }
@@ -564,6 +572,8 @@ function applyBoothState(payload, { skipAutoStart = false } = {}) {
   state.handoffState = payload.handoff_state || 'idle'
   state.handoffInitiatorId = payload.handoff_initiator_id || null
   state.broadcastUnlocked = payload.broadcast_unlocked || false
+  state.turnStartedAt = payload.turn_started_at || null
+  syncTurnTimer()
 
   // Ensure non-active interpreters are always muted locally
   if (state.participantId && state.activeInterpreterId !== state.participantId) {
@@ -1438,6 +1448,7 @@ function render() {
   renderMicControls()
   renderHandoverButton()
   renderLiveBadge()
+  syncTurnTimer()
 }
 
 /**
@@ -1670,6 +1681,66 @@ function renderHandoverButton() {
       : 'Your boothmate is offering you the mic. Press Take over to accept.'
   }
   setTextIfChanged(elements.handoverAnnouncer, handoverMessage)
+}
+
+/** Format elapsed seconds as MM:SS (or HH:MM:SS when >= 1 hour). */
+function formatTurnDuration(totalSeconds) {
+  const hours = Math.floor(totalSeconds / 3600)
+  const minutes = Math.floor((totalSeconds % 3600) / 60)
+  const seconds = totalSeconds % 60
+  const mm = String(minutes).padStart(2, '0')
+  const ss = String(seconds).padStart(2, '0')
+  if (hours > 0) {
+    const hh = String(hours).padStart(2, '0')
+    return `${hh}:${mm}:${ss}`
+  }
+  return `${mm}:${ss}`
+}
+
+function renderTurnTimer(elapsedSec = 0, isRunning = false) {
+  if (!elements.turnTimer) return
+  const text = formatTurnDuration(elapsedSec)
+  setTextIfChanged(elements.turnTimer, text)
+  if (isRunning) {
+    elements.turnTimer.classList.add('turn-timer--live')
+    if (elapsedSec >= 1200) {
+      // 20 minutes AIIC shift fatigue threshold
+      elements.turnTimer.classList.add('turn-timer--warning')
+    } else {
+      elements.turnTimer.classList.remove('turn-timer--warning')
+    }
+  } else {
+    elements.turnTimer.classList.remove('turn-timer--live', 'turn-timer--warning')
+  }
+}
+
+function tickTurnTimer() {
+  if (!state.broadcastUnlocked || !state.turnStartedAt) {
+    syncTurnTimer()
+    return
+  }
+  const startedMs = Date.parse(state.turnStartedAt)
+  if (Number.isNaN(startedMs)) {
+    renderTurnTimer(0, false)
+    return
+  }
+  const elapsedSec = Math.max(0, Math.floor((Date.now() - startedMs) / 1000))
+  renderTurnTimer(elapsedSec, true)
+}
+
+function syncTurnTimer() {
+  if (state.broadcastUnlocked && state.turnStartedAt) {
+    tickTurnTimer()
+    if (!state.turnTimerInterval) {
+      state.turnTimerInterval = setInterval(tickTurnTimer, 1000)
+    }
+  } else {
+    if (state.turnTimerInterval) {
+      clearInterval(state.turnTimerInterval)
+      state.turnTimerInterval = null
+    }
+    renderTurnTimer(0, false)
+  }
 }
 
 /** Update the LIVE / OFF LIVE / STANDBY badge in the header */

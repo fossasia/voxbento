@@ -439,7 +439,42 @@ label {
   height: 1.25rem;
 }
 
-/* ── Live badge ──────────────────────────────────────────────────────── */
+/* ── Live badge & Turn timer ─────────────────────────────────────────── */
+.deck-status-badges {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.5rem;
+  flex-wrap: wrap;
+}
+
+.turn-timer {
+  display: inline-flex;
+  align-items: center;
+  padding: 0.45rem 0.85rem;
+  border-radius: 999px;
+  font-family: var(--vb-font-mono, monospace);
+  font-size: 0.88rem;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  color: var(--bx-muted);
+  background: var(--bx-surface-2, #f1f3f7);
+  border: 1px solid var(--bx-border);
+  line-height: 1;
+}
+
+.turn-timer.turn-timer--live {
+  color: var(--bx-text);
+  background: #fff;
+  border-color: var(--bx-border-strong);
+}
+
+.turn-timer.turn-timer--warning {
+  color: #b45309;
+  background: #fef3c7;
+  border-color: #fde68a;
+  animation: pulse-standby 2s ease-in-out infinite;
+}
+
 .live-badge {
   display: inline-flex;
   align-items: center;

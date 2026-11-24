@@ -74,9 +74,12 @@
       <!-- Broadcast deck: the primary controls -->
       <section class='broadcast-deck'>
         <div class='deck-status'>
-          <span id='live-badge' class='live-badge off' role='status'>
-            <span class='live-dot' aria-hidden='true'>●</span> <span id='live-badge-text'>OFF LIVE</span>
-          </span>
+          <div class='deck-status-badges'>
+            <span id='live-badge' class='live-badge off' role='status'>
+              <span class='live-dot' aria-hidden='true'>●</span> <span id='live-badge-text'>OFF LIVE</span>
+            </span>
+            <span id='turn-timer' class='turn-timer' role='timer' aria-label='Current turn duration'>00:00</span>
+          </div>
           <span class='deck-hint'>Your broadcast to attendees</span>
         </div>
 

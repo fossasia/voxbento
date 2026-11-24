@@ -102,6 +102,7 @@ class Booth:
     mediamtx_path: str = ""
     room_id: int | None = None
     active_interpreter_id: str | None = None
+    turn_started_at: str | None = None
     handoff_state: str = "idle"
     handoff_initiator_id: str | None = None
     broadcast_unlocked: bool = False
@@ -161,6 +162,7 @@ class Booth:
             "language": self.language,
             "channel_id": self.channel_id,
             "active_interpreter_id": self.active_interpreter_id,
+            "turn_started_at": self.turn_started_at,
             "handoff_state": self.handoff_state,
             "handoff_initiator_id": self.handoff_initiator_id,
             "broadcast_unlocked": self.broadcast_unlocked,
@@ -259,6 +261,7 @@ class BoothRegistry:
                         invite_public_id=record.get("active_invite_public_id"),
                     )
                     booth.active_interpreter_id = participant_id
+                    booth.turn_started_at = utc_now_iso() if booth.broadcast_unlocked else None
                     placeholders.append((booth.booth_id, participant_id))
                 booth.refresh_ingest_status()
                 self.attendance.observe(booth)
@@ -426,6 +429,8 @@ class BoothRegistry:
                 and booth.active_interpreter_id is None
             ):
                 booth.active_interpreter_id = participant.participant_id
+                if booth.broadcast_unlocked:
+                    booth.turn_started_at = utc_now_iso()
             self._changed(booth)
             return participant, booth.as_public_dict()
 
@@ -462,11 +467,17 @@ class BoothRegistry:
             participant.ingest_connected = False
             if booth.active_interpreter_id == participant.participant_id:
                 booth.active_interpreter_id = _pick_next_interpreter(booth)
+                if booth.active_interpreter_id and booth.broadcast_unlocked:
+                    booth.turn_started_at = utc_now_iso()
+                else:
+                    booth.turn_started_at = None
                 booth.handoff_state = "idle"
                 booth.handoff_initiator_id = None
             booth.refresh_ingest_status()
         elif booth.active_interpreter_id is None:
             booth.active_interpreter_id = participant.participant_id
+            if booth.broadcast_unlocked:
+                booth.turn_started_at = utc_now_iso()
 
     async def leave_participant(
         self,
@@ -558,6 +569,10 @@ class BoothRegistry:
             was_active = booth.active_interpreter_id == participant_id
             if was_active:
                 booth.active_interpreter_id = _pick_next_interpreter(booth)
+                if booth.active_interpreter_id and booth.broadcast_unlocked:
+                    booth.turn_started_at = utc_now_iso()
+                else:
+                    booth.turn_started_at = None
             # A handoff cannot complete once its initiator or the active interpreter has left.
             if was_active or participant_id == booth.handoff_initiator_id:
                 booth.handoff_state = "idle"
@@ -568,6 +583,7 @@ class BoothRegistry:
         if not booth.participants:
             booth.ingest_status = "disconnected"
             booth.handoff_state = "idle"
+            booth.turn_started_at = None
         self._changed(booth)
 
     async def set_broadcast_unlocked(
@@ -586,6 +602,11 @@ class BoothRegistry:
         async with self._lock:
             booth = self._get_or_create_booth(booth_id, language, channel_id)
             booth.broadcast_unlocked = unlocked
+            if unlocked:
+                if booth.active_interpreter_id and not booth.turn_started_at:
+                    booth.turn_started_at = utc_now_iso()
+            else:
+                booth.turn_started_at = None
             # Locking the booth (Mission Control "Stop") forces every publisher
             # offline so the room truly stops: mic + ingest flags are cleared and
             # the aggregate ingest status returns to disconnected. This keeps the
@@ -645,7 +666,9 @@ class BoothRegistry:
                 raise PermissionError(
                     "Only room coordinators, event owners, Admins or the active interpreter can reassign another interpreter."
                 )
-            booth.active_interpreter_id = target_id
+            if booth.active_interpreter_id != target_id:
+                booth.active_interpreter_id = target_id
+                booth.turn_started_at = utc_now_iso() if booth.broadcast_unlocked else None
             # A direct reassignment supersedes any handoff in progress.
             booth.handoff_state = "idle"
             booth.handoff_initiator_id = None
@@ -744,6 +767,7 @@ class BoothRegistry:
 
             # Flip active interpreter
             booth.active_interpreter_id = new_active
+            booth.turn_started_at = utc_now_iso() if booth.broadcast_unlocked else None
             booth.handoff_state = "idle"
             booth.handoff_initiator_id = None
 

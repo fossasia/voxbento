@@ -935,3 +935,128 @@ def test_booth_session_key_tells_users_and_invite_visits_apart():
     assert booth_session_key(decode_token(create_token())) is None
     assert booth_session_key({"sub": "x", "kind": "listener"}) is None
     assert booth_session_key(None) is None
+
+
+@pytest.mark.anyio
+async def test_turn_started_at_none_while_broadcast_locked():
+    registry = BoothRegistry()
+    p1 = await join(registry, "Alice")
+    booth = registry.get_booth_sync("hall-1-fr")
+    assert booth.active_interpreter_id == p1.participant_id
+    assert booth.broadcast_unlocked is False
+    assert booth.turn_started_at is None
+    snapshot = await registry.snapshot("hall-1-fr", "French", "hall-1-fr-audio")
+    assert snapshot["turn_started_at"] is None
+
+
+@pytest.mark.anyio
+async def test_turn_started_at_set_when_broadcast_unlocked():
+    registry = BoothRegistry()
+    await join(registry, "Alice")
+    state = await registry.set_broadcast_unlocked("hall-1-fr", True, "French", "hall-1-fr-audio")
+    assert state["turn_started_at"] is not None
+    booth = registry.get_booth_sync("hall-1-fr")
+    assert booth.turn_started_at == state["turn_started_at"]
+
+
+@pytest.mark.anyio
+async def test_turn_started_at_cleared_when_broadcast_locked():
+    registry = BoothRegistry()
+    await join(registry, "Alice")
+    await registry.set_broadcast_unlocked("hall-1-fr", True, "French", "hall-1-fr-audio")
+    state = await registry.set_broadcast_unlocked("hall-1-fr", False, "French", "hall-1-fr-audio")
+    assert state["turn_started_at"] is None
+    booth = registry.get_booth_sync("hall-1-fr")
+    assert booth.turn_started_at is None
+
+
+@pytest.mark.anyio
+async def test_turn_started_at_resets_on_handoff():
+    registry = BoothRegistry()
+    p1 = await join(registry, "Alice")
+    p2 = await join(registry, "Bob")
+    await registry.set_broadcast_unlocked("hall-1-fr", True, "French", "hall-1-fr-audio")
+    first_turn = registry.get_booth_sync("hall-1-fr").turn_started_at
+    assert first_turn is not None
+
+    await registry.initiate_handoff("hall-1-fr", p1.participant_id, "French", "hall-1-fr-audio")
+    state = await registry.accept_handoff("hall-1-fr", p2.participant_id, "French", "hall-1-fr-audio")
+    assert state["active_interpreter_id"] == p2.participant_id
+    assert state["turn_started_at"] is not None
+
+
+@pytest.mark.anyio
+async def test_turn_started_at_idempotent_on_same_active_interpreter():
+    registry = BoothRegistry()
+    p1 = await join(registry, "Alice")
+    p2 = await join(registry, "Bob")
+    await registry.set_broadcast_unlocked("hall-1-fr", True, "French", "hall-1-fr-audio")
+    initial_turn = registry.get_booth_sync("hall-1-fr").turn_started_at
+    assert initial_turn is not None
+
+    # Reassigning to the same interpreter should NOT change turn_started_at
+    state = await registry.set_active_interpreter(
+        "hall-1-fr", p1.participant_id, p1.participant_id, "French", "hall-1-fr-audio"
+    )
+    assert state["turn_started_at"] == initial_turn
+
+    # Reassigning to a different interpreter resets turn_started_at
+    state2 = await registry.set_active_interpreter(
+        "hall-1-fr", p1.participant_id, p2.participant_id, "French", "hall-1-fr-audio"
+    )
+    assert state2["active_interpreter_id"] == p2.participant_id
+    assert state2["turn_started_at"] is not None
+
+
+@pytest.mark.anyio
+async def test_turn_started_at_promotes_backup_on_leave():
+    registry = BoothRegistry()
+    p1 = await join(registry, "Alice")
+    p2 = await join(registry, "Bob")
+    await registry.set_broadcast_unlocked("hall-1-fr", True, "French", "hall-1-fr-audio")
+    assert registry.get_booth_sync("hall-1-fr").active_interpreter_id == p1.participant_id
+
+    # Active leaves -> backup promoted -> new turn timestamp
+    await registry.leave_participant("hall-1-fr", p1.participant_id, "French", "hall-1-fr-audio")
+    booth = registry.get_booth_sync("hall-1-fr")
+    assert booth.active_interpreter_id == p2.participant_id
+    assert booth.turn_started_at is not None
+
+    # Backup leaves -> no interpreters -> cleared
+    await registry.leave_participant("hall-1-fr", p2.participant_id, "French", "hall-1-fr-audio")
+    assert booth.active_interpreter_id is None
+    assert booth.turn_started_at is None
+
+
+@pytest.mark.anyio
+async def test_turn_started_at_preserved_on_reclaim():
+    registry = BoothRegistry()
+    p1, _ = await registry.join_participant(
+        booth_id="hall-1-fr",
+        display_name="Alice",
+        role="interpreter",
+        language="French",
+        channel_id="hall-1-fr-audio",
+        connection_id="conn-1",
+    )
+    await registry.set_broadcast_unlocked("hall-1-fr", True, "French", "hall-1-fr-audio")
+    orig_turn = registry.get_booth_sync("hall-1-fr").turn_started_at
+    assert orig_turn is not None
+
+    # Disconnect drops connection but keeps slot for grace period
+    await registry.disconnect_participant("hall-1-fr", p1.participant_id, "conn-1")
+    booth = registry.get_booth_sync("hall-1-fr")
+    assert booth.turn_started_at == orig_turn
+
+    # Reclaim should preserve turn_started_at
+    _, state = await registry.join_participant(
+        booth_id="hall-1-fr",
+        display_name="Alice",
+        role="interpreter",
+        language="French",
+        channel_id="hall-1-fr-audio",
+        participant_id=p1.participant_id,
+        connection_id="conn-2",
+    )
+    assert state["turn_started_at"] == orig_turn
+
