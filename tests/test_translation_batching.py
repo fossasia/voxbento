@@ -259,7 +259,34 @@ async def test_status_notices_reach_other_languages_while_one_connection_stalls(
         if blocker is not None:
             blocker.close()
     assert [call.args[1] for call in bundle.await_args_list].count("de") == 1
+    notices = [call for call in bundle.await_args_list if call.args[1] in {"fr", "de"}]
+    assert all(
+        call.args[8] == ("model_downloading" if reason == "downloading" else "pipeline_failed") for call in notices
+    )
     assert worker_module.scheduler_for("local", NLLB, 1).idle()
+
+
+async def test_batch_rechecks_each_listener_after_waiting_for_an_engine_slot(worker_env, monkeypatch):
+    worker, job, engine, _, _ = worker_env
+    scheduler = TranslationScheduler(1)
+    blocker = scheduler.admit(job.room.id, "other")
+    await blocker.__aenter__()
+    monkeypatch.setitem(worker_module.SCHEDULERS, ("local", NLLB), scheduler)
+    listeners = {"fr", "de"}
+    monkeypatch.setattr(
+        "portal.websockets.manager.listener_manager.has_listeners",
+        lambda booth: booth.rsplit("-", 1)[-1] in listeners,
+    )
+    task = asyncio.create_task(worker._process_completed_sentence(job, 10, "Hello", "source"))
+    try:
+        while scheduler.waiting() == 0:
+            await asyncio.sleep(0)
+        listeners.remove("fr")
+    finally:
+        blocker.close()
+    await asyncio.wait_for(task, 1)
+    assert [target.code for target in engine.calls[0][1]] == ["de"]
+    assert scheduler.idle()
 
 
 @pytest.mark.parametrize("rows", [[[None, "Hallo"]], [["", "Hallo"]]])
