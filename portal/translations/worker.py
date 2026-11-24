@@ -2,20 +2,25 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import time
+from dataclasses import dataclass
 
+from portal import youtube_captions
+from portal.config import settings
 from portal.database import get_session
 from portal.models import DBBooth, Event, Room, TranscriptTranslation
-from portal.transcription.timing import timing_metadata
+from portal.transcription.timing import segment_timing, timing_metadata
 from portal.translations.constants import OPENAI_COMPATIBLE_ENDPOINTS, TranslationProviderEnum
+from portal.translations.engine import EngineKind, Language, TranslationContext, TranslationEngine
 from portal.translations.keys import get_translation_api_key
+from portal.translations.providers import local as local_provider
 from portal.translations.providers.anthropic import AnthropicProvider
+from portal.translations.providers.base import ProviderEngine
 from portal.translations.providers.gemini import GeminiProvider
 from portal.translations.providers.local import LocalProvider
 from portal.translations.providers.openai import OpenAIProvider
+from portal.translations.scheduler import StaleTranslationJob, TranslationJob, TranslationScheduler
 from portal.translations.vocabulary import resolve_vocabulary_entries
-
-LANGUAGE_SEMAPHORES: dict[str, asyncio.Semaphore] = {}
-LANGUAGE_QUEUES: dict[str, int] = {}
 
 logger = logging.getLogger(__name__)
 
@@ -24,13 +29,203 @@ VOCABULARY_LOOKUP_TIMEOUT = 2.0
 
 openai_provider = OpenAIProvider()
 
-PROVIDERS = {
-    TranslationProviderEnum.GEMINI.value: GeminiProvider(),
-    TranslationProviderEnum.ANTHROPIC.value: AnthropicProvider(),
+
+def _api_concurrency() -> int:
+    return settings.translation_api_concurrency
+
+
+def _self_hosted_concurrency() -> int:
+    return settings.self_hosted_llm_concurrency
+
+
+def _lag_budget() -> float | None:
+    """Seconds a segment may wait for the engine before it is dropped as stale; None never drops it."""
+    return settings.translation_max_lag_seconds or None
+
+
+#: The engine behind each translation provider a room or booth can select.
+ENGINES: dict[str, TranslationEngine] = {
+    TranslationProviderEnum.GEMINI.value: ProviderEngine(
+        TranslationProviderEnum.GEMINI.value, GeminiProvider(), EngineKind.LLM_API, max_concurrency=_api_concurrency
+    ),
+    TranslationProviderEnum.ANTHROPIC.value: ProviderEngine(
+        TranslationProviderEnum.ANTHROPIC.value,
+        AnthropicProvider(),
+        EngineKind.LLM_API,
+        max_concurrency=_api_concurrency,
+    ),
     TranslationProviderEnum.LOCAL.value: LocalProvider(),
 }
 for p in OPENAI_COMPATIBLE_ENDPOINTS.keys():
-    PROVIDERS[p] = openai_provider
+    ENGINES[p] = ProviderEngine(p, openai_provider, EngineKind.OPENAI_COMPATIBLE_LLM, max_concurrency=_api_concurrency)
+# The operator's self-hosted server speaks the same protocol; the provider picks its endpoint by name.
+ENGINES[TranslationProviderEnum.SELF_HOSTED.value] = ProviderEngine(
+    TranslationProviderEnum.SELF_HOSTED.value,
+    openai_provider,
+    EngineKind.OPENAI_COMPATIBLE_LLM,
+    max_concurrency=_self_hosted_concurrency,
+)
+
+# Providers that run without a per-event API key.
+KEYLESS_PROVIDERS = {TranslationProviderEnum.LOCAL.value, TranslationProviderEnum.SELF_HOSTED.value}
+
+#: Schedulers made on first use, by what each one limits (#1188); see ``scheduler_for``.
+SCHEDULERS: dict[tuple[str, str], TranslationScheduler] = {}
+
+
+def _scheduler_key(provider: str, model: str, event_id: int | None) -> tuple[str, str]:
+    """What one scheduler covers: whatever runs out first when it is overloaded.
+
+    - Local: one model. Each loaded model has its own CTranslate2 threads, so rooms on
+      different models never wait for each other, and loading one model blocks only its rooms.
+    - Self-hosted: the operator's one server, shared by every room.
+    - Hosted: one event. A hosted provider's key always comes from the event, and each key has
+      its own quota, so an event whose key is slow, rate-limited or failing only holds up its
+      own rooms. Keyed by the event rather than the key, so no secret is handled here.
+    """
+    if provider == TranslationProviderEnum.LOCAL.value:
+        return provider, model
+    if provider in KEYLESS_PROVIDERS or event_id is None:
+        return provider, ""
+    return provider, f"event-{event_id}"
+
+
+def scheduler_for(provider: str, model: str = "", event_id: int | None = None) -> TranslationScheduler:
+    """The scheduler shared by every room translating with ``provider`` (and its model or event).
+
+    When the engine's limit changes (its setting did), the same scheduler takes the new limit,
+    so calls already running still count against it. The lag budget follows its setting too.
+    """
+    engine = ENGINES.get(provider)
+    capacity = engine.max_concurrency if engine is not None else TranslationEngine.max_concurrency
+    key = _scheduler_key(provider, model, event_id)
+    scheduler = SCHEDULERS.get(key)
+    if scheduler is None:
+        # Drop the ones with nothing in them, so keys and models no longer used do not pile up.
+        for idle in [k for k, s in SCHEDULERS.items() if s.idle()]:
+            del SCHEDULERS[idle]
+        scheduler = SCHEDULERS[key] = TranslationScheduler(capacity)
+    elif scheduler.capacity != capacity:
+        scheduler.set_capacity(capacity)
+    scheduler.lag_budget = _lag_budget()
+    return scheduler
+
+
+def _inference_timeout(provider: str, model: str) -> float | None:
+    """Seconds an engine call may take, or None while the local model is still downloading."""
+    if provider != TranslationProviderEnum.LOCAL.value:
+        return 12.0
+    # If the local CPU is pegged, NLLB can take 30+ seconds.
+    if local_provider.is_model_loaded(model):
+        # In memory already, so it translates even while an Admin downloads it again; and the
+        # usual case skips the cache lookup on disk below.
+        return 60.0
+    try:
+        prog = local_provider.get_download_progress(model)
+        if prog and prog.get("status") == "downloading":
+            return None
+    except Exception as exc:
+        # Download status is advisory; inference keeps its normal timeout.
+        logger.warning(
+            "Local model download status unavailable (%s); using standard inference timeout",
+            type(exc).__name__,
+        )
+    return 60.0
+
+
+#: Who a translation is for: someone listening to it (speech or text), or only YouTube's caption track.
+LISTENERS = "listeners"
+YOUTUBE_ONLY = "youtube"
+
+
+def _audience(room_id: int, lang_code: str, booth_id_str: str, target_booth_id: str) -> str | None:
+    """Who a translation into ``lang_code`` is for right now, or None when nobody takes it."""
+    from portal.websockets.manager import listener_manager, tts_manager
+
+    if tts_manager.has_listeners(room_id, lang_code, booth_id_str) or listener_manager.has_listeners(target_booth_id):
+        return LISTENERS
+    # A language posted to YouTube's caption track is translated even with no listeners. Only the
+    # floor's translations are posted there, so a booth's segments keep the listener rule.
+    if booth_id_str.endswith("-floor") and youtube_captions.wants(room_id, lang_code):
+        return YOUTUBE_ONLY
+    return None
+
+
+@dataclass
+class _ResolvedTranslation:
+    """Resolved provider/model/room/language state for a single translation segment."""
+
+    event: Event
+    room: Room
+    provider: str
+    model: str
+    api_key: str | None
+    enabled_langs: list
+    source_lang_code: str | None
+    source_lang_name: str
+    source_booth_id: int | None = None
+
+
+@dataclass
+class _JobContext:
+    """Resolved room, provider, model, enabled languages and source language code."""
+
+    room: Room
+    provider: str
+    model: str
+    enabled_langs: list
+    source_lang_code: str | None
+
+
+def _enabled_translation_langs(owner) -> list:
+    """Enabled translation languages for a room or booth.
+
+    Centralised so the floor and booth paths cannot drift apart.
+    """
+    return [lang for lang in owner.translation_languages if lang.enabled]
+
+
+def _resolve_source_lang_name(source_lang_code: str | None) -> str:
+    """Human-readable source language name, falling back to the code (or English)."""
+    import pycountry
+
+    source_lang_obj = pycountry.languages.get(alpha_2=source_lang_code) if source_lang_code else None
+    return source_lang_obj.name if source_lang_obj else (source_lang_code or "English")
+
+
+async def _broadcast_source_language(
+    room_id: int,
+    language_code: str,
+    booth_id_str: str,
+    uuid_segment_id: str,
+    seq: int,
+    text: str,
+    target_booth_id: str,
+) -> None:
+    """Broadcast the source-language bundle instantly (translation == original text)."""
+    from portal.transcription.timing import timing_metadata
+    from portal.websockets.manager import listener_manager, tts_manager
+
+    await tts_manager.broadcast_bundle(
+        room_id, language_code, booth_id_str, b"", uuid_segment_id, seq, text, text, None, audio_pending=False
+    )
+    if target_booth_id:
+        await listener_manager.broadcast(
+            target_booth_id,
+            {
+                "type": "translated_caption",
+                "status": "final",
+                "text": text,
+                "segment_id": uuid_segment_id,
+                "seq": seq,
+                **timing_metadata(),
+            },
+        )
+    if booth_id_str.endswith("-floor") and youtube_captions.wants(room_id, language_code):
+        # The floor's own text is offered as "floor"; a YouTube track set to this
+        # language code needs it offered under that code too.
+        timing = segment_timing.get()
+        youtube_captions.offer(room_id, language_code, text, timing.source_received_at_ms if timing else None)
 
 
 class TranslationWorker:
@@ -41,16 +236,48 @@ class TranslationWorker:
     def __init__(self, broadcast_callback):
         self.broadcast_callback = broadcast_callback
 
+    def _accumulate_sentence(self, current: str | None, chunk: str = "") -> str:
+        """Accumulate sentence fragments or normalize text for completed-sentence processing."""
+        if not current:
+            return chunk.strip() if chunk else ""
+        if not chunk:
+            return current.strip()
+        c = current.strip()
+        k = chunk.strip()
+        if k in {".", ",", "!", "?", ";", ":", "..."}:
+            return f"{c}{k}"
+        return f"{c} {k}"
+
+    async def _process_completed_sentence(
+        self,
+        job: _ResolvedTranslation,
+        segment_id: int,
+        text: str,
+        booth_id_str: str,
+        uuid_segment_id: str = "",
+        seq: int = 0,
+        *,
+        arrived_at: float | None = None,
+    ) -> list:
+        """Run the translation tasks of a resolved job: one per language with listeners."""
+        tasks = self._build_language_tasks(
+            job, segment_id, text, booth_id_str, uuid_segment_id, seq, arrived_at=arrived_at
+        )
+        if tasks:
+            logger.debug("[%s] Spawning %d translation tasks for active listeners", booth_id_str, len(tasks))
+            await asyncio.gather(*tasks)
+        return tasks
+
     async def handle_translation(
         self, room_id: int, segment_id: int, text: str, booth_id_str: str, uuid_segment_id: str = "", seq: int = 0
     ):
         """Called when a finalized STT segment is saved. Fires off LLM requests for enabled target languages."""
         from sqlalchemy import select
-        from sqlalchemy.orm import selectinload
 
         from portal.models import TranscriptSegment
-        from portal.websockets.manager import tts_manager
 
+        # The lag budget counts from here, so resolving the job below counts against it (#1189).
+        arrived_at = time.monotonic()
         async with get_session() as session:
             segment = await session.scalar(select(TranscriptSegment).where(TranscriptSegment.id == segment_id))
             if not segment:
@@ -61,114 +288,178 @@ class TranslationWorker:
                 "[%s] handle_translation triggered for segment %s (len=%s)", booth_id_str, segment_id, len(text)
             )
 
-            provider = None
-            model = None
-            enabled_langs = []
-            room = None
+            job = await self._resolve_translation_job(session, room_id, segment, booth_id_str)
 
-            if segment.booth_id is None:
-                # Floor translation
-                room = await session.scalar(
-                    select(Room).options(selectinload(Room.translation_languages)).where(Room.id == room_id)
-                )
-                if not room or not room.floor_translation_enabled:
-                    logger.error(
-                        f"[{booth_id_str}] handle_translation abort: floor_translation_enabled is false for room {room_id}"
+        # The connection goes back to the pool before translating: a segment can wait a while for
+        # the engine, and each translation needs a connection of its own to save its result.
+        # Holding this one meanwhile let busy rooms empty the pool. The job's rows stay readable
+        # (sessions do not expire them).
+        if job is None:
+            return
+        sentence = self._accumulate_sentence(text)
+        await self._process_completed_sentence(
+            job, segment_id, sentence, booth_id_str, uuid_segment_id, seq, arrived_at=arrived_at
+        )
+
+    async def _resolve_translation_job(
+        self, session, room_id: int, segment, booth_id_str: str
+    ) -> _ResolvedTranslation | None:
+        """Resolve the room, provider, model, enabled languages and source language for a segment.
+
+        Returns ``None`` (after logging, where applicable) when the segment cannot be translated.
+        """
+        from sqlalchemy import select
+
+        context = await self._resolve_job_context(session, room_id, segment, booth_id_str)
+        if not context:
+            return None
+
+        event = await session.scalar(select(Event).where(Event.id == context.room.event_id))
+        if not event:
+            return None
+
+        api_key = self._get_translation_api_key(event, context.provider)
+        if not api_key and context.provider not in KEYLESS_PROVIDERS:
+            logger.error(f"[{booth_id_str}] Translation API key not found for provider {context.provider}")
+            return None
+
+        return _ResolvedTranslation(
+            event=event,
+            room=context.room,
+            provider=context.provider,
+            model=context.model,
+            api_key=api_key,
+            enabled_langs=context.enabled_langs,
+            source_lang_code=context.source_lang_code,
+            source_lang_name=_resolve_source_lang_name(context.source_lang_code),
+            source_booth_id=segment.booth_id,
+        )
+
+    async def _resolve_job_context(self, session, room_id: int, segment, booth_id_str: str) -> _JobContext | None:
+        """Fetch the room/booth config and validate that all required settings exist."""
+        if segment.booth_id is None:
+            context = await self._resolve_floor_context(session, room_id, booth_id_str)
+        else:
+            context = await self._resolve_booth_context(session, room_id, segment)
+
+        if not context:
+            return None
+
+        if not context.provider or not context.model or not context.enabled_langs:
+            logger.error(
+                f"[{booth_id_str}] handle_translation abort: missing config. "
+                f"provider={context.provider}, model={context.model}, langs={context.enabled_langs}"
+            )
+            return None
+
+        return context
+
+    async def _resolve_floor_context(self, session, room_id: int, booth_id_str: str) -> _JobContext | None:
+        """Floor translation configuration from the room."""
+        from sqlalchemy import select
+        from sqlalchemy.orm import selectinload
+
+        room = await session.scalar(
+            select(Room).options(selectinload(Room.translation_languages)).where(Room.id == room_id)
+        )
+        if not room or not room.floor_translation_enabled:
+            logger.error(
+                f"[{booth_id_str}] handle_translation abort: floor_translation_enabled is false for room {room_id}"
+            )
+            return None
+
+        return _JobContext(
+            room=room,
+            provider=room.floor_translation_provider,
+            model=room.floor_translation_model,
+            enabled_langs=_enabled_translation_langs(room),
+            source_lang_code=room.floor_language_code,
+        )
+
+    async def _resolve_booth_context(self, session, room_id: int, segment) -> _JobContext | None:
+        """Booth translation configuration from the booth."""
+        from sqlalchemy import select
+        from sqlalchemy.orm import selectinload
+
+        booth = await session.scalar(
+            select(DBBooth).options(selectinload(DBBooth.translation_languages)).where(DBBooth.id == segment.booth_id)
+        )
+        if not booth or not booth.translation_enabled:
+            return None
+
+        room = await session.scalar(select(Room).where(Room.id == room_id))
+        if not room:
+            return None
+
+        return _JobContext(
+            room=room,
+            provider=booth.translation_provider,
+            model=booth.translation_model,
+            enabled_langs=_enabled_translation_langs(booth),
+            source_lang_code=booth.language_code,
+        )
+
+    def _build_language_tasks(
+        self,
+        job: _ResolvedTranslation,
+        segment_id: int,
+        text: str,
+        booth_id_str: str,
+        uuid_segment_id: str,
+        seq: int,
+        *,
+        arrived_at: float | None = None,
+    ) -> list:
+        """Construct the async translation and broadcast tasks for a resolved job."""
+        tasks = []
+        for lang in job.enabled_langs:
+            target_booth_id = f"{job.event.slug}-{job.room.id}-{lang.language_code}"
+
+            if lang.language_code == job.source_lang_code:
+                tasks.append(
+                    _broadcast_source_language(
+                        job.room.id,
+                        lang.language_code,
+                        booth_id_str,
+                        uuid_segment_id,
+                        seq,
+                        text,
+                        target_booth_id,
                     )
-                    return
-                provider = room.floor_translation_provider
-                model = room.floor_translation_model
-                enabled_langs = [lang for lang in room.translation_languages if lang.enabled]
-                source_lang_code = room.floor_language_code
+                )
             else:
-                # Booth translation
-                booth = await session.scalar(
-                    select(DBBooth)
-                    .options(selectinload(DBBooth.translation_languages))
-                    .where(DBBooth.id == segment.booth_id)
-                )
-                if not booth or not booth.translation_enabled:
-                    return
-                provider = booth.translation_provider
-                model = booth.translation_model
-                enabled_langs = [lang for lang in booth.translation_languages if lang.enabled]
-                room = await session.scalar(select(Room).where(Room.id == room_id))
-                source_lang_code = booth.language_code
+                audience = _audience(job.room.id, lang.language_code, booth_id_str, target_booth_id)
+                if audience is None:
+                    continue
 
-            if not provider or not model or not enabled_langs or not room:
-                logger.error(
-                    f"[{booth_id_str}] handle_translation abort: missing config. provider={provider}, model={model}, langs={enabled_langs}"
-                )
-                return
-
-            event = await session.scalar(select(Event).where(Event.id == room.event_id))
-            if not event:
-                return
-
-            api_key = self._get_translation_api_key(event, provider)
-            if not api_key and provider != TranslationProviderEnum.LOCAL.value:
-                logger.error(f"[{booth_id_str}] Translation API key not found for provider {provider}")
-                return
-
-            import pycountry
-
-            source_lang_obj = pycountry.languages.get(alpha_2=source_lang_code) if source_lang_code else None
-            source_lang_name = source_lang_obj.name if source_lang_obj else (source_lang_code or "English")
-
-            tasks = []
-            for lang in enabled_langs:
-                if lang.language_code == source_lang_code:
-                    # Target == Source: bypass translation/TTS entirely. It was already broadcast instantly
-                    # on the base room. We just need to mark it done for anyone who might have connected
-                    # specifically to the source-language target websocket.
-                    async def _broadcast_source(r_id, l_code, b_id_str, u_seg_id, sq, txt, t_booth_id):
-                        from portal.websockets.manager import listener_manager
-                        await tts_manager.broadcast_bundle(
-                            r_id, l_code, b_id_str, b"", u_seg_id, sq, txt, txt, None, audio_pending=False
-                        )
-                        if t_booth_id:
-                            await listener_manager.broadcast(t_booth_id, {"type": "translated_caption", "status": "final", "text": txt,
-                                                                         "segment_id": u_seg_id, "seq": sq, **timing_metadata()})
-
-                    target_booth_id = f"{event.slug}-{room.id}-{lang.language_code}"
-                    tasks.append(
-                        _broadcast_source(room.id, lang.language_code, booth_id_str, uuid_segment_id, seq, text, target_booth_id)
+                tasks.append(
+                    self._translate_and_broadcast(
+                        job.event,
+                        job.room,
+                        job.provider,
+                        job.model,
+                        job.api_key,
+                        lang.language_code,
+                        lang.language_name,
+                        job.source_lang_code,
+                        job.source_lang_name,
+                        segment_id,
+                        text,
+                        booth_id_str,
+                        uuid_segment_id,
+                        seq,
+                        target_booth_id,
+                        job.source_booth_id,
+                        synthesize_audio=audience == LISTENERS,
+                        recheck_audience=True,
+                        arrived_at=arrived_at,
                     )
-                else:
-                    # Lazy translation: only translate if someone is actually listening!
-                    target_booth_id = f"{event.slug}-{room.id}-{lang.language_code}"
-                    from portal.websockets.manager import listener_manager
-                    has_tts = tts_manager.has_listeners(room.id, lang.language_code, booth_id_str)
-                    has_text = listener_manager.has_listeners(target_booth_id)
-                    if not has_tts and not has_text:
-                        continue
+                )
 
-                    tasks.append(
-                        self._translate_and_broadcast(
-                            event,
-                            room,
-                            provider,
-                            model,
-                            api_key,
-                            lang.language_code,
-                            lang.language_name,
-                            source_lang_code,
-                            source_lang_name,
-                            segment_id,
-                            text,
-                            booth_id_str,
-                            uuid_segment_id,
-                            seq,
-                            target_booth_id,
-                            segment.booth_id,
-                        )
-                    )
-
-            if tasks:
-                logger.error(f"[{booth_id_str}] Spawning {len(tasks)} translation tasks for active listeners")
-                await asyncio.gather(*tasks)
+        return tasks
 
     def _get_translation_api_key(self, event: Event, provider: str) -> str | None:
+        """Resolve the API key for the given event and translation provider."""
         return get_translation_api_key(event, provider)
 
     async def _translate_and_broadcast(
@@ -189,26 +480,34 @@ class TranslationWorker:
         seq: int,
         target_booth_id: str | None = None,
         source_booth_id: int | None = None,
+        synthesize_audio: bool = True,
+        recheck_audience: bool = False,
+        arrived_at: float | None = None,
     ):
+        """Translate and deliver a segment, keeping advisory status failures outside inference.
+
+        ``synthesize_audio`` is False when nobody listens to this language (it is only translated for the
+        YouTube caption track), so no speech is generated for it. With ``recheck_audience``, who takes
+        the translation is checked again when the segment gets its engine slot (#1189): the last
+        listener may have left while it waited. ``arrived_at`` (``time.monotonic()``) is when the
+        segment arrived; the lag budget counts from it, or from now when it is not given.
+        """
         from portal.websockets.manager import tts_manager
 
         queue_key = f"{booth_id_str}:{lang_code}"
-        sem = LANGUAGE_SEMAPHORES.setdefault(queue_key, asyncio.Semaphore(2))
-        q_depth = LANGUAGE_QUEUES.setdefault(queue_key, 0)
+        # Rooms take turns for the engine, and so do the languages within a room.
+        job = scheduler_for(provider, model, event.id).admit(room.id, queue_key, arrived_at=arrived_at)
 
-        if q_depth >= 15:
+        if job is None:
             logger.warning(f"[{booth_id_str}] Queue full for {lang_code}. Dropping segment {seq}.")
             await tts_manager.broadcast_bundle(
                 room.id, lang_code, booth_id_str, b"", uuid_segment_id, seq, text, "", "pipeline_failed"
             )
             return
 
-        LANGUAGE_QUEUES[queue_key] += 1
-        queue_decremented = False
-
         try:
-            # Resolved before taking an inference slot: the glossary is optional context, and a slow
-            # lookup must not occupy one of the two per-language slots while other rooms wait.
+            # Resolved before waiting for an engine slot: the glossary is optional context, and a
+            # slow lookup must not hold a slot while other rooms wait.
             vocabulary_entries = []
             if room.floor_ai_vocabulary_enabled:
                 try:
@@ -229,77 +528,109 @@ class TranslationWorker:
                     )
                     vocabulary_entries = []
 
-            async with sem:
-                try:
-                    # Enforce a strict timeout on LLM inference (12s for cloud, 60s for local).
-                    # If the local CPU is pegged, NLLB can take 30+ seconds.
-                    timeout_val = 12.0
-                    if provider == "local":
-                        timeout_val = 60.0
-                        try:
-                            from portal.translations.providers.local import get_download_progress
-
-                            prog = get_download_progress(model)
-                            if prog and prog.get("status") == "downloading":
-                                timeout_val = 0.1  # Fail fast if downloading
-                        except Exception:
-                            pass
-
-                    translated_text = await asyncio.wait_for(
-                        self._call_llm(
-                            provider,
-                            model,
-                            api_key,
-                            text,
-                            lang_name,
-                            source_lang_name,
-                            target_lang_code=lang_code,
-                            source_language_code=source_lang_code,
-                            persona=room.floor_ai_interpreter_persona,
-                            style=room.floor_ai_interpretation_style,
-                            vocabulary_entries=vocabulary_entries,
-                        ),
-                        timeout=timeout_val,
+            # The slot covers the engine call only; saving and broadcasting happen after it is free.
+            translated_text = None
+            nobody_listens = False
+            async with job:
+                # Enforce a strict timeout on inference (12s for cloud, 60s for local). Checked once
+                # the segment has its turn, so a download that started while it waited still counts.
+                # A download runs in its own thread and holds no slot, so nothing queues behind it.
+                timeout_val = _inference_timeout(provider, model)
+                downloading = timeout_val is None
+                if recheck_audience and target_booth_id:
+                    # Checked again now that the segment has its turn: the last listener may have
+                    # left while it waited, and then nothing runs or is sent for it (#1189).
+                    audience = _audience(room.id, lang_code, booth_id_str, target_booth_id)
+                    nobody_listens = audience is None
+                    synthesize_audio = audience == LISTENERS
+                if not downloading and not nobody_listens:
+                    translated_text = await self._infer_holding_slot(
+                        job,
+                        timeout_val,
+                        booth_id_str,
+                        provider,
+                        model,
+                        api_key,
+                        text,
+                        lang_code,
+                        lang_name,
+                        source_lang_code,
+                        source_lang_name,
+                        room,
+                        vocabulary_entries,
                     )
-                except asyncio.TimeoutError:
-                    if provider == "local" and timeout_val == 0.1:
-                        logger.info(
-                            f"[{booth_id_str}] Local model {model} is downloading. Dropping segment for {lang_code}."
-                        )
-                        await tts_manager.broadcast_bundle(
-                            room.id, lang_code, booth_id_str, b"", uuid_segment_id, seq, text, "", "model_downloading"
-                        )
-                        return
 
-                    logger.error(f"[{booth_id_str}] Translation LLM timed out after {timeout_val}s for {lang_code}.")
-                    translated_text = None
+            if nobody_listens:
+                logger.info("[%s] Nobody listens to %s any more. Skipping segment %s.", booth_id_str, lang_code, seq)
+                return
 
-                if not translated_text:
-                    await tts_manager.broadcast_bundle(
-                        room.id, lang_code, booth_id_str, b"", uuid_segment_id, seq, text, "", "pipeline_failed"
-                    )
-                    return
+            if downloading:
+                # Told after the slot is free, so the next segment does not wait for this broadcast.
+                await self._drop_while_downloading(room.id, lang_code, booth_id_str, model, uuid_segment_id, seq, text)
+                return
 
-                # Save to DB using an independent session to avoid concurrent transaction crashes
-                async with get_session() as local_session:
-                    translation = TranscriptTranslation(
-                        segment_id=segment_id, language_code=lang_code, text=translated_text
-                    )
-                    local_session.add(translation)
-                    await local_session.flush()
-
-                # Broadcast Stage 1 (Text Ready) immediately with empty audio
+            if translated_text is None:
                 await tts_manager.broadcast_bundle(
-                    room.id, lang_code, booth_id_str, b"", uuid_segment_id, seq, text, translated_text, None
+                    room.id, lang_code, booth_id_str, b"", uuid_segment_id, seq, text, "", "pipeline_failed"
                 )
-                if target_booth_id:
-                    from portal.websockets.manager import listener_manager
-                    await listener_manager.broadcast(target_booth_id, {"type": "translated_caption", "status": "final", "text": translated_text,
-                                                                      "segment_id": uuid_segment_id, "seq": seq, **timing_metadata()})
+                return
 
-            # Decrement queue early so slow TTS doesn't cause new incoming segments to be dropped
-            LANGUAGE_QUEUES[queue_key] -= 1
-            queue_decremented = True
+            if not translated_text.strip():
+                # The engine ran and had nothing to say for this segment, which is not a failure.
+                # Close the segment (no error, no audio to wait for) so listeners move on without
+                # a message; there is nothing to store or speak.
+                await tts_manager.broadcast_bundle(
+                    room.id, lang_code, booth_id_str, b"", uuid_segment_id, seq, text, "", None, audio_pending=False
+                )
+                return
+
+            # Save to DB using an independent session to avoid concurrent transaction crashes
+            async with get_session() as local_session:
+                translation = TranscriptTranslation(segment_id=segment_id, language_code=lang_code, text=translated_text)
+                local_session.add(translation)
+                await local_session.flush()
+
+            # Broadcast Stage 1 (Text Ready) immediately with empty audio. It says whether speech
+            # follows, so a listener who joined after the audience check does not wait for one.
+            await tts_manager.broadcast_bundle(
+                room.id,
+                lang_code,
+                booth_id_str,
+                b"",
+                uuid_segment_id,
+                seq,
+                text,
+                translated_text,
+                None,
+                audio_pending=synthesize_audio,
+            )
+            if target_booth_id:
+                from portal.websockets.manager import listener_manager
+
+                await listener_manager.broadcast(
+                    target_booth_id,
+                    {
+                        "type": "translated_caption",
+                        "status": "final",
+                        "text": translated_text,
+                        "segment_id": uuid_segment_id,
+                        "seq": seq,
+                        **timing_metadata(),
+                    },
+                )
+            if booth_id_str.endswith("-floor"):
+                # Non-blocking: queues the translation for the room's YouTube caption track, if it asks for this language.
+                timing = segment_timing.get()
+                youtube_captions.offer(
+                    room.id, lang_code, translated_text, timing.source_received_at_ms if timing else None
+                )
+
+            # Saved and delivered: the segment leaves its language's queue, so slow speech
+            # synthesis below does not hold back new segments.
+            job.close()
+
+            if not synthesize_audio:
+                return
 
             from portal.tts.worker import synthesize
 
@@ -325,14 +656,97 @@ class TranslationWorker:
                 room.id, lang_code, booth_id_str, audio_bytes, uuid_segment_id, seq, text, translated_text, error
             )
 
+        except StaleTranslationJob as stale:
+            await self._drop_stale(room.id, lang_code, booth_id_str, uuid_segment_id, seq, text, stale.waited)
         except Exception as e:
-            logger.error(f"[{booth_id_str}] Translation failed for {lang_code}: {e} (api_key is None? {api_key is None})")
+            logger.error(
+                f"[{booth_id_str}] Translation failed for {lang_code}: {e} (api_key is None? {api_key is None})"
+            )
             await tts_manager.broadcast_bundle(
                 room.id, lang_code, booth_id_str, b"", uuid_segment_id, seq, text, "", "pipeline_failed"
             )
         finally:
-            if not queue_decremented:
-                LANGUAGE_QUEUES[queue_key] -= 1
+            # A job that stopped before its result was delivered (dropped, failed or cancelled) leaves its
+            # channel here; for the others this does nothing.
+            job.close()
+
+    async def _infer_holding_slot(
+        self,
+        job: TranslationJob,
+        timeout_val: float,
+        booth_id_str: str,
+        provider: str,
+        model: str,
+        api_key: str | None,
+        text: str,
+        lang_code: str,
+        lang_name: str,
+        source_lang_code: str | None,
+        source_lang_name: str,
+        room: Room,
+        vocabulary_entries: list,
+    ) -> str | None:
+        """Run the engine call within the job's slot and its timeout; None when it timed out."""
+        call = asyncio.ensure_future(
+            self._call_llm(
+                provider,
+                model,
+                api_key,
+                text,
+                lang_name,
+                source_lang_name,
+                target_lang_code=lang_code,
+                source_language_code=source_lang_code,
+                persona=room.floor_ai_interpreter_persona,
+                style=room.floor_ai_interpretation_style,
+                vocabulary_entries=vocabulary_entries,
+            )
+        )
+        try:
+            return await asyncio.wait_for(asyncio.shield(call), timeout=timeout_val)
+        except asyncio.TimeoutError:
+            logger.error(f"[{booth_id_str}] Translation LLM timed out after {timeout_val}s for {lang_code}.")
+            return None
+        finally:
+            if not call.done():
+                # Stop the call, but keep its slot until it has ended: a local model runs in a
+                # thread that cannot be stopped, and the next call must not start beside it.
+                call.cancel()
+                job.keep_slot_until(call)
+
+    async def _drop_while_downloading(
+        self, room_id: int, lang_code: str, booth_id_str: str, model: str, uuid_segment_id: str, seq: int, text: str
+    ) -> None:
+        """Drop a segment because its local model is still downloading, and tell listeners why."""
+        from portal.websockets.manager import tts_manager
+
+        logger.info(
+            "[%s] Local model %s is downloading. Dropping segment for %s.", booth_id_str, model, lang_code
+        )
+        await tts_manager.broadcast_bundle(
+            room_id, lang_code, booth_id_str, b"", uuid_segment_id, seq, text, "", "model_downloading"
+        )
+
+    async def _drop_stale(
+        self, room_id: int, lang_code: str, booth_id_str: str, uuid_segment_id: str, seq: int, text: str, waited: float
+    ) -> None:
+        """Drop a segment that could not start within the lag budget, so its language catches up.
+
+        Not a failure: the engine is busy, and the next segment is translated instead. Listeners
+        skip it without a message.
+        """
+        from portal.websockets.manager import tts_manager
+
+        logger.warning(
+            "[%s] Segment %s for %s waited %.1f s for the engine. Dropping it as stale.",
+            booth_id_str,
+            seq,
+            lang_code,
+            waited,
+        )
+        await tts_manager.broadcast_bundle(
+            room_id, lang_code, booth_id_str, b"", uuid_segment_id, seq, text, "", "stale"
+        )
 
     async def _call_llm(
         self,
@@ -349,22 +763,22 @@ class TranslationWorker:
         style: str | None = None,
         vocabulary_entries: list | None = None,
     ) -> str | None:
-        provider_instance = PROVIDERS.get(provider)
-        if not provider_instance:
+        engine = ENGINES.get(provider)
+        if not engine:
             logger.error(f"Translation provider {provider} not supported.")
             return None
 
-        translated = await provider_instance.translate(
-            provider_name=provider,
-            text=text,
-            target_lang_name=target_lang_name,
-            target_lang_code=target_lang_code,
-            source_lang_name=source_lang_name,
+        translated = await engine.translate_text(
+            Language(code=source_language_code or "", name=source_lang_name),
+            Language(code=target_lang_code, name=target_lang_name),
+            text,
+            TranslationContext(
+                persona=persona,
+                style=style,
+                vocabulary={target_lang_code: vocabulary_entries} if vocabulary_entries else {},
+            ),
             model=model,
             api_key=api_key,
-            persona=persona,
-            style=style,
-            vocabulary_entries=vocabulary_entries or (),
         )
         if not translated:
             logger.warning(f"Provider {provider} returned empty translation for text: '{text}'")

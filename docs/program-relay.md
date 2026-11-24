@@ -134,6 +134,7 @@ The badge at the top reads **Live on YouTube**. Check the preview in YouTube Stu
 | YouTube preview plays but never goes public | Auto-start is off (recommended) | Click **Go live** in YouTube Studio |
 | *The YouTube relay service on the server is not responding* | `program-relay` container not running | Operator: `docker compose ps program-relay`, `docker compose logs program-relay` |
 | *Not switched on for this server yet* | Relay mode not deployed | Operator: run `scripts/setup-youtube-relay.sh` |
+| *Not switched on for this server yet* under **Add VoxBento as an extra destination** | RTMPS ingest not deployed | Operator: run `scripts/setup-youtube-relay.sh --ingest-only` (a relay deployment also covers it) |
 | *At capacity* | `PROGRAM_RELAY_MAX` rooms already forwarding | Stop another room's forwarding, or the operator raises the limit |
 
 ## Security
@@ -207,6 +208,24 @@ For EC2, select the instance's security group → **Inbound rules → Edit inbou
 and add **Custom TCP**, port **1936**, source the encoder's public IP (or
 `0.0.0.0/0` for organizers connecting from varying networks). Save the rule.
 
+### RTMPS ingest only (no relay)
+
+To let streaming tools add VoxBento as an extra RTMPS destination (YouTube stays
+independent, no `program-relay`), run instead:
+
+```bash
+scripts/setup-youtube-relay.sh --ingest-only   # same --host, --cert-dir/--cert-name, --yes
+```
+
+It does steps 1, 3 and the validation above, but uses `docker-compose.rtmps.yml`
+(portal `PROGRAM_RTMPS_ENABLED=true` plus the MediaMTX RTMPS listener), skips
+`PROGRAM_RELAY_CONTROL_SECRET` and the relay health check, and builds and starts only
+`mediamtx` and `portal`. If `COMPOSE_FILE` already includes `docker-compose.relay.yml`, it changes nothing:
+relay deployments accept the extra-destination mode too. Running the script later without
+`--ingest-only` replaces `docker-compose.rtmps.yml` with the relay file; the two are never
+combined. Rollback: drop `docker-compose.rtmps.yml` from `COMPOSE_FILE` and run
+`docker compose up -d --remove-orphans`.
+
 ### Websites behind Cloudflare
 
 Cloudflare's standard web proxy does not carry RTMPS on port 1936. Use a separate
@@ -230,6 +249,9 @@ scripts/setup-youtube-relay.sh --host rtmps.voxbento.com \
   --cert-name rtmps.voxbento.com
 ```
 
+For an ingest-only deployment add `--ingest-only` to the same command; without it the script
+switches the server to relay mode and starts `program-relay`.
+
 Use the actual certificate directory if Caddy uses another issuer. Other deployments
 should substitute their own DNS-only hostname in both Caddy and the relay settings.
 Check port 1936 **from another machine**: the setup script's loopback TLS check cannot
@@ -246,7 +268,9 @@ Keep **one portal replica** (ownership and reconciliation are process-local). Op
 **Deploys.** `deploy.yml` copies `.env`, so `COMPOSE_FILE` keeps the relay in every
 deploy. Without it, `docker compose up --remove-orphans` would delete `program-relay`
 and close port 1936. The deploy therefore **refuses to continue** when `program-relay`
-is running but the new configuration would not include it.
+is running but the new configuration would not include it, and when MediaMTX is accepting
+RTMPS on 1936 but the new configuration would not open it (ingest-only deployments missing
+`docker-compose.rtmps.yml`).
 
 Manual equivalent: set the variables above in `.env`, then
 

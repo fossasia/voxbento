@@ -1,0 +1,43 @@
+# Opt-in RTMPS ingest without relaying (#1087): VoxBento as an extra destination.
+# Read docs/program-stream-ingest.md and docs/program-relay.md first.
+#
+# A streaming tool (StreamYard, Restream, vMix, Zoom/Teams live streaming, OBS with a
+# multi-output plugin) keeps sending to YouTube and adds a "Custom RTMP" destination here.
+# There is no program-relay service: YouTube stays independent, so a VoxBento outage never
+# touches it. Relay deployments (docker-compose.relay.yml) already include everything below;
+# never combine the two files.
+#
+# Set up with one command, which writes the settings below into .env:
+#
+#   scripts/setup-youtube-relay.sh --ingest-only
+#
+# The script adds COMPOSE_FILE=docker-compose.yml:docker-compose.rtmps.yml to .env, so plain
+# `docker compose up -d` and the production deploy workflow always include this file.
+#
+# Settings read from .env: MEDIAMTX_AUTH_HOOK_SECRET, PROGRAM_RTMPS_PUBLIC_BASE (e.g.
+# rtmps://voxbento.com:1936), PROGRAM_RTMPS_CERT_DIR and PROGRAM_RTMPS_CERT_NAME (<name>.crt +
+# <name>.key in that directory, e.g. Caddy's certificate directory for the hostname).
+# Rollback: remove this file from COMPOSE_FILE in .env and run
+# `docker compose up -d --remove-orphans`; the WHIP dual-output mode is unaffected.
+services:
+  portal:
+    environment:
+      # RTMPS ingest is a kind of program ingest, so it needs both switches.
+      PROGRAM_INGEST_ENABLED: "true"
+      PROGRAM_RTMPS_ENABLED: "true"
+      PROGRAM_RTMPS_PUBLIC_BASE: "${PROGRAM_RTMPS_PUBLIC_BASE:?set PROGRAM_RTMPS_PUBLIC_BASE, e.g. rtmps://voxbento.com:1936}"
+
+  mediamtx:
+    environment:
+      # TLS-only RTMP: "strict" opens the RTMPS listener and keeps plaintext RTMP closed.
+      MTX_RTMP: "yes"
+      MTX_RTMPENCRYPTION: "strict"
+      MTX_RTMPSADDRESS: ":1936"
+      MTX_RTMPSERVERKEY: "/certs/${PROGRAM_RTMPS_CERT_NAME:-rtmps}.key"
+      MTX_RTMPSERVERCERT: "/certs/${PROGRAM_RTMPS_CERT_NAME:-rtmps}.crt"
+    volumes:
+      # A directory, not single files, so renewed certificates (new files) stay visible.
+      - "${PROGRAM_RTMPS_CERT_DIR:?set PROGRAM_RTMPS_CERT_DIR (run scripts/setup-youtube-relay.sh --ingest-only)}:/certs:ro"
+    ports:
+      # Public contribution ingest. Every publish is checked by /internal/media-auth.
+      - "1936:1936"

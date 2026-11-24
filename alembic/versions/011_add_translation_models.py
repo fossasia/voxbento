@@ -28,7 +28,7 @@ def upgrade() -> None:
         sa.Column("room_id", sa.Integer(), nullable=False),
         sa.Column("language_code", sa.String(length=20), nullable=False),
         sa.Column("language_name", sa.String(length=100), nullable=False),
-        sa.Column("enabled", sa.Boolean(), server_default="1", nullable=False),
+        sa.Column("enabled", sa.Boolean(), server_default=sa.true(), nullable=False),
         sa.ForeignKeyConstraint(["room_id"], ["rooms.id"], ondelete="CASCADE"),
         sa.PrimaryKeyConstraint("id"),
     )
@@ -53,7 +53,7 @@ def upgrade() -> None:
     op.add_column("events", sa.Column("gemini_api_key", sa.Text(), nullable=True))
     op.add_column("events", sa.Column("anthropic_api_key", sa.Text(), nullable=True))
     op.add_column("events", sa.Column("groq_api_key", sa.Text(), nullable=True))
-    op.add_column("rooms", sa.Column("floor_translation_enabled", sa.Boolean(), server_default="0", nullable=False))
+    op.add_column("rooms", sa.Column("floor_translation_enabled", sa.Boolean(), server_default=sa.false(), nullable=False))
     op.add_column("rooms", sa.Column("floor_translation_provider", sa.String(length=50), nullable=True))
     op.add_column("rooms", sa.Column("floor_translation_model", sa.String(length=100), nullable=True))
     op.add_column(

@@ -24,8 +24,10 @@ from portal.outage_log import OutageLog
 
 logger = logging.getLogger(__name__)
 WHIP_MODE = "whip"
-RELAY_MODE = "rtmps_relay"
-MODES = (WHIP_MODE, RELAY_MODE)
+RTMPS_MODE = "rtmps"  # VoxBento is an extra RTMPS destination; YouTube is independent
+RELAY_MODE = "rtmps_relay"  # VoxBento forwards to YouTube (#749)
+RTMPS_MODES = (RTMPS_MODE, RELAY_MODE)
+MODES = (WHIP_MODE, RTMPS_MODE, RELAY_MODE)
 STREAM_KEY = re.compile(r"[A-Za-z0-9_-]{4,128}")
 RELAY_CONTROL_TIMEOUT = 3.0
 # MediaMTX track names for the documented H.264/AAC contribution contract.

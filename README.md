@@ -105,6 +105,9 @@ For **NEW local setups only**, copy the example configuration and generate separ
 
 The encryption key protects stored provider keys and queued email.
 
+The welcome email is queued for delivery 15 minutes after verification or magic-link sign-in changes an unverified account to verified.
+Already-verified accounts do not gain a welcome email or change an existing welcome delivery time by redeeming an old verification link.
+
 ```bash
 uv run python -c "
 import secrets, re

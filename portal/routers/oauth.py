@@ -421,7 +421,7 @@ async def _handle_authorization_code_grant(
 
     return {
         "access_token": access_token_raw,
-        "token_type": "Bearer",
+        "token_type": "Bearer",  # nosec B105 # OAuth authentication scheme, not a credential
         "expires_in": 3600,
         "refresh_token": refresh_token_raw,
         "scope": " ".join(auth_code.scopes),
@@ -525,7 +525,7 @@ async def _handle_refresh_token_grant(
 
     return {
         "access_token": new_access_token_raw,
-        "token_type": "Bearer",
+        "token_type": "Bearer",  # nosec B105 # OAuth authentication scheme, not a credential
         "expires_in": 3600,
         "refresh_token": new_refresh_token_raw,
         "scope": " ".join(token_record.scopes),

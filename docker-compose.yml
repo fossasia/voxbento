@@ -20,6 +20,7 @@ services:
       SMTP_USER: "${SMTP_USER}"
       SMTP_PASSWORD: "${SMTP_PASSWORD}"
       SMTP_FROM_EMAIL: "${SMTP_FROM_EMAIL:-noreply@voxbento.com}"
+      SMTP_FROM_NAME: "${SMTP_FROM_NAME-VoxBento}"
       BOOTH_ACCESS_TOKEN: "${BOOTH_ACCESS_TOKEN:-}"
       JWT_SECRET: "${JWT_SECRET:-}"
       JWT_EXPIRY_SECONDS: "${JWT_EXPIRY_SECONDS:-86400}"
@@ -79,7 +80,7 @@ services:
   mediamtx:
     # Program-ingest kick endpoints are verified against this exact API version.
     # Re-run tests/test_program_ingest_media.py before changing the pin.
-    image: bluenviron/mediamtx:1.21.3
+    image: bluenviron/mediamtx:1.21.4
     volumes:
       - ./mediamtx.yml:/mediamtx.yml:ro
     environment:
@@ -102,7 +103,7 @@ services:
   #   10000/udp → JVB media traffic
 
   jitsi-web:
-    image: ghcr.io/jitsi/web:stable-11248
+    image: ghcr.io/jitsi/web:stable-11509
     read_only: true
     tmpfs:
       - /run:size=16M,uid=1000,gid=1000,mode=1750,exec
@@ -132,7 +133,7 @@ services:
     restart: unless-stopped
 
   jitsi-prosody:
-    image: ghcr.io/jitsi/prosody:stable-11248
+    image: ghcr.io/jitsi/prosody:stable-11509
     read_only: true
     tmpfs:
       - /run:size=16M,uid=1000,gid=1000,mode=1750,exec
@@ -155,7 +156,7 @@ services:
     restart: unless-stopped
 
   jitsi-jicofo:
-    image: ghcr.io/jitsi/jicofo:stable-11248
+    image: ghcr.io/jitsi/jicofo:stable-11509
     read_only: true
     tmpfs:
       - /run:size=32M,uid=1000,gid=1000,mode=1750,exec
@@ -177,7 +178,7 @@ services:
     restart: unless-stopped
 
   jitsi-jvb:
-    image: ghcr.io/jitsi/jvb:stable-11248
+    image: ghcr.io/jitsi/jvb:stable-11509
     read_only: true
     tmpfs:
       - /run:size=32M,uid=1000,gid=1000,mode=1750,exec

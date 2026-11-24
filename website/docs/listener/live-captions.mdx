@@ -55,9 +55,9 @@ Runs OpenAI's Whisper model entirely on the event server — no external API key
 Two modes are available: a batch mode using OpenAI's `whisper-1` model (similar latency to Local Whisper) and a streaming mode using `gpt-4o-realtime-preview` or `gpt-4o-mini-realtime-preview` (lower latency with partial caption support). Requires an OpenAI API key configured by the event admin.
 
 </TabItem>
-  <TabItem value="deepgram-nova-2" label="Deepgram Nova-2">
+  <TabItem value="deepgram-nova" label="Deepgram Nova">
 
-Streams audio to Deepgram's `nova-2` model, providing real-time partial and final captions with some of the lowest caption latency available. Requires a Deepgram API key.
+Streams audio to Deepgram's `nova-3` model (or the older `nova-2`), providing real-time partial and final captions with some of the lowest caption latency available. Requires a Deepgram API key.
 
 </TabItem>
   <TabItem value="elevenlabs-scribe" label="ElevenLabs Scribe">

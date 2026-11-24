@@ -110,6 +110,37 @@ async def test_standby_interpreter_cannot_reassign_another_interpreter():
 
 
 @pytest.mark.anyio
+async def test_standby_interpreter_cannot_make_themselves_active():
+    """A passive interpreter naming themselves must not take the mic from whoever is live."""
+    registry = BoothRegistry()
+    interpreter_a = await join(registry, "Interpreter A")
+    interpreter_b = await join(registry, "Interpreter B")
+    await registry.update_participant_state(
+        "hall-1-fr",
+        interpreter_a.participant_id,
+        "French",
+        "hall-1-fr-audio",
+        mic_active=True,
+        ingest_connected=True,
+    )
+
+    with pytest.raises(PermissionError):
+        await registry.set_active_interpreter(
+            "hall-1-fr",
+            interpreter_b.participant_id,
+            interpreter_b.participant_id,
+            "French",
+            "hall-1-fr-audio",
+        )
+
+    state = await registry.snapshot("hall-1-fr", "French", "hall-1-fr-audio")
+    participants = {p["participant_id"]: p for p in state["participants"]}
+    assert state["active_interpreter_id"] == interpreter_a.participant_id
+    assert state["ingest_status"] == "connected"
+    assert participants[interpreter_a.participant_id]["mic_active"] is True
+
+
+@pytest.mark.anyio
 async def test_standby_interpreter_cannot_mark_ingest_connected():
     registry = BoothRegistry()
     await join(registry, "Interpreter A")

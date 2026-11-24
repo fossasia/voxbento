@@ -35,6 +35,10 @@ updates:
     labels:
       - "dependencies"
       - "docker"
+    # pyproject.toml requires Python <3.14, so don't bump the base image past 3.13.
+    ignore:
+      - dependency-name: "python"
+        versions: [">=3.14"]
     commit-message:
       prefix: "deps(docker)"
 

@@ -84,6 +84,24 @@ assert(pickTabAudio(fakeStream([lonelyVideo], [])) === null, 'no shared audio re
 assert(lonelyVideo.stopped === true, 'the video track is stopped even without audio')
 
 const senderCode = readFileSync(new URL('../portal/static/js/program-sender.js', import.meta.url), 'utf8')
+// Starting or reconnecting must preserve the room's saved presentation delay.
+const mintSessionCode = senderCode.slice(senderCode.indexOf('async function mintSession()'), senderCode.indexOf('async function publish('))
+const mintRequests = []
+const mintContext = {
+  card: { dataset: { mintUrl: '/workspace/events/1/rooms/2/program-sender' } },
+  document: { querySelector: () => ({ content: 'session-csrf-token' }) },
+  async fetch(url, options) {
+    mintRequests.push({ url, options })
+    return { ok: true, json: async () => ({ secret: 'sender-secret' }) }
+  },
+}
+runInNewContext(mintSessionCode, mintContext)
+await mintContext.mintSession()
+const mintRequest = mintRequests[0]
+assert(mintRequest.url === mintContext.card.dataset.mintUrl && mintRequest.options.method === 'POST', 'sender requests a session from the room endpoint')
+assert(!Object.hasOwn(JSON.parse(mintRequest.options.body), 'sync_offset_ms'), 'sender leaves the saved sync delay unchanged')
+assert(mintRequest.options.headers['X-CSRF-Token'] === 'session-csrf-token', 'sender session request retains CSRF protection')
+
 const openInputCode = senderCode.slice(senderCode.indexOf('async function openInput()'), senderCode.indexOf('/** @throws {SourceError}'))
 const recoveryCode = senderCode.slice(senderCode.indexOf('async function handleInputLost('), senderCode.indexOf('function startMeter()'))
 

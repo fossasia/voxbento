@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 import sys
 from pathlib import Path
 
@@ -8,5 +10,5 @@ from fastapi.testclient import TestClient
 from fastapi_app import app
 
 client = TestClient(app)
-response = client.post("/api/developer/clients/client_test_id_123/delete", data={"csrf_token": "test"})
+response = client.post("/api/developer/clients/client_test_id_123/delete", data={"csrf_token": "test"})  # nosec B105 # intentionally invalid CSRF test input
 print(response.status_code)
