@@ -1,0 +1,78 @@
+name: Interpreter handoff browser
+
+on:
+  push:
+    branches:
+      - main
+      - dev
+      - "feature/**"
+    paths:
+      - ".github/workflows/interpreter-handoff-browser.yml"
+      - "tests/interpreter_handoff_browser_smoke.py"
+      - "portal/booth_state.py"
+      - "portal/booth_publish.py"
+      - "portal/websockets/**"
+      - "portal/static/js/interpreter-booth.js"
+      - "portal/templates/interpreter_booth.html"
+      - "portal/auth.py"
+      - "pyproject.toml"
+      - "uv.lock"
+
+  pull_request:
+    branches:
+      - main
+      - dev
+    paths:
+      - ".github/workflows/interpreter-handoff-browser.yml"
+      - "tests/interpreter_handoff_browser_smoke.py"
+      - "portal/booth_state.py"
+      - "portal/booth_publish.py"
+      - "portal/websockets/**"
+      - "portal/static/js/interpreter-booth.js"
+      - "portal/templates/interpreter_booth.html"
+      - "portal/auth.py"
+      - "pyproject.toml"
+      - "uv.lock"
+
+  workflow_dispatch:
+
+# Cancel superseded runs on the same PR; allow post-merge and branch pushes to run to completion
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.sha }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+permissions:
+  contents: read
+
+# ────────────────────────────────────────────────────────────────
+jobs:
+
+  interpreter-handoff-browser:
+    runs-on: ubuntu-24.04
+    # Match the Python package below to the browsers bundled in this image.
+    container: mcr.microsoft.com/playwright/python:v1.58.0-noble
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7.0.1
+        with:
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@v7
+        with:
+          enable-cache: true
+          cache-dependency-glob: |
+            uv.lock
+            .github/workflows/interpreter-handoff-browser.yml
+      - name: Install project dependencies
+        run: uv sync --python 3.13 --dev --frozen
+      - name: Verify the active/backup interpreter switch in real browsers
+        env:
+          PYTHONPATH: .
+          HANDOFF_ARTIFACT_DIR: interpreter-handoff-artifacts
+        run: uv run --with playwright==1.58.0 python tests/interpreter_handoff_browser_smoke.py
+      - name: Upload handoff screenshots
+        if: always()
+        uses: actions/upload-artifact@v7.0.2
+        with:
+          name: interpreter-handoff-browser
+          path: interpreter-handoff-artifacts/
+          retention-days: 7
