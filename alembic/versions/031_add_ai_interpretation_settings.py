@@ -22,7 +22,7 @@ def upgrade() -> None:
     op.add_column("rooms", sa.Column("floor_ai_interpretation_style", sa.Text(), nullable=True))
     op.add_column(
         "rooms",
-        sa.Column("floor_ai_vocabulary_enabled", sa.Boolean(), server_default="1", nullable=False),
+        sa.Column("floor_ai_vocabulary_enabled", sa.Boolean(), server_default=sa.true(), nullable=False),
     )
     op.create_table(
         "ai_vocabulary_entries",
@@ -34,7 +34,7 @@ def upgrade() -> None:
         sa.Column("target_language", sa.String(length=20), server_default="all", nullable=False),
         sa.Column("target_term", sa.String(length=255), nullable=False),
         sa.Column("description", sa.Text(), nullable=True),
-        sa.Column("case_sensitive", sa.Boolean(), server_default="0", nullable=False),
+        sa.Column("case_sensitive", sa.Boolean(), server_default=sa.false(), nullable=False),
         sa.Column("match_type", sa.String(length=20), server_default="phrase", nullable=False),
         sa.Column("priority", sa.Integer(), server_default="0", nullable=False),
         sa.Column("created_at", sa.DateTime(timezone=True), nullable=False),

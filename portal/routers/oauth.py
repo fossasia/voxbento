@@ -318,6 +318,7 @@ async def _handle_authorization_code_grant(
     code_verifier: str | None,
     event: str | None = None,
 ) -> dict | JSONResponse:
+    """Validate authorization code grant, verify PKCE, and issue access/refresh tokens."""
     if not code or not redirect_uri or not code_verifier:
         return JSONResponse(status_code=400, content={"error": "invalid_request"})
 
@@ -329,11 +330,7 @@ async def _handle_authorization_code_grant(
     )
     auth_code = code_result.scalars().first()
 
-    if (
-        not auth_code
-        or auth_code.used
-        or auth_code.expires_at.replace(tzinfo=timezone.utc) < datetime.now(timezone.utc)
-    ):
+    if not auth_code or auth_code.used or auth_code.is_expired:
         return JSONResponse(status_code=400, content={"error": "invalid_grant"})
 
     if auth_code.client_id != client.id or auth_code.redirect_uri != redirect_uri:
