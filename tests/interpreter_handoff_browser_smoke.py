@@ -8,9 +8,15 @@ Four booth tabs join one booth: interpreters A (active), B (backup) and C
 (passive), and a room coordinator. The coordinator sends ``booth:set-active``
 for B and every tab is checked against the one-active-publisher invariant.
 
-Only MediaMTX is stubbed. The WHIP endpoint answers the tab's real SDP offer
-and redeems the Bearer ticket with the portal's own ``redeem_ticket`` and
-``still_entitled``, so single-use and path binding are checked for real.
+Stubbed: MediaMTX (WHIP and WHEP), the ingest status endpoint and the
+transcription start/stop calls. Everything else is the real app: the booth page,
+the booth WebSocket, roles and publish tickets.
+
+The WHIP stub answers the tab's real SDP offer and redeems the Bearer ticket
+for the path in the request URL with the portal's own ``redeem_ticket`` and
+``still_entitled``, so single-use and path binding are checked for real. It also
+keeps each WHIP session open until the tab sends DELETE, and the test fails if a
+second session is ever opened while another is still open.
 """
 
 from __future__ import annotations
@@ -22,7 +28,7 @@ import socket
 import time
 import uuid
 from pathlib import Path
-from urllib.parse import urlparse
+from urllib.parse import unquote, urlparse
 
 os.environ.setdefault("API_KEY_ENCRYPTION_KEY", "handoff-smoke-test-encryption-key-32-chars")
 os.environ.setdefault("SECRET_KEY", "handoff-smoke-test-jwt-key-for-isolated-tests")
@@ -75,6 +81,16 @@ INIT_SCRIPT = """
     window.__audioEdges.push([idOf(this), idOf(dest)]);
     return connect.call(this, dest, ...rest);
   };
+  window.__micTracks = [];
+  // Not every frame has navigator.mediaDevices (an about:blank iframe, for one).
+  if (navigator.mediaDevices && navigator.mediaDevices.getUserMedia) {
+    const getUserMedia = navigator.mediaDevices.getUserMedia.bind(navigator.mediaDevices);
+    navigator.mediaDevices.getUserMedia = async (constraints) => {
+      const stream = await getUserMedia(constraints);
+      stream.getAudioTracks().forEach((track) => window.__micTracks.push(track));
+      return stream;
+    };
+  }
 })();
 """
 
@@ -86,9 +102,22 @@ async (offerSdp) => {
   await pc.setRemoteDescription({ type: 'offer', sdp: offerSdp });
   const answer = await pc.createAnswer();
   await pc.setLocalDescription(answer);
-  return pc.localDescription.sdp;
+  return { sdp: pc.localDescription.sdp, index: window.__answerers.length - 1 };
 }
 """
+
+CLOSE_ANSWERER_SCRIPT = "(index) => window.__answerers[index].close()"
+
+
+def whip_target(url: str) -> tuple[str, str]:
+    """The MediaMTX path and the resource id a WHIP request addresses.
+
+    The page posts to ``/<path with / written as %2F>/whip``. The resource URL the stub
+    returns, which the page later sends DELETE to, is ``/<path>/whip/<id>``.
+    """
+    path = unquote(urlparse(url).path.strip("/"))
+    head, _, tail = path.partition("/whip")
+    return head, tail.lstrip("/")
 
 
 class Tab:
@@ -147,6 +176,15 @@ class Tab:
         """Open peer connections that carry a local audio track, i.e. a WHIP publish."""
         return await self.page.evaluate(
             "window.__pcs.filter((pc) => !pc.__closed && pc.getSenders().some((s) => s.track)).length"
+        )
+
+    async def mic_capture_state(self) -> dict:
+        """Microphone tracks this tab captured: how many, and how many still deliver audio."""
+        return await self.page.evaluate(
+            """() => ({
+              total: window.__micTracks.length,
+              delivering: window.__micTracks.filter((t) => t.readyState === 'live' && t.enabled).length,
+            })"""
         )
 
     async def mic_source_count(self) -> int:
@@ -227,6 +265,10 @@ async def main() -> None:
     artifacts = Path(os.environ["HANDOFF_ARTIFACT_DIR"]) if os.environ.get("HANDOFF_ARTIFACT_DIR") else None
     if artifacts:
         artifacts.mkdir(parents=True, exist_ok=True)
+    # The stub answers on plain HTTP, so pin the base: an HTTPS MEDIAMTX_WHIP_BASE in the environment
+    # would otherwise send the tabs to a real service.
+    previous_whip_base = settings.mediamtx_whip_base
+    settings.mediamtx_whip_base = "http://localhost:8889"
     whip_host = urlparse(settings.mediamtx_whip_base).netloc
     # Production sets a strong BOOTH_ACCESS_TOKEN and the booth link carries it as ?token=.
     # Tabs authenticate their state fetch with it and take their role from the cookie.
@@ -253,6 +295,11 @@ async def main() -> None:
 
             tabs: dict[str, Tab] = {}
             contexts = []
+            # Every WHIP session the stub has opened, by resource id. A session stays open until its tab
+            # sends DELETE, like a MediaMTX publisher would. ``overlaps`` records every session that was
+            # opened while another one was still open.
+            sessions: dict[str, dict] = {}
+            overlaps: list[dict] = []
 
             async def open_tab(name: str, role: str) -> Tab:
                 context = await browser.new_context(**options)
@@ -277,11 +324,11 @@ async def main() -> None:
                 tab = Tab(name, page)
 
                 async def handle_other(route):
-                    host = urlparse(route.request.url).netloc
-                    if host in {urlparse(origin).netloc, whip_host}:
+                    if urlparse(route.request.url).netloc == urlparse(origin).netloc:
                         await route.fallback()
                     else:
-                        await route.abort()  # Jitsi and fonts are not part of this flow.
+                        # Jitsi and fonts are not part of this flow, and nothing may reach a real MediaMTX.
+                        await route.abort()
 
                 async def handle_status(route):
                     await route.fulfill(json={"reachable": True})
@@ -300,13 +347,23 @@ async def main() -> None:
                     if request.url.endswith("/whep"):  # the booth's monitoring feed; there is no media here
                         await route.fulfill(status=404, headers=cors)
                         return
-                    if request.method != "POST":  # CORS preflight and the DELETE that ends a session
-                        await route.fulfill(status=204 if request.method == "OPTIONS" else 200, headers=cors)
+                    if request.method == "OPTIONS":  # CORS preflight
+                        await route.fulfill(status=204, headers=cors)
+                        return
+                    requested_path, resource_id = whip_target(request.url)
+                    if request.method == "DELETE":  # the tab ends its publish: close MediaMTX's side too
+                        session = sessions.get(resource_id)
+                        if session is not None and session["open"]:
+                            session["open"] = False
+                            await answerer.evaluate(CLOSE_ANSWERER_SCRIPT, session["index"])
+                        await route.fulfill(status=200, headers=cors)
                         return
                     secret = (request.headers.get("authorization") or "").removeprefix("Bearer ").strip()
-                    ticket = redeem_ticket(secret, media_path)
+                    # Redeemed for the path the tab actually posted to, not for the one we expect.
+                    ticket = redeem_ticket(secret, requested_path)
                     entry = {
                         "tab": tab.name,
+                        "path": requested_path,
                         "redeemed": ticket is not None,
                         "participant_id": ticket.participant_id if ticket else None,
                         "entitled": bool(ticket and still_entitled(ticket)),
@@ -318,21 +375,26 @@ async def main() -> None:
                     if not entry["entitled"]:
                         await route.fulfill(status=401, headers=cors, body="ticket refused")
                         return
-                    sdp = await answerer.evaluate(ANSWERER_SCRIPT, request.post_data)
+                    still_open = [s["tab"] for s in sessions.values() if s["open"]]
+                    if still_open:
+                        overlaps.append({"opened_by": tab.name, "still_open": still_open})
+                    answer = await answerer.evaluate(ANSWERER_SCRIPT, request.post_data)
+                    resource_id = str(uuid.uuid4())
+                    sessions[resource_id] = {"tab": tab.name, "index": answer["index"], "open": True}
                     await route.fulfill(
                         status=201,
                         headers={
                             **cors,
                             "Content-Type": "application/sdp",
-                            "Location": f"/{media_path}/whip/{uuid.uuid4()}",
+                            "Location": f"/{requested_path}/whip/{resource_id}",
                         },
-                        body=sdp,
+                        body=answer["sdp"],
                     )
 
                 await context.route("**/*", handle_other)
                 await context.route("**/api/interpreter/status/**", handle_status)
                 await context.route("**/transcription/**", handle_transcription)
-                await context.route(f"http://{whip_host}/**", handle_whip)
+                await context.route(lambda url: urlparse(url).netloc == whip_host, handle_whip)
                 await page.goto(f"{origin}{booth_url_path}?token={access_token}")
 
                 async def joined():
@@ -384,6 +446,7 @@ async def main() -> None:
             first_ticket = a.whip[0]
             assert first_ticket["redeemed"] and first_ticket["entitled"], first_ticket
             assert first_ticket["participant_id"] == a.participant_id
+            assert first_ticket["path"] == media_path, f"A posted to the wrong WHIP path: {first_ticket['url']}"
             assert redeem_ticket(first_ticket["secret"], media_path) is None, "a publish ticket must be single-use"
 
             # The role comes from the server-side session, not from what the client claims.
@@ -454,12 +517,31 @@ async def main() -> None:
 
             await wait_for("B receives a publish ticket", b_publishes)
             assert await b.frames("out", "booth:request-publish-ticket", marks["B"])
-            await wait_for("B is publishing", lambda: _is_one(b.live_publishers()))
+
+            async def b_whip_received():
+                # The tab adds its audio track before it asks for a ticket and posts the offer, so a
+                # live publisher alone does not mean the stub has seen the request yet.
+                return bool(b.whip) and await _is_one(b.live_publishers())
+
+            await wait_for("B's WHIP request reaches the stub", b_whip_received)
             b_ticket = b.whip[-1]
             assert b_ticket["redeemed"] and b_ticket["entitled"], b_ticket
             assert b_ticket["participant_id"] == b.participant_id, "the ticket must belong to the new active tab"
+            assert b_ticket["path"] == media_path, f"B posted to the wrong WHIP path: {b_ticket['url']}"
             assert redeem_ticket(b_ticket["secret"], media_path) is None
             assert len(a.whip) == 1, f"A must not publish again after the switch: {a.whip}"
+
+            # A ticket is bound to the booth's path: a fresh one is refused, and spent, for any other path.
+            fresh_mark = await b.mark()
+            await b.send({"type": "booth:request-publish-ticket"})
+
+            async def fresh_ticket():
+                got = await b.frames("in", "booth:publish-ticket", fresh_mark)
+                return got[-1].get("ticket") if got else None
+
+            fresh = await wait_for("B gets a fresh ticket", fresh_ticket)
+            assert redeem_ticket(fresh, "another-event/1/en") is None, "a ticket must not work for another path"
+            assert redeem_ticket(fresh, media_path) is None, "a ticket shown for the wrong path is spent"
 
             async def b_is_live_everywhere():
                 for t in everyone:
@@ -481,6 +563,14 @@ async def main() -> None:
             for t in everyone:
                 assert len(tiles[t.name]) == 1, f"{t.name} shows {len(tiles[t.name])} active tiles"
             assert sum([await t.live_publishers() for t in everyone]) == 1
+            # MediaMTX's side: A's session ended, B's is the only one open, and the two never overlapped.
+            assert not overlaps, f"a WHIP session was opened while another was still open: {overlaps}"
+            open_sessions = [s["tab"] for s in sessions.values() if s["open"]]
+            assert open_sessions == ["B"], f"open WHIP sessions: {open_sessions}"
+            # A let go of the microphone (its tracks are muted or ended); B is capturing.
+            a_mic = await a.mic_capture_state()
+            assert a_mic["total"] > 0 and a_mic["delivering"] == 0, f"A still captures audio: {a_mic}"
+            assert (await b.mic_capture_state())["delivering"] > 0, "B should be capturing audio"
             states = [comparable(await t.state()) for t in everyone]
             assert all(s == states[0] for s in states), f"tabs disagree: {states}"
             assert booths.get_booth_sync(booth_id).active_interpreter_id == b.participant_id
@@ -512,6 +602,7 @@ async def main() -> None:
             "single-use ticket for the new active tab, passive tabs refused, tabs converged, mic never routed to speakers"
         )
     finally:
+        settings.mediamtx_whip_base = previous_whip_base
         settings.booth_access_token = previous_access_token
         server.should_exit = True
         await task
