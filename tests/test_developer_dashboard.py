@@ -37,7 +37,8 @@ CSRF = "csrf-test-token"
 
 
 @pytest.fixture
-async def setup_db():
+async def setup_db(monkeypatch):
+    monkeypatch.setattr(settings, "public_base_url", "http://test")
     configure("sqlite+aiosqlite://")
     await init_db()
     yield

@@ -251,7 +251,7 @@ async def developer_dashboard(
         response.set_cookie(
             "dashboard_csrf", csrf_token, httponly=True, secure=is_cookie_secure(request), samesite="lax"
         )
-    if flash_cookie:
+    if flash_cookie or new_secret:
         response.delete_cookie("dev_flash_secret", path="/developer")
         response.headers["Cache-Control"] = "no-store"
     return response
@@ -431,6 +431,7 @@ async def rotate_oauth_client_secret(
         encrypted_flash = _get_flash_fernet().encrypt(flash_payload.encode("utf-8")).decode("utf-8")
 
         response = RedirectResponse(url="/developer", status_code=status.HTTP_303_SEE_OTHER)
+        response.headers["Cache-Control"] = "no-store"
         response.set_cookie(
             "dev_flash_secret",
             encrypted_flash,
