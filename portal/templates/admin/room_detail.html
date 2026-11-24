@@ -149,6 +149,9 @@
   </div>
   <a href="{{ management_prefix }}/events/{{ event.id }}/rooms/{{ room.id }}/analysis/" class="btn btn-outline">View reports</a>
 </div>
+{% if event.meeting_analysis_enabled %}
+<iframe class="room-reports-frame" title="Meeting reports" loading="lazy" src="{{ management_prefix }}/events/{{ event.id }}/rooms/{{ room.id }}/analysis/?panel=1"></iframe>
+{% endif %}
 
 {% if is_event_owner %}
 <div class="room-card room-card--row">

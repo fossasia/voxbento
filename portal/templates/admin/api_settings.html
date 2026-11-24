@@ -157,7 +157,7 @@
       <h2>Meeting Reports</h2>
     </div>
     <p class="muted api-settings-intro">
-      After a session, an AI service can read a room's stored transcript and write meeting notes, grouped by the topics that came up. Reports are only made when an event owner asks for one on the room's Meeting reports page.
+      After a session, an AI service can read a room's stored transcript and write meeting notes, grouped by the topics that came up. Event owners ask for a report on the room's Meeting reports page, or turn on automatic reports below.
     </p>
 
     <div class="form-group checkbox-group api-settings-toggle">
@@ -166,6 +166,14 @@
         Enable meeting reports for this event
       </label>
       <p class="form-help api-settings-toggle-help">The transcript is sent to the service chosen below. Local (Ollama) keeps it on your own server.</p>
+    </div>
+
+    <div class="form-group checkbox-group api-settings-toggle">
+      <label class="api-settings-toggle-label">
+        <input type="checkbox" name="meeting_analysis_auto" {% if event.meeting_analysis_auto %}checked{% endif %}>
+        Write a report automatically when captions stop
+      </label>
+      <p class="form-help api-settings-toggle-help">About a minute after a room's floor or booth captions stop, a report is written on that session, if it has at least {{ analysis_auto_min_lines }} transcript lines and doesn't have a report yet. Needs meeting reports to be on.</p>
     </div>
 
     <div class="form-group api-key-field">
