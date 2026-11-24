@@ -1,7 +1,7 @@
 """Enforce unique developer account per user (#1368 review)
 
-Revision ID: 048
-Revises: 047
+Revision ID: 049
+Revises: 048
 Create Date: 2026-11-24 09:58:00.000000
 
 """
@@ -12,8 +12,8 @@ from typing import Sequence, Union
 
 from alembic import op
 
-revision: str = "048"
-down_revision: Union[str, Sequence[str], None] = "047"
+revision: str = "049"
+down_revision: Union[str, Sequence[str], None] = "048"
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
 
@@ -32,9 +32,11 @@ def upgrade() -> None:
         )
     """)
     with op.batch_alter_table("developer_accounts") as batch:
-        batch.create_unique_constraint("uq_developer_accounts_user_id", ["user_id"])
+        batch.drop_index("ix_developer_accounts_user_id")
+        batch.create_index("ix_developer_accounts_user_id", ["user_id"], unique=True)
 
 
 def downgrade() -> None:
     with op.batch_alter_table("developer_accounts") as batch:
-        batch.drop_constraint("uq_developer_accounts_user_id", type_="unique")
+        batch.drop_index("ix_developer_accounts_user_id")
+        batch.create_index("ix_developer_accounts_user_id", ["user_id"], unique=False)
