@@ -76,12 +76,14 @@ export function createFloorTranscript(maxLines = MAX_FLOOR_LINES) {
       }
       if (typeof message.text !== 'string' || !message.text.trim()) return false
       const line = { text: message.text, hits: Array.isArray(message.hits) ? message.hits : [] }
+      const key = typeof message.segment_id === 'string' ? message.segment_id : null
       if (message.status === 'partial') {
+        // A partial that arrives after its own final would linger under it.
+        if (key && seen.has(key)) return false
         partial = line
         return true
       }
       if (message.status !== 'final') return false
-      const key = typeof message.segment_id === 'string' ? message.segment_id : null
       // A reconnect can deliver the same final twice.
       if (key && seen.has(key)) return false
       if (key) seen.add(key)

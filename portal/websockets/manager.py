@@ -21,7 +21,13 @@ from portal.booth_identity import booth_id_to_mediamtx_path, parse_booth_id
 from portal.booth_publish import TICKET_TTL_SECS, issue_ticket
 from portal.config import settings
 from portal.globals import booths
-from portal.interpreter_assist import FLOOR_LANGUAGE, FloorCaptionRelay, GlossaryCache
+from portal.interpreter_assist import (
+    EMPTY_GLOSSARY,
+    FLOOR_LANGUAGE,
+    FloorCaptionRelay,
+    GlossaryCache,
+    GlossaryMessage,
+)
 from portal.roles import ALL_ROLES, INTERPRETER, can_set_active
 from portal.tasks import track_task
 
@@ -715,6 +721,8 @@ tts_manager = TTSConnectionManager()
 # Interpreter Assist (#1375): delivered through manager.broadcast, so only sockets that hold
 # a role in the receiving booth get the room's glossary and floor captions.
 glossary_cache = GlossaryCache()
+#: Longest a join waits for the booth's glossary; a slower read follows as booth:glossary.
+JOIN_GLOSSARY_TIMEOUT = 2.0
 floor_caption_relay = FloorCaptionRelay(
     send=manager.broadcast, booth_ids_in_room=manager.booth_ids_in_room, glossary=glossary_cache
 )
@@ -724,8 +732,32 @@ async def notify_glossary_changed(event_slug: str, room_id: int) -> None:
     """Send the new glossary to every booth of the room that is open now."""
     glossary_cache.invalidate_room(event_slug, room_id)
     for booth_id in manager.booth_ids_in_room(event_slug, room_id):
-        glossary = await glossary_cache.get(booth_id)
-        await manager.broadcast(booth_id, glossary.message())
+        glossary = await glossary_cache.refresh(booth_id)
+        if glossary is None:
+            # The read failed: interpreters keep the list they have rather than an empty one.
+            continue
+        await manager.broadcast(booth_id, dict(glossary.message()))
+
+
+async def _join_glossary(ws: WebSocket, booth_id: str) -> GlossaryMessage:
+    """The glossary for booth:joined, never holding the join up for longer than JOIN_GLOSSARY_TIMEOUT."""
+    try:
+        return (await asyncio.wait_for(glossary_cache.get(booth_id), JOIN_GLOSSARY_TIMEOUT)).message()
+    except TimeoutError:
+        track_task(asyncio.create_task(_send_glossary_when_read(ws, booth_id)))
+        return (glossary_cache.peek(booth_id) or EMPTY_GLOSSARY).message()
+
+
+async def _send_glossary_when_read(ws: WebSocket, booth_id: str) -> None:
+    """Follow a join that went out without its glossary once the slow read finishes."""
+    glossary = await glossary_cache.refresh(booth_id)
+    session = manager.get_session(ws)
+    if glossary is None or session is None or session.revoked:
+        return
+    try:
+        await ws.send_text(json.dumps(glossary.message()))
+    except (WebSocketDisconnect, RuntimeError, OSError):
+        logger.debug("Booth socket closed before its glossary was sent", exc_info=True)
 
 
 async def broadcast_booth_state(booth_id: str, state: dict) -> None:
@@ -845,14 +877,14 @@ async def _handle_join(ws: WebSocket, session: Session, data: dict) -> None:
     # "Stop") simply because they reconnected.
     # Interpreter Assist: the booth's glossary comes with the join, so only someone who joined
     # with a role in this booth receives it. Later edits arrive as booth:glossary.
-    glossary = await glossary_cache.get(session.booth_id)
+    glossary = await _join_glossary(ws, session.booth_id)
     await ws.send_text(
         json.dumps(
             {
                 "type": "booth:joined",
                 "participant_id": participant.participant_id,
                 "state": state,
-                "glossary": glossary.message(),
+                "glossary": glossary,
             }
         )
     )

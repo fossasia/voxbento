@@ -85,7 +85,16 @@ const join = (pieces) => pieces.map((p) => p.text).join('')
   assert(!t.apply({ status: 'final', text: '  ' }), 'an empty final is ignored')
   assert(!t.apply({ status: 'translated', text: 'x' }), 'an unknown status is ignored')
   assert(!t.apply(null), 'a missing message is ignored')
-  assert(MAX_FLOOR_LINES > 0, 'the default keeps some lines')
+  const defaults = createFloorTranscript()
+  for (let i = 0; i < MAX_FLOOR_LINES + 5; i++) defaults.apply({ status: 'final', text: `line ${i}`, segment_id: `s${i}` })
+  assert(defaults.lines().length === MAX_FLOOR_LINES, 'the default transcript keeps only MAX_FLOOR_LINES lines')
+  assert(defaults.lines()[0].text === 'line 5', 'the default transcript drops the oldest lines')
+
+  const late = createFloorTranscript()
+  late.apply({ status: 'final', text: 'Done.', segment_id: 'seg-1' })
+  assert(!late.apply({ status: 'partial', text: 'Do', segment_id: 'seg-1' }), 'a partial arriving after its own final is ignored')
+  assert(late.partial() === null, 'no stale partial is left under the final')
+  assert(late.apply({ status: 'partial', text: 'Next', segment_id: 'seg-2' }), 'a partial of the next segment is still shown')
 }
 
 // ── createInterpreterAssist with a minimal DOM ────────────────────────────
@@ -165,6 +174,11 @@ function findAll(node, tag, out = []) {
   nodes['assist-search'].value = 'opening'
   nodes['assist-search'].listeners.input()
   assert(nodes['assist-glossary'].children.length === 1, 'typing in the search box filters the list')
+  const row = nodes['assist-glossary'].children[0]
+  assert(
+    row.children[0].textContent === 'keynote' && row.children[1].textContent === 'discours',
+    'the search shows the matching term and its translation',
+  )
   nodes['assist-search'].value = 'zzz'
   nodes['assist-search'].listeners.input()
   assert(nodes['assist-glossary-empty'].textContent === 'No term matches your search.', 'a search with no match says so')

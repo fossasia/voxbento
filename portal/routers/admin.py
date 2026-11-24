@@ -2160,7 +2160,7 @@ async def admin_upload_ai_vocabulary(request: Request, event_id: int, room_id: i
         await session.flush()
         event_slug = await session.scalar(select(Event.slug).where(Event.id == event_id))
 
-    await _push_room_glossary(event_slug, room_id)
+    _push_room_glossary(event_slug, room_id)
     return safe_redirect(
         url=_vocabulary_result_url(event_id, room_id, imported, warnings, languages),
         status_code=status.HTTP_303_SEE_OTHER,
@@ -2214,19 +2214,18 @@ async def admin_delete_ai_vocabulary(request: Request, event_id: int, room_id: i
                 raise HTTPException(status_code=400, detail="Invalid vocabulary entry ID.") from exc
         await session.execute(statement)
         event_slug = await session.scalar(select(Event.slug).where(Event.id == event_id))
-    await _push_room_glossary(event_slug, room_id)
+    _push_room_glossary(event_slug, room_id)
     return safe_redirect(url=f"/admin/events/{event_id}/rooms/{room_id}/", status_code=status.HTTP_303_SEE_OTHER)
 
 
-async def _push_room_glossary(event_slug: str | None, room_id: int) -> None:
-    """Show the edited glossary in the room's open booths; the edit itself is already saved."""
-    if not event_slug:
-        return
-    try:
-        await notify_glossary_changed(event_slug, room_id)
-    except Exception:
-        # Floor captions use the new entries once the cache expires; the list refreshes on the next join.
-        logger.warning("Could not push the edited glossary to room %s booths", room_id, exc_info=True)
+def _push_room_glossary(event_slug: str | None, room_id: int) -> None:
+    """Show the edited glossary in the room's open booths, after the edit is saved.
+
+    Runs in the background, so a slow booth socket never holds up the owner's redirect;
+    track_task logs it if the push fails.
+    """
+    if event_slug:
+        track_task(asyncio.create_task(notify_glossary_changed(event_slug, room_id)))
 
 
 @router.get("/api/admin/providers/translation/models", dependencies=[Depends(require_owner_or_coordinator)])

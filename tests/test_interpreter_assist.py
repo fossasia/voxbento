@@ -71,6 +71,25 @@ def test_overlapping_terms_keep_the_longer_one():
     assert text[hits[0]["start"] : hits[0]["end"]] == "Machine learning"
 
 
+def test_a_longer_term_that_starts_later_wins_as_in_translation():
+    from portal.translations.vocabulary import protect_terms
+
+    # "data" starts first, but "data science" is longer: translation protects the longer one.
+    terms = [_term(1, "big data", "mégadonnées"), _term(2, "data science", "science des données")]
+    text = "We do big data science here."
+
+    hits = find_hits(text, terms)
+
+    assert [text[h["start"] : h["end"]] for h in hits] == ["data science"]
+    assert protect_terms(text, terms).target_terms == ("science des données",)
+
+
+def test_equal_length_overlaps_go_to_the_term_listed_first():
+    terms = [_term(1, "AB CD", "first"), _term(2, "CD EF", "second")]
+    hits = find_hits("AB CD EF", terms)
+    assert [h["target_term"] for h in hits] == ["first"]
+
+
 def test_hit_offsets_are_utf16_so_the_browser_cuts_the_same_text():
     text = "🎤 Welcome to PyCon 🎉 and PyCon again"
     hits = find_hits(text, [_term(1, "PyCon", "PyCon FR")])
@@ -218,12 +237,12 @@ async def test_relay_sends_each_booth_its_own_translations_in_order():
     relay.offer("conf-3-floor", _caption("final", "Second keynote.", segment_id="b"))
     await relay.idle()
 
-    assert [(booth, m["text"], m["hits"][0]["target_term"]) for booth, m in sent] == [
-        ("conf-3-de", "First keynote.", "Hauptvortrag"),
-        ("conf-3-fr", "First keynote.", "discours"),
-        ("conf-3-de", "Second keynote.", "Hauptvortrag"),
-        ("conf-3-fr", "Second keynote.", "discours"),
-    ]
+    # Each booth has its own sender, so order is guaranteed per booth.
+    def received(booth_id: str) -> list[tuple[str, str]]:
+        return [(m["text"], m["hits"][0]["target_term"]) for booth, m in sent if booth == booth_id]
+
+    assert received("conf-3-de") == [("First keynote.", "Hauptvortrag"), ("Second keynote.", "Hauptvortrag")]
+    assert received("conf-3-fr") == [("First keynote.", "discours"), ("Second keynote.", "discours")]
 
 
 @pytest.mark.anyio
@@ -492,3 +511,162 @@ def test_joining_a_booth_brings_its_glossary(booth_ws_app):
     assert [(t["source_term"], t["target_term"], t["description"]) for t in joined["glossary"]["terms"]] == [
         ("keynote", "discours d'ouverture", "Opening talk")
     ]
+
+
+# ── Review follow-ups: cache races, outages, stalled booths ───────────────
+
+
+@pytest.mark.anyio
+async def test_a_read_that_overlaps_an_invalidation_is_not_cached():
+    release = asyncio.Event()
+    versions = ["old", "new"]
+
+    async def loader(_booth_id: str) -> BoothGlossary:
+        version = versions.pop(0)
+        if version == "old":
+            await release.wait()
+        return BoothGlossary(terms=(_term(1, "term", version),))
+
+    cache = GlossaryCache(loader=loader, ttl=60, clock=_Clock())
+    slow_read = asyncio.create_task(cache.get("conf-1-de"))
+    await asyncio.sleep(0)
+    cache.invalidate_room("conf", 1)  # the room's glossary is edited while the old read runs
+    release.set()
+    assert (await slow_read).terms[0].target_term == "old"
+    # The old read was not stored: the next request reads the edited glossary.
+    assert (await cache.get("conf-1-de")).terms[0].target_term == "new"
+
+
+@pytest.mark.anyio
+async def test_a_failed_refresh_keeps_the_last_glossary_and_backs_off():
+    calls = 0
+    fail = False
+
+    async def loader(_booth_id: str) -> BoothGlossary:
+        nonlocal calls
+        calls += 1
+        if fail:
+            raise OperationalError("SELECT", {}, Exception())
+        return BoothGlossary(terms=(_term(1, "term", "Begriff"),))
+
+    clock = _Clock()
+    cache = GlossaryCache(loader=loader, ttl=60, clock=clock, retry_after=10)
+    first = await cache.get("conf-1-de")
+    fail = True
+    cache.invalidate_room("conf", 1)
+
+    assert await cache.refresh("conf-1-de") is None
+    assert cache.peek("conf-1-de") is first
+    # During the outage every caption reuses the last glossary instead of reading again.
+    for _ in range(5):
+        assert await cache.get("conf-1-de") is first
+    assert calls == 2
+    clock.now = 11
+    await cache.get("conf-1-de")
+    assert calls == 3
+
+
+@pytest.mark.anyio
+async def test_expired_glossaries_are_evicted_once_the_cache_is_full():
+    async def loader(booth_id: str) -> BoothGlossary:
+        return BoothGlossary()
+
+    clock = _Clock()
+    cache = GlossaryCache(loader=loader, ttl=10, clock=clock, max_entries=3)
+    for room in range(3):
+        await cache.get(f"conf-{room}-de")
+    clock.now = 20  # all three have expired
+    await cache.get("conf-9-de")
+
+    assert cache.peek("conf-0-de") is None
+    assert cache.peek("conf-9-de") is not None
+
+
+@pytest.mark.anyio
+async def test_a_stalled_booth_does_not_hold_up_the_others():
+    stalled = asyncio.Event()
+    sent: list[str] = []
+
+    async def send(booth_id: str, message: dict) -> None:
+        if booth_id == "conf-3-de":
+            await stalled.wait()  # never completes
+        sent.append(f"{booth_id}:{message['text']}")
+
+    relay = FloorCaptionRelay(
+        send, lambda slug, room: ["conf-3-de", "conf-3-fr"], _StaticGlossary({}), delivery_timeout=0.05
+    )
+    relay.offer("conf-3-floor", _caption("final", "One."))
+    relay.offer("conf-3-floor", _caption("final", "Two."))
+    await relay.idle()
+
+    assert sent == ["conf-3-fr:One.", "conf-3-fr:Two."]
+
+
+@pytest.mark.anyio
+async def test_a_full_queue_drops_partials_before_finals():
+    gate = asyncio.Event()
+    sent: list[str] = []
+
+    async def send(_booth_id: str, message: dict) -> None:
+        await gate.wait()
+        sent.append(message.get("text", message["status"]))
+
+    relay = FloorCaptionRelay(send, lambda slug, room: ["conf-3-de"], _StaticGlossary({}), max_pending=3)
+    relay.offer("conf-3-floor", _caption("final", "first"))
+    await asyncio.sleep(0)  # "first" is being sent
+    relay.offer("conf-3-floor", _caption("final", "a"))
+    relay.offer("conf-3-floor", _caption("clear"))
+    relay.offer("conf-3-floor", _caption("final", "b"))
+    relay.offer("conf-3-floor", _caption("final", "c"))  # over the limit: the clear goes, not a final
+    gate.set()
+    await relay.idle()
+
+    assert sent == ["first", "a", "b", "c"]
+
+
+@pytest.mark.anyio
+async def test_a_failed_refresh_after_an_edit_does_not_empty_the_booth(monkeypatch):
+    from portal.websockets import manager as manager_module
+
+    async def failing_loader(_booth_id: str) -> BoothGlossary:
+        raise OperationalError("SELECT", {}, Exception())
+
+    sent: list[tuple[str, dict]] = []
+
+    async def broadcast(booth_id: str, message: dict) -> None:
+        sent.append((booth_id, message))
+
+    monkeypatch.setattr(manager_module, "glossary_cache", GlossaryCache(loader=failing_loader))
+    monkeypatch.setattr(manager_module.manager, "booth_ids_in_room", lambda slug, room: ["conf-1-de"])
+    monkeypatch.setattr(manager_module.manager, "broadcast", broadcast)
+
+    await manager_module.notify_glossary_changed("conf", 1)
+
+    assert sent == []
+
+
+@pytest.mark.anyio
+async def test_a_slow_glossary_read_does_not_hold_up_the_join(monkeypatch):
+    from portal.websockets import manager as manager_module
+
+    release = asyncio.Event()
+
+    async def slow_loader(_booth_id: str) -> BoothGlossary:
+        await release.wait()
+        return BoothGlossary(terms=(_term(1, "keynote", "discours"),))
+
+    ws = _MockWebSocket()
+    monkeypatch.setattr(manager_module, "glossary_cache", GlossaryCache(loader=slow_loader))
+    monkeypatch.setattr(manager_module, "JOIN_GLOSSARY_TIMEOUT", 0.05)
+    monkeypatch.setattr(manager_module.manager, "get_session", lambda _ws: _booth_session("conf-1-de"))
+
+    joined_glossary = await manager_module._join_glossary(ws, "conf-1-de")
+    assert joined_glossary["terms"] == []  # the join went out without waiting
+
+    release.set()
+    for _ in range(20):
+        if ws.sent:
+            break
+        await asyncio.sleep(0.01)
+    assert ws.sent and ws.sent[0]["type"] == "booth:glossary"
+    assert ws.sent[0]["terms"][0]["target_term"] == "discours"
