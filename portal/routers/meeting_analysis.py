@@ -1,11 +1,9 @@
 from __future__ import annotations
 
-from collections import defaultdict
-from dataclasses import dataclass
+from urllib.parse import urlencode
 
 from fastapi import APIRouter, Depends, Form, HTTPException, Request, status
 from fastapi.responses import JSONResponse, Response
-from sqlalchemy import func, select
 from sqlalchemy.exc import IntegrityError
 
 from portal.auth import get_access_flags, require_admin_csrf, require_event_owner, require_owner_or_coordinator
@@ -14,23 +12,41 @@ from portal.database import (
     get_event_by_id,
     get_meeting_report,
     get_session,
-    list_booths_for_room,
     list_meeting_reports,
 )
-from portal.meeting_analysis.constants import IN_PROGRESS, PROVIDER_LABELS, STATUS_DONE, STATUS_PENDING, model_for
+from portal.meeting_analysis.channels import (
+    Channel,
+    list_channels,
+    session_choice,
+    translated_lines,
+    translation_languages,
+)
+from portal.meeting_analysis.constants import (
+    IN_PROGRESS,
+    PROVIDER_LABELS,
+    STATUS_DONE,
+    STATUS_PENDING,
+    STATUS_QUEUED,
+    model_for,
+)
 from portal.meeting_analysis.export import report_markdown
 from portal.meeting_analysis.prompts import format_offset, transcript_lines
 from portal.meeting_analysis.schema import load_sections
-from portal.meeting_analysis.sessions import Session, describe_range, split_sessions
-from portal.meeting_analysis.worker import mark_interrupted_reports, session_filter, start_analysis
-from portal.models import MeetingReport, TranscriptSegment
+from portal.meeting_analysis.sessions import describe_range
+from portal.meeting_analysis.worker import (
+    mark_interrupted_reports,
+    report_lines,
+    room_busy,
+    start_analysis,
+    start_batch,
+)
+from portal.models import MeetingReport
+from portal.room_setup import language_name
 from portal.routers.admin import room_in_event, templates
 from portal.utils import safe_redirect, verify_same_origin
 from portal.workspace_routing import management_url
 
 router = APIRouter()
-
-FLOOR = "floor"
 
 
 class _Refused(Exception):
@@ -39,47 +55,7 @@ class _Refused(Exception):
         self.reason = reason
 
 
-@dataclass(frozen=True)
-class Channel:
-    id: str
-    label: str
-    language_code: str
-    sessions: list[Session]
-
-
-async def _channels(session, room) -> list[Channel]:
-    rows: dict[str, list] = defaultdict(list)
-    for language_code, segment_id, created_at in await session.execute(
-        select(TranscriptSegment.language_code, TranscriptSegment.id, TranscriptSegment.created_at)
-        .where(TranscriptSegment.room_id == room.id)
-        .order_by(TranscriptSegment.created_at, TranscriptSegment.id)
-    ):
-        rows[language_code].append((segment_id, created_at))
-    channels = []
-    if rows.get(FLOOR):
-        channels.append(Channel(FLOOR, "Floor audio", room.floor_language_code or FLOOR, split_sessions(rows[FLOOR])))
-    for booth in await list_booths_for_room(session, room.id):
-        if rows.get(booth.language_code):
-            channels.append(
-                Channel(
-                    booth.language_code,
-                    f"{booth.language_name} booth",
-                    booth.language_code,
-                    split_sessions(rows[booth.language_code]),
-                )
-            )
-    return channels
-
-
-def _session_choice(channels: list[Channel], choice: str) -> tuple[Channel, Session] | None:
-    channel_id, _, first_id = choice.partition(":")
-    channel = next((c for c in channels if c.id == channel_id), None)
-    if channel is None:
-        return None
-    if not first_id:
-        return channel, channel.sessions[0]
-    stretch = next((s for s in channel.sessions if str(s.first_id) == first_id), None)
-    return (channel, stretch) if stretch else None
+__all__ = ["Channel", "router"]
 
 
 WORDS_PER_MINUTE = 200
@@ -117,7 +93,8 @@ async def room_analysis_page(request: Request, event_id: int, room_id: int):
         room = await room_in_event(session, event_id, room_id)
         await mark_interrupted_reports(session, room_id)
         reports = await list_meeting_reports(session, room_id)
-        channels = await _channels(session, room)
+        channels = await list_channels(session, room)
+        languages = await translation_languages(session, room)
     admin_flags = await get_access_flags(request, event_id=event_id, room_id=room_id)
     return templates.TemplateResponse(
         request=request,
@@ -126,6 +103,7 @@ async def room_analysis_page(request: Request, event_id: int, room_id: int):
             "event": event,
             "room": room,
             "channels": channels,
+            "languages": languages,
             "describe_range": describe_range,
             "reports": [_report_view(report) for report in reports],
             "in_progress": any(report.status in IN_PROGRESS for report in reports),
@@ -143,22 +121,34 @@ async def room_analysis_page(request: Request, event_id: int, room_id: int):
     dependencies=[Depends(require_event_owner), Depends(require_admin_csrf)],
 )
 async def room_analysis_generate(
-    request: Request, event_id: int, room_id: int, channel: str = Form(""), stretch: str = Form("", alias="session")
+    request: Request,
+    event_id: int,
+    room_id: int,
+    channel: str = Form(""),
+    stretch: str = Form("", alias="session"),
+    language: str = Form(""),
 ):
     if not verify_same_origin(request):
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Invalid request origin.")
     page = f"events/{event_id}/rooms/{room_id}/analysis/"
+    query = {"panel": "1"} if request.query_params.get("panel") == "1" else {}
     try:
-        report_id = await _create_report(event_id, room_id, stretch or channel)
+        report_ids = await _create_reports(event_id, room_id, stretch or channel, language.strip())
     except IntegrityError:
-        return safe_redirect(url=management_url(request, f"{page}?error=busy"), status_code=303)
+        query["error"] = "busy"
     except _Refused as refused:
-        return safe_redirect(url=management_url(request, f"{page}?error={refused.reason}"), status_code=303)
-    start_analysis(report_id)
+        query["error"] = refused.reason
+    else:
+        if len(report_ids) == 1:
+            start_analysis(report_ids[0])
+        else:
+            start_batch(report_ids)
+    if query:
+        page += "?" + urlencode(query)
     return safe_redirect(url=management_url(request, page), status_code=status.HTTP_303_SEE_OTHER)
 
 
-async def _create_report(event_id: int, room_id: int, choice: str) -> int:
+async def _create_reports(event_id: int, room_id: int, choice: str, language: str = "") -> list[int]:
     async with get_session() as session:
         event = await get_event_by_id(session, event_id)
         if event is None:
@@ -167,31 +157,40 @@ async def _create_report(event_id: int, room_id: int, choice: str) -> int:
         if not event.meeting_analysis_enabled:
             raise _Refused("disabled")
         await mark_interrupted_reports(session, room_id)
-        busy = await session.scalar(
-            select(func.count())
-            .select_from(MeetingReport)
-            .where(MeetingReport.room_id == room_id, MeetingReport.status.in_(IN_PROGRESS))
-        )
-        if busy:
+        if await room_busy(session, room_id):
             raise _Refused("busy")
-        picked = _session_choice(await _channels(session, room), choice)
+        picked = session_choice(await list_channels(session, room), choice)
         if picked is None:
             raise _Refused("channel")
         chosen, stretch = picked
-        report = await create_meeting_report(
-            session,
-            event_id=event_id,
-            room_id=room_id,
-            channel_id=chosen.id,
-            channel_label=chosen.label,
-            language_code=chosen.language_code,
-            provider=event.meeting_analysis_provider,
-            model=model_for(event.meeting_analysis_provider, event.meeting_analysis_model),
-            status=STATUS_PENDING,
-            session_started_at=stretch.started_at,
-            session_ended_at=stretch.ended_at,
-        )
-        return report.id
+        languages = [language]
+        if language == "*":
+            languages = [""]
+            for code, _ in await translation_languages(session, room):
+                if await translated_lines(session, room, chosen, stretch, code):
+                    languages.append(code)
+        elif language and not await translated_lines(session, room, chosen, stretch, language):
+            raise _Refused("language")
+        ids = []
+        for language in languages:
+            label = f"{chosen.label} ({language_name(language)} translation)" if language else chosen.label
+            language_code = language or chosen.language_code
+            report = await create_meeting_report(
+                session,
+                event_id=event_id,
+                room_id=room_id,
+                channel_id=chosen.id,
+                channel_label=label[:200],
+                language_code=language_code,
+                transcript_language=language or None,
+                provider=event.meeting_analysis_provider,
+                model=model_for(event.meeting_analysis_provider, event.meeting_analysis_model),
+                status=STATUS_QUEUED if ids else STATUS_PENDING,
+                session_started_at=stretch.started_at,
+                session_ended_at=stretch.ended_at,
+            )
+            ids.append(report.id)
+        return ids
 
 
 @router.get(
@@ -208,15 +207,12 @@ async def room_analysis_report(request: Request, event_id: int, room_id: int, re
         report = await _room_report(session, event_id, room_id, report_id)
         segments = []
         if report.status == STATUS_DONE and report.last_segment_id is not None:
-            segments = (
-                await session.scalars(
-                    select(TranscriptSegment)
-                    .where(*session_filter(report, covered_only=True))
-                    .order_by(TranscriptSegment.created_at, TranscriptSegment.id)
-                )
-            ).all()
+            segments = await report_lines(session, report, covered_only=True)
     admin_flags = await get_access_flags(request, event_id=event_id, room_id=room_id)
-    transcript = [(format_offset(line.offset_seconds), line.text) for line in transcript_lines(segments)]
+    transcript = [
+        (format_offset(line.offset_seconds), line.text)
+        for line in transcript_lines(segments, report.session_started_at)
+    ]
     return templates.TemplateResponse(
         request=request,
         name="admin/room_analysis_report.html",
