@@ -64,6 +64,12 @@
     </div>
     <p id='sender-level' class='program-sender-level' data-level='none'>Start a sound check to see the input level.</p>
 
+    {% if room.floor_source == 'program_ingest' and room.program_ingest_mode in ('rtmps', 'rtmps_relay') %}
+    <label id='sender-switch-label'>
+      <input type='checkbox' id='sender-switch' value='{{ room.program_ingest_mode }}'>
+      Switch this room from {{ 'YouTube relay' if room.program_ingest_mode == 'rtmps_relay' else 'RTMPS ingest' }} to browser audio and retire its encoder key when I start sending. Stop any live encoder first.
+    </label>
+    {% endif %}
     <div class='program-sender-actions'>
       <button type='button' class='btn btn-primary' id='sender-start'>Start sending</button>
       <button type='button' class='btn btn-outline' id='sender-mute' hidden aria-pressed='false'>Mute</button>
