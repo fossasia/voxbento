@@ -1203,3 +1203,28 @@ label {
 .portal-footer .footer-links a:hover {
   text-decoration: underline;
 }
+
+@media (prefers-reduced-motion: reduce) {
+  .live-badge.on .live-dot,
+  .live-badge.standby .live-dot,
+  .header-btn--handover.state-flash-yellow {
+    animation: none !important;
+  }
+
+  .header-btn--handover.state-flash-yellow {
+    background: var(--vb-color-warning);
+    border-color: var(--vb-color-warning-text);
+    box-shadow: 0 0 0 2px color-mix(in srgb, var(--vb-color-warning) 50%, transparent);
+  }
+
+  .booth-layout,
+  .booth-layout *,
+  .booth-layout *::before,
+  .booth-layout *::after,
+  .toast,
+  .toast * {
+    transition-duration: 0.01ms !important;
+  }
+}
+
+
