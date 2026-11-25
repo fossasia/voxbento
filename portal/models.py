@@ -129,6 +129,8 @@ class Room(Base):
     display_name: Mapped[str] = mapped_column(String(200))
     eventyay_room_id: Mapped[str | None] = mapped_column(String(200), nullable=True, default=None)
     jitsi_url: Mapped[str | None] = mapped_column(String(500), nullable=True, default=None)
+    monitor_floor_enabled: Mapped[bool] = mapped_column(Boolean, default=True, server_default=sa.true())
+    monitor_meeting_enabled: Mapped[bool] = mapped_column(Boolean, default=True, server_default=sa.true())
     relay_booth_id: Mapped[int | None] = mapped_column(
         ForeignKey("booths.id", ondelete="SET NULL"), nullable=True, default=None
     )

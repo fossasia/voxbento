@@ -36,6 +36,7 @@ class Settings(BaseSettings):
     # http://{jitsi_domain}. Set to https://... for production HTTPS.
     jitsi_base_url: str = ""
     jitsi_internal_base: str = ""
+    mediamtx_hls_base: str = "/hls"
     mediamtx_whip_base: str = "http://localhost:8889"
     # MediaMTX Control API (port 9997). Used to dynamically create named
     # paths with alwaysAvailable so WHEP readers survive publisher handoffs.

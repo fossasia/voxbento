@@ -30,6 +30,7 @@ services:
       # Jitsi stable-11146+ serves HTTPS on the unprivileged container port 8443.
       JITSI_INTERNAL_BASE: "https://jitsi-web:8443"
       # Browser-facing URLs — must be reachable from the user's machine
+      MEDIAMTX_HLS_BASE: "${MEDIAMTX_HLS_BASE:-/hls}"
       MEDIAMTX_WHIP_BASE: "${MEDIAMTX_WHIP_BASE:-http://localhost:8889}"
       FLOOR_BOT_BASE: "http://floor-bot:8080"
       MEDIAMTX_AUTH_HOOK_SECRET: "${MEDIAMTX_AUTH_HOOK_SECRET:-}"

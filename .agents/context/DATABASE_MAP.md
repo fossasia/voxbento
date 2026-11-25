@@ -68,6 +68,7 @@ Cascade: deletes rooms + booths when event is deleted.
 | `floor_translation_enabled` | Boolean | Default False |
 | `floor_translation_provider` | String(50) nullable | — |
 | `floor_translation_model` | String(100) nullable | — |
+| `monitor_floor_enabled`, `monitor_meeting_enabled` | Boolean | Room Settings controls for interpreter monitor choices. Both default on (migration 049). |
 | `floor_source_language_code` | String(20) | Default `'en'` |
 | `floor_tts_enabled` | Boolean | Default False; controls whether TTS is generated for floor audio translations |
 | `floor_tts_provider` | String(20) | Default `'deepgram'`; TTS engine — `'deepgram'` (cloud) or `'supertonic'` (self-hosted ONNX) |

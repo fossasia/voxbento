@@ -274,3 +274,7 @@ then set the feature flag false. Keep the floor authentication boundary and
 private ports; do not restore anonymous public floor publishing. Migration 025
 supports downgrade, but back up first: downgrade removes program configuration
 and sequence data.
+
+### Interpreter floor monitoring
+
+Program ingest rooms open the interpreter booth on **Room floor audio**. WHIP uses the room’s WHEP feed. RTMPS uses the MediaMTX HLS player at the browser-facing `MEDIAMTX_HLS_BASE` (default `/hls` through Caddy). For local development without Caddy, set it to `http://localhost:8888`. Reload an open booth after changing the room’s ingest transport.

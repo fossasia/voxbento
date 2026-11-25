@@ -48,7 +48,7 @@ const state = {
   handoffInitiatorId: null,
   /** Track whether booth audio WHEP has been auto-started for passive */
   boothAudioAutoStarted: false,
-  /** The Jitsi monitor is loaded once; rejoining after a reconnect keeps it. */
+  /** A booth reconnect keeps the selected floor monitor playing. */
   monitoringStarted: false,
   /** Set when the page is closing or the server ended the session for good. */
   stopReconnecting: false,
@@ -77,7 +77,6 @@ const elements = {
   handoverAnnouncer: document.getElementById('handover-announcer'),
   liveBadge: document.getElementById('live-badge'),
   liveBadgeText: document.getElementById('live-badge-text'),
-  passRelay: document.getElementById('pass-relay'),
   relayAudio: document.getElementById('relay-audio'),
   relayDeviceSelect: document.getElementById('relay-device-select'),
   showVirtualRelayDevices: document.getElementById('show-virtual-relay-devices'),
@@ -342,10 +341,6 @@ function bindEventHandlers() {
   elements.toggleMic.addEventListener('click', async () => {
     await toggleMicMute()
   })
-
-  if (elements.passRelay) {
-    elements.passRelay.addEventListener('click', toggleRelayAudio)
-  }
 
   if (elements.relayDeviceSelect && elements.relayAudio) {
     elements.relayDeviceSelect.addEventListener('change', async () => {
@@ -706,7 +701,49 @@ function joinBooth() {
   wsSend(payload)
 }
 
+const floorMonitor = typeof createWhepClient === 'function' ? createWhepClient() : null
+
 function joinMonitoringFeed() {
+  const selector = document.getElementById('monitor-source')
+  if (!selector) return
+  selector.disabled = false
+  selector.onchange = joinMonitoringFeed
+  const roomAudio = selector.value === 'floor'
+  const useMeeting = selector.value === 'jitsi'
+  const useRelay = selector.value === 'relay'
+  if (relayListening && !useRelay) setRelayListening(false)
+  document.getElementById('meeting-player').classList.toggle('hidden', !useMeeting)
+  document.getElementById('floor-player').classList.toggle('hidden', !roomAudio)
+  const hlsPlayer = document.getElementById('floor-hls')
+  if (roomAudio) {
+    elements.jitsiFrame.removeAttribute('src')
+    if (hlsPlayer) {
+      hlsPlayer.src = hlsPlayer.dataset.url
+      return
+    }
+    const audio = document.getElementById('floor-audio')
+    const status = document.getElementById('floor-status')
+    status.textContent = 'Connecting to room audio…'
+    floorMonitor.start({
+      whepUrl: audio.dataset.url,
+      audioEl: audio,
+      onState: (st) => {
+        let message = 'Connecting to room audio…'
+        if (st.audioActive) message = 'Listening to room audio'
+        else if (st.playbackBlocked) message = 'Press play to hear room audio'
+        else if (st.retrying) message = 'Waiting for the room floor feed…'
+        setTextIfChanged(status, message)
+      },
+    })
+    return
+  }
+  hlsPlayer?.removeAttribute('src')
+  floorMonitor?.stop()
+  if (!useMeeting) {
+    elements.jitsiFrame.removeAttribute('src')
+    if (useRelay && !relayListening) setRelayListening(true)
+    return
+  }
   try {
     const rawUrl = portal.dataset.jitsiUrl
     if (!rawUrl) {
@@ -837,21 +874,12 @@ const boothWhep = typeof createWhepClient === 'function' ? createWhepClient() : 
 // ── Relay Listening ───────────────────────────────────────────────────────────
 
 let relayListening = false
-let relayDefaultText = ''
 
-function toggleRelayAudio() {
+function setRelayListening(listening) {
   if (!state.relayWhepUrl) return
-  
-  if (!relayDefaultText && elements.passRelay) {
-    relayDefaultText = elements.passRelay.textContent.trim()
-  }
 
-  relayListening = !relayListening
+  relayListening = listening
   if (relayListening) {
-    if (elements.passRelay) {
-      elements.passRelay.classList.add('btn-primary')
-      elements.passRelay.textContent = 'Stop Listening to Relay'
-    }
     if (elements.relayStatus) elements.relayStatus.textContent = 'Connecting...'
     relayWhep.start({
       whepUrl: state.relayWhepUrl,
@@ -871,10 +899,6 @@ function toggleRelayAudio() {
       }
     })
   } else {
-    if (elements.passRelay) {
-      elements.passRelay.classList.remove('btn-primary')
-      elements.passRelay.textContent = relayDefaultText
-    }
     if (elements.relayStatus) {
       elements.relayStatus.textContent = 'Not Listening'
       elements.relayStatus.className = 'status-badge'
@@ -1451,7 +1475,6 @@ function renderRoleControls() {
 
   if (elements.handoverBtn) elements.handoverBtn.style.display = canGo ? '' : 'none'
   if (elements.toggleMic) elements.toggleMic.style.display = canGo ? '' : 'none'
-  if (elements.passRelay) elements.passRelay.style.display = canGo ? '' : 'none'
 }
 
 function renderParticipants() {
