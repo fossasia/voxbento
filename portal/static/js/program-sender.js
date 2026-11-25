@@ -344,7 +344,10 @@ function stopMeter() {
 
 function releaseHeaders() {
   // Bind the release to this session's secret so the server ignores a stale DELETE.
-  return sessionSecret ? {'X-Program-Session': sessionSecret} : {};
+  return {
+    'X-CSRF-Token': document.querySelector('meta[name="csrf-token"]')?.content || '',
+    ...(sessionSecret ? {'X-Program-Session': sessionSecret} : {}),
+  };
 }
 
 class SenderError extends Error {
@@ -359,12 +362,15 @@ class SourceError extends Error {}
 class StaleConnect extends Error {}
 
 /** @throws {SenderError} when the server refuses a session */
-async function mintSession() {
+async function mintSession(switchFrom) {
   // No sync_offset_ms: the server keeps the room's saved YouTube sync delay.
   const response = await fetch(card.dataset.mintUrl, {
     method: 'POST',
-    headers: {'Content-Type': 'application/json'},
-    body: '{}',
+    headers: {
+      'Content-Type': 'application/json',
+      'X-CSRF-Token': document.querySelector('meta[name="csrf-token"]')?.content || '',
+    },
+    body: JSON.stringify({switch_from: switchFrom}),
     cache: 'no-store',
   });
   let data;
@@ -480,7 +486,7 @@ async function releaseSession() {
 
 async function discardSession(secret) {
   try {
-    await fetch(card.dataset.mintUrl, {method: 'DELETE', cache: 'no-store', keepalive: true, headers: {'X-Program-Session': secret}});
+    await fetch(card.dataset.mintUrl, {method: 'DELETE', cache: 'no-store', keepalive: true, headers: {'X-CSRF-Token': document.querySelector('meta[name="csrf-token"]')?.content || '', 'X-Program-Session': secret}});
   } catch (error) {
     console.warn('Could not release the previous sender session', error);
   }
@@ -494,9 +500,10 @@ function scheduleReconnect(delayMs) {
   }, delayMs);
 }
 
-async function connect() {
+async function connect(switchFrom) {
   if (!sending || connecting) return;
   const gen = generation;
+  let switchPending = Boolean(switchFrom);
   connecting = true;
   if (attempt > 0) setState('reconnecting', `Connection dropped. Reconnecting (attempt ${attempt})…`);
   else setState('connecting', 'Connecting to the floor…');
@@ -504,7 +511,9 @@ async function connect() {
     // Drop the stale WHIP source and release the old session so the retry claims the floor cleanly.
     await releaseSession();
     if (gen !== generation) return;
-    const session = await mintSession();
+    const session = await mintSession(switchFrom);
+    switchPending = false;
+    if (switchFrom) document.getElementById('sender-switch-label').hidden = true;
     if (gen !== generation) {
       // Stopped while minting: give back the session nobody will use.
       await discardSession(session.secret);
@@ -525,6 +534,11 @@ async function connect() {
         : error.message;
       await stop(true);
       setState('error', hint);
+      return;
+    }
+    if (switchPending) {
+      await stop(true);
+      setState('error', `${error.message} Click Start sending to try again.`);
       return;
     }
     attempt += 1;
@@ -557,6 +571,13 @@ async function start() {
     setState('error', 'Confirm you have the right to interpret and caption this stream.');
     return;
   }
+  const switchInput = document.getElementById('sender-switch');
+  const switchRequired = switchInput && !document.getElementById('sender-switch-label').hidden;
+  if (switchRequired && !switchInput.checked) {
+    switchInput.focus();
+    setState('error', 'Confirm the room audio switch before starting.');
+    return;
+  }
   startButton.disabled = true;
   setState('connecting', source === SOURCES.TAB ? 'Waiting for you to pick the tab…' : 'Requesting the audio input…');
   try {
@@ -577,7 +598,7 @@ async function start() {
   recordButton.disabled = true;
   testButton.disabled = true;
   keepAwake();
-  await connect();
+  await connect(switchRequired ? switchInput.value : undefined);
 }
 
 async function stop(keepState) {

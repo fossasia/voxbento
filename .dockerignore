@@ -8,3 +8,4 @@ hls-output/
 *.log
 mediamtx
 mediamtx_v*
+.python-version

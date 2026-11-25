@@ -198,11 +198,21 @@ var translationLangSelect = document.getElementById("translation-lang-select");
 
 var audioEl = document.getElementById("audio-player");
 var statusEl = document.getElementById("status");
+var tapToListenBtn = document.getElementById("tap-to-listen-btn");
+var whepPlaybackBlocked = false;
 var captionsWs = null;
 var captionsRetryTimer = null;
 var captionsRetryDelayMs = 1000;
 
 var ttsWs = null;
+var ttsRetryTimer = null;
+var ttsRetryDelayMs = 1000;
+// The badge the AI voice shows while it is what the listener hears, so it can
+// come back after a reconnect. Null when the badge belongs to WebRTC.
+var ttsLiveStatus = null;
+// Set while the badge says the AI voice is reconnecting or was refused, so
+// WebRTC updates don't replace it with a Live the listener can't hear.
+var ttsStatusHeld = false;
 var audioCtx = null;
 var nextStartTime = 0;
 var currentAudioDelayMs = 0;
@@ -237,9 +247,35 @@ function showAudioPlayer(show) {
   }
 }
 
+function ttsPlaybackBlocked() {
+  return ttsWs !== null && audioCtx !== null && audioCtx.state === "suspended";
+}
+
+function updateTapToListen() {
+  if (tapToListenBtn) {
+    tapToListenBtn.hidden = !(whepPlaybackBlocked || ttsPlaybackBlocked());
+  }
+}
+
+if (tapToListenBtn) {
+  tapToListenBtn.addEventListener("click", function () {
+    WhepListener.resume();
+    if (audioCtx && audioCtx.state === "suspended") {
+      audioCtx.resume().then(updateTapToListen);
+    }
+  });
+}
+
 function onState(s) {
-  whepAudioLive = s.peerConnection === "connected" && s.audioActive;
-  if (whepAudioLive) {
+  whepPlaybackBlocked = Boolean(s.playbackBlocked) && s.peerConnection === "connected";
+  updateTapToListen();
+  whepAudioLive = s.peerConnection === "connected" && s.audioActive && !whepPlaybackBlocked;
+  if (ttsStatusHeld) {
+    return;
+  }
+  if (whepPlaybackBlocked) {
+    setStatus("Ready — tap to listen", "waiting");
+  } else if (whepAudioLive) {
     setStatus("Live (WebRTC)", "live");
     showAudioPlayer(true);
   } else if (s.peerConnection === "connecting" || s.ice === "checking") {
@@ -319,6 +355,8 @@ function stopCurrentStream() {
   }
   showAudioPlayer(false);
   audioEl.muted = false;
+  whepPlaybackBlocked = false;
+  updateTapToListen();
   resetCaptions();
 
   setStatus("Waiting for selection...", "waiting");
@@ -329,6 +367,7 @@ function startTtsWs(roomId, langCode, boothId, audioDelayMs) {
   stopTtsWs();
   if (!audioCtx) {
     audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+    audioCtx.onstatechange = updateTapToListen;
   }
   if (audioCtx.state === "suspended") {
     audioCtx.resume();
@@ -344,6 +383,13 @@ function startTtsWs(roomId, langCode, boothId, audioDelayMs) {
     comfortNoiseLevelDb: -40,
   });
 
+  ttsRetryDelayMs = 1000;
+  openTtsWs(roomId, langCode, boothId);
+}
+
+// Kept apart from startTtsWs so a reconnect leaves the audio context and the
+// speech already scheduled on it alone.
+function openTtsWs(roomId, langCode, boothId) {
   var wsProto = window.location.protocol === "https:" ? "wss:" : "ws:";
   var wsUrl =
     wsProto +
@@ -355,10 +401,14 @@ function startTtsWs(roomId, langCode, boothId, audioDelayMs) {
     langCode +
     "/" +
     boothId;
-  ttsWs = new WebSocket(wsUrl);
-  ttsWs.binaryType = "arraybuffer";
+  var ws = new WebSocket(wsUrl);
+  ttsWs = ws;
+  ws.binaryType = "arraybuffer";
+  updateTapToListen();
 
-  ttsWs.onmessage = function (event) {
+  ws.onmessage = function (event) {
+    // Reset on data rather than on open: a refused socket opens before it closes.
+    ttsRetryDelayMs = 1000;
     if (event.data instanceof ArrayBuffer) {
       try {
         var frame = window.TTSParser.parseFrame(event.data);
@@ -382,6 +432,11 @@ function startTtsWs(roomId, langCode, boothId, audioDelayMs) {
           caption: frame.header.caption || "",
           translation: frame.header.translation || "",
           error: frame.header.error || (frame.header.audio_pending === false && !frame.audioBytes.byteLength ? 'no_audio' : null),
+          // The translator ran and had nothing to say, or the segment was skipped so the language could
+          // catch up with the speaker ("stale"): the segment is finished, with nothing to show.
+          empty:
+            !frame.header.translation &&
+            (frame.header.error === 'stale' || (!frame.header.error && frame.header.audio_pending === false)),
           audioBuffer: null,
           receivedAt: segmentStore[seq]?.receivedAt || Date.now(),
         };
@@ -432,12 +487,64 @@ function startTtsWs(roomId, langCode, boothId, audioDelayMs) {
     }
   };
 
-  ttsWs.onclose = function () {
-    // closed
+  ws.onopen = function () {
+    // A refused socket opens and closes at once, so wait before calling it live.
+    setTimeout(function () {
+      if (ttsWs !== ws || !ttsLiveStatus) return;
+      ttsStatusHeld = false;
+      setStatus(ttsLiveStatus, "live");
+    }, 500);
+  };
+  ws.onclose = function (event) {
+    // stopTtsWs() clears ttsWs before the close event fires, so this only
+    // reconnects sockets that dropped on their own. 4001/4003 are auth rejections,
+    // which retrying won't fix, so the listener is told instead of left in silence.
+    if (ttsWs !== ws) return;
+    ttsWs = null;
+    updateTapToListen();
+    if (event.code === 4001 || event.code === 4003) {
+      ttsStatusHeld = true;
+      setStatus("Access ended. Reload the page to join again.", "error");
+      return;
+    }
+    if (ttsLiveStatus) {
+      ttsStatusHeld = true;
+      setStatus("Reconnecting...", "recovering");
+    }
+    ttsRetryTimer = setTimeout(function () {
+      ttsRetryTimer = null;
+      // Segments sent while the socket was down never arrive, and a restarted
+      // server numbers a booth's segments again from the start, so the queue
+      // starts over from the first segment the new socket gets.
+      speechDelivery.reset();
+      resetSegmentQueue();
+      openTtsWs(roomId, langCode, boothId);
+    }, ttsRetryDelayMs);
+    ttsRetryDelayMs = Math.min(ttsRetryDelayMs * 2, 15000);
   };
 }
 
+function resetSegmentQueue() {
+  if (seqWaitTimer) {
+    clearTimeout(seqWaitTimer);
+    seqWaitTimer = null;
+  }
+  if (fallbackQueueTimer) {
+    clearTimeout(fallbackQueueTimer);
+    fallbackQueueTimer = null;
+  }
+  segmentStore = Object.create(null);
+  expectedSeq = null;
+  isSegmentPlaying = false;
+}
+
 function stopTtsWs() {
+  ttsLiveStatus = null;
+  ttsStatusHeld = false;
+  if (ttsRetryTimer) {
+    clearTimeout(ttsRetryTimer);
+    ttsRetryTimer = null;
+  }
   if (ttsWs) {
     ttsWs.close();
     ttsWs = null;
@@ -662,14 +769,8 @@ function pumpSegmentQueue() {
   var isTranslationActive =
     Boolean(translationLangSelect.value) && mode !== "original";
   if (isTranslationActive) {
+    // Failed, pending or downloading translations show nothing; only real text renders.
     var tText = nextSeg.translation;
-    if (!tText && nextSeg.error === "pipeline_failed") {
-      tText = "(Translation failed)";
-    } else if (!tText && nextSeg.error === "model_downloading") {
-      tText = "(Downloading translation model...)";
-    } else if (!tText) {
-      tText = "(Translation pending...)";
-    }
     if (tText) {
       var fakeData = {
         type: "translation",
@@ -747,8 +848,8 @@ function finishSegmentWithDelay(seg, seqId) {
   var isTranslationActive =
     Boolean(translationLangSelect.value) && mode !== "original";
 
-  if (!isTranslationActive) {
-    // No translation, no TTS: advance immediately (it shouldn't be here in Original mode, but just in case)
+  if (!isTranslationActive || seg.empty) {
+    // Nothing to read or hear (no translation wanted, or an empty one): advance immediately.
     isSegmentPlaying = false;
     delete segmentStore[seqId];
     expectedSeq++;
@@ -1186,7 +1287,8 @@ function applyTtsOverlay() {
       var selOpt =
         translationLangSelect.options[translationLangSelect.selectedIndex];
       var langName = selOpt ? selOpt.text : "Translation";
-      setStatus("Live (" + langName + " TTS)", "live");
+      ttsLiveStatus = "Live (" + langName + " TTS)";
+      setStatus(ttsLiveStatus, "live");
     } else {
       audioEl.muted = false;
       if (whepAudioLive) {
@@ -1209,3 +1311,56 @@ window.addEventListener("beforeunload", function () {
 });
 
 window.setInterval(applyCurrentRoomAudioDelay, 3000);
+
+function selectOption(select, matches) {
+  var index = Array.from(select.options).findIndex(matches);
+  if (index < 1) return false;
+  select.selectedIndex = index;
+  select.dispatchEvent(new Event("change"));
+  return true;
+}
+
+function syncListenerLink() {
+  var url = new URL(window.location.href);
+  url.searchParams.delete("code");
+  url.searchParams.delete("room");
+  url.searchParams.delete("lang");
+  if (roomSelect.value) {
+    url.searchParams.set("room", roomSelect.value);
+    var selectedOpt = languageSelect.options[languageSelect.selectedIndex];
+    if (selectedOpt && selectedOpt.dataset.languageCode) {
+      url.searchParams.set("lang", selectedOpt.dataset.languageCode);
+    }
+  }
+  window.history.replaceState(null, "", url);
+}
+
+function applyListenerLink() {
+  var params = new URLSearchParams(window.location.search);
+  var requestedRoom = params.get("room");
+  var requestedLang = (params.get("lang") || "").toLowerCase();
+  var rooms = Array.from(roomSelect.options).filter(function (opt) {
+    return opt.value;
+  });
+
+  var roomSelected =
+    Boolean(requestedRoom) &&
+    selectOption(roomSelect, function (opt) {
+      return opt.value === requestedRoom;
+    });
+  if (!roomSelected && rooms.length === 1) {
+    roomSelected = selectOption(roomSelect, function (opt) {
+      return opt.value === rooms[0].value;
+    });
+  }
+  if (roomSelected && requestedLang) {
+    selectOption(languageSelect, function (opt) {
+      return opt.dataset.languageCode === requestedLang;
+    });
+  }
+}
+
+applyListenerLink();
+syncListenerLink();
+roomSelect.addEventListener("change", syncListenerLink);
+languageSelect.addEventListener("change", syncListenerLink);

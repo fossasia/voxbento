@@ -12,6 +12,7 @@ import hashlib
 import hmac
 import logging
 import re
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from urllib.parse import urlsplit
@@ -24,8 +25,10 @@ from portal.outage_log import OutageLog
 
 logger = logging.getLogger(__name__)
 WHIP_MODE = "whip"
-RELAY_MODE = "rtmps_relay"
-MODES = (WHIP_MODE, RELAY_MODE)
+RTMPS_MODE = "rtmps"  # VoxBento is an extra RTMPS destination; YouTube is independent
+RELAY_MODE = "rtmps_relay"  # VoxBento forwards to YouTube (#749)
+RTMPS_MODES = (RTMPS_MODE, RELAY_MODE)
+MODES = (WHIP_MODE, RTMPS_MODE, RELAY_MODE)
 STREAM_KEY = re.compile(r"[A-Za-z0-9_-]{4,128}")
 RELAY_CONTROL_TIMEOUT = 3.0
 # MediaMTX track names for the documented H.264/AAC contribution contract.
@@ -162,7 +165,11 @@ async def start_relay(room_id: int, source: str, url: str) -> dict:
     return response.json()
 
 
-async def sync(wanted: dict[int, tuple[str, str]], relay_rooms: set[int]) -> None:
+async def sync(
+    wanted: dict[int, tuple[str, str]],
+    relay_rooms: set[int],
+    start_current: Callable[[int, str, str], Awaitable[dict | None]],
+) -> None:
     """Converge the relay service on ``wanted`` ({room_id: (source path, destination)}).
 
     Fails closed: relays beyond ``PROGRAM_RELAY_MAX`` are not started, relays for rooms
@@ -196,7 +203,9 @@ async def sync(wanted: dict[int, tuple[str, str]], relay_rooms: set[int]) -> Non
         current = live.get(str(room_id))
         try:
             if current is None or current.get("fingerprint") != fingerprint(source, url):
-                current = await start_relay(room_id, source, url)
+                current = await start_current(room_id, source, url)
+                if current is None:
+                    continue
         except Exception:  # noqa: BLE001
             relay_health[room_id] = RelayHealth(
                 "degraded", "Relay service rejected the request; retrying automatically."

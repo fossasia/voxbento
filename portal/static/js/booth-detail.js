@@ -1,9 +1,14 @@
-// Booth page (owner view): the model pickers and the translation language picker.
+// Booth page (owner view): the tabs, the model pickers and the translation language picker.
 // The language list and the saved choices come from the #booth-detail-config JSON block
 // (no inline script).
 
 import { initLangPicker } from './lang-picker.js';
 import { bindModelFilter } from './model-filter.js';
+import { initTabs } from './tabs.js';
+
+const root = document.getElementById('booth-detail');
+
+initTabs({ name: 'booth', storageKey: `voxbento:booth-tab:${root?.dataset.boothId}` });
 
 bindModelFilter(
   document.getElementById('transcription_provider'),
@@ -13,7 +18,7 @@ bindModelFilter(
 bindModelFilter(
   document.getElementById('translation_provider'),
   document.getElementById('translation_model'),
-  'transProvider',
+  'provider',
 );
 
 const configEl = document.getElementById('booth-detail-config');
