@@ -620,7 +620,7 @@ async function run() {
   ttsToggle.checked = true;
   ttsToggle.dispatchEvent(new Event('change'));
   choose(document.getElementById('translation-lang-select'), 'fr');
-  assert(Boolean(ttsSocket()) && ttsSocket().url.endsWith('/ws/tts/2/fr/demo-2-floor'), 'French speech opens the room TTS feed');
+  assert(Boolean(ttsSocket()) && ttsSocket().url.split('?')[0].endsWith('/ws/tts/2/fr/demo-2-floor'), 'French speech opens the room TTS feed');
 
   // Before the restart: sentence 1 plays; sentence 2's audio is still being synthesized.
   for (const stage of ['caption', 'text', 'audio']) sendFloorSegment(1, 'before-1', 'Before 1', 'Avant 1', stage);
@@ -910,6 +910,45 @@ async function run() {
   feedSockets().pop().onclose({ code: 1006 });
   assert(pendingTimers(1000) === 1, 'the translation-only feed still reconnects');
   assert(statusText() === 'Live (WebRTC + Translation)', 'a translation-only feed drop leaves the WebRTC badge alone, got "' + statusText() + '"');
+
+  console.log('\n── Non-destructive broadcast lock & resume (#1390) ──');
+  choose(roomSelect, '1');
+  choose(languageSelect, 'http://mtx/es/whep');
+  const capSock = captionsSocket();
+  assert(Boolean(capSock) && capSock.url.includes('replay=1'), 'captions socket opens with ?replay=1');
+
+  // Simulate booth going live
+  capSock.onmessage({ data: JSON.stringify({ type: 'booth:state', state: { ingest_status: 'connected', broadcast_unlocked: true } }) });
+  whepOpts.onState({ peerConnection: 'connected', ice: 'connected', audioActive: true });
+  assert(statusText() === 'Live (WebRTC)', 'booth unlocks and becomes live');
+  assert(roomSelect.value === '1', 'room selection is 1');
+  assert(languageSelect.value === 'http://mtx/es/whep', 'language selection is Spanish');
+
+  // Coordinator locks the booth
+  capSock.onmessage({ data: JSON.stringify({ type: 'booth:state', state: { ingest_status: 'connected', broadcast_unlocked: false } }) });
+  assert(roomSelect.value === '1', 'lock does not wipe roomSelect');
+  assert(languageSelect.value === 'http://mtx/es/whep', 'lock does not wipe languageSelect');
+  assert(!languageSelect.disabled, 'lock does not disable languageSelect');
+  assert(statusText().includes('locked by the organizers'), 'status shows waiting/locked message');
+
+  // Coordinator unlocks the booth again
+  capSock.onmessage({ data: JSON.stringify({ type: 'booth:state', state: { ingest_status: 'connected', broadcast_unlocked: true } }) });
+  whepOpts.onState({ peerConnection: 'connected', ice: 'connected', audioActive: true });
+  assert(statusText() === 'Live (WebRTC)', 'unlock automatically resumes live playback');
+
+  console.log('\n── Opt-in catch-up replay & stale partial suppression (#1390) ──');
+  // Replay message is rendered directly
+  capSock.onmessage({ data: JSON.stringify({ type: 'caption', status: 'final', seq: 42, segment_id: 'rep-42', text: 'Replayed sentence', replay: true }) });
+  const replayedBlock = document.getElementById('segment-seq-42');
+  assert(Boolean(replayedBlock) && replayedBlock.textContent.includes('Replayed sentence'), 'replay caption renders directly in history');
+
+  // Final caption suppresses subsequent late partial for the same segment_id
+  capSock.onmessage({ data: JSON.stringify({ type: 'caption', status: 'final', seq: 43, segment_id: 'seg-xyz', text: 'Final text for 43' }) });
+  assert(Boolean(document.getElementById('segment-seq-43')), 'final caption segment created');
+
+  // Late partial arrives with the finalized segment_id
+  capSock.onmessage({ data: JSON.stringify({ type: 'caption', status: 'partial', segment_id: 'seg-xyz', text: 'Late stale partial' }) });
+  assert(!document.getElementById('segment-seg-xyz'), 'stale partial does not create duplicate block');
 
   console.log('\n' + passed + ' passed, ' + failed + ' failed');
   process.exit(failed > 0 ? 1 : 0);

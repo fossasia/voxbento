@@ -110,11 +110,14 @@ document.getElementById("live-captions").addEventListener(
 
 jumpToLatestBtn.addEventListener("click", scrollCaptionsToLatest);
 
+var finalizedSegmentIds = new Set();
+
 function resetCaptions() {
   document.getElementById("caption-history").innerHTML = "";
   document.getElementById("caption-current").innerHTML = "";
   var waitingText = document.getElementById("waiting-text");
   if (waitingText) waitingText.classList.remove("listener-hidden");
+  finalizedSegmentIds.clear();
   scrollCaptionsToLatest();
 }
 
@@ -401,6 +404,8 @@ function openTtsWs(roomId, langCode, boothId) {
     langCode +
     "/" +
     boothId;
+  var sep = wsUrl.indexOf("?") === -1 ? "?" : "&";
+  wsUrl += sep + "replay=1";
   var ws = new WebSocket(wsUrl);
   ttsWs = ws;
   ws.binaryType = "arraybuffer";
@@ -412,10 +417,22 @@ function openTtsWs(roomId, langCode, boothId) {
     if (event.data instanceof ArrayBuffer) {
       try {
         var frame = window.TTSParser.parseFrame(event.data);
+        if (frame.header && frame.header.replay === true) {
+          if (frame.header.translation) {
+            renderItem({
+              type: "translation",
+              status: "final",
+              text: frame.header.translation,
+              language_code: langCode,
+              segment_id: "seq-" + frame.header.seq,
+            });
+          }
+          return;
+        }
         if (!event.programDelivered) {
           speechDelivery.schedule(frame.header, () => {
             if (ttsWs) ttsWs.onmessage({data: event.data, programDelivered: true});
-          });
+          }, currentAudioDelayMs);
           return;
         }
         var seq = frame.header.seq;
@@ -599,9 +616,10 @@ function startWhepAndCaptions(whepUrl, boothId, audioDelayMs) {
 function openCaptionsWs(boothId) {
   if (!boothId) return;
   var wsProto = window.location.protocol === "https:" ? "wss:" : "ws:";
-  var ws = new WebSocket(
-    wsProto + "//" + window.location.host + "/ws/captions/" + boothId,
-  );
+  var wsUrl = wsProto + "//" + window.location.host + "/ws/captions/" + boothId;
+  var sep = wsUrl.indexOf("?") === -1 ? "?" : "&";
+  wsUrl += sep + "replay=1";
+  var ws = new WebSocket(wsUrl);
   captionsWs = ws;
   ws.onmessage = handleCaptionsMessage;
   ws.onopen = function () {
@@ -872,16 +890,46 @@ function finishSegmentWithDelay(seg, seqId) {
 function handleCaptionsMessage(event) {
   try {
     var data = JSON.parse(event.data);
+    if (data.replay === true) {
+      var waitingTextEl = document.getElementById("waiting-text");
+      if (waitingTextEl) waitingTextEl.classList.add("listener-hidden");
+      var sid = data.seq
+        ? "seq-" + data.seq
+        : data.segment_id || "legacy-" + Date.now();
+      renderItem({
+        type: "caption",
+        status: "final",
+        text: data.text,
+        segment_id: sid,
+      });
+      return;
+    }
     if (!event.programDelivered && ['caption', 'translation', 'translated_caption'].includes(data.type)) {
-      captionDelivery.schedule(data, () => handleCaptionsMessage({data: event.data, programDelivered: true}));
+      captionDelivery.schedule(data, () => handleCaptionsMessage({data: event.data, programDelivered: true}), currentAudioDelayMs);
       return;
     }
     var waitingText = document.getElementById("waiting-text");
 
     if (data.type === "booth:state") {
       var bstate = data.state || {};
-      // If we were waiting for the broadcast to go live, start WHEP or TTS now.
-      // A locked booth stays silent for listeners even if ingest reports connected.
+      var wasUnlocked = lastBroadcastUnlocked === true;
+      var wasLocked = lastBroadcastUnlocked === false;
+      lastBroadcastUnlocked = bstate.broadcast_unlocked;
+
+      if (bstate.broadcast_unlocked === false) {
+        if (wasUnlocked) {
+          speechDelivery.reset();
+          resetSegmentQueue();
+          if (audioScheduler) {
+            audioScheduler.reset();
+          }
+          WhepListener.stop();
+          stopTtsWs();
+          setStatus("Broadcast is currently locked by the organizers — waiting for stream to resume...", "waiting");
+        }
+        return;
+      }
+
       if (
         bstate.ingest_status === "connected" &&
         bstate.broadcast_unlocked === true
@@ -893,6 +941,7 @@ function handleCaptionsMessage(event) {
           pendingAudioDelayMs = 0;
           pendingBoothId = null;
           startWhepStream(url, delayMs);
+          applyTtsOverlay();
         } else if (pendingTtsLang) {
           var plang = pendingTtsLang;
           var prid = pendingRoomId;
@@ -904,25 +953,21 @@ function handleCaptionsMessage(event) {
           pendingBoothId = null;
           startTtsWs(prid, plang, pBoothId, ttsDelayMs);
           setStatus("Live (TTS Audio)", "live");
+        } else if (wasLocked) {
+          var selectedOpt = languageSelect.options[languageSelect.selectedIndex];
+          var whepUrl = selectedOpt ? selectedOpt.value : null;
+          var boothObjId = selectedOpt ? selectedOpt.dataset.boothObjId : null;
+          var sourceData = boothObjId
+            ? boothsData.find((b) => b.id.toString() === boothObjId.toString())
+            : null;
+          var delayMs = normalizeAudioDelayMs(
+            sourceData ? sourceData.audio_delay_ms : 0,
+          );
+          if (whepUrl) {
+            startWhepStream(whepUrl, delayMs);
+          }
+          applyTtsOverlay();
         }
-      }
-      // Booths start locked, so only tear down when the organizers lock a
-      // booth that was unlocked (floor booths are never locked this way).
-      var wasUnlocked = lastBroadcastUnlocked === true;
-      lastBroadcastUnlocked = bstate.broadcast_unlocked;
-      if (wasUnlocked && bstate.broadcast_unlocked === false) {
-        stopCurrentStream();
-        setStatus("Broadcast is currently locked by the organizers.", "error");
-        roomSelect.value = "";
-        languageSelect.innerHTML =
-          '<option value="">-- Select Language --</option>';
-        languageSelect.disabled = true;
-        captionModeSelect.disabled = true;
-        captionModeSelect.value = "original";
-        translationLangSelect.innerHTML = "";
-        var transGroup = document.getElementById("translation-lang-group");
-        if (transGroup) transGroup.hidden = true;
-        applyCaptionMode();
       }
       return;
     }
@@ -932,7 +977,7 @@ function handleCaptionsMessage(event) {
 
       if (data.status === "partial") {
         var sid = data.segment_id;
-        if (sid) {
+        if (sid && !finalizedSegmentIds.has(sid)) {
           renderItem({
             type: "caption",
             status: "partial",
@@ -941,6 +986,12 @@ function handleCaptionsMessage(event) {
           });
         }
       } else if (data.status === "final") {
+        if (data.segment_id) {
+          finalizedSegmentIds.add(data.segment_id);
+          if (finalizedSegmentIds.size > 500) {
+            finalizedSegmentIds.delete(finalizedSegmentIds.values().next().value);
+          }
+        }
         if (expectedSeq === null && data.seq) expectedSeq = data.seq;
         var mode = captionModeSelect ? captionModeSelect.value : "original";
         var isTranslationActive =
@@ -1251,6 +1302,10 @@ languageSelect.addEventListener("change", function () {
 });
 
 function applyTtsOverlay() {
+  if (lastBroadcastUnlocked === false) {
+    stopTtsWs();
+    return;
+  }
   var selectedOpt = languageSelect.options[languageSelect.selectedIndex];
   var languageCode = selectedOpt ? selectedOpt.dataset.languageCode : null;
   var roomId = parseInt(roomSelect.value, 10);

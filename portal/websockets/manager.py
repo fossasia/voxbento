@@ -5,7 +5,7 @@ import json
 import logging
 import struct
 import time
-from collections import OrderedDict
+from collections import OrderedDict, deque
 from collections.abc import AsyncIterator, Awaitable, Callable
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
@@ -103,9 +103,7 @@ class ConnectionManager:
         """Inject an asynchronous batch membership checker."""
         self.membership_checker = checker
 
-    def set_token_checker(
-        self, checker: Callable[[str, set[str | int]], Awaitable[set[str | int]]] | None
-    ) -> None:
+    def set_token_checker(self, checker: Callable[[str, set[str | int]], Awaitable[set[str | int]]] | None) -> None:
         """Inject an asynchronous batch invite token checker."""
         self.token_checker = checker
 
@@ -143,7 +141,11 @@ class ConnectionManager:
         for room_sockets in list(self._rooms.values()):
             for ws in list(room_sockets):
                 session = self._sessions.get(id(ws))
-                if session is not None and session.invite_token_id is not None and str(session.invite_token_id) == str(token_id):
+                if (
+                    session is not None
+                    and session.invite_token_id is not None
+                    and str(session.invite_token_id) == str(token_id)
+                ):
                     if booth_id is None or session.booth_id == booth_id:
                         session.granted_role = None
                         session.revoked = True
@@ -448,10 +450,7 @@ class ConnectionManager:
 
             async def _close_stale_tokens(sockets: list[WebSocket]) -> None:
                 await asyncio.gather(
-                    *[
-                        self.close_session(ws, code=WS_CLOSE_REVOKED, reason=REASON_INVITE_REVOKED)
-                        for ws in sockets
-                    ],
+                    *[self.close_session(ws, code=WS_CLOSE_REVOKED, reason=REASON_INVITE_REVOKED) for ws in sockets],
                     return_exceptions=True,
                 )
 
@@ -498,7 +497,13 @@ class _StateLock:
 
 
 class ListenerConnectionManager:
-    def __init__(self) -> None:
+    def __init__(
+        self,
+        *,
+        max_replay_per_booth: int = 15,
+        replay_ttl_seconds: float = 600.0,
+        max_replay_channels: int = 500,
+    ) -> None:
         self._rooms: dict[str, set[WebSocket]] = {}
         # Last listener state sent per booth, so updates that only touch
         # interpreter-side fields (mic, chat, handoff) don't fan out to every listener.
@@ -509,6 +514,10 @@ class ListenerConnectionManager:
         # booth IDs from the captions endpoint don't accumulate.
         self._state_locks: dict[str, _StateLock] = {}
         self._anon_rooms: dict[str, set[WebSocket]] = {}
+        self._replay_buffers: OrderedDict[str, deque[tuple[float, dict]]] = OrderedDict()
+        self._max_replay_per_booth = max_replay_per_booth
+        self._replay_ttl_seconds = replay_ttl_seconds
+        self._max_replay_channels = max_replay_channels
 
     def add(self, ws: WebSocket, booth_id: str, *, is_anonymous: bool = False) -> None:
         self._rooms.setdefault(booth_id, set()).add(ws)
@@ -565,7 +574,54 @@ class ListenerConnectionManager:
             if entry.users == 0:
                 del self._state_locks[booth_id]
 
+    def record_replay(self, booth_id: str, message: dict) -> None:
+        now = time.time()
+        buf = self._replay_buffers.get(booth_id)
+        if buf is None:
+            if len(self._replay_buffers) >= self._max_replay_channels:
+                self._replay_buffers.popitem(last=False)
+            buf = deque(maxlen=self._max_replay_per_booth)
+            self._replay_buffers[booth_id] = buf
+        else:
+            self._replay_buffers.move_to_end(booth_id)
+        while buf and (now - buf[0][0]) > self._replay_ttl_seconds:
+            buf.popleft()
+        buf.append((now, dict(message)))
+
+    async def send_replay(self, ws: WebSocket, booth_id: str) -> None:
+        buf = self._replay_buffers.get(booth_id)
+        if not buf:
+            return
+        now = time.time()
+        items = [msg for ts, msg in list(buf) if (now - ts) <= self._replay_ttl_seconds]
+        for msg in items:
+            replay_msg = {**msg, "replay": True}
+            try:
+                await ws.send_text(json.dumps(replay_msg))
+            except Exception:
+                break
+
+    def purge_replay(
+        self,
+        *,
+        event_slug: str | None = None,
+        room_id: int | None = None,
+        booth_id: str | None = None,
+    ) -> None:
+        to_del = []
+        for bid in list(self._replay_buffers.keys()):
+            if booth_id and bid == booth_id:
+                to_del.append(bid)
+            elif room_id is not None and f"-{room_id}-" in bid:
+                to_del.append(bid)
+            elif event_slug is not None and (bid == event_slug or bid.startswith(f"{event_slug}-")):
+                to_del.append(bid)
+        for bid in to_del:
+            self._replay_buffers.pop(bid, None)
+
     async def broadcast(self, booth_id: str, message: dict) -> None:
+        if message.get("type") in ("caption", "translation", "translated_caption") and message.get("status") == "final":
+            self.record_replay(booth_id, message)
         payload = json.dumps(message)
         dead: list[WebSocket] = []
         for ws in list(self._rooms.get(booth_id, set())):
@@ -603,7 +659,14 @@ logger = logging.getLogger(__name__)
 
 
 class TTSConnectionManager:
-    def __init__(self, reauthorize_seconds: float = 5.0, max_concurrent_authorizations: int = 4) -> None:
+    def __init__(
+        self,
+        reauthorize_seconds: float = 5.0,
+        max_concurrent_authorizations: int = 4,
+        max_replay_per_channel: int = 15,
+        replay_ttl_seconds: float = 600.0,
+        max_replay_channels: int = 500,
+    ) -> None:
         self._rooms: dict[str, set[WebSocket]] = {}
         self._authorizers: dict[WebSocket, Callable[[], Awaitable[None]]] = {}
         # Rechecking on every bundle would cost one DB read per subscriber per segment, so a
@@ -612,9 +675,70 @@ class TTSConnectionManager:
         self._authorized_at: dict[WebSocket, float] = {}
         # Keeps a large audience from taking every pooled DB connection at once.
         self._authorization_slots = asyncio.Semaphore(max_concurrent_authorizations)
+        self._replay_buffers: OrderedDict[str, deque[tuple[float, dict]]] = OrderedDict()
+        self._max_replay_per_channel = max_replay_per_channel
+        self._replay_ttl_seconds = replay_ttl_seconds
+        self._max_replay_channels = max_replay_channels
 
     def _get_key(self, room_id: int, language_code: str, booth_id: str) -> str:
         return f"{room_id}-{language_code}-{booth_id}"
+
+    def record_replay(self, key: str, header: dict) -> None:
+        now = time.time()
+        buf = self._replay_buffers.get(key)
+        if buf is None:
+            if len(self._replay_buffers) >= self._max_replay_channels:
+                self._replay_buffers.popitem(last=False)
+            buf = deque(maxlen=self._max_replay_per_channel)
+            self._replay_buffers[key] = buf
+        else:
+            self._replay_buffers.move_to_end(key)
+        while buf and (now - buf[0][0]) > self._replay_ttl_seconds:
+            buf.popleft()
+        if buf and (
+            buf[-1][1].get("segment_id") == header.get("segment_id")
+            or (header.get("seq") is not None and buf[-1][1].get("seq") == header.get("seq"))
+        ):
+            buf[-1] = (now, dict(header))
+        else:
+            buf.append((now, dict(header)))
+
+    async def send_replay(self, ws: WebSocket, room_id: int, language_code: str, booth_id: str) -> None:
+        key = self._get_key(room_id, language_code, booth_id)
+        buf = self._replay_buffers.get(key)
+        if not buf:
+            return
+        now = time.time()
+        items = [header for ts, header in list(buf) if (now - ts) <= self._replay_ttl_seconds]
+        for header in items:
+            replay_header = {**header, "replay": True, "audio_pending": False}
+            header_bytes = json.dumps(replay_header).encode("utf-8")
+            frame = struct.pack(">BI", 1, len(header_bytes)) + header_bytes
+            try:
+                await ws.send_bytes(frame)
+            except Exception:
+                break
+
+    def purge_replay(
+        self,
+        *,
+        event_slug: str | None = None,
+        room_id: int | None = None,
+        booth_id: str | None = None,
+    ) -> None:
+        to_del = []
+        for key in list(self._replay_buffers.keys()):
+            parts = key.split("-", 2)
+            k_room_id = parts[0] if parts else ""
+            k_booth_id = parts[2] if len(parts) > 2 else ""
+            if booth_id and (k_booth_id == booth_id or booth_id in key):
+                to_del.append(key)
+            elif room_id is not None and k_room_id == str(room_id):
+                to_del.append(key)
+            elif event_slug is not None and (k_booth_id.startswith(f"{event_slug}-") or f"{event_slug}-" in key):
+                to_del.append(key)
+        for key in to_del:
+            self._replay_buffers.pop(key, None)
 
     def add(
         self,
@@ -668,6 +792,17 @@ class TTSConnectionManager:
             "audio_pending": (not audio_bytes and error is None) if audio_pending is None else audio_pending,
             **timing_metadata(),
         }
+        if translation or caption:
+            header_replay = {
+                "segment_id": segment_id,
+                "seq": seq,
+                "caption": caption,
+                "translation": translation,
+                "error": error,
+                "audio_pending": False,
+                **timing_metadata(),
+            }
+            self.record_replay(key, header_replay)
         header_bytes = json.dumps(header).encode("utf-8")
         # Frame: [1-byte version][4-byte length L][L-bytes header][audio_bytes]
         frame = struct.pack(">BI", 1, len(header_bytes)) + header_bytes + audio_bytes
@@ -712,6 +847,16 @@ class TTSConnectionManager:
 manager = ConnectionManager()
 listener_manager = ListenerConnectionManager()
 tts_manager = TTSConnectionManager()
+
+
+def purge_replay(
+    *,
+    event_slug: str | None = None,
+    room_id: int | None = None,
+    booth_id: str | None = None,
+) -> None:
+    listener_manager.purge_replay(event_slug=event_slug, room_id=room_id, booth_id=booth_id)
+    tts_manager.purge_replay(event_slug=event_slug, room_id=room_id, booth_id=booth_id)
 
 
 async def broadcast_booth_state(booth_id: str, state: dict) -> None:
@@ -817,7 +962,9 @@ async def _handle_join(ws: WebSocket, session: Session, data: dict) -> None:
         await ws.send_text(json.dumps({"type": "booth:error", "message": str(exc)}))
         return
     for old_ws in manager.detach_participant(session.booth_id, participant.participant_id, keep=ws):
-        track_task(asyncio.create_task(manager.close_session(old_ws, code=WS_CLOSE_SUPERSEDED, reason=REASON_SUPERSEDED)))
+        track_task(
+            asyncio.create_task(manager.close_session(old_ws, code=WS_CLOSE_SUPERSEDED, reason=REASON_SUPERSEDED))
+        )
     session.participant_id = participant.participant_id
     session.language = language
     session.channel_id = channel_id

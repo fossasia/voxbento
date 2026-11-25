@@ -286,10 +286,14 @@ async def ws_captions(websocket: WebSocket, booth_id: str) -> None:
                     is_authorized = bool(await resolve_booth_role(invite_sess, booth_id))
                 reject_code = 4001
                 if not is_authorized:
-                    submitted = websocket.query_params.get("code") or websocket.cookies.get(f"listener_code_{booth_event}")
+                    submitted = websocket.query_params.get("code") or websocket.cookies.get(
+                        f"listener_code_{booth_event}"
+                    )
                     try:
                         is_authorized = verify_join_code(
-                            websocket.client.host if websocket.client else "unknown", submitted, ev.listener_join_code,
+                            websocket.client.host if websocket.client else "unknown",
+                            submitted,
+                            ev.listener_join_code,
                         )
                     except JoinCodeThrottled:
                         reject_code = 1008
@@ -322,6 +326,8 @@ async def ws_captions(websocket: WebSocket, booth_id: str) -> None:
         # Tell a newly connected listener whether the booth is already live, so
         # it doesn't have to wait for the next state change to start playback.
         await listener_manager.send_booth_state(websocket, booth_id)
+        if websocket.query_params.get("replay") == "1":
+            await listener_manager.send_replay(websocket, booth_id)
         while True:
             await websocket.receive_text()
     except WebSocketDisconnect:
@@ -497,6 +503,8 @@ async def ws_tts(websocket: WebSocket, room_id: int, language_code: str, booth_i
 
     await websocket.accept()
     tts_manager.add(websocket, room_id, language_code, booth_id, authorize=authorize)
+    if websocket.query_params.get("replay") == "1":
+        await tts_manager.send_replay(websocket, room_id, language_code, booth_id)
     try:
         while True:
             await websocket.receive_text()

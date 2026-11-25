@@ -164,3 +164,35 @@ class TestCaptionAggregator:
 
         finals = [msg for bid, msg in received if msg.get("status") == "final"]
         assert len(finals) == 0
+
+    async def test_timing_metadata_emitted_for_booth_and_floor(self):
+        received = []
+
+        async def fake_callback(booth_id, message):
+            await collect_broadcasts(booth_id, message, received)
+
+        aggregator = CaptionAggregator(fake_callback)
+        await aggregator.handle_partial("testevent-1-en", "Hello partial")
+        await aggregator.handle_final("testevent-1-en", "Hello finalized.")
+
+        partials = [msg for bid, msg in received if msg.get("status") == "partial"]
+        finals = [msg for bid, msg in received if msg.get("status") == "final"]
+
+        assert len(partials) >= 1
+        assert "source_received_at_ms" in partials[0]
+        assert "server_sent_at_ms" in partials[0]
+
+        assert len(finals) >= 1
+        assert "source_received_at_ms" in finals[0]
+        assert "server_sent_at_ms" in finals[0]
+
+    async def test_partial_timing_anchors_to_utterance_start_time(self):
+        received = []
+
+        async def fake_callback(booth_id, message):
+            await collect_broadcasts(booth_id, message, received)
+
+        aggregator = CaptionAggregator(fake_callback)
+        aggregator.states["test-b"] = CaptionState(booth_id="test-b", utterance_start_time=1000.0)
+        timing = await aggregator.partial_timing("test-b")
+        assert timing["source_received_at_ms"] == 1000000

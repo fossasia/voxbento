@@ -1366,6 +1366,9 @@ async def admin_regenerate_join_code(request: Request, event_id: int):
             raise HTTPException(status_code=404, detail="Event not found.")
         event.listener_join_code = "".join((secrets.choice("ABCDEFGHJKLMNPQRSTUVWXYZ23456789") for _ in range(6)))
         await session.flush()
+        from portal.websockets.manager import purge_replay
+
+        purge_replay(event_slug=event.slug)
     return safe_redirect(url=management_url(request, f"events/{event_id}/"), status_code=status.HTTP_303_SEE_OTHER)
 
 
@@ -1484,7 +1487,9 @@ async def admin_event_api_settings_post(
     if meeting_analysis_model is not None and len(meeting_analysis_model) > ANALYSIS_MAX_MODEL_LENGTH:
         raise HTTPException(status_code=400, detail="The meeting report model name is too long.")
     if meeting_analysis_model and not _ANALYSIS_MODEL_RE.fullmatch(meeting_analysis_model):
-        raise HTTPException(status_code=400, detail="The meeting report model name has characters a model name can't have.")
+        raise HTTPException(
+            status_code=400, detail="The meeting report model name has characters a model name can't have."
+        )
     async with get_session() as session:
         event = await get_event_by_id(session, event_id)
         if event is None:

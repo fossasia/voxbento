@@ -259,8 +259,12 @@ async def delete_event(session: AsyncSession, event_id: int) -> bool:
         room.relay_booth = None
     await session.flush()
 
+    slug = ev.slug
     await session.delete(ev)
     await session.flush()
+    from portal.websockets.manager import purge_replay
+
+    purge_replay(event_slug=slug)
     return True
 
 
@@ -348,6 +352,9 @@ async def delete_room(session: AsyncSession, room_id: int) -> bool:
     # now safe to delete the room
     await session.delete(room)
     await session.flush()
+    from portal.websockets.manager import purge_replay
+
+    purge_replay(room_id=room_id)
     return True
 
 
@@ -479,8 +486,12 @@ async def delete_booth(session: AsyncSession, booth_id: int) -> bool:
     for room in result.scalars().all():
         room.relay_booth = None
     await session.flush()
+    room_id = booth.room_id
     await session.delete(booth)
     await session.flush()
+    from portal.websockets.manager import purge_replay
+
+    purge_replay(room_id=room_id)
     return True
 
 
@@ -777,9 +788,13 @@ async def get_hosting_request(session: AsyncSession, request_id: int) -> Hosting
 
 
 async def get_open_hosting_request(session: AsyncSession, user_id: int) -> HostingRequest | None:
-    stmt = select(HostingRequest).options(joinedload(HostingRequest.user)).where(
-        HostingRequest.user_id == user_id,
-        HostingRequest.status == HOSTING_REQUEST_OPEN,
+    stmt = (
+        select(HostingRequest)
+        .options(joinedload(HostingRequest.user))
+        .where(
+            HostingRequest.user_id == user_id,
+            HostingRequest.status == HOSTING_REQUEST_OPEN,
+        )
     )
     return (await session.execute(stmt)).scalars().first()
 

@@ -83,22 +83,26 @@ class CaptionAggregator:
 
     async def partial_timing(self, booth_id: str) -> dict:
         """Return program presentation metadata when available, without blocking live text on DB errors."""
-        if self.room_id is None or not booth_id.endswith("-floor"):
-            return {}
-        try:
-            async with get_session() as session:
-                room = await session.get(Room, self.room_id)
-                if room and room.floor_source == "program_ingest":
-                    now = int(time.time() * 1000)
-                    return {
-                        "source_received_at_ms": now,
-                        "server_sent_at_ms": now,
-                        "sync_offset_ms": room.program_sync_offset_ms,
-                        "timestamp_basis": "stt_receive_wall_clock",
-                    }
-        except SQLAlchemyError:
-            logger.debug("[%s] Partial-caption timing unavailable during database failure.", booth_id, exc_info=True)
-        return {}
+        state = self._get_state(booth_id)
+        now = int(time.time() * 1000)
+        source_ms = int((state.utterance_start_time or time.time()) * 1000)
+        sync_offset = 0
+        if self.room_id is not None:
+            try:
+                async with get_session() as session:
+                    room = await session.get(Room, self.room_id)
+                    if room and room.floor_source == "program_ingest":
+                        sync_offset = room.program_sync_offset_ms
+            except SQLAlchemyError:
+                logger.debug(
+                    "[%s] Partial-caption timing unavailable during database failure.", booth_id, exc_info=True
+                )
+        return {
+            "source_received_at_ms": source_ms,
+            "server_sent_at_ms": now,
+            "sync_offset_ms": sync_offset,
+            "timestamp_basis": "stt_receive_wall_clock",
+        }
 
     async def handle_interim(self, booth_id: str, text: str):
         """Show words still being recognised after the ones already settled, without keeping them.
@@ -109,10 +113,18 @@ class CaptionAggregator:
         if not text.strip():
             return
         state = self._get_state(booth_id)
+        if not state.utterance_start_time:
+            state.utterance_start_time = time.time()
         preview = f"{state.current_utterance} {text.strip()}".strip()
         await self.broadcast_callback(
-            booth_id, {"type": "caption", "status": "partial", "text": preview,
-                       "segment_id": state.segment_id, **await self.partial_timing(booth_id)}
+            booth_id,
+            {
+                "type": "caption",
+                "status": "partial",
+                "text": preview,
+                "segment_id": state.segment_id,
+                **await self.partial_timing(booth_id),
+            },
         )
 
     async def handle_chunk(self, booth_id: str, text: str):
@@ -212,6 +224,9 @@ class CaptionAggregator:
                 self.states[booth_id] = CaptionState(booth_id=booth_id)
                 return
             seq, timing = allocation
+        else:
+            source_ms = int((state.utterance_start_time or time.time()) * 1000)
+            timing = SegmentTiming(source_ms, 0)
         context_token = segment_timing.set(timing)
 
         try:
@@ -237,11 +252,10 @@ class CaptionAggregator:
             )
             if seq is None:
                 return None
-            timing = None
-            if room.floor_source == "program_ingest":
-                timing = SegmentTiming(
-                    int((state.utterance_start_time or time.time()) * 1000), room.program_sync_offset_ms
-                )
+            timing = SegmentTiming(
+                int((state.utterance_start_time or time.time()) * 1000),
+                room.program_sync_offset_ms if room.floor_source == "program_ingest" else 0,
+            )
         return seq, timing
 
     async def publish_final(self, booth_id: str, final_text: str, segment_id: str, seq: int | None):
