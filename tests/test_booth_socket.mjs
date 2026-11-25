@@ -230,7 +230,7 @@ console.log('Booth socket lifecycle checks passed')
     'jitsi-frame': frame,
   }
   const context = vm.createContext({
-    URL, URLSearchParams, createBackoff, localStorage: { getItem: () => null },
+    URL, URLSearchParams, createBackoff, createInterpreterAssist, localStorage: { getItem: () => null },
     document: { getElementById: (id) => elements[id] },
     createWhepClient: () => ({
       start: ({ whepUrl }) => switches.push(whepUrl),
