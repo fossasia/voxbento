@@ -2,8 +2,8 @@
 
 Adds the encrypted Azure Translator API key and subscription region to events.
 
-Revision ID: 048
-Revises: 047
+Revision ID: 050
+Revises: 049
 Create Date: 2026-11-14
 """
 
@@ -15,8 +15,8 @@ import sqlalchemy as sa
 
 from alembic import op
 
-revision: str = "048"
-down_revision: Union[str, Sequence[str], None] = "047"
+revision: str = "050"
+down_revision: Union[str, Sequence[str], None] = "049"
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
 

@@ -36,8 +36,10 @@ async def drain_pipeline():
 
 
 @pytest.fixture
-async def sequence_db(tmp_path):
+async def sequence_db(tmp_path, monkeypatch):
     """Isolate each stream's persistent counter and finish its background work on teardown."""
+    # These tests drain caption writes. The independent delayed report job has its own tests.
+    monkeypatch.setattr("portal.meeting_analysis.auto.schedule_auto_report", lambda *args: None)
     url = f"sqlite+aiosqlite:///{(tmp_path / 'sequence.db').as_posix()}"
     db.configure(url)
     await db.init_db()
