@@ -1,8 +1,8 @@
 """add_srt_and_backup_contribution
 
-Revision ID: 049
-Revises: 048
-Create Date: 2026-11-25 09:45:00.000000
+Revision ID: 050
+Revises: 049
+Create Date: 2026-11-25 10:04:00.000000
 
 """
 
@@ -15,8 +15,8 @@ import sqlalchemy as sa
 from alembic import op
 
 # revision identifiers, used by Alembic.
-revision: str = "049"
-down_revision: Union[str, Sequence[str], None] = "048"
+revision: str = "050"
+down_revision: Union[str, Sequence[str], None] = "049"
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
 
