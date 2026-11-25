@@ -64,9 +64,27 @@
       <section class='stage-monitor'>
         <div class='stage-head'>
           <span class='stage-title'>Floor Monitor</span>
-          <span class='stage-sub'>Live audio &amp; video from the floor</span>
+          {% if offer_meeting or offer_floor or relay_whep_url %}
+          <label class='stage-sub' for='monitor-source'>Listen to</label>
+          <select id='monitor-source' class='input input-sm' disabled>
+            {% if offer_floor %}<option value='floor' selected>{{ floor_label }}</option>{% endif %}
+            {% if offer_meeting %}<option value='jitsi'>Room Jitsi meeting</option>{% endif %}
+            {% if relay_whep_url %}<option value='relay'>Relay ({{ relay_language_name }})</option>{% endif %}
+            <option value='off'>Monitor off</option>
+          </select>
+          {% else %}
+          <span class='stage-sub'>No monitor source is configured for this booth.</span>
+          {% endif %}
         </div>
-        <div class='monitor-frame'>
+        <div id='floor-player' class='hidden'>
+          {% if floor_hls_url %}
+          <iframe id='floor-hls' title='Room floor stream' allow='autoplay' data-url='{{ floor_hls_url }}'></iframe>
+          {% else %}
+          <span id='floor-status' role='status'></span>
+          <audio id='floor-audio' controls autoplay data-url='{{ floor_whep_url }}'></audio>
+          {% endif %}
+        </div>
+        <div id='meeting-player' class='monitor-frame hidden'>
           <iframe id='jitsi-frame' title='Jitsi monitoring feed' allow='camera; microphone; autoplay; fullscreen; display-capture; speaker-selection'></iframe>
         </div>
       </section>
@@ -185,9 +203,6 @@
         </summary>
         <div class='card-body'>
           {% if relay_whep_url %}
-          <button id='pass-relay' type='button' class='btn btn-block' title='Listen to Relay'>
-            Listen to Relay ({{ relay_language_name }})
-          </button>
           <div class='field'>
             <label class='field-label' for='relay-device-select'>Output Device</label>
             <select id='relay-device-select' class='input input-sm device-select'><option value=''>Default output</option></select>

@@ -214,3 +214,46 @@ for (let attempt = 0; attempt < 3; attempt++) {
 }
 
 console.log('Booth socket lifecycle checks passed')
+
+// Switching floor sources must release the old player so both feeds never play together.
+{
+  const switches = []
+  const selector = { value: 'floor' }
+  const frame = { removeAttribute: () => switches.push('leave-jitsi') }
+  const elements = {
+    'interpreter-portal': { dataset: { jitsiUrl: 'https://meet.example/room' } },
+    'monitor-source': selector,
+    'meeting-player': { classList: { toggle() {} } },
+    'floor-player': { classList: { toggle() {} } },
+    'floor-audio': { dataset: { url: '/event/1/floor/whep' } },
+    'floor-status': {},
+    'jitsi-frame': frame,
+  }
+  const context = vm.createContext({
+    URL, URLSearchParams, createBackoff, localStorage: { getItem: () => null },
+    document: { getElementById: (id) => elements[id] },
+    createWhepClient: () => ({
+      start: ({ whepUrl }) => switches.push(whepUrl),
+      stop: () => switches.push('stop-floor'),
+    }),
+  })
+  vm.runInContext(source + '\nshowError = () => {}; joinMonitoringFeed()', context)
+  assert.deepEqual(switches, ['leave-jitsi', '/event/1/floor/whep'])
+  selector.value = 'jitsi'
+  selector.onchange()
+  assert.equal(switches.at(-1), 'stop-floor')
+  assert.match(frame.src, /^https:\/\/meet\.example\/room#/)
+
+  const hls = {
+    dataset: { url: '/hls/event/1/floor/?muted=false' },
+    removeAttribute(name) { delete this[name] },
+  }
+  elements['floor-hls'] = hls
+  selector.value = 'floor'
+  selector.onchange()
+  assert.equal(hls.src, hls.dataset.url)
+  assert.equal(switches.at(-1), 'leave-jitsi')
+  selector.value = 'jitsi'
+  selector.onchange()
+  assert.equal(hls.src, undefined)
+}

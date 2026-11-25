@@ -3,7 +3,7 @@ const POLL_MS = 5000;
 const MAX_POLLS = 420;
 
 function pendingIds() {
-  return [...document.querySelectorAll('[data-report-status="pending"], [data-report-status="running"]')]
+  return [...document.querySelectorAll('[data-report-status="queued"], [data-report-status="pending"], [data-report-status="running"]')]
     .map((el) => el.dataset.reportId);
 }
 
@@ -13,7 +13,7 @@ async function finished(id) {
     const res = await fetch(url, { headers: { Accept: 'application/json' } });
     if (!res.ok) return false;
     const report = await res.json();
-    return report.status !== 'pending' && report.status !== 'running';
+    return report.status !== 'queued' && report.status !== 'pending' && report.status !== 'running';
   } catch (err) {
     console.error('Could not check meeting report', id, err);
     return false;

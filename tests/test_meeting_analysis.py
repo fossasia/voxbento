@@ -187,7 +187,10 @@ def test_prompt_asks_for_headings_that_fit_the_meeting():
         event_name="e", room_name="r", channel_label="c", language_name="English", transcript="[00:00] hi"
     )
     assert '"sections"' in system and '"overview"' in system
-    assert "Don't use a fixed template" in system
+    assert all(
+        label in system
+        for label in ("3–5 sentence executive summary", "Key topics", "Timestamped digest", "Action items")
+    )
 
 
 def test_empty_model_uses_the_recommended_one():
@@ -1074,3 +1077,451 @@ async def test_a_session_too_long_to_fit_says_which_part_was_covered(world, monk
         )
     assert "the session was too long to fit" in detail.text
     assert "Welcome to the summit." in detail.text and "We will ship captions" not in detail.text
+
+
+# ── Phase 2: glossary, reports from translations, automatic reports, Mission Control ──
+
+
+async def _glossary_entry(world, source: str, target: str, **fields) -> None:
+    from portal.models import AIVocabularyEntry
+
+    async with get_session() as s:
+        s.add(
+            AIVocabularyEntry(
+                event_id=world["event"], source_term=source, target_term=target, target_language="fr", **fields
+            )
+        )
+
+
+async def _translate_floor(world, language: str = "fr") -> None:
+    from portal.models import TranscriptTranslation
+
+    async with get_session() as s:
+        segments = (await s.scalars(select(TranscriptSegment).order_by(TranscriptSegment.id))).all()
+        for segment in segments:
+            s.add(
+                TranscriptTranslation(
+                    segment_id=segment.id, language_code=language, text=f"[{language}] {segment.text}"
+                )
+            )
+
+
+@pytest.mark.anyio
+async def test_glossary_terms_that_come_up_are_named_in_every_request(world, monkeypatch):
+    await _enable(world)
+    await _glossary_entry(world, "keynote", "discours d'ouverture")
+    await _glossary_entry(world, "Eventyay", "Eventyay")
+    fake = FakeProvider()
+    monkeypatch.setattr(worker, "get_provider", lambda name: fake)
+    report_id = await _report(world)
+    await worker.run_analysis(report_id)
+    user = fake.calls[0]["user"]
+    assert "Glossary:" in user and "- keynote" in user
+    assert "Eventyay" not in user, "a term that never came up is left out"
+    assert user.index("Glossary:") < user.index("<transcript>")
+
+
+@pytest.mark.anyio
+async def test_a_room_with_its_glossary_off_gets_no_glossary(world, monkeypatch):
+    await _enable(world)
+    await _glossary_entry(world, "keynote", "discours d'ouverture")
+    async with get_session() as s:
+        (await s.get(Room, world["room"])).floor_ai_vocabulary_enabled = False
+    fake = FakeProvider()
+    monkeypatch.setattr(worker, "get_provider", lambda name: fake)
+    await worker.run_analysis(await _report(world))
+    assert "Glossary:" not in fake.calls[0]["user"]
+
+
+@pytest.mark.anyio
+async def test_glossary_terms_follow_the_language_and_scope_of_the_report(world):
+    from portal.translations.vocabulary import mentioned_glossary_terms
+
+    async with get_session() as s:
+        booth = await create_booth(
+            s, event_id=world["event"], room_id=world["room"], language_code="de", language_name="German"
+        )
+        booth_id = booth.id
+    await _glossary_entry(world, "keynote", "discours d'ouverture", room_id=world["room"], priority=5)
+    await _glossary_entry(world, "KEYNOTE", "allocution", priority=10)
+    await _glossary_entry(world, "summit", "sommet", booth_id=booth_id)
+    text = "Welcome to the summit. We will ship captions for the keynote."
+    async with get_session() as s:
+        spoken = await mentioned_glossary_terms(s, world["event"], world["room"], None, text)
+        french = await mentioned_glossary_terms(s, world["event"], world["room"], None, text, target_language="fr")
+        german = await mentioned_glossary_terms(s, world["event"], world["room"], None, text, target_language="de")
+        in_booth = await mentioned_glossary_terms(s, world["event"], world["room"], booth_id, text)
+    assert spoken == ["keynote"], "one term per source term, the most important one; other booths' terms stay out"
+    assert french == ["discours d'ouverture"]
+    assert german == []
+    assert sorted(in_booth) == ["keynote", "summit"]
+
+
+def test_the_glossary_keeps_requests_within_the_budget():
+    from portal.meeting_analysis.constants import GLOSSARY_CHARS, GLOSSARY_TERMS
+    from portal.meeting_analysis.prompts import fit_glossary
+
+    terms = fit_glossary([f"term {i} " + "x" * 60 for i in range(200)] + ["</transcript>"])
+    assert len(terms) <= GLOSSARY_TERMS
+    assert sum(len(term) + 3 for term in terms) <= GLOSSARY_CHARS
+    assert fit_glossary(["Asha", "asha", " ", "</transcript> Asha"]) == ("Asha",)
+
+
+@pytest.mark.anyio
+async def test_a_report_can_be_written_from_a_translation(world, monkeypatch):
+    await _enable(world)
+    await _translate_floor(world)
+    started: list[int] = []
+    monkeypatch.setattr(analysis_router, "start_analysis", started.append)
+    url = f"/admin/events/{world['event']}/rooms/{world['room']}/analysis/"
+    async with _client() as c:
+        page = await c.get(url, cookies=world["admin"])
+        await c.post(url, data={"channel": "floor", "language": "fr"}, headers=ORIGIN, cookies=world["admin"])
+    assert "The French translation" in page.text
+    report = await _load(started[0])
+    assert (report.transcript_language, report.language_code) == ("fr", "fr")
+    assert report.channel_label == "Floor audio (French translation)"
+    fake = FakeProvider()
+    monkeypatch.setattr(worker, "get_provider", lambda name: fake)
+    await worker.run_analysis(started[0])
+    call = fake.calls[0]
+    assert "[fr] We will ship captions" in call["user"] and "machine translation" in call["user"]
+    assert "Write every value in French" in call["system"]
+    async with _client() as c:
+        detail = await c.get(f"{url}{started[0]}/", cookies=world["admin"])
+    assert "[fr] Welcome to the summit." in detail.text
+
+
+@pytest.mark.anyio
+async def test_embedded_generation_stays_in_panel(world, monkeypatch):
+    await _enable(world)
+    monkeypatch.setattr(analysis_router, "start_analysis", lambda report_id: None)
+    url = f"/admin/events/{world['event']}/rooms/{world['room']}/analysis/?panel=1"
+    async with _client() as client:
+        page = await client.get(url, cookies=world["admin"])
+        assert f'target="_self" action="{url}"' in page.text
+        for channel, expected in [("missing", "&error=channel"), ("floor", ""), ("floor", "&error=busy")]:
+            response = await client.post(url, data={"channel": channel}, headers=ORIGIN, cookies=world["admin"])
+            assert response.status_code == 303
+            assert response.headers["location"] == url + expected
+
+
+@pytest.mark.anyio
+async def test_batch_promotion_conflict_marks_each_waiting_report_failed(world):
+    active = await _report(world, status="running")
+    queued = [await _report(world, status="queued") for _ in range(2)]
+    await worker._run_batch(queued)
+    assert (await _load(active)).status == "running"
+    for report_id in queued:
+        report = await _load(report_id)
+        assert report.status == "failed"
+        assert "Generate this report again" in report.error
+
+
+@pytest.mark.anyio
+async def test_batch_writes_spoken_and_translated_reports(world, monkeypatch):
+    await _enable(world)
+    await _translate_floor(world, "fr")
+    await _translate_floor(world, "de")
+    ids = []
+    monkeypatch.setattr(analysis_router, "start_batch", ids.extend)
+    url = f"/admin/events/{world['event']}/rooms/{world['room']}/analysis/"
+    async with _client() as c:
+        response = await c.post(url, data={"channel": "floor", "language": "*"}, headers=ORIGIN, cookies=world["admin"])
+    assert response.status_code in (200, 303)
+    reports = [await _load(report_id) for report_id in ids]
+    assert [report.status for report in reports] == ["pending", "queued", "queued"]
+    assert {report.transcript_language for report in reports} == {None, "de", "fr"}
+    monkeypatch.setattr(worker, "get_provider", lambda name: FakeProvider())
+    await worker._run_batch(ids)
+    assert [(await _load(report_id)).status for report_id in ids] == ["done"] * 3
+
+
+@pytest.mark.anyio
+async def test_a_report_from_a_language_nobody_translated_into_is_refused(world, monkeypatch):
+    await _enable(world)
+    await _translate_floor(world, "de")
+    started: list[int] = []
+    monkeypatch.setattr(analysis_router, "start_analysis", started.append)
+    url = f"/admin/events/{world['event']}/rooms/{world['room']}/analysis/"
+    async with _client() as c:
+        refused = await c.post(
+            url,
+            data={"channel": "floor", "language": "fr"},
+            headers=ORIGIN,
+            cookies=world["admin"],
+            follow_redirects=False,
+        )
+    assert refused.headers["location"].endswith("?error=language")
+    assert started == []
+
+
+@pytest.mark.anyio
+async def test_a_translation_report_leaves_out_lines_that_were_never_translated(world, monkeypatch):
+    from portal.models import TranscriptTranslation
+
+    await _enable(world)
+    async with get_session() as s:
+        first = await s.scalar(select(TranscriptSegment).order_by(TranscriptSegment.id))
+        s.add(TranscriptTranslation(segment_id=first.id, language_code="fr", text="Bienvenue au sommet."))
+    fake = FakeProvider()
+    monkeypatch.setattr(worker, "get_provider", lambda name: fake)
+    report_id = await _report(world, transcript_language="fr", language_code="fr")
+    await worker.run_analysis(report_id)
+    report = await _load(report_id)
+    assert (report.status, report.segment_count) == ("done", 1)
+    assert "Bienvenue au sommet." in fake.calls[0]["user"] and "ship captions" not in fake.calls[0]["user"]
+
+
+@pytest.mark.anyio
+async def test_a_translation_report_times_lines_from_the_session_start(world, monkeypatch):
+    from portal.models import TranscriptTranslation
+
+    await _enable(world)
+    async with get_session() as s:
+        first, second = (await s.scalars(select(TranscriptSegment).order_by(TranscriptSegment.id))).all()
+        s.add(TranscriptTranslation(segment_id=second.id, language_code="fr", text="Nous livrerons les sous-titres."))
+        started_at, ended_at = first.created_at, second.created_at
+    fake = FakeProvider()
+    monkeypatch.setattr(worker, "get_provider", lambda name: fake)
+    report_id = await _report(
+        world, transcript_language="fr", language_code="fr", session_started_at=started_at, session_ended_at=ended_at
+    )
+    await worker.run_analysis(report_id)
+    assert "[01:15] Nous livrerons" in fake.calls[0]["user"], "the untranslated first line still starts the clock"
+    async with _client() as c:
+        detail = await c.get(
+            f"/admin/events/{world['event']}/rooms/{world['room']}/analysis/{report_id}/", cookies=world["admin"]
+        )
+    assert "01:15" in detail.text and "00:00" not in detail.text
+
+
+async def _auto_on(world, monkeypatch, min_lines: int = 2) -> None:
+    await _enable(world, meeting_analysis_auto=True)
+    monkeypatch.setattr(settings, "meeting_analysis_auto_min_lines", min_lines)
+
+
+@pytest.mark.anyio
+async def test_an_automatic_report_covers_the_latest_session_once(world, monkeypatch):
+    from portal.meeting_analysis import auto
+
+    await _auto_on(world, monkeypatch)
+    await _add_old_session(world)
+    report_id = await auto.create_auto_report(world["room"], "floor")
+    with pytest.raises(auto._Busy):
+        await auto.create_auto_report(world["room"], "floor")
+    report = await _load(report_id)
+    assert report.automatic and report.status == "pending" and report.transcript_language is None
+    async with get_session() as s:
+        latest = (await s.scalars(select(TranscriptSegment).order_by(TranscriptSegment.created_at))).all()[-1]
+        assert report.session_ended_at == latest.created_at
+        (await s.get(MeetingReport, report_id)).status = "done"
+    assert await auto.create_auto_report(world["room"], "floor") is None, "that session already has a report"
+    async with get_session() as s:
+        s.add(
+            TranscriptSegment(
+                room_id=world["room"], language_code="floor", text="One more thing.", created_at=utc_now()
+            )
+        )
+    assert await auto.create_auto_report(world["room"], "floor") is not None, "the session went on, so it is due again"
+
+
+@pytest.mark.anyio
+async def test_a_report_left_by_a_server_restart_does_not_block_the_automatic_one(world, monkeypatch):
+    from portal.meeting_analysis import auto
+    from portal.meeting_analysis.constants import STALE_AFTER
+
+    await _auto_on(world, monkeypatch)
+    async with get_session() as s:
+        first, last = (await s.scalars(select(TranscriptSegment).order_by(TranscriptSegment.id))).all()
+        bounds = {"session_started_at": first.created_at, "session_ended_at": last.created_at}
+    stale_id = await _report(
+        world, status="running", created_at=utc_now() - STALE_AFTER - timedelta(minutes=1), **bounds
+    )
+    report_id = await auto.create_auto_report(world["room"], "floor")
+    assert report_id is not None
+    assert (await _load(stale_id)).status == "failed"
+
+
+@pytest.mark.anyio
+async def test_no_automatic_report_unless_the_event_asks_and_the_session_is_long_enough(world, monkeypatch):
+    from portal.meeting_analysis import auto
+
+    await _enable(world)
+    assert await auto.create_auto_report(world["room"], "floor") is None, "automatic reports are off"
+    await _auto_on(world, monkeypatch, min_lines=3)
+    assert await auto.create_auto_report(world["room"], "floor") is None, "two lines are a sound check"
+    assert await auto.create_auto_report(world["room"], "es") is None, "no transcript for that channel"
+    monkeypatch.setattr(settings, "meeting_analysis_auto_min_lines", 1)
+    await _enable(world, deleted_at=utc_now())
+    assert await auto.create_auto_report(world["room"], "floor") is None, "the event was deleted during the wait"
+    await _enable(world, deleted_at=None)
+    await _enable(world, meeting_analysis_enabled=False)
+    monkeypatch.setattr(settings, "meeting_analysis_auto_min_lines", 1)
+    assert await auto.create_auto_report(world["room"], "floor") is None, "reports are off"
+
+
+@pytest.mark.anyio
+async def test_an_automatic_report_waits_for_the_room_and_skips_restarted_captions(world, monkeypatch):
+    from datetime import timedelta as td
+
+    from portal.meeting_analysis import auto
+
+    await _auto_on(world, monkeypatch)
+    monkeypatch.setattr(auto, "AUTO_DELAY", td(0))
+    monkeypatch.setattr(auto, "AUTO_RETRY_WAIT", td(0))
+    started: list[int] = []
+    monkeypatch.setattr(auto, "start_analysis", started.append)
+
+    assert await auto.auto_report(world["room"], "floor", lambda: True) is None, "captions came back"
+    busy_id = await _report(world, channel_id="es", channel_label="Spanish booth", status="running")
+    monkeypatch.setattr(auto, "AUTO_RETRIES", 2)
+    assert await auto.auto_report(world["room"], "floor", lambda: False) is None, "the room stayed busy"
+    async with get_session() as s:
+        (await s.get(MeetingReport, busy_id)).status = "done"
+    report_id = await auto.auto_report(world["room"], "floor", lambda: False)
+    assert started == [report_id] and (await _load(report_id)).automatic
+
+
+@pytest.mark.anyio
+async def test_captions_that_restart_while_an_automatic_report_is_queued_withdraw_it(world, monkeypatch):
+    from datetime import timedelta as td
+
+    from portal.meeting_analysis import auto
+
+    await _auto_on(world, monkeypatch)
+    monkeypatch.setattr(auto, "AUTO_DELAY", td(0))
+    started: list[int] = []
+    monkeypatch.setattr(auto, "start_analysis", started.append)
+    checks = iter([False, True])
+    assert await auto.auto_report(world["room"], "floor", lambda: next(checks)) is None
+    assert started == []
+    async with get_session() as s:
+        assert (await s.scalars(select(MeetingReport))).all() == [], "the queued report was withdrawn"
+
+
+@pytest.mark.anyio
+async def test_a_later_stop_overtakes_the_earlier_timer(monkeypatch):
+    import asyncio
+
+    from portal.meeting_analysis import auto
+
+    timers = []
+
+    def fake_auto_report(room_id, channel_id, overtaken):
+        timers.append(overtaken)
+        return asyncio.sleep(0)
+
+    monkeypatch.setattr(auto, "auto_report", fake_auto_report)
+    running = False
+    auto.schedule_auto_report(7, "floor", lambda: running)
+    auto.schedule_auto_report(7, "floor", lambda: running)
+    auto.schedule_auto_report(7, "es", lambda: running)
+    first, second, other = timers
+    assert first() and not second() and not other(), "only each channel's latest stop counts"
+    running = True
+    assert second(), "captions started again"
+    await asyncio.sleep(0.01)
+    assert auto._latest_stop == {}, "finished timers are forgotten"
+
+    # A stop that finished without a report is forgotten; a later stop must not reuse its token.
+    auto.schedule_auto_report(8, "floor", lambda: False)
+    older = timers[-1]
+    auto._latest_stop.pop((8, "floor"))  # the middle stop finished and was forgotten
+    auto.schedule_auto_report(8, "floor", lambda: False)
+    assert older(), "an older stop never matches a later one"
+    await asyncio.sleep(0.01)
+
+
+@pytest.mark.anyio
+async def test_stopping_captions_schedules_an_automatic_report(monkeypatch):
+    from portal.meeting_analysis import auto
+    from portal.transcription import worker as transcription_worker
+
+    class Stopped:
+        room_id = 7
+        language_code = "floor"
+
+        def stop(self):
+            pass
+
+        async def wait_until_stopped(self):
+            pass
+
+    scheduled = []
+    monkeypatch.setattr(auto, "schedule_auto_report", lambda *args: scheduled.append(args))
+    monkeypatch.setitem(transcription_worker.active_workers, "summit-7-floor", Stopped())
+    await transcription_worker.stop_transcription_worker("summit-7-floor")
+    ((room_id, channel_id, captions_running),) = scheduled
+    assert (room_id, channel_id, captions_running()) == (7, "floor", False)
+    transcription_worker.active_workers["summit-7-floor"] = Stopped()
+    try:
+        assert captions_running(), "a new worker for the booth means the session goes on"
+    finally:
+        transcription_worker.active_workers.pop("summit-7-floor")
+
+
+@pytest.mark.anyio
+async def test_settings_turn_automatic_reports_on(world):
+    url = f"/admin/events/{world['event']}/api-settings"
+    async with _client() as c:
+        page = await c.get(f"{url}/", cookies=world["admin"])
+        await c.post(
+            url, data={"meeting_analysis_enabled": "on", "meeting_analysis_auto": "on"}, cookies=world["admin"]
+        )
+        async with get_session() as s:
+            assert (await s.get(Event, world["event"])).meeting_analysis_auto
+        await c.post(url, data={"meeting_analysis_enabled": "on"}, cookies=world["admin"])
+    assert "Write a report automatically when captions stop" in page.text
+    async with get_session() as s:
+        assert not (await s.get(Event, world["event"])).meeting_analysis_auto
+
+
+def _mission_control_rooms(page: str) -> list[dict]:
+    import html
+    import re
+
+    config = re.search(r"data-config='([^']*)'", page).group(1)
+    return json.loads(html.unescape(config))["rooms"]
+
+
+@pytest.mark.anyio
+async def test_mission_control_shows_each_rooms_latest_report(world):
+    async with _client() as c:
+        off = await c.get("/mission-control/summit/", cookies=world["coordinator"])
+    assert _mission_control_rooms(off.text)[0]["reports"] is None, "nothing to show while reports are off"
+    await _enable(world)
+    await _report(world, status="done", title="Old notes")
+    report_id = await _report(world, status="running", automatic=True)
+    async with _client() as c:
+        coordinator = await c.get("/mission-control/summit/", cookies=world["coordinator"])
+        admin = await c.get("/mission-control/summit/", cookies=world["admin"])
+    reports = _mission_control_rooms(coordinator.text)[0]["reports"]
+    base = f"/events/{world['event']}/rooms/{world['room']}/analysis/"
+    assert reports["url"] == f"/admin{base}"
+    async with _client() as c:
+        panel = await c.get(reports["url"] + "?panel=1", cookies=world["coordinator"])
+    assert "Old notes" in panel.text and f'data-report-id="{report_id}"' in panel.text
+    assert "Generate report</button>" not in panel.text
+    assert _mission_control_rooms(admin.text)[0]["reports"]["url"] == f"/admin{base}"
+    async with _client() as c:
+        status_check = await c.get(f"/api/admin{base}{report_id}", cookies=world["coordinator"])
+    assert status_check.json()["status"] == "running"
+
+
+@pytest.mark.anyio
+async def test_event_owners_reach_reports_from_mission_control_in_their_workspace(world):
+    from portal.database import set_event_membership
+    from portal.roles import EVENT_OWNER
+
+    await _enable(world)
+    async with get_session() as s:
+        owner = await create_user(s, email="owner@example.com", display_name="Owner")
+        await set_event_membership(s, user_id=owner.id, event_id=world["event"], role=EVENT_OWNER)
+        cookies = {"user_token": create_user_token(user_id=owner.id, email=owner.email)}
+    async with _client() as c:
+        page = await c.get("/mission-control/summit/", cookies=cookies)
+        reports = _mission_control_rooms(page.text)[0]["reports"]
+        listing = await c.get(reports["url"], cookies=cookies)
+    assert reports["url"] == f"/workspace/events/{world['event']}/rooms/{world['room']}/analysis/"
+    assert listing.status_code == 200 and "Meeting reports" in listing.text

@@ -379,6 +379,27 @@ label {
   color: var(--bx-muted);
 }
 
+#monitor-source {
+  width: auto;
+  max-width: 100%;
+}
+
+#floor-player {
+  display: grid;
+  gap: 0.5rem;
+  padding: 1rem;
+}
+
+#floor-hls {
+  width: 100%;
+  min-height: 240px;
+  border: 0;
+}
+
+#floor-audio {
+  max-width: 100%;
+}
+
 .monitor-frame {
   position: relative;
   flex-grow: 1;
@@ -1308,4 +1329,27 @@ label {
   grid-column: 1 / -1;
   font-size: 0.78rem;
   color: var(--bx-muted);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .live-badge.on .live-dot,
+  .live-badge.standby .live-dot,
+  .header-btn--handover.state-flash-yellow {
+    animation: none !important;
+  }
+
+  .header-btn--handover.state-flash-yellow {
+    background: var(--vb-color-warning);
+    border-color: var(--vb-color-warning-text);
+    box-shadow: 0 0 0 2px color-mix(in srgb, var(--vb-color-warning) 50%, transparent);
+  }
+
+  .booth-layout,
+  .booth-layout *,
+  .booth-layout *::before,
+  .booth-layout *::after,
+  .toast,
+  .toast * {
+    transition-duration: 0.01ms !important;
+  }
 }
