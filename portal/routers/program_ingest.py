@@ -29,6 +29,7 @@ from portal.program_ingest import (
     configure_source,
     delete_srt_path_from_mediamtx,
     generate_backup_srt_passphrase,
+    has_supported_audio,
     health,
     kick,
     media_path,
@@ -226,11 +227,7 @@ async def ingest_status(event_id: int, room_id: int) -> JSONResponse:
             )
 
         # Operational metrics without exposing secrets (#750)
-        audio_present = bool(
-            current
-            and current.codecs
-            and any(c.upper() in {"AAC", "OPUS", "MPEG-4 AUDIO"} or "AAC" in c.upper() for c in current.codecs)
-        )
+        audio_present = bool(current and has_supported_audio(current.codecs))
         bytes_val = current.last_bytes if current and current.last_bytes >= 0 else 0
         metrics = {
             "bytes_received": bytes_val,
@@ -336,13 +333,26 @@ async def ingest_change(request: Request, event_id: int, room_id: int, change: I
                     raise HTTPException(409, "Primary feed is not connected")
                 if primary_snapshot.bytesReceived <= 0:
                     raise HTTPException(409, "Primary feed is not sending media")
+                primary_source_id = primary_snapshot.source.id if primary_snapshot.source else None
                 current = health.get(room.id)
-                if (
-                    current
-                    and current.primary_last_progress > 0
-                    and (time.monotonic() - current.primary_last_progress >= TAKEOVER_STALL_SECS)
-                ):
-                    raise HTTPException(409, "Primary feed is stalled")
+                if current and current.primary_session_id and current.primary_session_id == primary_source_id:
+                    if (
+                        current.primary_last_progress > 0
+                        and (time.monotonic() - current.primary_last_progress >= TAKEOVER_STALL_SECS)
+                    ):
+                        raise HTTPException(409, "Primary feed is stalled")
+                elif current and current.primary_session_id:
+                    # Publisher changed from previous session: verify progress between two samples
+                    initial_bytes = primary_snapshot.bytesReceived
+                    await asyncio.sleep(0.1)
+                    sample2 = await media_path(primary_path)
+                    if not sample2 or not sample2.ready or not sample2.source:
+                        raise HTTPException(409, "Primary feed is not connected")
+                    if sample2.bytesReceived <= initial_bytes:
+                        raise HTTPException(409, "Primary feed is still being verified; retry shortly")
+                    current.primary_session_id = primary_source_id
+                    current.primary_last_bytes = sample2.bytesReceived
+                    current.primary_last_progress = time.monotonic()
                 await promote_primary_feed(room, event.slug)
                 await session.commit()
                 return JSONResponse({"active_feed": "primary"})
@@ -388,7 +398,7 @@ async def ingest_change(request: Request, event_id: int, room_id: int, change: I
                     resp["backup_obs_server_url"] = (
                         f"srt://{_srt_host()}:{settings.program_srt_public_port}?streamid=publish:{backup_path}::{backup_secret}&passphrase={backup_secret}&pkt_size=1316"
                     )
-                return JSONResponse(resp)
+                return JSONResponse(resp, headers={"Cache-Control": "no-store", "Pragma": "no-cache"})
     secret = None
     rtmps_mode = False
     cleanup_pending = False
@@ -541,6 +551,7 @@ async def relay_destination_set(
             room = await get_room_by_id(session, room_id)
             if not room or room.event_id != event_id:
                 raise HTTPException(404, "Room not found")
+            old_destination = program_relay.destination(room)
             try:
                 program_relay.store_destination(room, destination.server_url, destination.stream_key)
             except ValueError as exc:
@@ -548,11 +559,18 @@ async def relay_destination_set(
             except RuntimeError:
                 raise HTTPException(409, "The server encryption key is not configured; ask the operator.") from None
             server_url = room.program_relay_server
-        try:
-            await program_relay.stop_relay(room_id, forget_health=False)
-        except httpx.HTTPError:
-            logger.warning("program_relay stop_failed_on_save room_id=%s", room_id)
-            raise HTTPException(502, "Relay service unavailable; retry saving destination to restart relay.")
+            new_destination = program_relay.destination(room)
+
+        relay_health = program_relay.relay_health.get(room_id)
+        relay_failed = relay_health is not None and relay_health.state in ("failed", "unconfigured", "degraded")
+        destination_changed = (old_destination != new_destination)
+
+        if destination_changed or relay_failed:
+            try:
+                await program_relay.stop_relay(room_id, forget_health=False)
+            except httpx.HTTPError:
+                logger.warning("program_relay stop_failed_on_save room_id=%s", room_id)
+                raise HTTPException(502, "Relay service unavailable; retry saving destination to restart relay.")
     # A running relay restarts on the new destination at the next reconcile (fingerprint change).
     logger.info("program_relay destination_set room_id=%s", room_id)
     return JSONResponse({"configured": True, "server_url": server_url}, headers={"Cache-Control": "no-store"})

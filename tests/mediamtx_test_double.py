@@ -7,24 +7,31 @@ Faithfully reproduces MediaMTX 1.21.4 behavior:
 4. GET /v3/config/paths/list: returns list of path configs with '<redacted>' for non-empty srtPublishPassphrase.
 5. DELETE /v3/config/paths/delete/{name}: removes path, 404 if not found.
 6. Live path queries: /paths/list and /paths/get/{name}.
-7. Kick endpoints: /v3/{endpoint}/kick/{id} returns 200.
+7. Kick endpoints: /v3/{endpoint}/kick/{id} validates UUID, removes live source, 404 if not found.
 """
 
 from __future__ import annotations
 
 import json
 from typing import Any
+from uuid import UUID
 
 import httpx
 
 
 class MediaMTX121ControlDouble:
-    def __init__(self, media: dict[str, dict[str, Any]] | None = None, record_body: bool = True) -> None:
+    def __init__(
+        self,
+        media: dict[str, dict[str, Any]] | None = None,
+        record_body: bool = True,
+        redact_passphrase: bool = False,
+    ) -> None:
         self.configured_paths: dict[str, dict[str, Any]] = {}
         self.media: dict[str, dict[str, Any]] = media if media is not None else {}
         self.calls: list[Any] = []
         self.call_records: list[tuple[str, str, dict[str, Any]]] = []
         self.record_body = record_body
+        self.redact_passphrase = redact_passphrase
 
     def set_path(self, name: str, srt_passphrase: str = "", **extra: Any) -> None:
         """Test helper to register a path with a passphrase."""
@@ -81,7 +88,10 @@ class MediaMTX121ControlDouble:
             if name in self.configured_paths:
                 entry = dict(self.configured_paths[name])
                 entry["name"] = name
-                entry["srtPublishPassphrase"] = "<redacted>" if entry.get("srtPublishPassphrase") else ""
+                if self.redact_passphrase:
+                    entry["srtPublishPassphrase"] = "<redacted>" if entry.get("srtPublishPassphrase") else ""
+                else:
+                    entry["srtPublishPassphrase"] = entry.get("srtPublishPassphrase", "")
                 return httpx.Response(200, json=entry)
             return httpx.Response(404, json={"status": "error", "error": f"path '{name}' not found"})
 
@@ -90,7 +100,10 @@ class MediaMTX121ControlDouble:
             for name, entry in self.configured_paths.items():
                 item = dict(entry)
                 item["name"] = name
-                item["srtPublishPassphrase"] = "<redacted>" if item.get("srtPublishPassphrase") else ""
+                if self.redact_passphrase:
+                    item["srtPublishPassphrase"] = "<redacted>" if item.get("srtPublishPassphrase") else ""
+                else:
+                    item["srtPublishPassphrase"] = item.get("srtPublishPassphrase", "")
                 items.append(item)
             return httpx.Response(200, json={"itemCount": len(items), "pageCount": 1, "items": items})
 
@@ -118,15 +131,39 @@ class MediaMTX121ControlDouble:
             return httpx.Response(404, json={"status": "error", "error": f"path '{name}' not found"})
 
         if "/paths/list" in path:
-            return httpx.Response(200, json={"items": list(self.media.values())})
+            items = []
+            for name, m in self.media.items():
+                entry = dict(m)
+                entry.setdefault("name", name)
+                items.append(entry)
+            return httpx.Response(200, json={"items": items})
 
         if "/paths/get/" in path:
             name = path.split("/paths/get/")[1]
             if name in self.media:
-                return httpx.Response(200, json=self.media[name])
+                entry = dict(self.media[name])
+                entry.setdefault("name", name)
+                return httpx.Response(200, json=entry)
             return httpx.Response(404, json={"error": f"path '{name}' not found"})
 
         if "/kick/" in path:
-            return httpx.Response(200, json={})
+            if request.method != "POST":
+                return httpx.Response(405, json={"status": "error", "error": "method not allowed"})
+            sess_id = path.rstrip("/").split("/kick/")[-1]
+            try:
+                uuid_obj = UUID(sess_id)
+            except (ValueError, TypeError):
+                return httpx.Response(400, json={"status": "error", "error": f"invalid UUID: '{sess_id}'"})
+
+            found = False
+            for m in self.media.values():
+                src = m.get("source")
+                if isinstance(src, dict) and src.get("id") == str(uuid_obj):
+                    m["source"] = None
+                    m["ready"] = False
+                    found = True
+            if found:
+                return httpx.Response(200, json={})
+            return httpx.Response(404, json={"status": "error", "error": f"session '{sess_id}' not found"})
 
         return httpx.Response(200, json={})

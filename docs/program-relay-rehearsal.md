@@ -12,9 +12,9 @@ VoxBento accepts program contribution via **SRT Caller** (recommended for low-la
 
 ### OBS Studio (Software Encoder)
 * **Service:** Custom...
-* **Server:** `srt://<host>:8890?streamid=publish:<event_slug>/<room_id>/floor::<passphrase>&latency=500000` (or `#!::r=<event_slug>/<room_id>/floor,m=publish,s=<passphrase>&latency=500000`)
-  * *For Backup Feed:* `srt://<host>:8890?streamid=publish:<event_slug>/<room_id>/floor_backup::<passphrase>&latency=500000` (or `#!::r=<event_slug>/<room_id>/floor_backup,m=publish,s=<passphrase>&latency=500000`)
-* **Stream Key / Passphrase:** Leave stream key blank in OBS; enter the room passphrase in the passphrase field (or append `&passphrase=<passphrase>` if using URI-only configuration).
+* **Server:** `srt://<host>:8890?streamid=publish:<event_slug>/<room_id>/floor::<passphrase>&latency=500000` (or `srt://<host>:8890?streamid=#!::r=<event_slug>/<room_id>/floor,m=publish,s=<passphrase>&latency=500000`)
+  * *For Backup Feed:* `srt://<host>:8890?streamid=publish:<event_slug>/<room_id>/floor_backup::<backup_passphrase>&latency=500000` (or `srt://<host>:8890?streamid=#!::r=<event_slug>/<room_id>/floor_backup,m=publish,s=<backup_passphrase>&latency=500000`)
+* **Stream Key / Passphrase:** Leave stream key blank in OBS; enter the room passphrase for primary (or separate backup passphrase for backup feed) in the passphrase field (or append `&passphrase=<passphrase>` / `&passphrase=<backup_passphrase>` if using URI-only configuration). Both Stream ID and encryption require the feed's own passphrase.
 * **Latency:** `500ms` (`latency=500000` in microseconds).
 * **Video Output:**
   * **Encoder:** x264 or hardware H.264 (NVENC, QuickSync, Apple VideoToolbox)
@@ -33,9 +33,9 @@ VoxBento accepts program contribution via **SRT Caller** (recommended for low-la
 * **Hostname / Address:** `<host>`
 * **Port:** `8890`
 * **Latency:** `500 ms`
-* **Passphrase:** Enter the room SRT passphrase (AES-128 / AES-256 enabled).
+* **Passphrase:** Enter the room SRT passphrase for primary (or separate backup passphrase for backup; AES-128 / AES-256 enabled).
 * **Stream ID:** `publish:<event_slug>/<room_id>/floor::<passphrase>` (or `#!::r=<event_slug>/<room_id>/floor,m=publish,s=<passphrase>`)
-  * *Backup feed:* `publish:<event_slug>/<room_id>/floor_backup::<passphrase>` (or `#!::r=<event_slug>/<room_id>/floor_backup,m=publish,s=<passphrase>`)
+  * *Backup feed:* `publish:<event_slug>/<room_id>/floor_backup::<backup_passphrase>` (or `#!::r=<event_slug>/<room_id>/floor_backup,m=publish,s=<backup_passphrase>`)
 * **Video Encoding:** H.264, CBR `5000 kbps`, 1080p, Keyframe interval `2 seconds`.
 * **Audio Encoding:** AAC `48 kHz`, `160 kbps` stereo.
 
@@ -44,8 +44,8 @@ VoxBento accepts program contribution via **SRT Caller** (recommended for low-la
 * **Mode:** Caller
 * **Address:** `srt://<host>:8890`
 * **Latency:** `500 ms`
-* **Passphrase:** Enter room SRT passphrase.
-* **Stream ID:** `publish:<event_slug>/<room_id>/floor::<passphrase>` (or `#!::r=<event_slug>/<room_id>/floor,m=publish,s=<passphrase>`) (or `floor_backup`)
+* **Passphrase:** Enter room SRT passphrase for primary, or backup passphrase for backup.
+* **Stream ID:** `publish:<event_slug>/<room_id>/floor::<passphrase>` (or `#!::r=<event_slug>/<room_id>/floor,m=publish,s=<passphrase>`); for backup feed: `publish:<event_slug>/<room_id>/floor_backup::<backup_passphrase>` (or `#!::r=<event_slug>/<room_id>/floor_backup,m=publish,s=<backup_passphrase>`)
 * **Encoding Profile:** H.264 Main/High, CBR `5000 kbps`, Keyframe every `2 seconds`.
 * **Audio Profile:** AAC `48 kHz` stereo, `128 - 192 kbps`.
 
@@ -57,8 +57,8 @@ VoxBento accepts program contribution via **SRT Caller** (recommended for low-la
 * **Destination Port:** `8890`
 * **SRT Packet Size:** `1316 bytes` (exactly 7 × 188-byte MPEG-TS packets per SRT frame)
 * **SRT Latency:** `500 ms`
-* **Encryption:** AES-128 or AES-256 with the room SRT passphrase
-* **Stream ID:** `publish:<event_slug>/<room_id>/floor::<passphrase>` (or `#!::r=<event_slug>/<room_id>/floor,m=publish,s=<passphrase>`) (or `floor_backup`)
+* **Encryption:** AES-128 or AES-256 with the room SRT passphrase for primary (or separate backup passphrase for backup feed)
+* **Stream ID:** `publish:<event_slug>/<room_id>/floor::<passphrase>` (or `#!::r=<event_slug>/<room_id>/floor,m=publish,s=<passphrase>`); for backup feed: `publish:<event_slug>/<room_id>/floor_backup::<backup_passphrase>` (or `#!::r=<event_slug>/<room_id>/floor_backup,m=publish,s=<backup_passphrase>`)
 * **Video Parameters:** H.264, CBR `5000 kbps`, GOP length `60 frames at 30 fps` (2 seconds), closed GOP.
 * **Audio Parameters:** AAC-LC, `48 kHz`, `128 kbps` stereo.
 

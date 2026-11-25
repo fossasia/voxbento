@@ -286,10 +286,16 @@ class RelayManager:
         relay.state, relay.reason = "stopped", "Relay stopped."
         self._terminate(relay.process)
 
-    @staticmethod
-    def _terminate(process: subprocess.Popen | None) -> None:
+    _terminate_lock = threading.Lock()
+
+    @classmethod
+    def _terminate(cls, process: subprocess.Popen | None) -> None:
         if process is None or process.poll() is not None:
             return
+        with cls._terminate_lock:
+            if process.poll() is not None or getattr(process, "_is_terminating", False):
+                return
+            process._is_terminating = True
         try:
             if os.name == "posix":
                 os.killpg(process.pid, signal.SIGTERM)

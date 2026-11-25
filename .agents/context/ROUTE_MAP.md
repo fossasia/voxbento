@@ -251,7 +251,7 @@ with `?error=invalid_role&role=…` and the page explains why.
 
 - `POST .../program-ingest` accepts `mode: "srt"` on enable. Generates random 256-bit passphrase, stored Fernet-encrypted, write-only via API.
 - `POST .../program-ingest` actions: `toggle_backup` (`{action: "toggle_backup", backup_enabled: bool}`) to activate redundant ingest on `{event}/{room}/floor_backup`, and `promote_primary` (`{action: "promote_primary"}`) to manually revert an anti-flapping promoted backup feed back to primary.
-- Status (`GET .../program-ingest`) adds `srt_available`, `srt_server`, `srt_backup_server`, `backup_enabled`, `backup_connected`, `active_feed`, `alerts` (subsystem-tagged operator alerts for `encoder`, `gateway`, `youtube`, `language_provider`), and `metrics` (`bytes_received`, `packets_received`, `audio_present`, `reconnect_count`, `ingest_continuity`, `egress_continuity`, `processing_progress`).
+- Status (`GET .../program-ingest`) adds `srt_available`, `srt_server`, `srt_backup_server`, `backup_enabled`, `backup_connected`, `active_feed`, `alerts` (subsystem-tagged operator alerts for `encoder`, `gateway`, `youtube`, `language_provider`), and `metrics` (`bytes_received`, `audio_present`, `reconnect_count`, `ingest_continuity`, `egress_continuity`, `processing_progress`).
 - `/internal/media-auth`: accepts `protocol: srt` on primary `{event}/{room}/floor` and backup `{event}/{room}/floor_backup` paths; validates room ownership, active/unexpired credentials, single-publisher reservations (409), and contribution room capacity ceiling `PROGRAM_CONTRIBUTION_MAX=4` (429).
 
 ## Sign in with YouTube routes (#1087)

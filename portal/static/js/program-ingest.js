@@ -202,7 +202,7 @@ function renderStatus(data) {
     promoteBtn.hidden = !(selectedMode() === 'srt' && data.enabled && data.active_feed === 'backup');
   }
   const backupToggle = document.getElementById('program-backup-toggle');
-  if (backupToggle) {
+  if (backupToggle && !busy) {
     backupToggle.checked = Boolean(data.backup_enabled);
     backupToggle.disabled = !data.enabled || selectedMode() !== 'srt';
   }
@@ -697,7 +697,11 @@ if (copySrtBackupBtn) {
 const backupToggle = document.getElementById('program-backup-toggle');
 if (backupToggle) {
   backupToggle.addEventListener('change', async () => {
-    if (busy) return;
+    if (busy) {
+      backupToggle.checked = !backupToggle.checked;
+      return;
+    }
+    const requested = backupToggle.checked;
     busy = true;
     backupToggle.disabled = true;
     try {
@@ -709,7 +713,7 @@ if (backupToggle) {
         },
         body: JSON.stringify({
           action: 'toggle_backup',
-          backup_enabled: backupToggle.checked,
+          backup_enabled: requested,
           mode: selectedMode()
         }),
       });
@@ -723,7 +727,7 @@ if (backupToggle) {
           backupSecretRow.hidden = false;
           document.getElementById('program-secret-panel').hidden = false;
         }
-      } else if (!backupToggle.checked) {
+      } else if (!requested) {
         savePassphrases(undefined, '');
         if (backupSecretRow) backupSecretRow.hidden = true;
         if (backupSecretInput) backupSecretInput.value = '';
@@ -732,7 +736,7 @@ if (backupToggle) {
     } catch (error) {
       console.error('Failed to toggle backup feed', error);
       status.textContent = error.message;
-      backupToggle.checked = !backupToggle.checked;
+      backupToggle.checked = !requested;
     } finally {
       backupToggle.disabled = false;
       busy = false;

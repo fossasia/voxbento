@@ -30,6 +30,7 @@ YOUTUBE_KEY = "abcd-efgh-ijkl-mnop-qrst"
 async def relay_env(monkeypatch):
     configure("sqlite+aiosqlite://")
     await init_db()
+    monkeypatch.setattr(settings, "jwt_secret", "test_jwt_secret_fixed_for_relay_32chars")
     monkeypatch.setattr(settings, "program_ingest_enabled", True)
     monkeypatch.setattr(settings, "program_relay_enabled", True)
     monkeypatch.setattr(settings, "program_relay_control_secret", RELAY_SECRET)
@@ -694,6 +695,22 @@ async def test_relay_resave_same_key_restarts_failed_relay(relay_env):
 
 
 @pytest.mark.anyio
+async def test_relay_resave_unchanged_key_does_not_restart_healthy_relay(relay_env):
+    env = relay_env
+    client, event, room = env["client"], env["event"], env["rooms"][0]
+    await enable_relay(client, event, room)
+    await save_destination(client, event, room, key=YOUTUBE_KEY)
+    relay.relay_health[room.id] = relay.RelayHealth("live", "Forwarding to YouTube.")
+
+    env["calls"].clear()
+    resp = await client.put(relay_url(event, room), json={"server_url": YOUTUBE_SERVER, "stream_key": YOUTUBE_KEY})
+    assert resp.status_code == 200
+
+    # Healthy relay must NOT be stopped when re-saving unchanged key
+    assert ("DELETE", f"/relays/{room.id}") not in env["calls"]
+
+
+@pytest.mark.anyio
 async def test_relay_resave_reports_502_when_stop_fails(relay_env):
     env = relay_env
     client, event, room = env["client"], env["event"], env["rooms"][0]
@@ -703,7 +720,8 @@ async def test_relay_resave_reports_502_when_stop_fails(relay_env):
     # Bring down the relay service so DELETE /relays/{room.id} fails with 500 (httpx.HTTPError)
     env["service"]["up"] = False
 
-    resp = await client.put(relay_url(event, room), json={"server_url": YOUTUBE_SERVER, "stream_key": YOUTUBE_KEY})
+    new_key = "rotated-key-12345"
+    resp = await client.put(relay_url(event, room), json={"server_url": YOUTUBE_SERVER, "stream_key": new_key})
     assert resp.status_code == 502
     assert "Relay service unavailable" in resp.json()["detail"]
 
@@ -711,5 +729,5 @@ async def test_relay_resave_reports_502_when_stop_fails(relay_env):
     async with get_session() as session:
         stored_room = await session.get(Room, room.id)
         assert stored_room.program_relay_server == YOUTUBE_SERVER
-        assert decrypt_val(stored_room.program_relay_key_enc) == YOUTUBE_KEY
+        assert decrypt_val(stored_room.program_relay_key_enc) == new_key
 

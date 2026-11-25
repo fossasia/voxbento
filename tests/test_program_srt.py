@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
+import shutil
 from unittest.mock import AsyncMock
 from uuid import uuid4
 
@@ -272,11 +274,12 @@ async def test_generate_and_apply_srt_passphrase(srt_env):
 async def test_srt_codec_validation_accepts_aac_audio_and_tolerates_data_tracks(srt_env):
     event = srt_env["event"]
     room = srt_env["rooms"][0]
+    test_session_id = str(uuid4())
 
     async with get_session() as session:
         stored = await session.get(Room, room.id)
         assert stored is not None
-        stored.program_session_id = "test-session-id"
+        stored.program_session_id = test_session_id
         await session.commit()
 
     # Helper to test codec validation
@@ -286,7 +289,7 @@ async def test_srt_codec_validation_accepts_aac_audio_and_tolerates_data_tracks(
         path = ingest.MediaPath(
             name=f"{event.slug}/{room.id}/floor",
             ready=True,
-            source=ingest.MediaSource(id="test-session-id", type="srtConn"),
+            source=ingest.MediaSource(id=test_session_id, type="srtConn"),
             tracks=tracks,
             bytesReceived=1024,
         )
@@ -340,7 +343,7 @@ async def test_srt_aac_audio_track_recognized_for_transcription(srt_env):
     path = ingest.MediaPath(
         name=f"{event.slug}/{room.id}/floor",
         ready=True,
-        source=ingest.MediaSource(id="test-session-id", type="srtConn"),
+        source=ingest.MediaSource(id=str(uuid4()), type="srtConn"),
         tracks=["H264", "AAC"],
         bytesReceived=1024,
     )
@@ -575,7 +578,7 @@ async def test_srt_revoke_returns_202_cleanup_pending_on_mediamtx_delete_failure
 @pytest.mark.anyio
 async def test_mediamtx_121_control_api_contract_duplicate_add_and_patch_preservation():
     """Verify MediaMTX 1.21.4 Control API contract: rejects duplicate add, preserves omitted fields on patch."""
-    double = MediaMTX121ControlDouble()
+    double = MediaMTX121ControlDouble(redact_passphrase=True)
     async with httpx.AsyncClient(transport=httpx.MockTransport(double.handle_request)) as client:
         # 1. Add new path
         add_resp = await client.post(
@@ -615,46 +618,77 @@ async def test_mediamtx_121_control_api_contract_duplicate_add_and_patch_preserv
 
 @pytest.mark.anyio
 async def test_pinned_image_mediamtx_api_live_contract():
-    """Verify against live pinned MediaMTX 1.21.4 container when reachable."""
-    api_base = settings.mediamtx_api_base
+    """Verify against live pinned MediaMTX 1.21.4 container when configured via MEDIAMTX_TEST_API_BASE."""
+    api_base = os.environ.get("MEDIAMTX_TEST_API_BASE")
+    if not api_base:
+        pytest.skip("MEDIAMTX_TEST_API_BASE not set; skipping live MediaMTX contract test")
+
     try:
-        async with httpx.AsyncClient(timeout=2.0) as client:
-            resp = await client.get(f"{api_base}/v3/config/paths/list")
+        async with httpx.AsyncClient(timeout=3.0) as client:
+            try:
+                resp = await client.get(f"{api_base}/v3/info")
+            except (httpx.ConnectError, httpx.TimeoutException) as exc:
+                pytest.skip(f"MediaMTX test instance not reachable: {exc}")
+
             if resp.status_code != 200:
-                pytest.skip("MediaMTX container not available")
+                pytest.skip(f"MediaMTX test instance returned HTTP {resp.status_code}")
 
-            test_path = "live-pinned-test/floor"
-            # Cleanup in case left over
-            await client.delete(f"{api_base}/v3/config/paths/delete/{test_path}")
+            version = resp.json().get("version", "")
+            if not version.startswith("v1.21"):
+                pytest.skip(f"Expected MediaMTX v1.21.x, got version '{version}'")
 
-            # 1. Add
-            r = await client.post(
-                f"{api_base}/v3/config/paths/add/{test_path}",
-                json={"srtPublishPassphrase": "live-test-secret", "overridePublisher": False},
-            )
-            assert r.status_code == 200
+            test_id = uuid4().hex[:8]
+            test_path = f"live-pinned-test-{test_id}/floor"
+            original_passphrase = f"live-test-secret-{test_id}"
+            path_created = False
 
-            # 2. Duplicate add rejected with 400
-            r_dup = await client.post(
-                f"{api_base}/v3/config/paths/add/{test_path}",
-                json={"srtPublishPassphrase": "other-secret"},
-            )
-            assert r_dup.status_code == 400
+            try:
+                # 1. Add
+                r = await client.post(
+                    f"{api_base}/v3/config/paths/add/{test_path}",
+                    json={"srtPublishPassphrase": original_passphrase, "overridePublisher": False},
+                )
+                assert r.status_code == 200
+                path_created = True
 
-            # 3. Patch preserves omitted passphrase
-            r_patch = await client.patch(
-                f"{api_base}/v3/config/paths/patch/{test_path}",
-                json={"overridePublisher": False},
-            )
-            assert r_patch.status_code == 200
+                # 2. Duplicate add rejected with 400
+                r_dup = await client.post(
+                    f"{api_base}/v3/config/paths/add/{test_path}",
+                    json={"srtPublishPassphrase": "other-secret"},
+                )
+                assert r_dup.status_code == 400
 
-            # 4. Get redacts passphrase
-            r_get = await client.get(f"{api_base}/v3/config/paths/get/{test_path}")
-            assert r_get.status_code == 200
-            assert r_get.json().get("srtPublishPassphrase") == "<redacted>"
+                # 3. Patch preserves omitted passphrase
+                r_patch = await client.patch(
+                    f"{api_base}/v3/config/paths/patch/{test_path}",
+                    json={"overridePublisher": True},
+                )
+                assert r_patch.status_code == 200
 
-            # Cleanup
-            await client.delete(f"{api_base}/v3/config/paths/delete/{test_path}")
-    except (httpx.ConnectError, httpx.TimeoutException):
-        pytest.skip("MediaMTX container not reachable")
+                # 4. Get redacts passphrase and reflects patched field
+                r_get = await client.get(f"{api_base}/v3/config/paths/get/{test_path}")
+                assert r_get.status_code == 200
+                assert r_get.json().get("srtPublishPassphrase") == "<redacted>"
+                assert r_get.json().get("overridePublisher") is True
+
+                # 5. Check credential preservation against live instance if SRT endpoint is available
+                srt_base = os.environ.get("MEDIAMTX_TEST_SRT_URL")
+                if srt_base and shutil.which("ffmpeg"):
+                    proc = await asyncio.create_subprocess_exec(
+                        "ffmpeg", "-y", "-f", "lavfi", "-i", "anullsrc", "-t", "0.2", "-f", "mpegts",
+                        f"{srt_base}/{test_path}?streamid=publish:{test_path}::{original_passphrase}&passphrase={original_passphrase}",
+                        stdout=asyncio.subprocess.PIPE,
+                        stderr=asyncio.subprocess.PIPE,
+                    )
+                    await proc.communicate()
+                    assert proc.returncode == 0
+            finally:
+                if path_created:
+                    try:
+                        del_resp = await client.delete(f"{api_base}/v3/config/paths/delete/{test_path}")
+                        assert del_resp.status_code in (200, 404)
+                    except (httpx.ConnectError, httpx.TimeoutException) as cleanup_err:
+                        raise RuntimeError(f"Failed to cleanup test path '{test_path}': {cleanup_err}") from cleanup_err
+    except (httpx.ConnectError, httpx.TimeoutException) as exc:
+        pytest.skip(f"MediaMTX container communication error: {exc}")
 
