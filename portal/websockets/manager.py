@@ -5,7 +5,7 @@ import json
 import logging
 import struct
 import time
-from collections import OrderedDict
+from collections import OrderedDict, deque
 from collections.abc import AsyncIterator, Awaitable, Callable
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
@@ -317,6 +317,8 @@ class ConnectionManager:
         """
         booths.lock_broadcast_sync(booth_id)
         self._allowed_cache.pop(booth_id, None)
+        listener_manager.clear_booth(booth_id)
+        tts_manager.clear_booth(booth_id)
         room_sockets = list(self._rooms.get(booth_id, set()))
         for ws in room_sockets:
             self.revoke_session(ws)
@@ -490,6 +492,62 @@ def _current_listener_state(booth_id: str, fallback: dict | None = None) -> dict
     return listener_booth_state(fallback) if fallback is not None else None
 
 
+@dataclass(frozen=True)
+class _ReplayEntry:
+    recorded_at: float
+    dedup_key: str | None
+    data: dict[str, object]
+
+
+class _ReplayBuffer:
+    """Bounded in-memory per-channel ring buffer with TTL and LRU channel eviction."""
+
+    def __init__(self, *, max_items: int = 15, ttl_seconds: float = 600.0, max_channels: int = 2000) -> None:
+        self.max_items = max_items
+        self.ttl_seconds = ttl_seconds
+        self.max_channels = max_channels
+        self._channels: OrderedDict[str, deque[_ReplayEntry]] = OrderedDict()
+
+    def record(self, key: str, data: dict[str, object], *, dedup_key: str | None = None) -> None:
+        """Append or update an entry for *key*, bounding per-channel depth and total channel count."""
+        bucket = self._channels.get(key)
+        if bucket is None:
+            bucket = deque(maxlen=self.max_items)
+            self._channels[key] = bucket
+            while len(self._channels) > self.max_channels:
+                self._channels.popitem(last=False)
+        else:
+            self._channels.move_to_end(key)
+
+        if dedup_key:
+            filtered = [entry for entry in bucket if entry.dedup_key != dedup_key]
+            if len(filtered) != len(bucket):
+                bucket.clear()
+                bucket.extend(filtered)
+
+        bucket.append(_ReplayEntry(recorded_at=time.monotonic(), dedup_key=dedup_key, data=dict(data)))
+
+    def snapshot(self, key: str) -> list[dict[str, object]]:
+        """Return non-expired buffered entries for *key* in chronological order."""
+        bucket = self._channels.get(key)
+        if not bucket:
+            return []
+        cutoff = time.monotonic() - self.ttl_seconds
+        while bucket and bucket[0].recorded_at < cutoff:
+            bucket.popleft()
+        if not bucket:
+            self._channels.pop(key, None)
+            return []
+        return [dict(entry.data) for entry in bucket]
+
+    def clear_key(self, key: str) -> None:
+        self._channels.pop(key, None)
+
+    def clear_matching(self, predicate: Callable[[str], bool]) -> None:
+        for key in [k for k in self._channels if predicate(k)]:
+            self._channels.pop(key, None)
+
+
 @dataclass
 class _StateLock:
     lock: asyncio.Lock = field(default_factory=asyncio.Lock)
@@ -498,7 +556,7 @@ class _StateLock:
 
 
 class ListenerConnectionManager:
-    def __init__(self) -> None:
+    def __init__(self, *, replay_max_items: int = 15, replay_ttl_seconds: float = 600.0) -> None:
         self._rooms: dict[str, set[WebSocket]] = {}
         # Last listener state sent per booth, so updates that only touch
         # interpreter-side fields (mic, chat, handoff) don't fan out to every listener.
@@ -509,9 +567,12 @@ class ListenerConnectionManager:
         # booth IDs from the captions endpoint don't accumulate.
         self._state_locks: dict[str, _StateLock] = {}
         self._anon_rooms: dict[str, set[WebSocket]] = {}
+        self._send_locks: dict[int, asyncio.Lock] = {}
+        self._replay = _ReplayBuffer(max_items=replay_max_items, ttl_seconds=replay_ttl_seconds)
 
     def add(self, ws: WebSocket, booth_id: str, *, is_anonymous: bool = False) -> None:
         self._rooms.setdefault(booth_id, set()).add(ws)
+        self._send_locks.setdefault(id(ws), asyncio.Lock())
         if is_anonymous:
             self._anon_rooms.setdefault(booth_id, set()).add(ws)
 
@@ -540,6 +601,7 @@ class ListenerConnectionManager:
         return bool(self._rooms.get(booth_id, set()))
 
     def remove(self, ws: WebSocket, booth_id: str) -> None:
+        self._send_locks.pop(id(ws), None)
         room = self._rooms.get(booth_id, set())
         room.discard(ws)
         if not room:
@@ -550,6 +612,35 @@ class ListenerConnectionManager:
         anon_set.discard(ws)
         if not anon_set:
             self._anon_rooms.pop(booth_id, None)
+
+    def clear_booth(self, booth_id: str) -> None:
+        """Purge cached replay captions for *booth_id*."""
+        self._replay.clear_key(booth_id)
+
+    def clear_room(self, event_slug: str, room_id: int) -> None:
+        """Purge cached replay captions for all channels in a deleted room."""
+        prefix = f"{event_slug}-{room_id}-"
+        self._replay.clear_matching(lambda k: k.startswith(prefix))
+
+    def clear_event(self, event_slug: str) -> None:
+        """Purge cached replay captions for an event (e.g. deletion or join-code rotation)."""
+        prefix = f"{event_slug}-"
+        self._replay.clear_matching(lambda k: k.startswith(prefix))
+
+    def snapshot_recent_captions(self, booth_id: str) -> list[dict[str, object]]:
+        """Return recent finalized captions tagged ``replay: True``."""
+        items = self._replay.snapshot(booth_id)
+        for item in items:
+            item["replay"] = True
+        return items
+
+    async def _send_locked(self, ws: WebSocket, text: str) -> None:
+        lock = self._send_locks.get(id(ws))
+        if lock is None:
+            await ws.send_text(text)
+            return
+        async with lock:
+            await ws.send_text(text)
 
     @asynccontextmanager
     async def _state_lock(self, booth_id: str) -> AsyncIterator[None]:
@@ -566,11 +657,14 @@ class ListenerConnectionManager:
                 del self._state_locks[booth_id]
 
     async def broadcast(self, booth_id: str, message: dict) -> None:
+        if message.get("type") in ("caption", "translated_caption") and message.get("status") == "final":
+            dedup_key = str(message.get("segment_id") or "") or None
+            self._replay.record(booth_id, message, dedup_key=dedup_key)
         payload = json.dumps(message)
         dead: list[WebSocket] = []
         for ws in list(self._rooms.get(booth_id, set())):
             try:
-                await ws.send_text(payload)
+                await self._send_locked(ws, payload)
             except Exception:
                 dead.append(ws)
         for ws in dead:
@@ -591,19 +685,31 @@ class ListenerConnectionManager:
             self._last_state[booth_id] = listener_state
             await self.broadcast(booth_id, {"type": "booth:state", "state": listener_state})
 
-    async def send_booth_state(self, ws: WebSocket, booth_id: str) -> None:
-        """Send one newly connected listener the booth's current status, if the booth exists."""
+    async def send_booth_state(self, ws: WebSocket, booth_id: str, *, include_replay: bool = False) -> None:
+        """Send one newly connected listener the booth's current status and optional recent captions."""
+        lock = self._send_locks.setdefault(id(ws), asyncio.Lock())
         async with self._state_lock(booth_id):
             listener_state = _current_listener_state(booth_id)
-            if listener_state is not None:
-                await ws.send_text(json.dumps({"type": "booth:state", "state": listener_state}))
+            replay_items = self.snapshot_recent_captions(booth_id) if include_replay else []
+            async with lock:
+                if listener_state is not None:
+                    await ws.send_text(json.dumps({"type": "booth:state", "state": listener_state}))
+                for item in replay_items:
+                    await ws.send_text(json.dumps(item))
 
 
 logger = logging.getLogger(__name__)
 
 
 class TTSConnectionManager:
-    def __init__(self, reauthorize_seconds: float = 5.0, max_concurrent_authorizations: int = 4) -> None:
+    def __init__(
+        self,
+        reauthorize_seconds: float = 5.0,
+        max_concurrent_authorizations: int = 4,
+        *,
+        replay_max_items: int = 15,
+        replay_ttl_seconds: float = 600.0,
+    ) -> None:
         self._rooms: dict[str, set[WebSocket]] = {}
         self._authorizers: dict[WebSocket, Callable[[], Awaitable[None]]] = {}
         # Rechecking on every bundle would cost one DB read per subscriber per segment, so a
@@ -612,6 +718,8 @@ class TTSConnectionManager:
         self._authorized_at: dict[WebSocket, float] = {}
         # Keeps a large audience from taking every pooled DB connection at once.
         self._authorization_slots = asyncio.Semaphore(max_concurrent_authorizations)
+        self._send_locks: dict[int, asyncio.Lock] = {}
+        self._replay = _ReplayBuffer(max_items=replay_max_items, ttl_seconds=replay_ttl_seconds)
 
     def _get_key(self, room_id: int, language_code: str, booth_id: str) -> str:
         return f"{room_id}-{language_code}-{booth_id}"
@@ -627,12 +735,14 @@ class TTSConnectionManager:
     ) -> None:
         key = self._get_key(room_id, language_code, booth_id)
         self._rooms.setdefault(key, set()).add(ws)
+        self._send_locks.setdefault(id(ws), asyncio.Lock())
         if authorize is not None:
             self._authorizers[ws] = authorize
 
     def remove(self, ws: WebSocket, room_id: int, language_code: str, booth_id: str) -> None:
         self._authorizers.pop(ws, None)
         self._authorized_at.pop(ws, None)
+        self._send_locks.pop(id(ws), None)
         key = self._get_key(room_id, language_code, booth_id)
         room = self._rooms.get(key, set())
         room.discard(ws)
@@ -642,6 +752,48 @@ class TTSConnectionManager:
     def has_listeners(self, room_id: int, language_code: str, booth_id: str) -> bool:
         key = self._get_key(room_id, language_code, booth_id)
         return bool(self._rooms.get(key, set()))
+
+    def clear_booth(self, booth_id: str) -> None:
+        """Purge cached TTS text replay headers for *booth_id*."""
+        suffix = f"-{booth_id}"
+        self._replay.clear_matching(lambda k: k.endswith(suffix))
+
+    def clear_room(self, event_slug: str, room_id: int) -> None:
+        """Purge cached TTS text replay headers for *room_id*."""
+        prefix = f"{room_id}-"
+        self._replay.clear_matching(lambda k: k.startswith(prefix) and f"-{event_slug}-{room_id}-" in k)
+
+    def clear_event(self, event_slug: str) -> None:
+        """Purge cached TTS text replay headers for *event_slug*."""
+        marker = f"-{event_slug}-"
+        self._replay.clear_matching(lambda k: marker in k)
+
+    def snapshot_recent_frames(self, room_id: int, language_code: str, booth_id: str) -> list[bytes]:
+        """Build text-only zero-audio binary bundles for recent finalized translations."""
+        key = self._get_key(room_id, language_code, booth_id)
+        frames: list[bytes] = []
+        for header in self._replay.snapshot(key):
+            header["audio_pending"] = False
+            header["replay"] = True
+            header_bytes = json.dumps(header).encode("utf-8")
+            frames.append(struct.pack(">BI", 1, len(header_bytes)) + header_bytes)
+        return frames
+
+    async def send_recent_frames(
+        self, ws: WebSocket, room_id: int, language_code: str, booth_id: str
+    ) -> None:
+        """Send recent text-only TTS bundles to a newly authorized subscriber."""
+        lock = self._send_locks.get(id(ws))
+        frames = self.snapshot_recent_frames(room_id, language_code, booth_id)
+        if not frames:
+            return
+        if lock is None:
+            for frame in frames:
+                await ws.send_bytes(frame)
+            return
+        async with lock:
+            for frame in frames:
+                await ws.send_bytes(frame)
 
     async def broadcast_bundle(
         self,
@@ -668,6 +820,8 @@ class TTSConnectionManager:
             "audio_pending": (not audio_bytes and error is None) if audio_pending is None else audio_pending,
             **timing_metadata(),
         }
+        if error is None and (translation or caption):
+            self._replay.record(key, header, dedup_key=segment_id or None)
         header_bytes = json.dumps(header).encode("utf-8")
         # Frame: [1-byte version][4-byte length L][L-bytes header][audio_bytes]
         frame = struct.pack(">BI", 1, len(header_bytes)) + header_bytes + audio_bytes
@@ -690,7 +844,12 @@ class TTSConnectionManager:
                             self._authorized_at[ws] = started
                 if ws not in self._rooms.get(key, set()):
                     return
-                await ws.send_bytes(frame)
+                lock = self._send_locks.get(id(ws))
+                if lock is None:
+                    await ws.send_bytes(frame)
+                else:
+                    async with lock:
+                        await ws.send_bytes(frame)
             except WSAuthError:
                 self.remove(ws, room_id, language_code, booth_id)
                 try:

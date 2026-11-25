@@ -317,11 +317,12 @@ async def ws_captions(websocket: WebSocket, booth_id: str) -> None:
             listener_manager.cancel_reservation(websocket, booth_id)
 
     listener_manager.add(websocket, booth_id, is_anonymous=is_anonymous)
+    wants_replay = websocket.query_params.get("replay") == "1"
 
     try:
         # Tell a newly connected listener whether the booth is already live, so
         # it doesn't have to wait for the next state change to start playback.
-        await listener_manager.send_booth_state(websocket, booth_id)
+        await listener_manager.send_booth_state(websocket, booth_id, include_replay=wants_replay)
         while True:
             await websocket.receive_text()
     except WebSocketDisconnect:
@@ -498,6 +499,8 @@ async def ws_tts(websocket: WebSocket, room_id: int, language_code: str, booth_i
     await websocket.accept()
     tts_manager.add(websocket, room_id, language_code, booth_id, authorize=authorize)
     try:
+        if websocket.query_params.get("replay") == "1":
+            await tts_manager.send_recent_frames(websocket, room_id, language_code, booth_id)
         while True:
             await websocket.receive_text()
     except WebSocketDisconnect:

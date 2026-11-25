@@ -225,7 +225,8 @@ async def _broadcast_source_language(
         # The floor's own text is offered as "floor"; a YouTube track set to this
         # language code needs it offered under that code too.
         timing = segment_timing.get()
-        youtube_captions.offer(room_id, language_code, text, timing.source_received_at_ms if timing else None)
+        offered_at_ms = timing.source_received_at_ms if timing and timing.sync_offset_ms is not None else None
+        youtube_captions.offer(room_id, language_code, text, offered_at_ms)
 
 
 class TranslationWorker:
@@ -621,9 +622,8 @@ class TranslationWorker:
             if booth_id_str.endswith("-floor"):
                 # Non-blocking: queues the translation for the room's YouTube caption track, if it asks for this language.
                 timing = segment_timing.get()
-                youtube_captions.offer(
-                    room.id, lang_code, translated_text, timing.source_received_at_ms if timing else None
-                )
+                offered_at_ms = timing.source_received_at_ms if timing and timing.sync_offset_ms is not None else None
+                youtube_captions.offer(room.id, lang_code, translated_text, offered_at_ms)
 
             # Saved and delivered: the segment leaves its language's queue, so slow speech
             # synthesis below does not hold back new segments.

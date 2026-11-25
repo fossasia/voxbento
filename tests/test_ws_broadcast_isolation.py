@@ -754,3 +754,98 @@ def test_check_booth_memberships_real_db():
         assert 99999 not in allowed
 
     anyio.run(run_check)
+
+
+def test_caption_replay_is_opt_in_and_isolated():
+    """Replay on /ws/captions requires ?replay=1, arrives after booth:state, and purges cleanly."""
+    import anyio
+
+    from portal.globals import booths
+    from portal.websockets.manager import listener_manager
+
+    bid = "repiso-1-en"
+    other_bid = "repiso-2-es"
+    listener_manager.clear_event("repiso")
+
+    async def seed_and_broadcast():
+        await booths.create_booth("repiso", "en", "English", room_id=1)
+        await booths.create_booth("repiso", "es", "Spanish", room_id=2)
+        await listener_manager.broadcast(bid, {"type": "caption", "status": "partial", "segment_id": "p1", "text": "Partial"})
+        await listener_manager.broadcast(
+            bid, {"type": "caption", "status": "final", "segment_id": "f1", "seq": 1, "text": "First final"}
+        )
+        await listener_manager.broadcast(
+            other_bid, {"type": "caption", "status": "final", "segment_id": "f2", "seq": 1, "text": "Other booth"}
+        )
+
+    anyio.run(seed_and_broadcast)
+
+    # Default socket (OBS overlay / embed) gets booth:state only, no replay frames.
+    with client.websocket_connect(f"/ws/captions/{bid}") as default_ws:
+        msgs = [json.loads(m) for m in _try_receive(default_ws, timeout=0.5)]
+        assert len(msgs) == 1
+        assert msgs[0]["type"] == "booth:state"
+
+    # Opt-in ?replay=1 gets booth:state first, then finalized replay only (no partials, no other booth).
+    with client.websocket_connect(f"/ws/captions/{bid}?replay=1") as replay_ws:
+        msgs = [json.loads(m) for m in _try_receive(replay_ws, timeout=0.5)]
+        assert msgs[0]["type"] == "booth:state"
+        assert len(msgs) == 2
+        assert msgs[1]["type"] == "caption"
+        assert msgs[1]["status"] == "final"
+        assert msgs[1]["text"] == "First final"
+        assert msgs[1]["replay"] is True
+
+    # Purging the event removes buffered captions.
+    listener_manager.clear_event("repiso")
+    with client.websocket_connect(f"/ws/captions/{bid}?replay=1") as after_purge_ws:
+        msgs = [json.loads(m) for m in _try_receive(after_purge_ws, timeout=0.5)]
+        assert [m["type"] for m in msgs] == ["booth:state"]
+
+
+def test_tts_replay_is_opt_in_and_text_only():
+    """Replay on /ws/tts requires ?replay=1 and emits zero-audio text bundles."""
+    import struct
+
+    import anyio
+
+    from portal.database import create_event, create_room, get_session
+    from portal.websockets.manager import tts_manager
+
+    async def setup_and_broadcast():
+        async with get_session() as s:
+            ev = await create_event(s, slug="ttsrep", display_name="TTS Replay")
+            ev.listener_join_code = "JOIN99"
+            room = await create_room(s, event_id=ev.id, display_name="Hall")
+            rid = room.id
+        bid = f"ttsrep-{rid}-floor"
+        tts_manager.clear_event("ttsrep")
+        await tts_manager.broadcast_bundle(
+            rid,
+            "fr",
+            bid,
+            b"\x01\x02\x03\x04",
+            segment_id="seg-tts-1",
+            seq=1,
+            caption="Hello",
+            translation="Bonjour",
+            error=None,
+        )
+        return rid, bid
+
+    rid, bid = anyio.run(setup_and_broadcast)
+    cookies = {"listener_code_ttsrep": "JOIN99"}
+
+    with client.websocket_connect(f"/ws/tts/{rid}/fr/{bid}?replay=1", cookies=cookies) as ws:
+        raw = ws.receive_bytes()
+        ver, header_len = struct.unpack(">BI", raw[:5])
+        assert ver == 1
+        header = json.loads(raw[5 : 5 + header_len].decode("utf-8"))
+        pcm = raw[5 + header_len :]
+        assert header["segment_id"] == "seg-tts-1"
+        assert header["translation"] == "Bonjour"
+        assert header["audio_pending"] is False
+        assert header["replay"] is True
+        assert pcm == b""
+
+    tts_manager.clear_event("ttsrep")

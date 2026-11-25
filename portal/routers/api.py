@@ -51,7 +51,7 @@ from portal.utils import (
     _resolve_whip_url,
     verify_same_origin,
 )
-from portal.websockets.manager import broadcast_transcription
+from portal.websockets.manager import broadcast_transcription, listener_manager, tts_manager
 
 logger = logging.getLogger(__name__)
 
@@ -410,6 +410,8 @@ async def delete_booth_by_language(
     finally:
         await booths.remove_booth(event_slug, room_db_id, language_code)
         await stop_booth_publish(booth_id, take_booth_publishers(booth_id))
+        listener_manager.clear_booth(booth_id)
+        tts_manager.clear_booth(booth_id)
 
 
 @router.post("/events/{event_slug}/booths", status_code=status.HTTP_201_CREATED)
@@ -602,6 +604,8 @@ async def delete_event_booth(
         await stop_transcription_worker(booth_id)
     finally:
         await booths.remove_booth(event_slug, room_id, language_code)
+        listener_manager.clear_booth(booth_id)
+        tts_manager.clear_booth(booth_id)
         await stop_booth_publish(booth_id, take_booth_publishers(booth_id))
 
 

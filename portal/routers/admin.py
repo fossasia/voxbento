@@ -203,7 +203,7 @@ from portal.user_admin import FIELDS as USER_ACCESS_FIELDS
 from portal.user_admin import AccessChange, UserAdminError, delete_user_account, is_last_active_admin, set_user_access
 from portal.user_menu import resolve_user_menu, user_menu_context
 from portal.utils import _check_mediamtx, _make_jitsi_url, get_client_ip, safe_redirect, verify_same_origin
-from portal.websockets.manager import broadcast_transcription, manager
+from portal.websockets.manager import broadcast_transcription, listener_manager, manager, tts_manager
 from portal.websockets.revocation import revoke_booths_for_deleted_entity, revoke_membership_push
 from portal.workspace_routing import management_template_context, management_url
 
@@ -1366,6 +1366,9 @@ async def admin_regenerate_join_code(request: Request, event_id: int):
             raise HTTPException(status_code=404, detail="Event not found.")
         event.listener_join_code = "".join((secrets.choice("ABCDEFGHJKLMNPQRSTUVWXYZ23456789") for _ in range(6)))
         await session.flush()
+        event_slug = event.slug
+    listener_manager.clear_event(event_slug)
+    tts_manager.clear_event(event_slug)
     return safe_redirect(url=management_url(request, f"events/{event_id}/"), status_code=status.HTTP_303_SEE_OTHER)
 
 
@@ -1532,10 +1535,14 @@ async def admin_delete_event(request: Request, event_id: int):
     """Delete an event by ID, returning 404 if missing or redirecting with an error alert on database failure."""
     try:
         async with get_session() as session:
+            ev = await get_event_by_id(session, event_id)
             await revoke_booths_for_deleted_entity(session, level="event", target_id=event_id)
             deleted = await delete_event(session, event_id)
             if not deleted:
                 raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Event not found.")
+            if ev is not None:
+                listener_manager.clear_event(ev.slug)
+                tts_manager.clear_event(ev.slug)
     except HTTPException:
         raise
     except SQLAlchemyError as e:
@@ -2393,8 +2400,12 @@ async def admin_delete_room(request: Request, event_id: int, room_id: int):
         room = await get_room_by_id(session, room_id)
         if room is None or room.event_id != event_id:
             raise HTTPException(status_code=404, detail="Room not found.")
+        ev = await get_event_by_id(session, event_id)
         await revoke_booths_for_deleted_entity(session, level="room", target_id=room_id)
         await delete_room(session, room_id)
+        if ev is not None:
+            listener_manager.clear_room(ev.slug, room_id)
+            tts_manager.clear_room(ev.slug, room_id)
     return safe_redirect(
         url=management_url(request, f"events/{event_id}/rooms/"), status_code=status.HTTP_303_SEE_OTHER
     )
