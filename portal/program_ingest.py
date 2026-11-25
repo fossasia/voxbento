@@ -114,6 +114,7 @@ class IngestHealth:
     primary_session_id: str | None = None
     last_active_path: str | None = None
     missing_since: float | None = None
+    primary_missing_since: float | None = None
     reservation_started_at: float | None = None
     backup_session_id: str | None = None
     backup_reservation_started_at: float | None = None
@@ -608,7 +609,7 @@ async def media_config_paths() -> set[str] | None:
         response.raise_for_status()
         body = response.json()
         if not isinstance(body, dict) or not isinstance(body.get("items"), list):
-            return set()
+            return None
         return {
             item["name"]
             for item in body["items"]
@@ -995,6 +996,51 @@ def relay_request(room: Room, event: Event, path: MediaPath | None) -> tuple[str
     return (active_path_name, url) if url else None
 
 
+async def _reconcile_primary_reservation(
+    room: Room,
+    event: Event,
+    current: IngestHealth,
+    primary_snapshot: MediaPath | None,
+    now: float,
+) -> None:
+    """Reconcile the primary reservation independently while the backup feed is on air."""
+    if not room.program_session_id:
+        current.primary_missing_since = None
+        return
+    primary_path_name = make_mediamtx_path(event.slug, room.id, "floor")
+    if primary_snapshot and primary_snapshot.ready and primary_snapshot.source:
+        if primary_snapshot.source.id == room.program_session_id:
+            current.reservation_started_at = None
+            current.primary_missing_since = None
+            return
+        await kick(primary_path_name, primary_snapshot.source)
+    if current.reservation_started_at is not None:
+        grace_started_at = current.reservation_started_at
+    else:
+        if current.primary_missing_since is None:
+            current.primary_missing_since = now
+        grace_started_at = current.primary_missing_since
+    if now - grace_started_at < settings.program_ingest_disconnect_grace_secs:
+        return
+    fresh_primary = await media_path(primary_path_name)
+    if (
+        fresh_primary
+        and fresh_primary.ready
+        and fresh_primary.source
+        and fresh_primary.source.id == room.program_session_id
+    ):
+        current.reservation_started_at = None
+        current.primary_missing_since = None
+        return
+    if fresh_primary and fresh_primary.source and fresh_primary.source.id != room.program_session_id:
+        await kick(primary_path_name, fresh_primary.source)
+    await kick(primary_path_name, reserved_source(room))
+    room.program_session_id = None
+    room.program_disconnected_at = utc_now()
+    current.reservation_started_at = None
+    current.primary_missing_since = None
+
+
 async def reconcile_room(room: Room, event: Event, path: MediaPath | None) -> tuple[str, str] | None:
     current = health.setdefault(room.id, IngestHealth())
     is_backup = getattr(room, "program_active_feed", "primary") == "backup" and room.program_backup_enabled
@@ -1003,6 +1049,14 @@ async def reconcile_room(room: Room, event: Event, path: MediaPath | None) -> tu
     )
     booth_id = make_booth_id(event.slug, room.id, "floor")
     now = time.monotonic()
+    if is_backup:
+        if room.program_session_id:
+            resolved_primary = await media_path(make_mediamtx_path(event.slug, room.id, "floor"))
+            await _reconcile_primary_reservation(room, event, current, resolved_primary, now)
+        else:
+            current.primary_missing_since = None
+    else:
+        current.primary_missing_since = None
     srt_off = room.program_ingest_mode in program_relay.SRT_MODES and not settings.srt_ingest_enabled
     rtmps_off = room.program_ingest_mode == program_relay.RTMPS_MODE and not settings.rtmps_ingest_enabled
     valid_cred = has_valid_credential(room)
@@ -1565,6 +1619,7 @@ async def reconcile_once() -> None:
 
                     backup_connected = bool(backup_snapshot and backup_snapshot.ready and backup_snapshot.source)
                     current.backup_connected = backup_connected
+                    backup_sample_time = snapshot_time
                     backup_negotiating = bool(
                         current.backup_reservation_started_at and (now - current.backup_reservation_started_at < 5.0)
                     )
@@ -1576,6 +1631,7 @@ async def reconcile_once() -> None:
                         fresh_backup = await media_path(backup_path_name)
                         if fresh_backup and fresh_backup.ready and fresh_backup.source:
                             backup_snapshot = fresh_backup
+                            backup_sample_time = time.monotonic()
                             backup_connected = True
                             current.backup_connected = True
                             if not room.program_backup_connected_at:
@@ -1639,7 +1695,7 @@ async def reconcile_once() -> None:
                                 current.backup_session_id = backup_sess_id
 
                                 if current.backup_last_cycle_bytes >= 0 and current.backup_last_cycle_time > 0:
-                                    dt = snapshot_time - current.backup_last_cycle_time
+                                    dt = backup_sample_time - current.backup_last_cycle_time
                                     delta_bytes = backup_snapshot.bytesReceived - current.backup_last_cycle_bytes
                                     if delta_bytes >= 0:
                                         effective_dt = dt if dt > 0 else 2.0
@@ -1654,7 +1710,7 @@ async def reconcile_once() -> None:
                                     current.backup_high_bitrate_cycles = 0
 
                                 current.backup_last_cycle_bytes = backup_snapshot.bytesReceived
-                                current.backup_last_cycle_time = snapshot_time
+                                current.backup_last_cycle_time = backup_sample_time
 
                                 if current.backup_high_bitrate_cycles >= 5:
                                     record_failure(current.backup_client_ip)

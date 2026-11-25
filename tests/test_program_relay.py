@@ -731,3 +731,20 @@ async def test_relay_resave_reports_502_when_stop_fails(relay_env):
         assert stored_room.program_relay_server == YOUTUBE_SERVER
         assert decrypt_val(stored_room.program_relay_key_enc) == new_key
 
+
+@pytest.mark.anyio
+async def test_relay_resave_succeeds_when_old_key_unreadable(relay_env):
+    env = relay_env
+    client, event, room = env["client"], env["event"], env["rooms"][0]
+    await enable_relay(client, event, room)
+
+    async with get_session() as session:
+        stored_room = await session.get(Room, room.id)
+        stored_room.program_relay_server = YOUTUBE_SERVER
+        stored_room.program_relay_key_enc = "corrupted-unreadable-ciphertext"
+        await session.commit()
+
+    resp = await client.put(relay_url(event, room), json={"server_url": YOUTUBE_SERVER, "stream_key": YOUTUBE_KEY})
+    assert resp.status_code == 200
+    assert ("DELETE", f"/relays/{room.id}") in env["calls"]
+

@@ -732,6 +732,9 @@ if (backupToggle) {
         if (backupSecretRow) backupSecretRow.hidden = true;
         if (backupSecretInput) backupSecretInput.value = '';
       }
+      if (typeof data?.backup_enabled === 'boolean') {
+        latest = { ...(latest || {}), backup_enabled: data.backup_enabled };
+      }
       updateSrtToolFields(latest || {});
     } catch (error) {
       console.error('Failed to toggle backup feed', error);

@@ -22,6 +22,7 @@ from portal.crypto import decrypt_val
 from portal.database import get_event_by_id, get_room_by_id, get_session
 from portal.program_ingest import (
     TAKEOVER_STALL_SECS,
+    IngestHealth,
     MediaAuth,
     apply_srt_passphrase_to_mediamtx,
     authorize_publish,
@@ -341,8 +342,8 @@ async def ingest_change(request: Request, event_id: int, room_id: int, change: I
                         and (time.monotonic() - current.primary_last_progress >= TAKEOVER_STALL_SECS)
                     ):
                         raise HTTPException(409, "Primary feed is stalled")
-                elif current and current.primary_session_id:
-                    # Publisher changed from previous session: verify progress between two samples
+                else:
+                    # Verify progress between two samples when publisher changed or has no tracked session
                     initial_bytes = primary_snapshot.bytesReceived
                     await asyncio.sleep(0.1)
                     sample2 = await media_path(primary_path)
@@ -350,7 +351,8 @@ async def ingest_change(request: Request, event_id: int, room_id: int, change: I
                         raise HTTPException(409, "Primary feed is not connected")
                     if sample2.bytesReceived <= initial_bytes:
                         raise HTTPException(409, "Primary feed is still being verified; retry shortly")
-                    current.primary_session_id = primary_source_id
+                    current = health.setdefault(room.id, IngestHealth())
+                    current.primary_session_id = sample2.source.id
                     current.primary_last_bytes = sample2.bytesReceived
                     current.primary_last_progress = time.monotonic()
                 await promote_primary_feed(room, event.slug)
@@ -551,7 +553,10 @@ async def relay_destination_set(
             room = await get_room_by_id(session, room_id)
             if not room or room.event_id != event_id:
                 raise HTTPException(404, "Room not found")
-            old_destination = program_relay.destination(room)
+            try:
+                old_destination = program_relay.destination(room)
+            except ValueError:
+                old_destination = None
             try:
                 program_relay.store_destination(room, destination.server_url, destination.stream_key)
             except ValueError as exc:

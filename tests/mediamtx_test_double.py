@@ -149,7 +149,20 @@ class MediaMTX121ControlDouble:
         if "/kick/" in path:
             if request.method != "POST":
                 return httpx.Response(405, json={"status": "error", "error": "method not allowed"})
-            sess_id = path.rstrip("/").split("/kick/")[-1]
+            parts = path.rstrip("/").split("/kick/")
+            sess_id = parts[-1]
+            endpoint_prefix = parts[0].rsplit("/", 1)[-1]
+            allowed_types = {
+                "webrtcsessions": {"webRTCSession"},
+                "rtspsessions": {"rtspSession"},
+                "rtmpconns": {"rtmpConn"},
+                "rtmpsconns": {"rtmpsConn"},
+                "srtconns": {"srtConn", "srtConns"},
+            }.get(endpoint_prefix)
+            if allowed_types is None:
+                return httpx.Response(
+                    404, json={"status": "error", "error": f"unknown kick endpoint '{endpoint_prefix}'"}
+                )
             try:
                 uuid_obj = UUID(sess_id)
             except (ValueError, TypeError):
@@ -158,7 +171,11 @@ class MediaMTX121ControlDouble:
             found = False
             for m in self.media.values():
                 src = m.get("source")
-                if isinstance(src, dict) and src.get("id") == str(uuid_obj):
+                if (
+                    isinstance(src, dict)
+                    and src.get("id") == str(uuid_obj)
+                    and src.get("type") in allowed_types
+                ):
                     m["source"] = None
                     m["ready"] = False
                     found = True

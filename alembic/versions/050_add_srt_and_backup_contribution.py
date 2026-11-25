@@ -12,7 +12,7 @@ from typing import Sequence, Union
 
 import sqlalchemy as sa
 
-from alembic import op
+from alembic import context, op
 
 # revision identifiers, used by Alembic.
 revision: str = "050"
@@ -23,9 +23,6 @@ depends_on: Union[str, Sequence[str], None] = None
 
 def upgrade() -> None:
     """Upgrade schema."""
-    inspector = sa.inspect(op.get_bind())
-    room_cols = {col["name"] for col in inspector.get_columns("rooms")}
-
     cols = [
         ("program_srt_passphrase_enc", sa.Column("program_srt_passphrase_enc", sa.Text(), nullable=True)),
         (
@@ -50,9 +47,18 @@ def upgrade() -> None:
             sa.Column("program_backup_connected_at", sa.DateTime(timezone=True), nullable=True),
         ),
     ]
-    for name, col in cols:
-        if name not in room_cols:
+    if context.is_offline_mode():
+        for _, col in cols:
             op.add_column("rooms", col)
+        return
+
+    inspector = sa.inspect(op.get_bind())
+    room_cols = {col["name"] for col in inspector.get_columns("rooms")}
+    missing = [col for name, col in cols if name not in room_cols]
+    if missing:
+        with op.batch_alter_table("rooms") as batch_op:
+            for col in missing:
+                batch_op.add_column(col)
 
 
 def downgrade() -> None:

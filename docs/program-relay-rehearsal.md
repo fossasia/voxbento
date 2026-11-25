@@ -12,9 +12,10 @@ VoxBento accepts program contribution via **SRT Caller** (recommended for low-la
 
 ### OBS Studio (Software Encoder)
 * **Service:** Custom...
-* **Server:** `srt://<host>:8890?streamid=publish:<event_slug>/<room_id>/floor::<passphrase>&latency=500000` (or `srt://<host>:8890?streamid=#!::r=<event_slug>/<room_id>/floor,m=publish,s=<passphrase>&latency=500000`)
-  * *For Backup Feed:* `srt://<host>:8890?streamid=publish:<event_slug>/<room_id>/floor_backup::<backup_passphrase>&latency=500000` (or `srt://<host>:8890?streamid=#!::r=<event_slug>/<room_id>/floor_backup,m=publish,s=<backup_passphrase>&latency=500000`)
-* **Stream Key / Passphrase:** Leave stream key blank in OBS; enter the room passphrase for primary (or separate backup passphrase for backup feed) in the passphrase field (or append `&passphrase=<passphrase>` / `&passphrase=<backup_passphrase>` if using URI-only configuration). Both Stream ID and encryption require the feed's own passphrase.
+* **Server:** `srt://<host>:8890?latency=500000`
+* **Stream Key:** `publish:<event_slug>/<room_id>/floor::<passphrase>` (or `#!::r=<event_slug>/<room_id>/floor,m=publish,s=<passphrase>`)
+  * *For Backup Feed:* `publish:<event_slug>/<room_id>/floor_backup::<backup_passphrase>` (or `#!::r=<event_slug>/<room_id>/floor_backup,m=publish,s=<backup_passphrase>`)
+* **Passphrase / Authentication:** Enter the room passphrase for primary (or separate backup passphrase for backup feed) in OBS's authentication password / passphrase field. Keep passphrases out of the Server URL; both the Stream ID and encryption require that feed's own passphrase.
 * **Latency:** `500ms` (`latency=500000` in microseconds).
 * **Video Output:**
   * **Encoder:** x264 or hardware H.264 (NVENC, QuickSync, Apple VideoToolbox)

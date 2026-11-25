@@ -355,8 +355,9 @@ class RelayManager:
                                 relay.relay_id,
                                 reason,
                             )
-                            relay.stop.set()
-                            relay.state, relay.reason = "failed", reason
+                            with self.lock:
+                                relay.stop.set()
+                                relay.state, relay.reason = "failed", reason
                             try:
                                 if os.name == "posix":
                                     os.killpg(process.pid, signal.SIGTERM)
@@ -370,13 +371,17 @@ class RelayManager:
                 # A destination that stops reading blocks FFmpeg's writes: bytes stop growing
                 # although the process is alive. Treat that as not forwarding and reconnect.
                 while process.poll() is None and not relay.stop.wait(0.25):
-                    if relay.state == "failed":
-                        return
                     limit = self.stall_secs if relay.forwarding else self.start_timeout_secs
-                    if time.monotonic() - relay.last_progress > limit:
-                        relay.stalled = True
-                        relay.state = "stalled"
-                        relay.reason = STALLED_REASON if relay.forwarding else NOT_FORWARDING_REASON
+                    should_terminate = False
+                    with self.lock:
+                        if relay.state == "failed" or relay.stop.is_set():
+                            return
+                        if time.monotonic() - relay.last_progress > limit:
+                            relay.stalled = True
+                            relay.state = "stalled"
+                            relay.reason = STALLED_REASON if relay.forwarding else NOT_FORWARDING_REASON
+                            should_terminate = True
+                    if should_terminate:
                         self._terminate(process)
                         return
 
@@ -385,8 +390,9 @@ class RelayManager:
             threading.Thread(target=watchdog, daemon=True).start()
             assert process.stdout is not None
             for line in process.stdout:
-                if relay.stop.is_set() or relay.state == "failed":
-                    continue
+                with self.lock:
+                    if relay.stop.is_set() or relay.state == "failed":
+                        continue
                 key, _, value = line.strip().partition("=")
                 if key == "out_time_us" and value.lstrip("-").isdigit():
                     relay.out_time_us = max(relay.out_time_us, int(value))
@@ -395,25 +401,27 @@ class RelayManager:
                     relay.bytes_out = int(value)
                     # The first report is the FLV header; forwarding needs bytes after it.
                     if not first:
-                        relay.forwarding = True
-                        relay.last_progress = time.monotonic()
-                        if (
-                            relay.state != "live"
-                            and not relay.stalled
-                            and not relay.stop.is_set()
-                            and relay.state != "failed"
-                        ):
-                            relay.state, relay.reason = "live", "Relaying the program feed to the destination."
-                            attempt = 0
+                        with self.lock:
+                            relay.forwarding = True
+                            relay.last_progress = time.monotonic()
+                            if (
+                                relay.state != "live"
+                                and not relay.stalled
+                                and not relay.stop.is_set()
+                                and relay.state != "failed"
+                            ):
+                                relay.state, relay.reason = "live", "Relaying the program feed to the destination."
+                                attempt = 0
             process.wait()
             errors.join(1)
-            if relay.stop.is_set():
-                return
-            attempt += 1
-            relay.restarts += 1
-            if relay.stalled:
-                reason = STALLED_REASON if relay.forwarding else NOT_FORWARDING_REASON
-            relay.state, relay.reason = "retrying", reason
+            with self.lock:
+                if relay.stop.is_set() or relay.state == "failed":
+                    return
+                attempt += 1
+                relay.restarts += 1
+                if relay.stalled:
+                    reason = STALLED_REASON if relay.forwarding else NOT_FORWARDING_REASON
+                relay.state, relay.reason = "retrying", reason
             logger.warning(
                 "relay exited relay_id=%s restarts=%s reason=%s", relay.relay_id, relay.restarts, relay.reason
             )

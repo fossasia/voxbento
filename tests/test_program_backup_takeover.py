@@ -521,8 +521,8 @@ async def test_backup_first_startup_grace_period(backup_env):
 
     async with get_session() as session:
         stored = await session.get(Room, room.id)
-        stored.program_connected_at = ingest.utc_now()
-        stored.program_session_id = str(uuid4())
+        stored.program_connected_at = None
+        stored.program_session_id = None
         stored.program_backup_enabled = True
         await ingest.generate_backup_srt_passphrase(stored)
         stored.program_backup_connected_at = ingest.utc_now()
@@ -532,13 +532,17 @@ async def test_backup_first_startup_grace_period(backup_env):
     media[backup_path] = {
         "name": backup_path,
         "ready": True,
-        "source": {"id": "backup-sess", "type": "srtConn"},
+        "source": {"id": str(uuid4()), "type": "srtConn"},
         "tracks": ["H264", "AAC"],
         "bytesReceived": 1024,
     }
 
-    # 1. Immediately on cycle 0, primary is given a startup grace period, NOT promoted to backup
+    # 1. Cycle 0 attaches backup, cycle 1 advances backup bytes within 5s startup grace:
+    # primary must stay selected during startup grace even while backup is progressing.
     await ingest.reconcile_once()
+    media[backup_path]["bytesReceived"] = 2048
+    await ingest.reconcile_once()
+    assert ingest.health[room.id].backup_last_progress > 0.0
     async with get_session() as session:
         stored = await session.get(Room, room.id)
         assert stored.program_active_feed == "primary"
@@ -549,7 +553,7 @@ async def test_backup_first_startup_grace_period(backup_env):
         stored.program_backup_connected_at = ingest.utc_now() - ingest.timedelta(seconds=10)
         await session.commit()
 
-    media[backup_path]["bytesReceived"] = 2048
+    media[backup_path]["bytesReceived"] = 4096
 
     await ingest.reconcile_once()
     async with get_session() as session:
@@ -1250,6 +1254,7 @@ async def test_standby_backup_non_conforming_codecs_rejected_and_not_promoted(ba
         assert stored is not None
         stored.program_ingest_mode = "srt"
         stored.program_backup_enabled = True
+        await ingest.generate_backup_srt_passphrase(stored)
         stored.program_backup_connected_at = ingest.utc_now()
         stored.program_active_feed = "primary"
         await session.commit()
@@ -1307,12 +1312,14 @@ async def test_standby_backup_excessive_bitrate_rejected_and_not_promoted(backup
     event = backup_env["event"]
     room = backup_env["room"]
     media = backup_env["media"]
+    calls = backup_env["calls"]
 
     async with get_session() as session:
         stored = await session.get(Room, room.id)
         assert stored is not None
         stored.program_ingest_mode = "srt"
         stored.program_backup_enabled = True
+        await ingest.generate_backup_srt_passphrase(stored)
         stored.program_backup_connected_at = ingest.utc_now()
         stored.program_active_feed = "primary"
         await session.commit()
@@ -1343,18 +1350,22 @@ async def test_standby_backup_excessive_bitrate_rejected_and_not_promoted(backup
     entry.primary_last_progress = now - 10.0  # primary stalled
     entry.backup_session_id = high_bitrate_sess_id
     entry.backup_connected = True
-    # Simulate standby having 4 high bitrate cycles already
+    # Seed backup_last_bytes to preserve the 4 prior high-bitrate violations on the same session
+    entry.backup_last_bytes = 10_000_000
+    entry.backup_last_progress = now - 1.0
     entry.backup_high_bitrate_cycles = 4
     entry.backup_last_cycle_bytes = 10_000_000
     entry.backup_last_cycle_time = now - 1.0  # 10MB in 1s = 80 Mbps > 12 Mbps
     ingest.health[room.id] = entry
 
+    calls.clear()
     await ingest.reconcile_once()
 
     current = ingest.health[room.id]
     # At 5th cycle, standby backup must be kicked and marked non-conforming
     assert current.backup_conforming is False
     assert current.backup_connected is False
+    assert any(method == "POST" and f"/v3/srtconns/kick/{high_bitrate_sess_id}" in url for method, url in calls)
 
     # Must NOT have taken over
     async with get_session() as session:
@@ -1525,10 +1536,13 @@ async def test_backup_takeover_blocked_when_backup_frozen(backup_env):
     room = backup_env["room"]
     media = backup_env["media"]
 
+    prim_sess_id = str(uuid4())
+    backup_sess_id = str(uuid4())
+
     async with get_session() as session:
         stored = await session.get(Room, room.id)
         stored.program_connected_at = ingest.utc_now()
-        stored.program_session_id = "prim-sess"
+        stored.program_session_id = prim_sess_id
         stored.program_backup_enabled = True
         pass_b = await ingest.generate_backup_srt_passphrase(stored)
         backup_env["configured_paths"].add(f"{event.slug}/{room.id}/floor_backup", pass_b)
@@ -1546,15 +1560,15 @@ async def test_backup_takeover_blocked_when_backup_frozen(backup_env):
     media[backup_path] = {
         "name": backup_path,
         "ready": True,
-        "source": {"id": "backup-sess-frozen", "type": "srtSource"},
+        "source": {"id": backup_sess_id, "type": "srtConn"},
         "tracks": ["H264", "AAC"],
         "bytesReceived": 0,
     }
 
     entry = ingest.IngestHealth()
-    entry.primary_session_id = "prim-sess"
+    entry.primary_session_id = prim_sess_id
     entry.primary_last_progress = 0.0
-    entry.backup_session_id = "backup-sess-frozen"
+    entry.backup_session_id = backup_sess_id
     entry.backup_last_bytes = 0
     entry.backup_last_progress = time.monotonic() - 10.0  # stalled for 10s
     ingest.health[room.id] = entry
@@ -2307,6 +2321,128 @@ async def test_newly_attached_backup_requires_bytes_rise_before_takeover(backup_
     async with get_session() as session:
         stored = await session.get(Room, room.id)
         assert stored.program_active_feed == "backup"
+
+
+@pytest.mark.anyio
+async def test_primary_reservation_reconciled_independently_while_backup_on_air(backup_env):
+    """Verify A's primary reservation stays locked while live, releases once confirmed gone, and keeps backup on air."""
+    room = backup_env["room"]
+    event = backup_env["event"]
+    media = backup_env["media"]
+    client = backup_env["client"]
+    primary_path = f"{event.slug}/{room.id}/floor"
+    backup_path = f"{event.slug}/{room.id}/floor_backup"
+    sess_a = str(uuid4())
+    sess_b = str(uuid4())
+    backup_sess = str(uuid4())
+
+    async with get_session() as session:
+        stored = await session.get(Room, room.id)
+        stored.program_backup_enabled = True
+        await ingest.generate_backup_srt_passphrase(stored)
+        stored.program_backup_connected_at = ingest.utc_now()
+        stored.program_active_feed = "backup"
+        stored.program_session_id = sess_a
+        prim_pass = ingest.decrypt_val(stored.program_srt_passphrase_enc)
+        await session.commit()
+
+    media[primary_path] = {
+        "name": primary_path,
+        "ready": True,
+        "source": {"type": "srtConn", "id": sess_a},
+        "tracks": ["H264", "AAC"],
+        "bytesReceived": 1000,
+    }
+    media[backup_path] = {
+        "name": backup_path,
+        "ready": True,
+        "source": {"type": "srtConn", "id": backup_sess},
+        "tracks": ["H264", "AAC"],
+        "bytesReceived": 5000,
+    }
+
+    # While A remains live on floor, A's reservation is retained and competing publisher B is rejected
+    await ingest.reconcile_once()
+    async with get_session() as session:
+        stored = await session.get(Room, room.id)
+        assert stored.program_active_feed == "backup"
+        assert stored.program_session_id == sess_a
+
+    compete_resp = await client.post(
+        "/internal/media-auth",
+        json={"action": "publish", "path": primary_path, "protocol": "srt", "id": sess_b, "ip": "198.51.100.2", "password": prim_pass},
+    )
+    assert compete_resp.status_code == 409
+
+    # Once A disappears from MediaMTX, primary reservation is released while backup stays on air
+    media.pop(primary_path)
+    media[backup_path]["bytesReceived"] = 6000
+    await ingest.reconcile_once()
+    async with get_session() as session:
+        stored = await session.get(Room, room.id)
+        assert stored.program_active_feed == "backup"
+        assert stored.program_session_id is None
+
+
+@pytest.mark.anyio
+async def test_promote_primary_requires_two_sample_progress_when_no_session_tracked(backup_env):
+    """Verify promote_primary checks two samples when current.primary_session_id is unset."""
+    client = backup_env["client"]
+    event = backup_env["event"]
+    room = backup_env["room"]
+    media = backup_env["media"]
+    primary_path = f"{event.slug}/{room.id}/floor"
+
+    async with get_session() as session:
+        stored = await session.get(Room, room.id)
+        stored.program_backup_enabled = True
+        await ingest.generate_backup_srt_passphrase(stored)
+        stored.program_active_feed = "backup"
+        await session.commit()
+
+    media[primary_path] = {
+        "name": primary_path,
+        "ready": True,
+        "source": {"id": str(uuid4()), "type": "srtConn"},
+        "tracks": ["H264", "AAC"],
+        "bytesReceived": 1000,
+    }
+    ingest.health.pop(room.id, None)  # No tracked session in health
+
+    # Flat bytes -> rejected with 409
+    resp = await client.post(
+        f"/admin/events/{event.id}/rooms/{room.id}/program-ingest",
+        json={"action": "promote_primary"},
+    )
+    assert resp.status_code == 409
+    assert "still being verified" in resp.text
+
+
+@pytest.mark.anyio
+async def test_media_config_paths_returns_none_on_malformed_json(backup_env, monkeypatch):
+    """Verify malformed config list payload returns None rather than empty set()."""
+    async def mock_get(*args, **kwargs):
+        return httpx.Response(200, json={"unexpected": "shape"})
+
+    client = ingest.get_http_client()
+    monkeypatch.setattr(client, "get", mock_get)
+    assert await ingest.media_config_paths() is None
+
+
+def test_mediamtx_double_kick_matches_protocol():
+    """Verify RTMP kick endpoint never disconnects an SRT session ID."""
+    srt_id = str(uuid4())
+    double = MediaMTX121ControlDouble(
+        media={"e/1/floor": {"name": "e/1/floor", "ready": True, "source": {"id": srt_id, "type": "srtConn"}}}
+    )
+    rtmp_resp = double.handle_request(httpx.Request("POST", f"http://mediamtx:9997/v3/rtmpconns/kick/{srt_id}"))
+    assert rtmp_resp.status_code == 404
+    assert double.media["e/1/floor"]["ready"] is True
+
+    srt_resp = double.handle_request(httpx.Request("POST", f"http://mediamtx:9997/v3/srtconns/kick/{srt_id}"))
+    assert srt_resp.status_code == 200
+    assert double.media["e/1/floor"]["ready"] is False
+
 
 
 

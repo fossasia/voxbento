@@ -623,72 +623,69 @@ async def test_pinned_image_mediamtx_api_live_contract():
     if not api_base:
         pytest.skip("MEDIAMTX_TEST_API_BASE not set; skipping live MediaMTX contract test")
 
-    try:
-        async with httpx.AsyncClient(timeout=3.0) as client:
-            try:
-                resp = await client.get(f"{api_base}/v3/info")
-            except (httpx.ConnectError, httpx.TimeoutException) as exc:
-                pytest.skip(f"MediaMTX test instance not reachable: {exc}")
+    async with httpx.AsyncClient(timeout=3.0) as client:
+        try:
+            resp = await client.get(f"{api_base}/v3/info")
+        except (httpx.ConnectError, httpx.TimeoutException) as exc:
+            pytest.skip(f"MediaMTX test instance not reachable: {exc}")
 
-            if resp.status_code != 200:
-                pytest.skip(f"MediaMTX test instance returned HTTP {resp.status_code}")
+        if resp.status_code != 200:
+            pytest.skip(f"MediaMTX test instance returned HTTP {resp.status_code}")
 
-            version = resp.json().get("version", "")
-            if not version.startswith("v1.21"):
-                pytest.skip(f"Expected MediaMTX v1.21.x, got version '{version}'")
+        version = resp.json().get("version", "")
+        if version != "v1.21.4":
+            pytest.skip(f"Expected MediaMTX v1.21.4, got version '{version}'")
 
-            test_id = uuid4().hex[:8]
-            test_path = f"live-pinned-test-{test_id}/floor"
-            original_passphrase = f"live-test-secret-{test_id}"
-            path_created = False
+        test_id = uuid4().hex[:8]
+        test_path = f"live-pinned-test-{test_id}/floor"
+        original_passphrase = f"live-test-secret-{test_id}"
+        cleanup_needed = False
 
-            try:
-                # 1. Add
-                r = await client.post(
-                    f"{api_base}/v3/config/paths/add/{test_path}",
-                    json={"srtPublishPassphrase": original_passphrase, "overridePublisher": False},
+        try:
+            # 1. Add (mark cleanup_needed before POST so unknown timeout outcomes still clean up)
+            cleanup_needed = True
+            r = await client.post(
+                f"{api_base}/v3/config/paths/add/{test_path}",
+                json={"srtPublishPassphrase": original_passphrase, "overridePublisher": False},
+            )
+            assert r.status_code == 200
+
+            # 2. Duplicate add rejected with 400
+            r_dup = await client.post(
+                f"{api_base}/v3/config/paths/add/{test_path}",
+                json={"srtPublishPassphrase": "other-secret"},
+            )
+            assert r_dup.status_code == 400
+
+            # 3. Patch preserves omitted passphrase
+            r_patch = await client.patch(
+                f"{api_base}/v3/config/paths/patch/{test_path}",
+                json={"overridePublisher": True},
+            )
+            assert r_patch.status_code == 200
+
+            # 4. Get redacts passphrase and reflects patched field
+            r_get = await client.get(f"{api_base}/v3/config/paths/get/{test_path}")
+            assert r_get.status_code == 200
+            assert r_get.json().get("srtPublishPassphrase") == "<redacted>"
+            assert r_get.json().get("overridePublisher") is True
+
+            # 5. Check credential preservation against live instance if SRT endpoint is available
+            srt_base = os.environ.get("MEDIAMTX_TEST_SRT_URL")
+            if srt_base and shutil.which("ffmpeg"):
+                proc = await asyncio.create_subprocess_exec(
+                    "ffmpeg", "-y", "-f", "lavfi", "-i", "anullsrc", "-t", "0.2", "-f", "mpegts",
+                    f"{srt_base}/{test_path}?streamid=publish:{test_path}::{original_passphrase}&passphrase={original_passphrase}",
+                    stdout=asyncio.subprocess.PIPE,
+                    stderr=asyncio.subprocess.PIPE,
                 )
-                assert r.status_code == 200
-                path_created = True
-
-                # 2. Duplicate add rejected with 400
-                r_dup = await client.post(
-                    f"{api_base}/v3/config/paths/add/{test_path}",
-                    json={"srtPublishPassphrase": "other-secret"},
-                )
-                assert r_dup.status_code == 400
-
-                # 3. Patch preserves omitted passphrase
-                r_patch = await client.patch(
-                    f"{api_base}/v3/config/paths/patch/{test_path}",
-                    json={"overridePublisher": True},
-                )
-                assert r_patch.status_code == 200
-
-                # 4. Get redacts passphrase and reflects patched field
-                r_get = await client.get(f"{api_base}/v3/config/paths/get/{test_path}")
-                assert r_get.status_code == 200
-                assert r_get.json().get("srtPublishPassphrase") == "<redacted>"
-                assert r_get.json().get("overridePublisher") is True
-
-                # 5. Check credential preservation against live instance if SRT endpoint is available
-                srt_base = os.environ.get("MEDIAMTX_TEST_SRT_URL")
-                if srt_base and shutil.which("ffmpeg"):
-                    proc = await asyncio.create_subprocess_exec(
-                        "ffmpeg", "-y", "-f", "lavfi", "-i", "anullsrc", "-t", "0.2", "-f", "mpegts",
-                        f"{srt_base}/{test_path}?streamid=publish:{test_path}::{original_passphrase}&passphrase={original_passphrase}",
-                        stdout=asyncio.subprocess.PIPE,
-                        stderr=asyncio.subprocess.PIPE,
-                    )
-                    await proc.communicate()
-                    assert proc.returncode == 0
-            finally:
-                if path_created:
-                    try:
-                        del_resp = await client.delete(f"{api_base}/v3/config/paths/delete/{test_path}")
-                        assert del_resp.status_code in (200, 404)
-                    except (httpx.ConnectError, httpx.TimeoutException) as cleanup_err:
-                        raise RuntimeError(f"Failed to cleanup test path '{test_path}': {cleanup_err}") from cleanup_err
-    except (httpx.ConnectError, httpx.TimeoutException) as exc:
-        pytest.skip(f"MediaMTX container communication error: {exc}")
+                await proc.communicate()
+                assert proc.returncode == 0
+        finally:
+            if cleanup_needed:
+                try:
+                    del_resp = await client.delete(f"{api_base}/v3/config/paths/delete/{test_path}")
+                    assert del_resp.status_code in (200, 404)
+                except (httpx.ConnectError, httpx.TimeoutException) as cleanup_err:
+                    raise RuntimeError(f"Failed to cleanup test path '{test_path}': {cleanup_err}") from cleanup_err
 
