@@ -199,6 +199,7 @@ with `?error=invalid_role&role=…` and the page explains why.
 | `portal/routers/meeting_analysis.py` | Room meeting reports page, report generation, Markdown download and status API |
 | `portal/room_setup.py` | Room plan parsing, available AI services, booth/translation-language reconciliation, and room summaries; uses existing tables |
 | `portal/workspace_routing.py` | `/workspace` handler mapping, legacy organizer redirects, and template URL context |
+| `portal/routers/webhooks.py` | Webhook subscription management API and available events |
 | `portal/websockets/handlers.py` | `ws_booth` and `ws_captions` endpoints; authenticates, decodes frames, dispatches via `BOOTH_HANDLERS` |
 | `portal/websockets/booth_protocol.py` | `handle_*` logic for each booth WS message |
 | `portal/websockets/manager.py` | Connection pools; delivers `BoothRegistry` events to booth sockets and listeners |
@@ -329,3 +330,8 @@ behavior. See `website/docs/api/authentication.mdx` for integration rollout.
 
 `POST /login` requires verified email and uses the `login` rate-limit bucket:
 10 attempts per normalized email per hour. There is no separate admin sign-in form.
+
+## OAuth Routes (#980)
+
+- `POST /oauth/token`: exchanges authorization code for access and refresh tokens. Validates client, PKCE verifier, and enforces `auth_code.is_expired` with portable UTC timezone normalization.
+- Protected API endpoints (`portal/routers/api_v1.py`) use `require_oauth_scope`, verifying client active status, scope membership, and `oauth_token.is_expired` boundary.

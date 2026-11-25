@@ -36,6 +36,7 @@ class Settings(BaseSettings):
     # http://{jitsi_domain}. Set to https://... for production HTTPS.
     jitsi_base_url: str = ""
     jitsi_internal_base: str = ""
+    mediamtx_hls_base: str = "/hls"
     mediamtx_whip_base: str = "http://localhost:8889"
     # MediaMTX Control API (port 9997). Used to dynamically create named
     # paths with alwaysAvailable so WHEP readers survive publisher handoffs.
@@ -225,6 +226,9 @@ class Settings(BaseSettings):
     # wait, with rooms taking turns. Each local model's limit comes from its CPU threads instead.
     self_hosted_llm_concurrency: int = Field(default=4, ge=1)
     translation_api_concurrency: int = Field(default=32, ge=1)
+    # Seconds a segment may wait for its translation engine to start. A segment that would wait
+    # longer is dropped as stale, so a backed-up language catches up with the speaker. 0 = never.
+    translation_max_lag_seconds: float = Field(default=4.0, ge=0)
 
     # Built-in translation models this server offers to events (#1191), comma-separated; the
     # first is the default. Models are large, so only the operator chooses what may be downloaded.

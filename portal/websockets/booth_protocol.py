@@ -17,12 +17,20 @@ from fastapi import WebSocket
 import portal.webhooks.worker as _wh_worker
 from portal.auth import can_perform_role
 from portal.booth_identity import booth_id_to_mediamtx_path, parse_booth_id
-from portal.booth_publish import TICKET_TTL_SECS, issue_ticket
+from portal.booth_publish import (
+    TICKET_TTL_SECS,
+    end_publishers,
+    issue_ticket,
+    stop_booth_publish,
+    take_booth_publishers,
+    take_departed_publishers,
+)
 from portal.booth_state import Participant
 from portal.config import settings
 from portal.globals import booths
 from portal.roles import INTERPRETER, can_set_active
 from portal.tasks import track_task
+from portal.webhooks.events import BOOTH_INTERPRETER_JOINED
 from portal.websockets.manager import REASON_SUPERSEDED, WS_CLOSE_SUPERSEDED, Session, manager
 
 logger = logging.getLogger(__name__)
@@ -87,20 +95,8 @@ async def handle_join(ws: WebSocket, session: Session, data: dict) -> None:
     if room_id is not None and room_id != booth_room_id:
         await ws.send_text(json.dumps({"type": "booth:error", "message": "room_id does not match this booth."}))
         return
-    async def announce_join(participant: Participant, state: dict) -> None:
-        """Bind the participant to this socket and answer it, before the state goes to the booth."""
-        for old_ws in manager.detach_participant(session.booth_id, participant.participant_id, keep=ws):
-            track_task(
-                asyncio.create_task(manager.close_session(old_ws, code=WS_CLOSE_SUPERSEDED, reason=REASON_SUPERSEDED))
-            )
-        session.participant_id = participant.participant_id
-        session.language = language
-        session.channel_id = channel_id
-        # Broadcast on/off is a live, in-memory state owned exclusively by Mission
-        # Control (the Go Live / Stop toggle). Joining or reloading the booth must
-        # never change it, so we deliberately do NOT re-apply any persisted value
-        # here — doing so would flip an interpreter live (or Mission Control to
-        # "Stop") simply because they reconnected.
+    async def send_joined(participant: Participant, state: dict) -> None:
+        # Sent from the booth's delivery queue, so it reaches this socket before the joined state.
         await ws.send_text(
             json.dumps({"type": "booth:joined", "participant_id": participant.participant_id, "state": state})
         )
@@ -120,15 +116,25 @@ async def handle_join(ws: WebSocket, session: Session, data: dict) -> None:
             user_id=session.user_id,
             invite_public_id=str(session.invite_token_id) if session.invite_token_id is not None else None,
             connection_id=session.connection_id,
-            before_publish=announce_join,
+            before_delivery=send_joined,
         )
     except (ValueError, PermissionError) as exc:
         await ws.send_text(json.dumps({"type": "booth:error", "message": str(exc)}))
         return
+    for old_ws in manager.detach_participant(session.booth_id, participant.participant_id, keep=ws):
+        track_task(asyncio.create_task(manager.close_session(old_ws, code=WS_CLOSE_SUPERSEDED, reason=REASON_SUPERSEDED)))
+    session.participant_id = participant.participant_id
+    session.language = language
+    session.channel_id = channel_id
+    # Broadcast on/off is a live, in-memory state owned exclusively by Mission
+    # Control (the Go Live / Stop toggle). Joining or reloading the booth must
+    # never change it, so we deliberately do NOT re-apply any persisted value
+    # here — doing so would flip an interpreter live (or Mission Control to
+    # "Stop") simply because they reconnected.
 
     if role == INTERPRETER:
         await _wh_worker.enqueue_webhook(
-            "booth.interpreter.joined",
+            BOOTH_INTERPRETER_JOINED,
             {
                 "booth_id": session.booth_id,
                 "participant_id": participant.participant_id,
@@ -141,7 +147,7 @@ async def handle_join(ws: WebSocket, session: Session, data: dict) -> None:
 async def handle_leave(_ws: WebSocket, session: Session, _data: dict) -> None:
     if not session.participant_id:
         return
-    await booths.leave_participant(
+    state = await booths.leave_participant(
         session.booth_id,
         session.participant_id,
         session.language,
@@ -149,14 +155,20 @@ async def handle_leave(_ws: WebSocket, session: Session, _data: dict) -> None:
         connection_id=session.connection_id,
     )
     session.participant_id = None
+    await end_publishers(take_departed_publishers(session.booth_id, state))
 
 
 def schedule_participant_expiry(booth_id: str, participant_id: str, connection_id: str | None, delay: float) -> None:
-    """Remove the participant after *delay* seconds unless they reconnect first."""
+    """Remove the participant after *delay* seconds unless they reconnect first.
+
+    Once the grace has run out they are no longer in the booth, so audio they still send is ended.
+    """
 
     async def expire() -> None:
         await asyncio.sleep(delay)
-        await booths.expire_participant(booth_id, participant_id, connection_id)
+        state = await booths.expire_participant(booth_id, participant_id, connection_id)
+        if state is not None:
+            await end_publishers(take_departed_publishers(booth_id, state))
 
     track_task(asyncio.create_task(expire(), name=f"booth-expire-{booth_id}"))
 
@@ -167,7 +179,8 @@ async def release_participant(session: Session, *, immediate: bool) -> None:
     A dropped connection keeps the participant, and the active slot they hold,
     for ``booth_reconnect_grace_seconds`` so the same session can reclaim them;
     their WHIP audio goes to MediaMTX directly and keeps playing meanwhile.
-    *immediate* (access revoked or changed) removes them at once.
+    *immediate* (access revoked or changed) removes them at once and ends the
+    WHIP session they opened, whatever state their browser is in (#1285).
     """
     participant_id = session.participant_id
     if not participant_id:
@@ -175,18 +188,16 @@ async def release_participant(session: Session, *, immediate: bool) -> None:
     session.participant_id = None
     grace = settings.booth_reconnect_grace_seconds
     if immediate or grace <= 0:
-        await booths.leave_participant(
+        state = await booths.leave_participant(
             session.booth_id, participant_id, session.language, session.channel_id, connection_id=session.connection_id
         )
     else:
-        async def start_grace(_state: dict) -> None:
-            # Started at commit, so a slow subscriber cannot stretch the grace period.
-            schedule_participant_expiry(session.booth_id, participant_id, session.connection_id, grace)
-
-        # Does nothing when another socket holds the participant now.
-        await booths.disconnect_participant(
-            session.booth_id, participant_id, session.connection_id, before_publish=start_grace
-        )
+        state = await booths.disconnect_participant(session.booth_id, participant_id, session.connection_id)
+        if state is None:
+            return  # another socket holds them now
+        schedule_participant_expiry(session.booth_id, participant_id, session.connection_id, grace)
+    # Still in the booth during the grace, so this only claims a publisher who was removed.
+    await end_publishers(take_departed_publishers(session.booth_id, state))
 
 
 async def handle_chat(ws: WebSocket, session: Session, data: dict) -> None:
@@ -283,26 +294,26 @@ async def handle_set_broadcast_unlocked(ws: WebSocket, session: Session, data: d
     if not isinstance(unlocked, bool):
         await ws.send_text(json.dumps({"type": "booth:error", "message": "unlocked must be a boolean."}))
         return
-    async def stop_transcription(_state: dict) -> None:
+    try:
+        await booths.set_broadcast_unlocked(session.booth_id, unlocked, session.language, session.channel_id)
+        # Claimed before any await, so a later unlock and go-live cannot be stopped by this Stop.
+        stopped = take_booth_publishers(session.booth_id) if not unlocked else []
         # Locking the booth must immediately stop everything tied to it: the
         # transcription worker (which pulls audio independently of any browser)
         # is torn down here so captions stop even if the interpreter's client is
-        # unresponsive. It runs before the state is delivered, so a slow socket
-        # cannot keep captions flowing. Publisher mic/ingest state is already
-        # reset inside set_broadcast_unlocked.
-        if unlocked:
-            return
-        try:
-            from portal.transcription.worker import stop_transcription_worker
+        # unresponsive. Publisher mic/ingest state is already reset inside
+        # set_broadcast_unlocked; the MediaMTX session is ended below.
+        if not unlocked:
+            # The WHIP session goes to MediaMTX directly; end it first so the audio
+            # stops even if the interpreter's tab never tears it down, without
+            # waiting for transcription cleanup.
+            await stop_booth_publish(session.booth_id, stopped, only_while_locked=True)
+            try:
+                from portal.transcription.worker import stop_transcription_worker
 
-            await stop_transcription_worker(session.booth_id)
-        except Exception as e:
-            logger.warning("Failed to stop transcription on lock: %s", e)
-
-    try:
-        await booths.set_broadcast_unlocked(
-            session.booth_id, unlocked, session.language, session.channel_id, before_publish=stop_transcription
-        )
+                await stop_transcription_worker(session.booth_id)
+            except Exception as e:
+                logger.warning("Failed to stop transcription on lock: %s", e)
     except Exception as exc:
         await ws.send_text(json.dumps({"type": "booth:error", "message": str(exc)}))
 

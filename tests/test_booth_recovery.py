@@ -206,10 +206,12 @@ async def test_revocation_removes_participants_whose_socket_had_dropped(monkeypa
     for participant, socket in ((ana, "Ana-socket"), (ben, "Ben-socket")):
         await registry.disconnect_participant(BOOTH, participant.participant_id, socket)
 
+    await registry.drain()
     registry.subscribe(record)
     connections = manager_module.ConnectionManager()
     await connections.close_user_sessions(7)
     await connections.close_token_sessions("inv-ben", booth_id=BOOTH)
+    await registry.drain()
 
     state = await registry.get_booth(BOOTH)
     assert [p["participant_id"] for p in state["participants"]] == [cleo.participant_id]

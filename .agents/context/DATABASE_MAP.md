@@ -68,6 +68,7 @@ Cascade: deletes rooms + booths when event is deleted.
 | `floor_translation_enabled` | Boolean | Default False |
 | `floor_translation_provider` | String(50) nullable | — |
 | `floor_translation_model` | String(100) nullable | — |
+| `monitor_floor_enabled`, `monitor_meeting_enabled` | Boolean | Room Settings controls for interpreter monitor choices. Both default on (migration 049). |
 | `floor_source_language_code` | String(20) | Default `'en'` |
 | `floor_tts_enabled` | Boolean | Default False; controls whether TTS is generated for floor audio translations |
 | `floor_tts_provider` | String(20) | Default `'deepgram'`; TTS engine — `'deepgram'` (cloud) or `'supertonic'` (self-hosted ONNX) |
@@ -491,3 +492,8 @@ transaction; the MediaMTX auth callback reserves a session before negotiation.
 Final floor sequence increments atomically and survives worker/portal restarts.
 Raw credentials are only returned at create/rotate. YouTube keys exist only in
 relay mode, encrypted (migration 028).
+
+## OAuth Tables & Expiration Handling (#980)
+
+- `oauth_authorization_codes`: stores authorization codes with `expires_at: DateTime(tz)`. Exposes `is_expired` property that normalizes SQLite-stripped naive datetimes to UTC-aware before comparison against `utc_now()`.
+- `oauth_tokens`: stores access and refresh token hashes with `expires_at: DateTime(tz)`. Exposes `is_expired` property used across token exchange and `require_oauth_scope` API dependencies to enforce consistent expiry boundaries across SQLite and PostgreSQL backends.

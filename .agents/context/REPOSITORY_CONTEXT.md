@@ -137,7 +137,7 @@ Client → Server messages:
 | `type` | Handler | Effect |
 |---|---|---|
 | `booth:join` | `handle_join` | Adds participant; first interpreter auto-assigned active |
-| `booth:leave` | `handle_leave` | Removes participant; triggers handoff if active leaves |
+| `booth:leave` | `handle_leave` | Removes participant; triggers handoff if active leaves; ends the WHIP session they opened |
 | `booth:chat` | `handle_chat` | Appends message; broadcasts `booth:chat` + `booth:state` |
 | `booth:set-active` | `handle_set_active` | Changes active interpreter (room_coordinator/current-active only) |
 | `booth:update-state` | `handle_update_state` | Updates mic_active / ingest_connected flags |

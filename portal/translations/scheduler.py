@@ -11,11 +11,16 @@ Each channel (one source stream translated into one language, e.g. ``"<booth>:fr
 limits the worker had before: at most ``per_channel`` calls running and ``queue_limit`` jobs
 admitted at once. A job is admitted when its segment arrives and counts against its channel
 until the worker closes it, once the result is saved and delivered.
+
+A scheduler with a lag budget drops a job that cannot start within that many seconds of its
+segment arriving (#1189): its language skips that segment and catches up with the speaker,
+instead of falling further behind with every segment that waits.
 """
 
 from __future__ import annotations
 
 import asyncio
+import time
 from collections import OrderedDict, deque
 from collections.abc import Hashable
 
@@ -23,6 +28,14 @@ from collections.abc import Hashable
 PER_CHANNEL = 2
 #: Jobs one channel may hold, waiting or running, before new segments are dropped.
 QUEUE_LIMIT = 15
+
+
+class StaleTranslationJob(Exception):
+    """The job could not start within its scheduler's lag budget, so it was dropped."""
+
+    def __init__(self, waited: float) -> None:
+        super().__init__(f"waited {waited:.1f} s for the engine")
+        self.waited = waited
 
 
 class _Channel:
@@ -42,11 +55,15 @@ class TranslationJob:
     The job keeps its place in the channel until ``close()``, so the worker can count it there
     while it saves and delivers the result. A job that never reaches the engine must be closed
     too. ``close()`` also gives back a slot the job still holds, and is safe to call twice.
+    Entering raises ``StaleTranslationJob`` when the job cannot start within the scheduler's lag
+    budget; the job then holds no slot and must still be closed.
     """
 
-    __slots__ = ("_scheduler", "_room", "_channel", "_state", "_admitted", "_busy_until")
+    __slots__ = ("_scheduler", "_room", "_channel", "_state", "_admitted", "_busy_until", "_arrived_at")
 
-    def __init__(self, scheduler: TranslationScheduler, room: Hashable, channel: str) -> None:
+    def __init__(
+        self, scheduler: TranslationScheduler, room: Hashable, channel: str, arrived_at: float | None = None
+    ) -> None:
         self._scheduler = scheduler
         self._room = room
         self._channel = channel
@@ -54,6 +71,13 @@ class TranslationJob:
         self._state = "waiting"
         self._admitted = True
         self._busy_until: asyncio.Future | None = None
+        #: When the segment arrived (``time.monotonic()``), or when the job was admitted if not given.
+        self._arrived_at = time.monotonic() if arrived_at is None else arrived_at
+
+    @property
+    def waited(self) -> float:
+        """Seconds since the job's segment arrived."""
+        return time.monotonic() - self._arrived_at
 
     async def __aenter__(self) -> TranslationJob:
         if self._state != "waiting" or not self._admitted:
@@ -94,22 +118,38 @@ class TranslationJob:
 
 
 class TranslationScheduler:
-    """Bounded, fair access to one engine: rooms take turns, then languages within a room."""
+    """Bounded, fair access to one engine: rooms take turns, then languages within a room.
 
-    def __init__(self, capacity: int, *, per_channel: int = PER_CHANNEL, queue_limit: int = QUEUE_LIMIT) -> None:
+    ``lag_budget`` is the most seconds a job may wait between its segment arriving and starting;
+    a job that would wait longer is dropped as stale. None (or 0) never drops a job for waiting.
+    """
+
+    def __init__(
+        self,
+        capacity: int,
+        *,
+        per_channel: int = PER_CHANNEL,
+        queue_limit: int = QUEUE_LIMIT,
+        lag_budget: float | None = None,
+    ) -> None:
         if capacity < 1 or per_channel < 1 or queue_limit < 1:
             raise ValueError("capacity, per_channel and queue_limit must be at least 1")
         self.capacity = capacity
         self.per_channel = per_channel
         self.queue_limit = queue_limit
+        self.lag_budget = lag_budget
         self.running = 0
         # Rooms, and the channels within each room, in turn order: the front is served next, and
         # whoever is served goes to the back. A room or channel with no jobs left is removed, so
         # when it comes back it joins at the back too, behind everyone already waiting.
         self._rooms: OrderedDict[Hashable, OrderedDict[str, _Channel]] = OrderedDict()
 
-    def admit(self, room: Hashable, channel: str) -> TranslationJob | None:
-        """A place in ``channel`` for one segment, or None when the channel is already full."""
+    def admit(self, room: Hashable, channel: str, *, arrived_at: float | None = None) -> TranslationJob | None:
+        """A place in ``channel`` for one segment, or None when the channel is already full.
+
+        ``arrived_at`` is when the segment arrived, from ``time.monotonic()``; the lag budget counts
+        from it. Without it, the budget counts from now.
+        """
         channels = self._rooms.get(room)
         if channels is None:
             channels = self._rooms[room] = OrderedDict()
@@ -119,7 +159,7 @@ class TranslationScheduler:
         if state.admitted >= self.queue_limit:
             return None
         state.admitted += 1
-        return TranslationJob(self, room, channel)
+        return TranslationJob(self, room, channel, arrived_at)
 
     def set_capacity(self, capacity: int) -> None:
         """Change how many calls may run at once. Calls already running finish; none are stopped."""
@@ -147,19 +187,30 @@ class TranslationScheduler:
         )
 
     async def _wait_for_turn(self, job: TranslationJob) -> None:
+        time_left = self.lag_budget - job.waited if self.lag_budget else None
+        if time_left is not None and time_left <= 0:
+            raise StaleTranslationJob(job.waited)
         state = self._rooms[job._room][job._channel]
         turn = asyncio.get_running_loop().create_future()
         state.waiters.append(turn)
         self._dispatch()
         try:
-            await turn
-        except asyncio.CancelledError:
+            async with asyncio.timeout(time_left):
+                await turn
+        except (asyncio.CancelledError, TimeoutError) as exc:
             if not turn.cancelled():
-                # The slot was given just before the cancel reached the job: pass it on.
+                # The slot was given just before the cancel or the deadline reached the job: pass it on.
                 self._give_back(job._room, job._channel)
             elif turn in state.waiters:
                 state.waiters.remove(turn)
+            if isinstance(exc, TimeoutError):
+                raise StaleTranslationJob(job.waited) from None
             raise
+        if self.lag_budget and job.waited >= self.lag_budget:
+            # The slot came after the deadline, before the late timeout could fire (the loop ran
+            # late). The job still did not start in time: pass the slot on without running it.
+            self._give_back(job._room, job._channel)
+            raise StaleTranslationJob(job.waited)
 
     def _leave(self, room: Hashable, channel: str) -> None:
         state = self._rooms[room][channel]

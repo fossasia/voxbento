@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import inspect
 
 import pytest
@@ -956,9 +957,11 @@ async def test_mutators_publish_one_event_each_and_failures_publish_nothing():
     events = await _recorded_events(registry)
     active = await join(registry, "Active")
     backup = await join(registry, "Backup")
+    await registry.drain()
     assert len(events) == 2
 
     await registry.set_active_interpreter("hall-1-fr", active.participant_id, backup.participant_id, "French", "c")
+    await registry.drain()
     assert len(events) == 3
     assert events[-1].state["active_interpreter_id"] == backup.participant_id
 
@@ -966,11 +969,26 @@ async def test_mutators_publish_one_event_each_and_failures_publish_nothing():
         await registry.set_active_interpreter("hall-1-fr", active.participant_id, active.participant_id, "French", "c")
     with pytest.raises(ValueError):
         await registry.add_chat_message("hall-1-fr", active.participant_id, "  ", "French", "c")
+    await registry.drain()
     assert len(events) == 3
 
     message, _ = await registry.add_chat_message("hall-1-fr", active.participant_id, "hi", "French", "c")
+    await registry.drain()
     assert len(events) == 4
     assert events[-1].chat_message == message
+
+
+@pytest.mark.anyio
+async def test_events_are_delivered_in_commit_order():
+    registry = BoothRegistry()
+    events = await _recorded_events(registry)
+    ana = await join(registry, "Ana")
+    ben = await join(registry, "Ben")
+    await registry.set_active_interpreter("hall-1-fr", ana.participant_id, ben.participant_id, "French", "c")
+    await registry.drain()
+
+    assert [len(e.state["participants"]) for e in events] == [1, 2, 2]
+    assert events[-1].state["active_interpreter_id"] == ben.participant_id
 
 
 @pytest.mark.anyio
@@ -987,6 +1005,7 @@ async def test_failing_subscriber_does_not_undo_the_change_or_block_others():
     registry.subscribe(broken)  # subscribing twice is harmless
     events = await _recorded_events(registry)  # registered after the failing subscriber
     participant = await join(registry, "Ana")
+    await registry.drain()
 
     assert len(calls) == 1
     assert len(events) == 1
@@ -995,24 +1014,67 @@ async def test_failing_subscriber_does_not_undo_the_change_or_block_others():
 
 
 @pytest.mark.anyio
-async def test_join_callback_runs_before_publish_and_publish_survives_its_failure():
+async def test_slow_subscriber_does_not_hold_up_the_mutator():
+    registry = BoothRegistry()
+    release = asyncio.Event()
+
+    async def stalled(_event):
+        await release.wait()
+
+    registry.subscribe(stalled)
+    participant = await asyncio.wait_for(join(registry, "Ana"), timeout=5)
+
+    assert (await registry.get_booth("hall-1-fr"))["active_interpreter_id"] == participant.participant_id
+    release.set()
+    await registry.drain()
+
+
+@pytest.mark.anyio
+async def test_cancelling_the_mutator_during_delivery_still_reaches_every_subscriber():
+    registry = BoothRegistry()
+    entered = asyncio.Event()
+    release = asyncio.Event()
+
+    async def stalled(_event):
+        entered.set()
+        await release.wait()
+
+    registry.subscribe(stalled)
+    events = await _recorded_events(registry)
+
+    async def mutate():
+        await join(registry, "Ana")
+        await asyncio.Event().wait()  # still running while the event is being delivered
+
+    task = asyncio.create_task(mutate())
+    await asyncio.wait_for(entered.wait(), timeout=5)
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    release.set()
+    await registry.drain()
+
+    assert await registry.get_booth("hall-1-fr") is not None
+    assert len(events) == 1
+
+
+@pytest.mark.anyio
+async def test_join_callback_runs_before_delivery_and_delivery_survives_its_failure():
     registry = BoothRegistry()
     order = []
 
     async def record(_event):
-        order.append("published")
+        order.append("delivered")
 
     async def announce(_participant, _state):
         order.append("announced")
         raise RuntimeError("socket closed")
 
     registry.subscribe(record)
-    with pytest.raises(RuntimeError):
-        await registry.join_participant(
-            "hall-1-fr", "Ana", "interpreter", "French", "c", before_publish=announce
-        )
+    await registry.join_participant("hall-1-fr", "Ana", "interpreter", "French", "c", before_delivery=announce)
+    await registry.drain()
 
-    assert order == ["announced", "published"]
+    assert order == ["announced", "delivered"]
 
 
 @pytest.mark.anyio
@@ -1022,6 +1084,7 @@ async def test_mark_ingest_overloaded_publishes_and_ignores_unknown_booths():
     assert await registry.mark_ingest_overloaded("hall-1-fr") is None
     await join(registry, "Ana")
     state = await registry.mark_ingest_overloaded("hall-1-fr")
+    await registry.drain()
 
     assert state["ingest_status"] == "overloaded"
     assert events[-1].state["ingest_status"] == "overloaded"
@@ -1047,58 +1110,28 @@ def test_every_booth_client_message_has_a_handler():
 async def test_idle_handoff_cancel_publishes_nothing():
     registry = BoothRegistry()
     participant = await join(registry, "Ana")
+    await registry.drain()
     events = await _recorded_events(registry)
 
     state = await registry.cancel_handoff("hall-1-fr", participant.participant_id, "French", "c")
+    await registry.drain()
 
     assert state["handoff_state"] == "idle"
     assert events == []
 
 
 @pytest.mark.anyio
-async def test_disconnect_and_lock_callbacks_run_before_delivery():
-    registry = BoothRegistry()
-    order = []
-
-    async def record(_event):
-        order.append("delivered")
-
-    participant, _ = await registry.join_participant(
-        "hall-1-fr", "Ana", "interpreter", "French", "c", connection_id="sock"
-    )
-    registry.subscribe(record)
-
-    async def started(_state):
-        order.append("callback")
-
-    await registry.disconnect_participant("hall-1-fr", participant.participant_id, "sock", before_publish=started)
-    await registry.set_broadcast_unlocked("hall-1-fr", False, "French", "c", before_publish=started)
-    # Another socket now holds the record: nothing to commit, so no callback or event.
-    assert await registry.disconnect_participant("hall-1-fr", participant.participant_id, "other") is None
-
-    assert order == ["callback", "delivered", "callback", "delivered"]
-
-
-
-@pytest.mark.anyio
-async def test_create_booth_publishes_once_and_duplicates_publish_nothing():
+async def test_creating_a_booth_publishes_only_when_the_caller_says_so():
+    """Provisioning publishes a new booth after its transaction commits, not when it is created."""
     registry = BoothRegistry()
     events = await _recorded_events(registry)
 
     state = await registry.create_booth("pycon2026", "en", "English", 1)
-    with pytest.raises(ValueError):
-        await registry.create_booth("pycon2026", "en", "English", 1)
-
-    assert [event.state for event in events] == [state]
-
-
-
-@pytest.mark.anyio
-async def test_snapshot_publishes_only_when_it_creates_the_booth():
-    registry = BoothRegistry()
-    events = await _recorded_events(registry)
-
-    state = await registry.snapshot("hall-1-fr", "French", "c")
     await registry.snapshot("hall-1-fr", "French", "c")
+    registry.publish_state("missing-1-en")
+    await registry.drain()
+    assert events == []
 
+    registry.publish_state(state["booth_id"])
+    await registry.drain()
     assert [event.state for event in events] == [state]

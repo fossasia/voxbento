@@ -16,6 +16,7 @@ from fastapi import WebSocket, WebSocketDisconnect
 from sqlalchemy.exc import SQLAlchemyError
 
 from portal.auth import WSAuthError
+from portal.booth_publish import end_publishers, stop_booth_publish, take_booth_publishers, take_departed_publishers
 from portal.booth_state import BoothEvent
 from portal.globals import booths
 from portal.roles import ALL_ROLES
@@ -37,6 +38,16 @@ REASON_INVITE_REVOKED: str = "Invitation revoked"
 # another tab. Final for the client, so the two tabs do not take turns reclaiming it.
 WS_CLOSE_SUPERSEDED: int = 4009
 REASON_SUPERSEDED: str = "Booth opened elsewhere"
+
+
+async def _end_retained_publishers(removal: Awaitable[list[tuple[str, dict]]]) -> None:
+    """End the WHIP sessions of participants removed after their access was revoked while their socket was down.
+
+    Nothing else would stop that audio while their browser is unreachable. The registry tells their booths.
+    """
+    departed = [take_departed_publishers(booth_id, state) for booth_id, state in await removal]
+    for publishers in departed:
+        await end_publishers(publishers)
 
 
 @dataclass
@@ -151,7 +162,7 @@ class ConnectionManager:
         if revoked_sockets:
             tasks = [self.close_session(ws, code=code, reason=reason) for ws in revoked_sockets]
             await asyncio.gather(*tasks, return_exceptions=True)
-        await booths.remove_disconnected(invite_public_id=str(token_id), booth_id=booth_id)
+        await _end_retained_publishers(booths.remove_disconnected(invite_public_id=str(token_id), booth_id=booth_id))
 
     def revocation_epoch(self, user_id: int, booth_id: str | None = None) -> tuple[int, int]:
         """Return (user_wide_epoch, booth_specific_epoch) for this user and booth."""
@@ -287,7 +298,7 @@ class ConnectionManager:
         if revoked_sockets:
             tasks = [self.close_session(ws, code=code, reason=reason) for ws in revoked_sockets]
             await asyncio.gather(*tasks, return_exceptions=True)
-        await booths.remove_disconnected(user_id=user_id, booth_id=booth_id)
+        await _end_retained_publishers(booths.remove_disconnected(user_id=user_id, booth_id=booth_id))
 
     async def close_booth_sessions(
         self,
@@ -295,15 +306,20 @@ class ConnectionManager:
         code: int = WS_CLOSE_REVOKED,
         reason: str = REASON_MEMBERSHIP_REMOVED,
     ) -> None:
-        """Revoke authorization and disconnect all active sockets in a booth (e.g. booth deletion)."""
+        """Revoke authorization and disconnect all active sockets in a booth (e.g. booth deletion).
+
+        Nobody may publish to the booth afterwards, so its broadcast is stopped before
+        anything is awaited (refusing any outstanding publish ticket) and its MediaMTX
+        source is ended too.
+        """
+        booths.lock_broadcast_sync(booth_id)
         self._allowed_cache.pop(booth_id, None)
         room_sockets = list(self._rooms.get(booth_id, set()))
-        if not room_sockets:
-            return
         for ws in room_sockets:
             self.revoke_session(ws)
         tasks = [self.close_session(ws, code=code, reason=reason) for ws in room_sockets]
         await asyncio.gather(*tasks, return_exceptions=True)
+        await stop_booth_publish(booth_id, take_booth_publishers(booth_id))
 
     async def broadcast(self, booth_id: str, message: dict) -> None:
         """Send *message* to booth members authorized for *booth_id*.

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from collections import deque
 from collections.abc import Awaitable, Callable
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
@@ -19,6 +20,7 @@ from portal.booth_identity import (
 )
 from portal.roles import Role, can_go_live, can_set_active, role_label
 from portal.tasks import track_task
+from portal.webhooks.events import SESSION_STATUS_CHANGED
 
 logger = logging.getLogger(__name__)
 
@@ -202,12 +204,21 @@ class BoothEvent:
 BoothEventSink = Callable[[BoothEvent], Awaitable[None]]
 
 
+@dataclass
+class _Delivery:
+    """A booth's queue of committed changes and the task delivering them."""
+
+    queue: deque[tuple[BoothEvent, Callable[[], Awaitable[None]] | None]] = field(default_factory=deque)
+    task: asyncio.Task = field(init=False)
+
+
 class BoothRegistry:
     def __init__(self, attendance: AttendanceTracker | None = None) -> None:
         self._booths: dict[str, Booth] = {}
         self._lock = asyncio.Lock()
-        # Told about every committed change, after the lock is released.
+        # Told about every committed change, in order, by each booth's delivery task.
         self._sinks: list[BoothEventSink] = []
+        self._deliveries: dict[str, _Delivery] = {}
         # Told about every participant change, under the lock (#1215).
         self.attendance = attendance or AttendanceTracker()
         # Booths whose live record may have changed since portal.booth_recovery last saved it.
@@ -219,30 +230,58 @@ class BoothRegistry:
         if sink not in self._sinks:
             self._sinks.append(sink)
 
-    async def _publish(
+    def _publish(
         self,
         booth_id: str,
         state: dict,
         chat_message: dict | None = None,
         *,
-        before: Callable[[], Awaitable[None]] | None = None,
+        before_delivery: Callable[[], Awaitable[None]] | None = None,
     ) -> None:
-        """Tell the subscribers about a committed change. Call after releasing the lock.
+        """Queue a committed change for the subscribers. Caller holds the lock.
 
-        ``before`` runs first, so the caller can act on the commit without waiting for slow
-        subscribers; the change is published even if it raises. A failing subscriber is logged and
-        never undoes the change or stops the others.
+        Nothing here awaits, so the change is queued in commit order and the
+        mutator never waits for delivery. The booth's queue is drained by its own
+        task, so a slow subscriber or a cancelled mutator cannot hold up or drop
+        the change, and one booth's stalled socket does not delay another booth.
         """
+        event = BoothEvent(booth_id=booth_id, state=state, chat_message=chat_message)
+        loop = asyncio.get_running_loop()
+        delivery = self._deliveries.get(booth_id)
+        if delivery is None or delivery.task.done() or delivery.task.get_loop() is not loop:
+            delivery = _Delivery()
+            self._deliveries[booth_id] = delivery
+            delivery.task = loop.create_task(self._deliver(booth_id, delivery), name=f"booth-events-{booth_id}")
+            track_task(delivery.task)
+        delivery.queue.append((event, before_delivery))
+
+    async def _deliver(self, booth_id: str, delivery: _Delivery) -> None:
+        """Deliver the booth's queued events in order, then stop until the next one."""
         try:
-            if before is not None:
-                await before()
+            while delivery.queue:
+                event, before_delivery = delivery.queue.popleft()
+                if before_delivery is not None:
+                    try:
+                        await before_delivery()
+                    except Exception:
+                        logger.exception("Booth event preparation failed for %s", booth_id)
+                for sink in list(self._sinks):
+                    try:
+                        await sink(event)
+                    except Exception:
+                        logger.exception("Booth event subscriber failed for %s", booth_id)
         finally:
-            event = BoothEvent(booth_id=booth_id, state=state, chat_message=chat_message)
-            for sink in list(self._sinks):
-                try:
-                    await sink(event)
-                except Exception:
-                    logger.exception("Booth event subscriber failed for %s", booth_id)
+            # Checked and removed with no await in between, so no event is queued meanwhile.
+            if self._deliveries.get(booth_id) is delivery:
+                del self._deliveries[booth_id]
+
+    async def drain(self) -> None:
+        """Wait until every change published so far has been delivered."""
+        loop = asyncio.get_running_loop()
+        while pending := [
+            d.task for d in self._deliveries.values() if not d.task.done() and d.task.get_loop() is loop
+        ]:
+            await asyncio.wait(pending)
 
     def _changed(self, booth: Booth) -> None:
         """Record a change to *booth*'s participants or live state. Caller holds the lock."""
@@ -395,9 +434,7 @@ class BoothRegistry:
                 room_id=room_id,
             )
             self._booths[booth_id] = booth
-            state = booth.as_public_dict()
-        await self._publish(booth_id, state)
-        return state
+            return booth.as_public_dict()
 
     async def snapshot(
         self,
@@ -406,13 +443,19 @@ class BoothRegistry:
         channel_id: str,
         room_id: int | None = None,
     ) -> dict:
-        """Return the booth's public state, creating the booth if needed. Publishes only a creation."""
         async with self._lock:
-            created = booth_id not in self._booths
-            state = self._get_or_create_booth(booth_id, language, channel_id, room_id=room_id).as_public_dict()
-        if created:
-            await self._publish(booth_id, state)
-        return state
+            return self._get_or_create_booth(booth_id, language, channel_id, room_id=room_id).as_public_dict()
+
+    def publish_state(self, booth_id: str) -> None:
+        """Publish the booth's current state, if it exists.
+
+        For a change made outside the mutators, e.g. booth provisioning, which
+        publishes the new booth once its database transaction has committed.
+        Nothing here awaits, so the state read is consistent without the lock.
+        """
+        booth = self._booths.get(booth_id)
+        if booth is not None:
+            self._publish(booth_id, booth.as_public_dict())
 
     async def join_participant(
         self,
@@ -429,7 +472,7 @@ class BoothRegistry:
         user_id: int | None = None,
         invite_public_id: str | None = None,
         connection_id: str | None = None,
-        before_publish: Callable[[Participant, dict], Awaitable[None]] | None = None,
+        before_delivery: Callable[[Participant, dict], Awaitable[None]] | None = None,
     ) -> tuple[Participant, dict]:
         """Add a participant, auto-assigning the active slot if it is free.
 
@@ -440,8 +483,8 @@ class BoothRegistry:
         taking over that record, e.g. the active interpreter's.
         ``joined_by`` records the session that joined, for checks made outside the
         socket; ``connection_id`` names the socket that now holds the record.
-        ``before_publish`` runs after the change is committed and before it is published, so the
-        joining socket can be told first; the change is published even if it raises.
+        ``before_delivery`` runs in the booth's delivery queue just before this change reaches the
+        subscribers, so the joining socket can be told first; the change is delivered even if it raises.
         """
         fields = [
             ("display_name", display_name, DISPLAY_NAME_MAX_LENGTH),
@@ -487,8 +530,8 @@ class BoothRegistry:
                     booth.active_interpreter_id = participant.participant_id
             self._changed(booth)
             state = booth.as_public_dict()
-        before = None if before_publish is None else (lambda: before_publish(participant, state))
-        await self._publish(booth_id, state, before=before)
+            before = None if before_delivery is None else (lambda: before_delivery(participant, state))
+            self._publish(booth_id, state, before_delivery=before)
         return participant, state
 
     @staticmethod
@@ -546,21 +589,13 @@ class BoothRegistry:
             if participant is not None and (connection_id is None or participant.connection_id == connection_id):
                 self._remove_participant(booth, participant_id)
             state = booth.as_public_dict()
-        await self._publish(booth_id, state)
+            self._publish(booth_id, state)
         return state
 
-    async def disconnect_participant(
-        self,
-        booth_id: str,
-        participant_id: str,
-        connection_id: str,
-        *,
-        before_publish: Callable[[dict], Awaitable[None]] | None = None,
-    ) -> dict | None:
+    async def disconnect_participant(self, booth_id: str, participant_id: str, connection_id: str) -> dict | None:
         """Mark a participant whose socket dropped as reconnecting, keeping their place.
 
         Returns the new state, or None when another socket already holds the record.
-        ``before_publish`` runs once the change is committed, ahead of delivery to subscribers.
         """
         async with self._lock:
             booth = self._booths.get(booth_id)
@@ -575,8 +610,7 @@ class BoothRegistry:
                 booth.handoff_initiator_id = None
             self._changed(booth)
             state = booth.as_public_dict()
-        before = None if before_publish is None else (lambda: before_publish(state))
-        await self._publish(booth_id, state, before=before)
+            self._publish(booth_id, state)
         return state
 
     async def expire_participant(self, booth_id: str, participant_id: str, connection_id: str | None) -> dict | None:
@@ -591,7 +625,7 @@ class BoothRegistry:
                 return None
             self._remove_participant(booth, participant_id)
             state = booth.as_public_dict()
-        await self._publish(booth_id, state)
+            self._publish(booth_id, state)
         return state
 
     async def remove_disconnected(
@@ -625,9 +659,9 @@ class BoothRegistry:
                 for participant_id in matches:
                     self._remove_participant(booth, participant_id)
                 if matches:
-                    changed.append((key, booth.as_public_dict()))
-        for key, state in changed:
-            await self._publish(key, state)
+                    state = booth.as_public_dict()
+                    changed.append((key, state))
+                    self._publish(key, state)
         return changed
 
     def _remove_participant(self, booth: Booth, participant_id: str) -> None:
@@ -655,12 +689,12 @@ class BoothRegistry:
         unlocked: bool,
         language: str,
         channel_id: str,
-        *,
-        before_publish: Callable[[dict], Awaitable[None]] | None = None,
     ) -> dict:
-        """Set Mission Control's Go Live switch.
+        """Update broadcast unlock state for a booth and notify webhooks.
 
-        ``before_publish`` runs once the change is committed, ahead of delivery to subscribers.
+        When unlocked is False, disconnects all active participants and sets
+        the ingest status to disconnected. Asynchronously enqueues a
+        session.status_changed webhook event.
         """
         async with self._lock:
             booth = self._get_or_create_booth(booth_id, language, channel_id)
@@ -685,13 +719,12 @@ class BoothRegistry:
 
             track_task(
                 asyncio.create_task(
-                    _wh.enqueue_webhook("session.status_changed", {"booth_id": booth_id, "is_active": unlocked})
+                    _wh.enqueue_webhook(SESSION_STATUS_CHANGED, {"booth_id": booth_id, "is_active": unlocked})
                 )
             )
 
             state = booth.as_public_dict()
-        before = None if before_publish is None else (lambda: before_publish(state))
-        await self._publish(booth_id, state, before=before)
+            self._publish(booth_id, state)
         return state
 
     async def set_active_interpreter(
@@ -738,7 +771,7 @@ class BoothRegistry:
             booth.refresh_ingest_status()
             self._changed(booth)
             state = booth.as_public_dict()
-        await self._publish(booth_id, state)
+            self._publish(booth_id, state)
         return state
 
     async def initiate_handoff(
@@ -778,7 +811,7 @@ class BoothRegistry:
             booth.handoff_state = "offered" if is_active else "requested"
             booth.handoff_initiator_id = requester_id
             state = booth.as_public_dict()
-        await self._publish(booth_id, state)
+            self._publish(booth_id, state)
         return state
 
     async def accept_handoff(
@@ -841,7 +874,7 @@ class BoothRegistry:
             booth.refresh_ingest_status()
             self._changed(booth)
             state = booth.as_public_dict()
-        await self._publish(booth_id, state)
+            self._publish(booth_id, state)
         return state
 
     async def cancel_handoff(
@@ -861,7 +894,7 @@ class BoothRegistry:
             booth.handoff_state = "idle"
             booth.handoff_initiator_id = None
             state = booth.as_public_dict()
-        await self._publish(booth_id, state)
+            self._publish(booth_id, state)
         return state
 
     async def add_chat_message(
@@ -894,7 +927,7 @@ class BoothRegistry:
                 booth.chat_messages = booth.chat_messages[-500:]
             chat_message = asdict(message)
             state = booth.as_public_dict()
-        await self._publish(booth_id, state, chat_message)
+            self._publish(booth_id, state, chat_message)
         return chat_message, state
 
     async def update_participant_state(
@@ -934,7 +967,7 @@ class BoothRegistry:
             booth.refresh_ingest_status()
             self._changed(booth)
             state = booth.as_public_dict()
-        await self._publish(booth_id, state)
+            self._publish(booth_id, state)
         return state
 
     async def mark_ingest_overloaded(self, booth_id: str) -> dict | None:
@@ -945,7 +978,7 @@ class BoothRegistry:
                 return None
             booth.ingest_status = "overloaded"
             state = booth.as_public_dict()
-        await self._publish(booth_id, state)
+            self._publish(booth_id, state)
         return state
 
     async def check_publish_permission(
@@ -990,6 +1023,18 @@ class BoothRegistry:
             booth = self._booths.get(booth_id)
             return booth.as_public_dict() if booth is not None else None
 
+    def lock_broadcast_sync(self, booth_id: str) -> None:
+        """Stop the booth's broadcast at once, without awaiting the lock.
+
+        Booth deletion calls this before it awaits anything, so a publish ticket
+        issued just before (e.g. to a participant in reconnect grace) is refused.
+        Safe without the lock: nothing here awaits, so no other coroutine runs meanwhile.
+        """
+        booth = self._booths.get(booth_id)
+        if booth is not None and booth.broadcast_unlocked:
+            booth.broadcast_unlocked = False
+            self._changed(booth)
+
     def get_booth_sync(self, booth_id: str) -> Booth | None:
         """Return the raw Booth dataclass without locking.
 
@@ -1016,6 +1061,24 @@ class BoothRegistry:
             self._booths.pop(booth_id, None)
             self.attendance.forget_booth(booth_id)
             self._mark_dirty(booth_id)
+
+    async def remove_idle_booths(self, event_slug: str, room_id: int, language_codes: list[str]) -> str | None:
+        """Remove the booths for *language_codes* in one step, unless one of them is live.
+
+        Returns the first live language code and removes nothing, or None once all are removed.
+        Checking and removing under one lock leaves no gap for a booth to go live in between.
+        """
+        booth_ids = [make_booth_id(event_slug, room_id, code) for code in language_codes]
+        async with self._lock:
+            for code, booth_id in zip(language_codes, booth_ids, strict=True):
+                booth = self._booths.get(booth_id)
+                if booth is not None and booth.ingest_status == "connected":
+                    return code
+            for booth_id in booth_ids:
+                self._booths.pop(booth_id, None)
+                self.attendance.forget_booth(booth_id)
+                self._mark_dirty(booth_id)
+        return None
 
     async def validate_booth_event(self, booth_id: str, expected_event: str) -> None:
         """Raise PermissionError if *booth_id* does not belong to *expected_event*.
