@@ -1135,3 +1135,18 @@ async def test_creating_a_booth_publishes_only_when_the_caller_says_so():
     registry.publish_state(state["booth_id"])
     await registry.drain()
     assert [event.state for event in events] == [state]
+
+
+@pytest.mark.anyio
+async def test_lock_broadcast_sync_publishes_only_when_it_stops_the_broadcast():
+    registry = BoothRegistry()
+    await registry.set_broadcast_unlocked("hall-1-fr", True, "French", "c")
+    await registry.drain()
+    events = await _recorded_events(registry)
+
+    registry.lock_broadcast_sync("hall-1-fr")
+    registry.lock_broadcast_sync("hall-1-fr")  # already stopped
+    registry.lock_broadcast_sync("missing-1-en")
+    await registry.drain()
+
+    assert [event.state["broadcast_unlocked"] for event in events] == [False]

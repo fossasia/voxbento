@@ -238,7 +238,9 @@ class BoothRegistry:
         *,
         before_delivery: Callable[[], Awaitable[None]] | None = None,
     ) -> None:
-        """Queue a committed change for the subscribers. Caller holds the lock.
+        """Queue a committed change for the subscribers.
+
+        Caller holds the lock, or changes the booth without awaiting (``lock_broadcast_sync``).
 
         Nothing here awaits, so the change is queued in commit order and the
         mutator never waits for delivery. The booth's queue is drained by its own
@@ -1034,6 +1036,7 @@ class BoothRegistry:
         if booth is not None and booth.broadcast_unlocked:
             booth.broadcast_unlocked = False
             self._changed(booth)
+            self._publish(booth_id, booth.as_public_dict())
 
     def get_booth_sync(self, booth_id: str) -> Booth | None:
         """Return the raw Booth dataclass without locking.
