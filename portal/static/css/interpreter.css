@@ -457,21 +457,21 @@ label {
   font-weight: 700;
   letter-spacing: 0.04em;
   color: var(--bx-muted);
-  background: var(--bx-surface-2, #f1f3f7);
+  background: var(--bx-surface-2);
   border: 1px solid var(--bx-border);
   line-height: 1;
 }
 
 .turn-timer.turn-timer--live {
   color: var(--bx-text);
-  background: #fff;
+  background: var(--bx-surface);
   border-color: var(--bx-border-strong);
 }
 
 .turn-timer.turn-timer--warning {
-  color: #b45309;
-  background: #fef3c7;
-  border-color: #fde68a;
+  color: var(--vb-color-warning-text, #b45309);
+  background: color-mix(in srgb, var(--vb-warning, var(--vb-color-warning, #f59e0b)) 15%, var(--bx-surface, #fff));
+  border-color: color-mix(in srgb, var(--vb-warning, var(--vb-color-warning, #f59e0b)) 45%, var(--bx-surface, #fff));
   animation: pulse-standby 2s ease-in-out infinite;
 }
 

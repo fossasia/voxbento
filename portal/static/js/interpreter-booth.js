@@ -58,6 +58,9 @@ const state = {
   /** Timestamp when the current active interpreter turn started while live. */
   turnStartedAt: null,
   turnTimerInterval: null,
+  turnBaseElapsedSec: 0,
+  turnSyncPerfTime: 0,
+  stateVersion: 0,
 }
 
 const reconnectBackoff = createBackoff()
@@ -564,6 +567,13 @@ async function fetchIngestReachability() {
 }
 
 function applyBoothState(payload, { skipAutoStart = false } = {}) {
+  if (typeof payload.state_version === 'number') {
+    if (payload.state_version < state.stateVersion) {
+      return
+    }
+    state.stateVersion = payload.state_version
+  }
+
   const previousActiveInterpreterId = state.activeInterpreterId
 
   state.participants = payload.participants || []
@@ -573,6 +583,20 @@ function applyBoothState(payload, { skipAutoStart = false } = {}) {
   state.handoffInitiatorId = payload.handoff_initiator_id || null
   state.broadcastUnlocked = payload.broadcast_unlocked || false
   state.turnStartedAt = payload.turn_started_at || null
+
+  if (state.turnStartedAt) {
+    const serverTimeMs = payload.server_time ? Date.parse(payload.server_time) : Date.now()
+    const startedMs = Date.parse(state.turnStartedAt)
+    if (!Number.isNaN(startedMs) && !Number.isNaN(serverTimeMs)) {
+      state.turnBaseElapsedSec = Math.max(0, (serverTimeMs - startedMs) / 1000)
+    } else {
+      state.turnBaseElapsedSec = 0
+    }
+    state.turnSyncPerfTime = performance.now()
+  } else {
+    state.turnBaseElapsedSec = 0
+    state.turnSyncPerfTime = 0
+  }
   syncTurnTimer()
 
   // Ensure non-active interpreters are always muted locally
@@ -1724,7 +1748,8 @@ function tickTurnTimer() {
     renderTurnTimer(0, false)
     return
   }
-  const elapsedSec = Math.max(0, Math.floor((Date.now() - startedMs) / 1000))
+  const deltaSec = state.turnSyncPerfTime ? Math.max(0, (performance.now() - state.turnSyncPerfTime) / 1000) : 0
+  const elapsedSec = Math.max(0, Math.floor(state.turnBaseElapsedSec + deltaSec))
   renderTurnTimer(elapsedSec, true)
 }
 

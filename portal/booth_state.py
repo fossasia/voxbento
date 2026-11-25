@@ -103,6 +103,7 @@ class Booth:
     room_id: int | None = None
     active_interpreter_id: str | None = None
     turn_started_at: str | None = None
+    state_version: int = 0
     handoff_state: str = "idle"
     handoff_initiator_id: str | None = None
     broadcast_unlocked: bool = False
@@ -141,6 +142,7 @@ class Booth:
             "channel_id": self.channel_id,
             "room_id": self.room_id,
             "broadcast_unlocked": self.broadcast_unlocked,
+            "turn_started_at": self.turn_started_at,
             "active_participant_id": active.participant_id if active else None,
             "active_session_key": active.joined_by if active else None,
             "active_display_name": active.display_name if active else None,
@@ -161,6 +163,8 @@ class Booth:
             "room_id": self.room_id,
             "language": self.language,
             "channel_id": self.channel_id,
+            "state_version": self.state_version,
+            "server_time": utc_now_iso(),
             "active_interpreter_id": self.active_interpreter_id,
             "turn_started_at": self.turn_started_at,
             "handoff_state": self.handoff_state,
@@ -198,6 +202,7 @@ class BoothRegistry:
 
     def _changed(self, booth: Booth) -> None:
         """Record a change to *booth*'s participants or live state. Caller holds the lock."""
+        booth.state_version += 1
         self.attendance.observe(booth)
         self._mark_dirty(booth.booth_id)
 
@@ -261,7 +266,9 @@ class BoothRegistry:
                         invite_public_id=record.get("active_invite_public_id"),
                     )
                     booth.active_interpreter_id = participant_id
-                    booth.turn_started_at = utc_now_iso() if booth.broadcast_unlocked else None
+                    booth.turn_started_at = record.get("turn_started_at") or (
+                        utc_now_iso() if booth.broadcast_unlocked else None
+                    )
                     placeholders.append((booth.booth_id, participant_id))
                 booth.refresh_ingest_status()
                 self.attendance.observe(booth)
@@ -918,6 +925,7 @@ class BoothRegistry:
         booth = self._booths.get(booth_id)
         if booth is not None and booth.broadcast_unlocked:
             booth.broadcast_unlocked = False
+            booth.turn_started_at = None
             self._changed(booth)
 
     def get_booth_sync(self, booth_id: str) -> Booth | None:

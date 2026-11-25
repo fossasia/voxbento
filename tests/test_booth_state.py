@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from datetime import datetime, timedelta, timezone
+
 import pytest
 
 from portal.auth import booth_session_key, create_participant_token, create_token, create_user_token, decode_token
@@ -955,8 +957,24 @@ async def test_turn_started_at_set_when_broadcast_unlocked():
     await join(registry, "Alice")
     state = await registry.set_broadcast_unlocked("hall-1-fr", True, "French", "hall-1-fr-audio")
     assert state["turn_started_at"] is not None
+    parsed = datetime.fromisoformat(state["turn_started_at"])
+    assert parsed.tzinfo is not None
+    assert state.get("server_time") is not None
+    assert state.get("state_version", 0) >= 1
     booth = registry.get_booth_sync("hall-1-fr")
     assert booth.turn_started_at == state["turn_started_at"]
+
+
+class ControllableClock:
+    def __init__(self, start_dt: datetime) -> None:
+        self.dt = start_dt
+
+    def now_iso(self) -> str:
+        return self.dt.isoformat()
+
+    def advance(self, **kwargs) -> str:
+        self.dt += timedelta(**kwargs)
+        return self.now_iso()
 
 
 @pytest.mark.anyio
@@ -971,56 +989,74 @@ async def test_turn_started_at_cleared_when_broadcast_locked():
 
 
 @pytest.mark.anyio
-async def test_turn_started_at_resets_on_handoff():
+async def test_turn_started_at_resets_on_handoff(monkeypatch):
+    clock = ControllableClock(datetime(2026, 11, 25, 10, 0, 0, tzinfo=timezone.utc))
+    monkeypatch.setattr("portal.booth_state.utc_now_iso", clock.now_iso)
+
     registry = BoothRegistry()
     p1 = await join(registry, "Alice")
     p2 = await join(registry, "Bob")
     await registry.set_broadcast_unlocked("hall-1-fr", True, "French", "hall-1-fr-audio")
     first_turn = registry.get_booth_sync("hall-1-fr").turn_started_at
-    assert first_turn is not None
+    assert first_turn == "2026-11-25T10:00:00+00:00"
 
+    clock.advance(minutes=20)
     await registry.initiate_handoff("hall-1-fr", p1.participant_id, "French", "hall-1-fr-audio")
     state = await registry.accept_handoff("hall-1-fr", p2.participant_id, "French", "hall-1-fr-audio")
     assert state["active_interpreter_id"] == p2.participant_id
-    assert state["turn_started_at"] is not None
+    assert state["turn_started_at"] == "2026-11-25T10:20:00+00:00"
+    assert state["turn_started_at"] != first_turn
 
 
 @pytest.mark.anyio
-async def test_turn_started_at_idempotent_on_same_active_interpreter():
+async def test_turn_started_at_idempotent_on_same_active_interpreter(monkeypatch):
+    clock = ControllableClock(datetime(2026, 11, 25, 10, 0, 0, tzinfo=timezone.utc))
+    monkeypatch.setattr("portal.booth_state.utc_now_iso", clock.now_iso)
+
     registry = BoothRegistry()
     p1 = await join(registry, "Alice")
     p2 = await join(registry, "Bob")
     await registry.set_broadcast_unlocked("hall-1-fr", True, "French", "hall-1-fr-audio")
     initial_turn = registry.get_booth_sync("hall-1-fr").turn_started_at
-    assert initial_turn is not None
+    assert initial_turn == "2026-11-25T10:00:00+00:00"
 
+    clock.advance(minutes=10)
     # Reassigning to the same interpreter should NOT change turn_started_at
     state = await registry.set_active_interpreter(
         "hall-1-fr", p1.participant_id, p1.participant_id, "French", "hall-1-fr-audio"
     )
     assert state["turn_started_at"] == initial_turn
 
+    clock.advance(minutes=20)
     # Reassigning to a different interpreter resets turn_started_at
     state2 = await registry.set_active_interpreter(
         "hall-1-fr", p1.participant_id, p2.participant_id, "French", "hall-1-fr-audio"
     )
     assert state2["active_interpreter_id"] == p2.participant_id
-    assert state2["turn_started_at"] is not None
+    assert state2["turn_started_at"] == "2026-11-25T10:30:00+00:00"
+    assert state2["turn_started_at"] != initial_turn
 
 
 @pytest.mark.anyio
-async def test_turn_started_at_promotes_backup_on_leave():
+async def test_turn_started_at_promotes_backup_on_leave(monkeypatch):
+    clock = ControllableClock(datetime(2026, 11, 25, 10, 0, 0, tzinfo=timezone.utc))
+    monkeypatch.setattr("portal.booth_state.utc_now_iso", clock.now_iso)
+
     registry = BoothRegistry()
     p1 = await join(registry, "Alice")
     p2 = await join(registry, "Bob")
     await registry.set_broadcast_unlocked("hall-1-fr", True, "French", "hall-1-fr-audio")
     assert registry.get_booth_sync("hall-1-fr").active_interpreter_id == p1.participant_id
+    first_turn = registry.get_booth_sync("hall-1-fr").turn_started_at
+    assert first_turn == "2026-11-25T10:00:00+00:00"
 
+    clock.advance(minutes=25)
     # Active leaves -> backup promoted -> new turn timestamp
     await registry.leave_participant("hall-1-fr", p1.participant_id, "French", "hall-1-fr-audio")
     booth = registry.get_booth_sync("hall-1-fr")
     assert booth.active_interpreter_id == p2.participant_id
-    assert booth.turn_started_at is not None
+    assert booth.turn_started_at == "2026-11-25T10:25:00+00:00"
+    assert booth.turn_started_at != first_turn
 
     # Backup leaves -> no interpreters -> cleared
     await registry.leave_participant("hall-1-fr", p2.participant_id, "French", "hall-1-fr-audio")
@@ -1038,6 +1074,7 @@ async def test_turn_started_at_preserved_on_reclaim():
         language="French",
         channel_id="hall-1-fr-audio",
         connection_id="conn-1",
+        joined_by="user:1",
     )
     await registry.set_broadcast_unlocked("hall-1-fr", True, "French", "hall-1-fr-audio")
     orig_turn = registry.get_booth_sync("hall-1-fr").turn_started_at
@@ -1049,7 +1086,7 @@ async def test_turn_started_at_preserved_on_reclaim():
     assert booth.turn_started_at == orig_turn
 
     # Reclaim should preserve turn_started_at
-    _, state = await registry.join_participant(
+    p1_reclaimed, state = await registry.join_participant(
         booth_id="hall-1-fr",
         display_name="Alice",
         role="interpreter",
@@ -1057,6 +1094,53 @@ async def test_turn_started_at_preserved_on_reclaim():
         channel_id="hall-1-fr-audio",
         participant_id=p1.participant_id,
         connection_id="conn-2",
+        joined_by="user:1",
+        reclaim=True,
     )
+    assert p1_reclaimed.participant_id == p1.participant_id
+    assert p1_reclaimed.connected is True
     assert state["turn_started_at"] == orig_turn
+
+
+@pytest.mark.anyio
+async def test_lock_broadcast_sync_clears_turn_started_at():
+    registry = BoothRegistry()
+    await join(registry, "Alice")
+    await registry.set_broadcast_unlocked("hall-1-fr", True, "French", "hall-1-fr-audio")
+    booth = registry.get_booth_sync("hall-1-fr")
+    assert booth.turn_started_at is not None
+
+    registry.lock_broadcast_sync("hall-1-fr")
+    assert booth.broadcast_unlocked is False
+    assert booth.turn_started_at is None
+
+
+@pytest.mark.anyio
+async def test_restore_preserves_turn_started_at():
+    registry = BoothRegistry()
+    p1, _ = await registry.join_participant(
+        booth_id="hall-1-fr",
+        display_name="Alice",
+        role="interpreter",
+        language="French",
+        channel_id="hall-1-fr-audio",
+        connection_id="conn-1",
+        joined_by="user:1",
+    )
+    await registry.set_broadcast_unlocked("hall-1-fr", True, "French", "hall-1-fr-audio")
+    booth = registry.get_booth_sync("hall-1-fr")
+    turn_time = booth.turn_started_at
+    assert turn_time is not None
+
+    record = booth.live_record()
+    assert record is not None
+    assert record["turn_started_at"] == turn_time
+
+    # Restore in fresh registry
+    registry2 = BoothRegistry()
+    await registry2.restore([record])
+    booth2 = registry2.get_booth_sync("hall-1-fr")
+    assert booth2.broadcast_unlocked is True
+    assert booth2.active_interpreter_id == p1.participant_id
+    assert booth2.turn_started_at == turn_time
 
