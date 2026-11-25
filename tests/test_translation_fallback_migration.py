@@ -1,4 +1,4 @@
-"""Revision 049 preserves existing rooms and can be rolled back on SQLite."""
+"""Revision 050 preserves existing rooms and can be rolled back on SQLite."""
 
 from __future__ import annotations
 
@@ -14,7 +14,7 @@ from sqlalchemy import create_engine, inspect, text
 
 
 def migration():
-    path = Path(__file__).resolve().parents[1] / "alembic/versions/049_room_translation_fallback.py"
+    path = Path(__file__).resolve().parents[1] / "alembic/versions/050_room_translation_fallback.py"
     spec = importlib.util.spec_from_file_location("fallback_migration", path)
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
@@ -27,7 +27,7 @@ def test_migration_follows_upstream_without_duplicate_revisions():
     config.set_main_option("script_location", str(root / "alembic"))
     scripts = ScriptDirectory.from_config(config)
     assert len(scripts.get_heads()) == 1
-    assert scripts.get_revision("049").down_revision == "048"
+    assert scripts.get_revision("050").down_revision == "049"
 
 
 def test_sqlite_upgrade_and_downgrade_preserve_rooms_and_indexes(tmp_path):

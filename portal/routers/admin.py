@@ -2173,6 +2173,10 @@ async def admin_edit_room(request: Request, event_id: int, room_id: int):
             if not form_section or form_section == "general":
                 _process_room_general_section(room, form)
 
+            if form_section == "monitor":
+                room.monitor_floor_enabled = form.get("monitor_floor_enabled") == "on"
+                room.monitor_meeting_enabled = form.get("monitor_meeting_enabled") == "on"
+
             if not form_section or form_section == "relay":
                 await _process_room_relay_section(session, room, event_id, form)
 
