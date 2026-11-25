@@ -379,6 +379,27 @@ label {
   color: var(--bx-muted);
 }
 
+#monitor-source {
+  width: auto;
+  max-width: 100%;
+}
+
+#floor-player {
+  display: grid;
+  gap: 0.5rem;
+  padding: 1rem;
+}
+
+#floor-hls {
+  width: 100%;
+  min-height: 240px;
+  border: 0;
+}
+
+#floor-audio {
+  max-width: 100%;
+}
+
 .monitor-frame {
   position: relative;
   flex-grow: 1;
