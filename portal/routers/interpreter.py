@@ -8,8 +8,9 @@ from fastapi.templating import Jinja2Templates
 from sqlalchemy import or_, select
 from sqlalchemy.orm import joinedload
 
-from portal.auth import get_booth_sessions, is_invite_token_revoked, resolve_booth_role
+from portal.auth import get_booth_sessions, is_invite_token_revoked, resolve_booth_role, resolve_session_user
 from portal.booth_identity import make_booth_id, make_mediamtx_path
+from portal.booth_state import DISPLAY_NAME_MAX_LENGTH
 from portal.config import settings
 from portal.database import (
     get_booth_by_id,
@@ -20,7 +21,9 @@ from portal.database import (
 )
 from portal.globals import _JS_CACHE_BUST, asset_version_context, booths
 from portal.models import DBBooth, Event
+from portal.program_relay import RTMPS_MODES
 from portal.roles import INTERPRETER, ROLE_RANK, can_go_live, can_set_active, highest_role, role_label
+from portal.room_setup import AUDIO_DESK, AUDIO_ENCODER, AUDIO_MEETING, room_audio_choice
 from portal.user_menu import resolve_user_menu, user_menu_context
 from portal.utils import _ensure_mediamtx_path, _make_jitsi_url, safe_redirect
 
@@ -46,6 +49,8 @@ async def interpreter_landing_page(request: Request) -> Any:
 
     user_sess = sessions.get("user_token")
     invite_sess = sessions.get("session_token")
+    if user_sess and await resolve_session_user(user_sess) is None:
+        user_sess = None
 
     if user_sess and user_sess.get("sub"):
         try:
@@ -204,6 +209,11 @@ async def interpreter_booth_by_identity(
     await _ensure_mediamtx_path(channel_id)
     whip_url = f"{settings.mediamtx_whip_base}/{mediamtx_path}/whip"
     whep_url = f"{settings.mediamtx_whip_base}/{mediamtx_path}/whep"
+    floor_path = make_mediamtx_path(event_slug, room_id, "floor")
+    floor_hls_url = None
+    offer_floor = False
+    meeting_monitor_enabled = True
+    floor_label = "Room floor audio"
     room_jitsi_url = None
     async with get_session() as session:
         stmt = (
@@ -223,6 +233,16 @@ async def interpreter_booth_by_identity(
         relay_whep_url = None
         relay_language_name = None
         if db_booth and db_booth.room:
+            room = db_booth.room
+            source = room_audio_choice(room)
+            source_label = {AUDIO_DESK: "audio desk", AUDIO_ENCODER: "encoder", AUDIO_MEETING: "meeting feed"}.get(source)
+            if source_label:
+                floor_label = f"Room floor audio ({source_label})"
+            program_floor = room.floor_source == "program_ingest"
+            offer_floor = room.monitor_floor_enabled and (program_floor or room.meeting_agent_enabled)
+            meeting_monitor_enabled = room.monitor_meeting_enabled
+            if program_floor and room.program_ingest_mode in RTMPS_MODES:
+                floor_hls_url = f"{settings.mediamtx_hls_base.rstrip('/')}/{floor_path}/?muted=false"
             if db_booth.room.jitsi_url:
                 room_jitsi_url = db_booth.room.jitsi_url
             if db_booth.room.relay_booth_id:
@@ -234,7 +254,8 @@ async def interpreter_booth_by_identity(
     default_jitsi_url = _make_jitsi_url(settings.effective_jitsi_base_url, settings.default_jitsi_room)
     final_jitsi_url = room_jitsi_url or default_jitsi_url
     user_sess = sessions.get("user_token", {})
-    display_name = user_sess.get("display_name", "") or user_sess.get("email", "")
+    # booth:join rejects longer names, and the email fallback can be up to 320 characters.
+    display_name = (user_sess.get("display_name") or user_sess.get("email") or "")[:DISPLAY_NAME_MAX_LENGTH]
     return templates.TemplateResponse(
         request=request,
         name="interpreter_booth.html",
@@ -251,6 +272,11 @@ async def interpreter_booth_by_identity(
             "language_code": language_code,
             "whip_url": whip_url,
             "whep_url": whep_url,
+            "floor_label": floor_label,
+            "floor_hls_url": floor_hls_url,
+            "floor_whep_url": f"{settings.mediamtx_whip_base}/{floor_path}/whep",
+            "offer_floor": offer_floor,
+            "offer_meeting": meeting_monitor_enabled and bool(final_jitsi_url),
             "relay_whep_url": relay_whep_url,
             "relay_language_name": relay_language_name,
             "granted_role": granted_role,

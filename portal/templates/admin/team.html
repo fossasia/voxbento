@@ -37,6 +37,7 @@
 <section class="tm-card tm-add" aria-labelledby="tm-add-title">
   <h2 class="tm-card-title" id="tm-add-title">Add someone</h2>
   <form method="post" action="{{ management_prefix }}/events/{{ event.id }}/team/add" class="tm-add-form" data-team-add>
+    <input type="hidden" name="csrf_token" value="{{ request.state.admin_csrf_token }}" />
     <div class="tm-field tm-field--email">
       <label for="tm-email">Email</label>
       <input id="tm-email" name="email" type="email" required autocomplete="off" placeholder="name@example.org" value="{{ form.get('email', '') }}" />
@@ -107,6 +108,7 @@
           <span>{{ a.label }}</span>
           <form method="post" action="{{ management_prefix }}/events/{{ event.id }}/team/remove"
             data-confirm-message="Remove {{ member.user.display_name }} as {{ a.label }}?">
+            <input type="hidden" name="csrf_token" value="{{ request.state.admin_csrf_token }}" />
             <input type="hidden" name="level" value="{{ a.level }}" />
             <input type="hidden" name="membership_id" value="{{ a.membership_id }}" />
             <button type="submit" class="tm-role-remove" aria-label="Remove {{ member.user.display_name }} as {{ a.label }}" title="Remove">&times;</button>
@@ -117,6 +119,7 @@
       <div class="tm-actions">
         {% if member.invitation_pending %}
         <form method="post" action="{{ management_prefix }}/events/{{ event.id }}/team/resend">
+          <input type="hidden" name="csrf_token" value="{{ request.state.admin_csrf_token }}" />
           <input type="hidden" name="user_id" value="{{ member.user.id }}" />
           <button type="submit" class="btn btn-sm btn-outline">Resend invitation</button>
         </form>
@@ -137,6 +140,7 @@
   <p class="tm-card-note">A link lets someone join one booth without an account. Anyone who has the link can use it, so send it only to the interpreter and revoke it when it's no longer needed.</p>
   {% if team.booth_places %}
   <form method="post" action="{{ management_prefix }}/events/{{ event.id }}/team/links" class="tm-add-form tm-link-form">
+    <input type="hidden" name="csrf_token" value="{{ request.state.admin_csrf_token }}" />
     <div class="tm-field">
       <label for="tm-link-booth">Booth</label>
       <select id="tm-link-booth" name="booth" required>
@@ -186,6 +190,7 @@
           </td>
           <td>
             <form method="post" action="{{ management_prefix }}/events/{{ event.id }}/team/links/revoke" data-confirm-message="Revoke this invite link? Anyone who has it can no longer join.">
+              <input type="hidden" name="csrf_token" value="{{ request.state.admin_csrf_token }}" />
               <input type="hidden" name="token" value="{{ link.token.token }}" />
               <button type="submit" class="btn btn-sm btn-outline tm-revoke">Revoke</button>
             </form>

@@ -1035,7 +1035,11 @@ async def test_booth_connect_handles_database_session_cutoff(monkeypatch, naive_
 
     monkeypatch.setattr(handlers, "get_session", session)
     monkeypatch.setattr(handlers, "get_user_by_id", AsyncMock(return_value=user))
-    monkeypatch.setattr(handlers, "resolve_ws_auth", AsyncMock(return_value={"sub": "10", "user": True}))
+    monkeypatch.setattr(
+        handlers,
+        "resolve_ws_auth",
+        AsyncMock(return_value={"sub": "10", "user": True, "iat": datetime.now(timezone.utc).timestamp()}),
+    )
     monkeypatch.setattr(handlers, "resolve_booth_role", AsyncMock(return_value="interpreter"))
     monkeypatch.setattr(handlers, "get_booth_language_name", AsyncMock(return_value="English"))
     monkeypatch.setattr(handlers, "manager", ConnectionManager())

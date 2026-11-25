@@ -15,6 +15,8 @@ logger = logging.getLogger(__name__)
 
 # Sentence boundary regex — split LLM output into sentences for the Speak API.
 SENTENCE_BOUNDARY = re.compile(r"([^.?!]+[.?!]+)")
+# Upper bound on waiting for Deepgram's "Flushed" reply after the last Speak message.
+FLUSH_TIMEOUT_SECONDS = 5.0
 
 
 class DeepgramTTSProvider(TTSProvider):
@@ -48,23 +50,27 @@ class DeepgramTTSProvider(TTSProvider):
             async with websockets.connect(
                 dg_url, additional_headers={"Authorization": f"Token {self.api_key}"}
             ) as dg_socket:
-                # Start a background task to receive audio chunks and broadcast them
+                # Start a background task to receive audio chunks and broadcast them.
+                # It ends at Deepgram's "Flushed" reply: the socket stays open after a
+                # flush, so waiting for it to close would hold every segment until the
+                # timeout below.
                 async def receive_audio():
                     try:
                         async for message in dg_socket:
                             if isinstance(message, bytes):
                                 await on_audio(message)
-                            elif isinstance(message, str):
-                                try:
-                                    msg_json = json.loads(message)
-                                    if msg_json.get("type") == "Error":
-                                        logger.error(f"[TTS] Deepgram Error: {msg_json}")
-                                except json.JSONDecodeError:
-                                    pass
+                                continue
+                            try:
+                                msg_type = json.loads(message).get("type")
+                            except (json.JSONDecodeError, AttributeError):
+                                continue
+                            if msg_type == "Flushed":
+                                return
+                            if msg_type == "Error":
+                                logger.error("[TTS] Deepgram error for lang %s: %s", language_code, message)
+                                return
                     except websockets.exceptions.ConnectionClosed:
                         pass
-                    except Exception as e:
-                        logger.error(f"[TTS] Receive error: {e}")
 
                 receive_task = asyncio.create_task(receive_audio())
 
@@ -95,13 +101,13 @@ class DeepgramTTSProvider(TTSProvider):
                 # Flush to tell Deepgram we are done generating for this segment
                 await dg_socket.send(json.dumps({"type": "Flush"}))
 
-                # Wait a short moment for remaining audio to arrive, then close.
-                # Deepgram sends a 'Flushed' metadata message when done; we await
-                # the receive task or time out after a few seconds to be safe.
+                # Deepgram answers the flush with "Flushed" once the last audio frame is
+                # sent; the timeout only guards against a reply that never comes.
                 try:
-                    await asyncio.wait_for(receive_task, timeout=5.0)
+                    await asyncio.wait_for(receive_task, timeout=FLUSH_TIMEOUT_SECONDS)
                 except asyncio.TimeoutError:
-                    pass
+                    logger.warning("[TTS] Deepgram did not confirm the flush for lang %s", language_code)
+                await dg_socket.send(json.dumps({"type": "Close"}))
 
-        except Exception as e:
-            logger.error(f"[TTS] Error in Deepgram TTS stream for lang {language_code}: {e}")
+        except (OSError, websockets.exceptions.WebSocketException) as e:
+            logger.error("[TTS] Error in Deepgram TTS stream for lang %s: %s", language_code, e)

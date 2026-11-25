@@ -40,6 +40,7 @@ from portal.models import (
     EventMembership,
     HostingRequest,
     InviteToken,
+    MeetingReport,
     Room,
     RoomMembership,
     TranscriptSegment,
@@ -596,6 +597,7 @@ async def update_user(
     email_verified: bool | None = None,
     is_admin: bool | None = None,
     is_active: bool | None = None,
+    last_sign_in_at: datetime | None = None,
 ) -> User | None:
     user = await get_user_by_id(session, user_id)
     if user:
@@ -607,7 +609,18 @@ async def update_user(
             user.is_admin = is_admin
         if is_active is not None:
             user.is_active = is_active
-        await session.flush()
+        if last_sign_in_at is not None:
+            await session.execute(
+                sa.update(User)
+                .where(User.id == user_id)
+                .where(or_(User.last_sign_in_at.is_(None), User.last_sign_in_at < last_sign_in_at))
+                .values(last_sign_in_at=last_sign_in_at)
+                .execution_options(synchronize_session=False)
+            )
+            await session.flush()
+            await session.refresh(user)
+        else:
+            await session.flush()
     return user
 
 
@@ -668,6 +681,7 @@ USER_SORT_COLUMNS = {
     "email_verified": User.email_verified,
     "is_active": User.is_active,
     "created_at": User.created_at,
+    "last_sign_in_at": User.last_sign_in_at,
 }
 
 
@@ -1097,8 +1111,20 @@ async def redeem_auth_token(session: AsyncSession, jti: str, expected_type: str)
     if tok.token_type != expected_type:
         raise ValueError("Invalid token type.")
 
-    tok.used_at = datetime.now(tz=timezone.utc)
-    await session.flush()
+    now = datetime.now(tz=timezone.utc)
+    result = await session.execute(
+        sa.update(AuthToken)
+        .where(
+            AuthToken.jti == jti,
+            AuthToken.token_type == expected_type,
+            AuthToken.used_at.is_(None),
+            AuthToken.expires_at > now,
+        )
+        .values(used_at=now)
+        .execution_options(synchronize_session="fetch")
+    )
+    if result.rowcount != 1:
+        raise ValueError("Token has already been used or has expired.")
     return tok
 
 
@@ -1250,3 +1276,24 @@ async def get_booth_language_name(booth_id: str) -> str | None:
         logger.warning("Database error while resolving language for booth '%s': %s", booth_id, exc, exc_info=True)
         return None
     return None
+
+
+async def create_meeting_report(session: AsyncSession, **fields: object) -> MeetingReport:
+    report = MeetingReport(**fields)
+    session.add(report)
+    await session.flush()
+    return report
+
+
+async def list_meeting_reports(session: AsyncSession, room_id: int, limit: int = 50) -> list[MeetingReport]:
+    result = await session.scalars(
+        select(MeetingReport)
+        .where(MeetingReport.room_id == room_id)
+        .order_by(MeetingReport.created_at.desc(), MeetingReport.id.desc())
+        .limit(limit)
+    )
+    return list(result.all())
+
+
+async def get_meeting_report(session: AsyncSession, report_id: int) -> MeetingReport | None:
+    return await session.get(MeetingReport, report_id)
