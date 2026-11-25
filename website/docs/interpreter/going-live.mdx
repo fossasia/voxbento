@@ -70,9 +70,17 @@ Start speaking. The floor audio from the Jitsi iframe plays in your headset so y
 
 ### Mic Mute / Unmute
 
-    Toggle your mic on or off at any time without stopping the stream. Use this for brief pauses — coughing, notes, transitions — without going fully offline.
+    Toggle your mic on or off at any time without stopping the stream using the Mute button or the **Space** key. Use this for extended pauses or transitions without going fully offline.
 
     If your microphone is muted outside Voxbento (a keyboard mute key, the operating system's input mute, or a headset button), Voxbento shows **Muted by your device** and coordinators in Mission Control see you as **Muted** until you unmute the device. This relies on your browser reporting the mute, which Chrome and Edge do for most devices.
+
+### Hold-to-Mute Cough Key (C)
+
+    Press and hold the **Cough** button or hold the **C** key on your keyboard to momentarily cut your microphone while clearing your throat, coughing, sneezing, or drinking water (in compliance with ISO 20109).
+
+    - **Momentary hold-to-mute:** Your mic is silenced for as long as the key or button is held, and restores automatically the moment you release it—preventing silent airtime caused by forgotten unmute toggles.
+    - **Local only:** The cough key operates locally on your audio track (`track.enabled = false`) while keeping your WHIP WebRTC connection alive. It does not send `booth:update-state`, meaning your speaking time in attendance and your on-air badge in Mission Control remain uninterrupted.
+    - **Fail-safe release:** Releasing the key, pointer release or cancel, or switching focus out of the window automatically restores your microphone so missed releases cannot leave the booth muted.
   
 
   ### VU Meter

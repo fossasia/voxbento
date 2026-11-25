@@ -584,6 +584,30 @@ label {
   border-color: var(--bx-live-ink);
 }
 
+/* Cough button — hold-to-mute momentary control (ISO 20109, #1395) */
+.header-btn--cough {
+  background: #fff;
+  color: var(--bx-text);
+  border-color: var(--bx-border-strong);
+  user-select: none;
+  -webkit-user-select: none;
+  touch-action: none;
+}
+
+.header-btn--cough:hover:not(:disabled) {
+  background: var(--bx-bg-subtle, #f8fafc);
+  border-color: var(--bx-border-strong);
+}
+
+.header-btn--cough.pressed,
+.header-btn--cough:active:not(:disabled) {
+  background: color-mix(in srgb, var(--vb-color-danger) 15%, var(--bx-surface));
+  color: var(--bx-danger);
+  border-color: var(--bx-danger);
+  box-shadow: inset 0 2px 4px rgba(0, 0, 0, 0.15);
+  transform: translateY(1px);
+}
+
 /* Handover button state machine (grey / green / flashing yellow) */
 .header-btn--handover.state-grey {
   background: #fff;

@@ -1,4 +1,5 @@
 import { createBackoff, finalCloseMessage } from './booth-reconnect.js'
+import { createCoughKey } from './cough-key.js'
 import { micIsActive, watchMicTracks } from './mic-activity.js'
 
 const portal = document.getElementById('interpreter-portal')
@@ -25,6 +26,7 @@ const state = {
   peerConnection: null,
   whipResourceUrl: null,
   micMuted: true,
+  coughMuted: false,
   /** The device itself is muted (keyboard key, OS input mute, headset button), as the browser reports it. */
   micDeviceMuted: false,
   ingestConnected: false,
@@ -72,6 +74,7 @@ const elements = {
   chatForm: document.getElementById('chat-form'),
   chatInput: document.getElementById('chat-input'),
   toggleMic: document.getElementById('toggle-mic'),
+  coughBtn: document.getElementById('cough-btn'),
   handoverBtn: document.getElementById('handover-btn'),
   handoverLabel: document.getElementById('handover-label'),
   handoverAnnouncer: document.getElementById('handover-announcer'),
@@ -111,6 +114,24 @@ let micAudioCtx = null
 let micAnalyser = null
 let loopbackRecorder = null
 let loopbackAudio = null
+
+const coughKey = createCoughKey({
+  canCough: () => {
+    const isActive = state.joined && state.participantId === state.activeInterpreterId
+    return Boolean(
+      isActive &&
+      !state.micMuted &&
+      state.broadcastUnlocked &&
+      state.micStream &&
+      !state.micDeviceMuted
+    )
+  },
+  getStream: () => state.micStream,
+  onCoughChange: (active) => {
+    state.coughMuted = active
+    renderMicControls()
+  },
+})
 
 
 boot().catch((error) => {
@@ -342,6 +363,22 @@ function bindEventHandlers() {
     await toggleMicMute()
   })
 
+  if (elements.coughBtn) {
+    elements.coughBtn.addEventListener('pointerdown', (e) => {
+      e.preventDefault()
+      coughKey.press('pointer')
+    })
+    elements.coughBtn.addEventListener('pointerup', () => {
+      coughKey.release('pointer')
+    })
+    elements.coughBtn.addEventListener('pointerleave', () => {
+      coughKey.release('pointer')
+    })
+    elements.coughBtn.addEventListener('pointercancel', () => {
+      coughKey.cancel()
+    })
+  }
+
   if (elements.relayDeviceSelect && elements.relayAudio) {
     elements.relayDeviceSelect.addEventListener('change', async () => {
       try {
@@ -423,11 +460,34 @@ function bindEventHandlers() {
   }
 
   document.addEventListener('keydown', (event) => {
-    if (event.code !== 'Space') return
-    const tag = document.activeElement?.tagName?.toLowerCase()
-    if (tag === 'input' || tag === 'textarea' || tag === 'select') return
-    event.preventDefault()
-    toggleMicMute().catch(() => {})
+    if (event.code === 'Space') {
+      if (event.repeat) return
+      const tag = document.activeElement?.tagName?.toLowerCase()
+      if (tag === 'input' || tag === 'textarea' || tag === 'select') return
+      event.preventDefault()
+      toggleMicMute().catch(() => {})
+      return
+    }
+
+    if (event.code === 'KeyC') {
+      if (event.repeat) return
+      const tag = document.activeElement?.tagName?.toLowerCase()
+      if (tag === 'input' || tag === 'textarea' || tag === 'select') return
+      event.preventDefault()
+      coughKey.press('key')
+    }
+  })
+
+  document.addEventListener('keyup', (event) => {
+    if (event.code === 'KeyC') {
+      const tag = document.activeElement?.tagName?.toLowerCase()
+      if (tag === 'input' || tag === 'textarea' || tag === 'select') return
+      coughKey.release('key')
+    }
+  })
+
+  window.addEventListener('blur', () => {
+    coughKey.blur()
   })
 
   elements.preflightRetry.addEventListener('click', () => {
@@ -588,6 +648,10 @@ function applyBoothState(payload, { skipAutoStart = false } = {}) {
     state.activeInterpreterId !== state.participantId &&
     previousActiveInterpreterId === state.participantId
 
+  if (becamePassive) {
+    coughKey.reset()
+  }
+
   // Level-triggered: while broadcast is locked, an active interpreter that is
   // still publishing must stop — regardless of whether we observed the exact
   // off→on transition. This makes Mission Control's "Stop" reliable even if a
@@ -600,6 +664,7 @@ function applyBoothState(payload, { skipAutoStart = false } = {}) {
   const lostPublishingRights = lostActivePublisher || lockedWhilePublishing
 
   if (lostPublishingRights) {
+    coughKey.reset()
     state.relayingOut = true
     if (state.micStream) {
       state.micStream.getAudioTracks().forEach((t) => { t.enabled = false })
@@ -1037,13 +1102,16 @@ function startMicMeter(stream) {
 
   function draw() {
     micAnimFrame = requestAnimationFrame(draw)
+    ctx.clearRect(0, 0, canvas.width, canvas.height)
+    ctx.fillStyle = '#e9ecef'
+    ctx.fillRect(0, 0, canvas.width, canvas.height)
+    if (state.coughMuted) {
+      return
+    }
     micAnalyser.getByteFrequencyData(data)
     const avg = data.reduce((a, b) => a + b, 0) / data.length
     const volume = avg / 128
 
-    ctx.clearRect(0, 0, canvas.width, canvas.height)
-    ctx.fillStyle = '#e9ecef'
-    ctx.fillRect(0, 0, canvas.width, canvas.height)
     if (!currentMicActive()) {
       ctx.fillStyle = '#9ca3af'
     } else if (volume > 0.95) {
@@ -1169,6 +1237,7 @@ function stopLoopbackTest() {
 }
 
 async function toggleMicMute() {
+  coughKey.reset()
   // Flip state and update UI immediately for instant visual feedback.
   state.micMuted = !state.micMuted
   renderMicControls()
@@ -1320,6 +1389,7 @@ async function startTranscription() {
 }
 
 async function stopLiveIngest() {
+  coughKey.reset()
   if (state.ingestConnected || state.whipResourceUrl) {
     const deleteUrl = state.whipResourceUrl
       || (state.whipBase && state.channelId
@@ -1475,6 +1545,7 @@ function renderRoleControls() {
 
   if (elements.handoverBtn) elements.handoverBtn.style.display = canGo ? '' : 'none'
   if (elements.toggleMic) elements.toggleMic.style.display = canGo ? '' : 'none'
+  if (elements.coughBtn) elements.coughBtn.style.display = canGo ? '' : 'none'
 }
 
 function renderParticipants() {
@@ -1580,13 +1651,15 @@ function renderMicControls() {
     state.ingestConnected ? 'Ingest connected' : 'Ingest disconnected',
     state.ingestConnected ? 'success' : 'warning',
   )
-  elements.micState.textContent = state.micMuted
-    ? 'Muted'
-    : state.micDeviceMuted
-      ? 'Muted by your device'
-      : state.micStream
-        ? 'Ready'
-        : 'Inactive'
+  elements.micState.textContent = state.coughMuted
+    ? 'Cough – muted'
+    : state.micMuted
+      ? 'Muted'
+      : state.micDeviceMuted
+        ? 'Muted by your device'
+        : state.micStream
+          ? 'Ready'
+          : 'Inactive'
 
   const micOnIcon = elements.toggleMic.querySelector('.ctrl-icon--mic-on')
   const micOffIcon = elements.toggleMic.querySelector('.ctrl-icon--mic-off')
@@ -1602,6 +1675,20 @@ function renderMicControls() {
   if (!state.broadcastUnlocked) {
     elements.toggleMic.setAttribute('title', 'Broadcast locked by Coordinator (Local test only)')
   }
+
+  if (elements.coughBtn) {
+    elements.coughBtn.disabled = !isActive || state.micMuted || !state.broadcastUnlocked
+    elements.coughBtn.classList.toggle('pressed', state.coughMuted)
+    elements.coughBtn.setAttribute('aria-pressed', state.coughMuted ? 'true' : 'false')
+    if (!state.broadcastUnlocked) {
+      elements.coughBtn.setAttribute('title', 'Broadcast locked by Coordinator')
+    } else if (state.micMuted) {
+      elements.coughBtn.setAttribute('title', 'Unmute microphone first to use cough key')
+    } else {
+      elements.coughBtn.setAttribute('title', 'Hold to mute (C)')
+    }
+  }
+
   elements.micDeviceSelect.disabled = state.ingestConnected
 
   if (state.ingestConnected && portal.dataset.eventSlug) {

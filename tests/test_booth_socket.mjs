@@ -3,10 +3,12 @@ import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 import vm from 'node:vm'
 import { createBackoff, finalCloseMessage } from '../portal/static/js/booth-reconnect.js'
+import { createCoughKey } from '../portal/static/js/cough-key.js'
 import { micIsActive, watchMicTracks } from '../portal/static/js/mic-activity.js'
 
 const source = readFileSync(new URL('../portal/static/js/interpreter-booth.js', import.meta.url), 'utf8')
   .replace(/^import .* from '\.\/booth-reconnect.js'\n/, '')
+  .replace(/^import .* from '\.\/cough-key.js'\n/, '')
   .replace(/^import .* from '\.\/mic-activity.js'\n/, '')
   .replace('boot().catch((error) => {', 'Promise.resolve().catch((error) => {')
 
@@ -25,7 +27,7 @@ function harness({ getUserMedia = async () => ({ getAudioTracks: () => [] }) } =
     message(data) { this.handlers.message({ data: JSON.stringify(data) }) }
   }
   const context = vm.createContext({
-    console, URL, Promise, WebSocket: Socket, createBackoff, finalCloseMessage, micIsActive, watchMicTracks,
+    console, URL, Promise, WebSocket: Socket, createBackoff, finalCloseMessage, createCoughKey, micIsActive, watchMicTracks,
     document: { getElementById: (id) => id === 'interpreter-portal'
       ? { dataset: { boothId: 'test-1-en', eventSlug: 'test', roomId: '1' } } : null },
     localStorage: { getItem: () => null },
@@ -227,7 +229,7 @@ console.log('Booth socket lifecycle checks passed')
     'jitsi-frame': frame,
   }
   const context = vm.createContext({
-    URL, URLSearchParams, createBackoff, localStorage: { getItem: () => null },
+    URL, URLSearchParams, createBackoff, createCoughKey, localStorage: { getItem: () => null },
     document: { getElementById: (id) => elements[id] },
     createWhepClient: () => ({
       start: ({ whepUrl }) => switches.push(whepUrl),
