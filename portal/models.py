@@ -129,6 +129,8 @@ class Room(Base):
     display_name: Mapped[str] = mapped_column(String(200))
     eventyay_room_id: Mapped[str | None] = mapped_column(String(200), nullable=True, default=None)
     jitsi_url: Mapped[str | None] = mapped_column(String(500), nullable=True, default=None)
+    monitor_floor_enabled: Mapped[bool] = mapped_column(Boolean, default=True, server_default=sa.true())
+    monitor_meeting_enabled: Mapped[bool] = mapped_column(Boolean, default=True, server_default=sa.true())
     relay_booth_id: Mapped[int | None] = mapped_column(
         ForeignKey("booths.id", ondelete="SET NULL"), nullable=True, default=None
     )
@@ -897,7 +899,18 @@ class OAuthAuthorizationCode(Base):
     event: Mapped[Event] = relationship()
 
     def __repr__(self) -> str:
+        """Return string representation of OAuthAuthorizationCode."""
         return f"<OAuthAuthorizationCode id={self.id} client_id={self.client_id}>"
+
+    @property
+    def is_expired(self) -> bool:
+        """Check if authorization code is expired, safely normalizing naive datetimes."""
+        now = utc_now()
+        exp = self.expires_at
+        # SQLite strips timezone info; normalise to UTC-aware
+        if exp.tzinfo is None:
+            exp = exp.replace(tzinfo=timezone.utc)
+        return now >= exp
 
 
 class OAuthToken(Base):
@@ -923,7 +936,18 @@ class OAuthToken(Base):
     event: Mapped[Event] = relationship()
 
     def __repr__(self) -> str:
+        """Return string representation of OAuthToken."""
         return f"<OAuthToken id={self.id} client_id={self.client_id} revoked={self.revoked}>"
+
+    @property
+    def is_expired(self) -> bool:
+        """Check if OAuth token is expired, safely normalizing naive datetimes."""
+        now = utc_now()
+        exp = self.expires_at
+        # SQLite strips timezone info; normalise to UTC-aware
+        if exp.tzinfo is None:
+            exp = exp.replace(tzinfo=timezone.utc)
+        return now >= exp
 
 
 class OAuthConsentGrant(Base):

@@ -85,7 +85,7 @@ assert(lonelyVideo.stopped === true, 'the video track is stopped even without au
 
 const senderCode = readFileSync(new URL('../portal/static/js/program-sender.js', import.meta.url), 'utf8')
 // Starting or reconnecting must preserve the room's saved presentation delay.
-const mintSessionCode = senderCode.slice(senderCode.indexOf('async function mintSession()'), senderCode.indexOf('async function publish('))
+const mintSessionCode = senderCode.slice(senderCode.indexOf('async function mintSession('), senderCode.indexOf('async function publish('))
 const mintRequests = []
 const mintContext = {
   card: { dataset: { mintUrl: '/workspace/events/1/rooms/2/program-sender' } },
@@ -97,6 +97,9 @@ const mintContext = {
 }
 runInNewContext(mintSessionCode, mintContext)
 await mintContext.mintSession()
+await mintContext.mintSession('rtmps_relay')
+assert(JSON.parse(mintRequests[1].options.body).switch_from === 'rtmps_relay', 'explicit start confirms the selected transport')
+assert(!Object.hasOwn(JSON.parse(mintRequests[0].options.body), 'switch_from'), 'reconnect cannot switch transports')
 const mintRequest = mintRequests[0]
 assert(mintRequest.url === mintContext.card.dataset.mintUrl && mintRequest.options.method === 'POST', 'sender requests a session from the room endpoint')
 assert(!Object.hasOwn(JSON.parse(mintRequest.options.body), 'sync_offset_ms'), 'sender leaves the saved sync delay unchanged')
