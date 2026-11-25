@@ -202,6 +202,7 @@ function connectWebSocket() {
       state.wsConnected = false
       state.ws = null
       state.joined = false
+      state.stateVersion = 0
       render()
       if (state.stopReconnecting) return
       const finalMessage = finalCloseMessage(event.code)
@@ -274,7 +275,7 @@ function handleServerMessage(data) {
     // publishing; if it is Off, we stay off. Going live is driven by broadcast
     // being unlocked from Mission Control — never by the act of joining itself,
     // because a booth defaults to locked (Off) until a coordinator turns it on.
-    applyBoothState(data.state)
+    applyBoothState(data.state, { resetVersion: true })
     if (rejoined) {
       reconcileIngestAfterRejoin()
     } else {
@@ -553,7 +554,7 @@ async function fetchBoothState() {
     const payload = await response.json().catch(() => ({ error: response.statusText }))
     throw new Error(payload.error || 'Failed to fetch booth state.')
   }
-  applyBoothState(await response.json())
+  applyBoothState(await response.json(), { resetVersion: true })
 }
 
 async function fetchIngestReachability() {
@@ -566,9 +567,9 @@ async function fetchIngestReachability() {
   state.ingestReachable = Boolean(payload.reachable)
 }
 
-function applyBoothState(payload, { skipAutoStart = false } = {}) {
+function applyBoothState(payload, { skipAutoStart = false, resetVersion = false } = {}) {
   if (typeof payload.state_version === 'number') {
-    if (payload.state_version < state.stateVersion) {
+    if (!resetVersion && payload.state_version < state.stateVersion) {
       return
     }
     state.stateVersion = payload.state_version

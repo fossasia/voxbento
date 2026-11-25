@@ -1144,3 +1144,39 @@ async def test_restore_preserves_turn_started_at():
     assert booth2.active_interpreter_id == p1.participant_id
     assert booth2.turn_started_at == turn_time
 
+
+@pytest.mark.anyio
+async def test_handoff_and_chat_advance_state_version_without_persistence_side_effects():
+    registry = BoothRegistry()
+    p1 = await join(registry, "Alice")
+    p2 = await join(registry, "Bob")
+    booth = registry.get_booth_sync("hall-1-fr")
+    base_version = booth.state_version
+
+    # Clear dirty set after initial joins
+    registry._dirty.clear()
+
+    # 1. initiate_handoff advances state_version, does not mark dirty
+    state1 = await registry.initiate_handoff("hall-1-fr", p1.participant_id, "French", "hall-1-fr-audio")
+    assert state1["state_version"] == base_version + 1
+    assert "hall-1-fr" not in registry._dirty
+
+    # 2. cancel_handoff advances state_version, does not mark dirty
+    state2 = await registry.cancel_handoff("hall-1-fr", p1.participant_id, "French", "hall-1-fr-audio")
+    assert state2["state_version"] == base_version + 2
+    assert "hall-1-fr" not in registry._dirty
+
+    # 3. add_chat_message advances state_version, does not mark dirty
+    _, state3 = await registry.add_chat_message(
+        "hall-1-fr", p1.participant_id, "Hello!", "French", "hall-1-fr-audio"
+    )
+    assert state3["state_version"] == base_version + 3
+    assert "hall-1-fr" not in registry._dirty
+
+    # 4. accept_handoff DOES call _changed (advances version AND marks dirty)
+    await registry.initiate_handoff("hall-1-fr", p1.participant_id, "French", "hall-1-fr-audio")
+    state4 = await registry.accept_handoff("hall-1-fr", p2.participant_id, "French", "hall-1-fr-audio")
+    assert state4["state_version"] == base_version + 5
+    assert "hall-1-fr" in registry._dirty
+
+

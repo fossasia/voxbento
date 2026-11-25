@@ -206,6 +206,10 @@ class BoothRegistry:
         self.attendance.observe(booth)
         self._mark_dirty(booth.booth_id)
 
+    def _advance_version(self, booth: Booth) -> None:
+        """Advance *booth*'s state version when public state changes without affecting attendance or persistence."""
+        booth.state_version += 1
+
     def _mark_dirty(self, booth_id: str) -> None:
         self._dirty.add(booth_id)
         self._dirty_event.set()
@@ -723,6 +727,7 @@ class BoothRegistry:
             is_active = booth.active_interpreter_id == requester_id
             booth.handoff_state = "offered" if is_active else "requested"
             booth.handoff_initiator_id = requester_id
+            self._advance_version(booth)
             return booth.as_public_dict()
 
     async def accept_handoff(
@@ -803,6 +808,7 @@ class BoothRegistry:
                 raise PermissionError("Only the handoff initiator can cancel.")
             booth.handoff_state = "idle"
             booth.handoff_initiator_id = None
+            self._advance_version(booth)
             return booth.as_public_dict()
 
     async def add_chat_message(
@@ -833,6 +839,7 @@ class BoothRegistry:
             booth.chat_messages.append(message)
             if len(booth.chat_messages) > 500:
                 booth.chat_messages = booth.chat_messages[-500:]
+            self._advance_version(booth)
             return asdict(message), booth.as_public_dict()
 
     async def update_participant_state(
