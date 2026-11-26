@@ -47,6 +47,10 @@
       playBtn.disabled = true;
     }
 
+    // The booth's on_air from booth:state, and the last state of the stream in the player.
+    let channelOnAir = false;
+    let lastPlayer = null;
+
     // kind is 'floor' while the floor plays in place of an off-air interpreter.
     function onPlayerState(s, kind) {
       if (config.headless) {
@@ -57,9 +61,17 @@
           payload: { state: s.peerConnection }
         }, config.target_origin);
       }
+      lastPlayer = { s: s, kind: kind };
+      renderPlayerStatus(s, kind);
+    }
 
+    function renderPlayerStatus(s, kind) {
       if (s.peerConnection === 'connected') {
-        setStatus('live', kind === 'floor' ? 'Original audio' : 'Live');
+        if (kind === 'floor') setStatus('live', 'Original audio');
+        // Right after its booth goes off air the interpreter's stream can still look connected
+        // while nothing comes, until the floor takes over.
+        else if (FLOOR_FALLBACK && !channelOnAir) setStatus('connecting', 'Interpreter off air\u2026');
+        else setStatus('live', 'Live');
         playBtn.disabled = false;
         playBtn.textContent = playing ? '\u23f8  Pause' : '\u25b6  Play Audio';
       } else if (s.peerConnection === 'failed' || s.peerConnection === 'closed') {
@@ -146,7 +158,12 @@
         try {
           var msg = JSON.parse(ev.data);
           if (msg.type === 'booth:state') {
-            if (channelSource && !RETURN_WHEP_URL) channelSource.setOnAir(Boolean(msg.state) && msg.state.on_air === true);
+            if (channelSource && !RETURN_WHEP_URL) {
+              channelOnAir = Boolean(msg.state) && msg.state.on_air === true;
+              channelSource.setOnAir(channelOnAir);
+              // Relabel the stream in the player now: its own state may not change until the floor takes over.
+              if (lastPlayer) renderPlayerStatus(lastPlayer.s, lastPlayer.kind);
+            }
             return;
           }
           if (msg.type === 'channel:state') {
