@@ -192,6 +192,17 @@ async function run() {
   assert(player.srcObject === null, 'the old player no longer holds the stream');
   client.stop();
 
+  // A switch can time out before the new stream has its track; the listener's pause must still hold.
+  const earlyPlayer = fakeAudio();
+  const early = vm.runInContext('createWhepClient()', context);
+  early.start({ whepUrl: 'http://mtx/th/whep', audioEl: fakeAudio() });
+  await flush();
+  early.setAudioElement(earlyPlayer, false);
+  lastPc.listeners.track({ track: { kind: 'audio' }, streams: [{ id: 'late' }] });
+  await flush();
+  assert(earlyPlayer.srcObject.id === 'late' && earlyPlayer.paused === true, 'a paused move before the track keeps the player paused');
+  early.stop();
+
   // With a listener delay the stream reaches the element through a Web Audio delay line.
   class FakeAudioContext {
     constructor() {

@@ -461,9 +461,12 @@ function createWhepClient() {
         } else {
           attachDirectStream(currentStream, autoplay);
         }
-        // The player has the autoplay attribute, which would start it anyway.
-        if (!autoplay) audioEl.pause();
+      } else {
+        // The track arrives later and plays only if this says so.
+        playOnTrack = autoplay;
       }
+      // The player has the autoplay attribute, which would start it anyway.
+      if (!autoplay) audioEl.pause();
       emitState();
     },
 
