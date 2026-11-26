@@ -143,7 +143,7 @@ def return_language_error(
     if return_code == booth_language:
         return f"The {language_name(booth_language)} booth already interprets into {language_name(spoken)}."
     if return_code in set(other_booth_languages):
-        return f"This room already has a {language_name(spoken)} booth, so another booth can't interpret into it."
+        return f"This room already has its own {language_name(spoken)} booth, so another booth can't interpret into it."
     return None
 
 
