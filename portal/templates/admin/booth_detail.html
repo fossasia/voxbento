@@ -83,7 +83,7 @@
         <dt>MediaMTX Path</dt>
         <dd><code>{{ mediamtx_path }}</code></dd>
         <dt>Language</dt>
-        <dd>{{ booth.language_name }} ({{ booth.language_code }})</dd>
+        <dd>{{ booth.language_name }} ({{ booth.language_code }}){% if return_language_name %}, two-way with {{ return_language_name }}{% endif %}</dd>
         <dt>Created</dt>
         <dd>{{ booth.created_at.strftime('%b %d, %Y, %H:%M UTC') if booth.created_at else '—' }}</dd>
       </dl>
@@ -335,6 +335,15 @@
           <input type="text" id="language_code" name="language_code" value="{{ booth.language_code }}">
         </div>
       </div>
+      {% if two_way_spoken %}
+      <input type="hidden" name="two_way_shown" value="1">
+      <label class="rs-toggle" for="two_way">
+        <span class="rs-toggle-text"><span class="rs-toggle-title">Two-way with {{ two_way_spoken_name }}</span>
+          <span class="hint">The interpreter can switch to interpreting into {{ two_way_spoken_name }}, for example for a question asked in {{ booth.language_name }}.</span>
+        </span>
+        <input type="checkbox" class="rs-switch" role="switch" id="two_way" name="two_way" value="{{ two_way_spoken }}" {% if booth.return_language_code == two_way_spoken %}checked{% endif %}>
+      </label>
+      {% endif %}
     </div>
     <div class="room-save-bar">
       <button type="submit" class="btn btn-primary">Save booth details</button>

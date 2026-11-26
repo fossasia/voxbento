@@ -87,6 +87,7 @@ Cascade: deletes rooms + booths when event is deleted.
 | `room_id` | FK → rooms.id CASCADE | — |
 | `language_code` | String(2) | ISO 639-1; validated by `validate_language_code` |
 | `language_name` | String(100) | Human-readable (e.g. "French") |
+| `return_language_code` | String(2) nullable | Two-way booth (#1397, migration 051): the room's spoken language, which the booth can also interpret into. Validated by `portal.room_setup.return_language_error` |
 | `transcription_enabled` | Boolean | Default False |
 | `transcription_provider` | String(20) | Default `'local'`; validated against `ProviderEnum` |
 | `transcription_model` | String(20) | Default `'tiny'`; validated against `ALLOWED_MODELS` |
@@ -240,6 +241,7 @@ something live, written by `portal/booth_recovery.py` shortly after the in-memor
 | `active_session_key` | String(100) nullable | `booth_session_key` of the active interpreter; only that session may reclaim the slot |
 | `active_display_name`, `active_role`, `active_user_id`, `active_invite_public_id` | | Placeholder details (attendance) |
 | `active_mic_active`, `active_ingest_connected` | Boolean | So listeners keep seeing the booth live while the interpreter reconnects |
+| `output_language_code` | String(2) nullable | The return language a two-way booth interprets into; null while it outputs into its own (#1397, migration 051) |
 | `updated_at` | DateTime(tz) | Refreshed every 60 s for live booths; rows older than `BOOTH_STATE_MAX_AGE_SECONDS` are not restored |
 
 A booth with Go Live off and no active interpreter has no row.
@@ -311,6 +313,7 @@ Tracks which languages the translation worker should generate for a given room o
 | 046 | `046_live_demo_room_ai.py` | Transitional room-linked demo settings and daily limit |
 | 047 | `047_live_demo_independent_ai.py` | Independent demo providers, models, encrypted keys, persona/style; removes room link |
 | 044 | `044_youtube_connections.py` | `youtube_connections` table (one per event), `rooms.youtube_broadcast_id`, `rooms.youtube_stream_id` (#1087) |
+| 051 | `051_two_way_booths.py` | `booths.return_language_code`, `booth_live_state.output_language_code` (#1397) |
 
 Run migrations: `uv run alembic upgrade head`
 

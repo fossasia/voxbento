@@ -96,6 +96,17 @@ room-deletion helper to clear self-relay and incoming relay references and delet
 dependent data. Publishing booths return 409; missing or foreign events/rooms
 return 404; successful deletion returns 204.
 
+`POST /api/v1/events/{event_slug}/rooms/{room_id}/booths/{language_code}` takes an
+optional JSON body `{"return_language_code": "en"}` to make the booth two-way (#1397);
+other keys are ignored. The return language must be the room's spoken language, not the
+booth's own and not another booth's language (422), and no booth may be created for a
+language another booth returns into (409). Booth list/get responses include
+`return_language_code`. `PUT /api/v1/events/{event_slug}/rooms/{eventyay_room_id}` takes
+two-way off booths whose return language no longer matches a changed spoken language
+(409 while one of them outputs into it), and refuses `target_languages` that include a
+language a kept booth returns into (409). Admin booth create, setup wizard add-booth and
+the legacy `POST /api/events/{event_slug}/booths` refuse that language too.
+
 ## WebSocket Endpoints
 
 | Path | Auth | Protocol |

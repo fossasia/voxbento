@@ -41,6 +41,7 @@ from portal.globals import booths
 from portal.models import DBBooth, Event, Room
 from portal.rate_limit import check_rate_limit
 from portal.roles import INTERPRETER, Permission, can_set_active, has_permission
+from portal.room_setup import return_language_owner, return_owner_error
 from portal.schemas.booth import CreateBoothRequest
 from portal.transcription import ProviderConfig, ProviderEnum, get_api_key
 from portal.transcription.worker import start_transcription_worker, stop_transcription_worker
@@ -51,7 +52,7 @@ from portal.utils import (
     _resolve_whip_url,
     verify_same_origin,
 )
-from portal.websockets.manager import broadcast_transcription
+from portal.websockets.manager import broadcast_channel_state, broadcast_transcription
 
 logger = logging.getLogger(__name__)
 
@@ -398,6 +399,7 @@ async def delete_booth_by_language(
             .where(Event.slug == event_slug, DBBooth.room_id == room_id, DBBooth.language_code == language_code)
         )
         db_booth = await session.scalar(stmt)
+        return_language_code = db_booth.return_language_code if db_booth else None
         if db_booth:
             try:
                 async with session.begin_nested():
@@ -409,7 +411,8 @@ async def delete_booth_by_language(
         await stop_transcription_worker(booth_id)
     finally:
         await booths.remove_booth(event_slug, room_db_id, language_code)
-        await stop_booth_publish(booth_id, take_booth_publishers(booth_id))
+        await stop_booth_publish(booth_id, take_booth_publishers(booth_id), return_language_code=return_language_code)
+        await broadcast_channel_state(event_slug, room_db_id)
 
 
 @router.post("/events/{event_slug}/booths", status_code=status.HTTP_201_CREATED)
@@ -479,6 +482,10 @@ async def create_event_booth(
         )
 
         db_room_id = room.id
+        # A two-way booth already interprets into this language's channel (#1397).
+        owner = await return_language_owner(session, db_room_id, body.language_code)
+        if owner is not None:
+            raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=return_owner_error(owner))
 
         # Create Booth in memory state
         try:
@@ -590,6 +597,7 @@ async def delete_event_booth(
             )
         )
         booth = booth_query.scalar_one_or_none()
+        return_language_code = booth.return_language_code if booth else None
 
         if booth:
             try:
@@ -602,7 +610,8 @@ async def delete_event_booth(
         await stop_transcription_worker(booth_id)
     finally:
         await booths.remove_booth(event_slug, room_id, language_code)
-        await stop_booth_publish(booth_id, take_booth_publishers(booth_id))
+        await stop_booth_publish(booth_id, take_booth_publishers(booth_id), return_language_code=return_language_code)
+        await broadcast_channel_state(event_slug, room_id)
 
 
 @router.get("/events/{event_slug}/booths")

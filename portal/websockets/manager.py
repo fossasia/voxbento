@@ -17,19 +17,25 @@ from sqlalchemy.exc import SQLAlchemyError
 
 import portal.webhooks.worker as _wh_worker
 from portal.auth import WSAuthError, can_perform_role
-from portal.booth_identity import booth_id_to_mediamtx_path, parse_booth_id
+from portal.booth_identity import make_booth_id, parse_booth_id
 from portal.booth_publish import (
     TICKET_TTL_SECS,
     end_publishers,
     issue_ticket,
+    publish_path,
+    publish_refusal,
     stop_booth_publish,
     take_booth_publishers,
     take_departed_publishers,
+    take_path_publishers,
 )
+from portal.booth_state import OUTPUTS, RETURN
 from portal.config import settings
 from portal.globals import booths
 from portal.roles import ALL_ROLES, INTERPRETER, can_set_active
+from portal.room_setup import load_booth_return_language
 from portal.tasks import track_task
+from portal.utils import _ensure_mediamtx_path
 from portal.webhooks.events import BOOTH_INTERPRETER_JOINED
 
 
@@ -68,6 +74,8 @@ class Session:
     issued_at: datetime = field(default_factory=utc_now)
     # Names this socket in the registry's participant record (Participant.connection_id).
     connection_id: str = field(default_factory=lambda: uuid4().hex)
+    # The booth's return language as (code, name) when it is two-way (#1397), read at connect.
+    return_language: tuple[str, str] | None = None
 
 
 class ConnectionManager:
@@ -308,12 +316,14 @@ class ConnectionManager:
         booth_id: str,
         code: int = WS_CLOSE_REVOKED,
         reason: str = REASON_MEMBERSHIP_REMOVED,
+        *,
+        return_language_code: str | None = None,
     ) -> None:
         """Revoke authorization and disconnect all active sockets in a booth (e.g. booth deletion).
 
         Nobody may publish to the booth afterwards, so its broadcast is stopped before
         anything is awaited (refusing any outstanding publish ticket) and its MediaMTX
-        source is ended too.
+        sources are ended too, on its return path as well for a two-way booth (#1397).
         """
         booths.lock_broadcast_sync(booth_id)
         self._allowed_cache.pop(booth_id, None)
@@ -322,7 +332,9 @@ class ConnectionManager:
             self.revoke_session(ws)
         tasks = [self.close_session(ws, code=code, reason=reason) for ws in room_sockets]
         await asyncio.gather(*tasks, return_exceptions=True)
-        await stop_booth_publish(booth_id, take_booth_publishers(booth_id))
+        await stop_booth_publish(booth_id, take_booth_publishers(booth_id), return_language_code=return_language_code)
+        event_slug, room_id, _ = parse_booth_id(booth_id)
+        await broadcast_channel_state(event_slug, room_id)
 
     async def broadcast(self, booth_id: str, message: dict) -> None:
         """Send *message* to booth members authorized for *booth_id*.
@@ -718,6 +730,7 @@ async def broadcast_booth_state(booth_id: str, state: dict) -> None:
     """Send the full state to the booth and the listener-safe status to its listeners."""
     await manager.broadcast(booth_id, {"type": "booth:state", "state": state})
     await listener_manager.broadcast_booth_state(booth_id, state)
+    await broadcast_channel_state(state.get("event_slug"), state.get("room_id"))
 
 
 async def broadcast_transcription(booth_id: str, payload: str | dict):
@@ -816,6 +829,9 @@ async def _handle_join(ws: WebSocket, session: Session, data: dict) -> None:
     except (ValueError, PermissionError) as exc:
         await ws.send_text(json.dumps({"type": "booth:error", "message": str(exc)}))
         return
+    code, name = session.return_language or (None, "")
+    if booths.set_return_language_sync(session.booth_id, code, name):
+        state = booths.get_booth_sync(session.booth_id).as_public_dict()
     for old_ws in manager.detach_participant(session.booth_id, participant.participant_id, keep=ws):
         track_task(asyncio.create_task(manager.close_session(old_ws, code=WS_CLOSE_SUPERSEDED, reason=REASON_SUPERSEDED)))
     session.participant_id = participant.participant_id
@@ -987,13 +1003,21 @@ async def _handle_request_publish_ticket(ws: WebSocket, session: Session, data: 
             booth = booths.get_booth_sync(session.booth_id)
             if booth is None or not booth.broadcast_unlocked:
                 raise PermissionError("Broadcast is stopped by Mission Control.")
-            # Bound to the server's booth, never to the client-supplied channel_id.
-            path = booth_id_to_mediamtx_path(session.booth_id)
+            # Bound to the server's booth and the channel it outputs into now (#1397),
+            # never to the client-supplied channel_id.
+            path = publish_path(booth)
+            refusal = publish_refusal(booth)
+            if refusal:
+                raise PermissionError(refusal)
         except (ValueError, PermissionError) as exc:
             reply["error"] = str(exc)
         else:
+            if booth.outputs_into_return:
+                # A return path may not exist yet, e.g. after a portal restart restored the direction.
+                await _ensure_mediamtx_path(path)
             reply["ticket"] = issue_ticket(session.booth_id, session.participant_id, path)
             reply["expires_in"] = int(TICKET_TTL_SECS)
+            reply["path"] = path
     await ws.send_text(json.dumps(reply))
 
 
@@ -1084,3 +1108,126 @@ async def _handle_cancel_handoff(ws: WebSocket, session: Session, _data: dict) -
         await ws.send_text(json.dumps({"type": "booth:error", "message": str(exc)}))
         return
     await broadcast_booth_state(session.booth_id, state)
+
+
+# ── Two-way booths (#1397) ───────────────────────────────────────────────
+
+
+async def _handle_set_output(ws: WebSocket, session: Session, data: dict) -> None:
+    """Switch a two-way booth between its own channel and the room's spoken language.
+
+    The server records the new output, ends the booth's session on the channel it left
+    (best effort, after the state change and before its broadcast), and tells everyone.
+    The interpreter's browser sees its output change and publishes again with a fresh
+    ticket bound to the new path.
+    """
+    output = data.get("output")
+    if set(data) != {"type", "output"} or output not in OUTPUTS:
+        await ws.send_text(json.dumps({"type": "booth:error", "message": "Send output as 'primary' or 'return'."}))
+        return
+    try:
+        return_language = await load_booth_return_language(session.booth_id)
+    except SQLAlchemyError:
+        # Fail closed but keep the socket: a database blip must not disconnect the booth.
+        logger.warning("Could not read the return language of booth %s", session.booth_id, exc_info=True)
+        await ws.send_text(json.dumps({"type": "booth:error", "message": "Could not switch the channel. Try again."}))
+        return
+    if return_language is None:
+        await ws.send_text(json.dumps({"type": "booth:error", "message": "This booth is not two-way."}))
+        return
+    try:
+        state, previous_path = await booths.set_output(
+            session.booth_id,
+            session.participant_id,
+            output,
+            can_reassign=can_set_active(session.granted_role),
+            return_language_code=return_language[0],
+            return_language=return_language[1],
+        )
+    except (ValueError, PermissionError) as exc:
+        await ws.send_text(json.dumps({"type": "booth:error", "message": str(exc)}))
+        return
+    if previous_path is not None:
+        if output == RETURN:
+            await _ensure_mediamtx_path(state["output_mediamtx_path"])
+        await end_publishers(take_path_publishers(session.booth_id, previous_path))
+        # Read again: another switch may have finished while the kick was awaited.
+        booth = booths.get_booth_sync(session.booth_id)
+        state = booth.as_public_dict() if booth is not None else state
+    await broadcast_booth_state(session.booth_id, state)
+
+
+async def note_return_language(booth_id: str, code: str | None, name: str) -> None:
+    """Tell a booth in memory its return language after it changed in the database."""
+    if booths.set_return_language_sync(booth_id, code, name):
+        await broadcast_booth_state(booth_id, booths.get_booth_sync(booth_id).as_public_dict())
+
+
+# Last channel:state sent to each floor caption feed, so unrelated booth changes don't fan out.
+_last_channel_states: dict[str, dict] = {}
+# Which booth held each room's return channel at the last check, by floor caption feed id.
+_last_return_booths: dict[str, str | None] = {}
+_NO_RETURN = {"return_on_air": False, "whep_url": None, "language_code": None}
+
+
+def floor_channel_state(event_slug: str, room_id: int) -> dict:
+    """What original-channel listeners need: whether a two-way booth is on air into the spoken language.
+
+    Listener-safe: nothing about the booth's people, chat or handoff.
+    """
+    booth = booths.room_return_booth(event_slug, room_id)
+    if booth is None:
+        return dict(_NO_RETURN)
+    on_air = booth.broadcast_unlocked and booth.ingest_status == "connected"
+    return {
+        "return_on_air": on_air,
+        "whep_url": f"{settings.mediamtx_whip_base}/{booth.output_mediamtx_path}/whep" if on_air else None,
+        "language_code": booth.output_language_code,
+    }
+
+
+async def broadcast_channel_state(event_slug: object, room_id: object) -> None:
+    """Send the room's original-channel listeners its channel:state if it changed since the last send.
+
+    When another booth takes or frees the room's return channel, the room's two-way booths are
+    sent their state too, so their switch shows whether that channel is free.
+    """
+    if not isinstance(event_slug, str) or not event_slug or not isinstance(room_id, int):
+        return
+    floor_id = make_booth_id(event_slug, room_id, "floor")
+    holder = booths.room_return_booth(event_slug, room_id)
+    holder_id = holder.booth_id if holder is not None else None
+    if _last_return_booths.get(floor_id) != holder_id:
+        if holder_id is None:
+            _last_return_booths.pop(floor_id, None)
+        else:
+            _last_return_booths[floor_id] = holder_id
+        for booth in booths.room_booths(event_slug, room_id):
+            if booth.return_language_code and booth.booth_id != holder_id:
+                await manager.broadcast(booth.booth_id, {"type": "booth:state", "state": booth.as_public_dict()})
+    async with listener_manager._state_lock(floor_id):
+        if not listener_manager.has_listeners(floor_id):
+            _last_channel_states.pop(floor_id, None)
+            return
+        current = floor_channel_state(event_slug, room_id)
+        if _last_channel_states.get(floor_id, _NO_RETURN) == current:
+            return
+        _last_channel_states[floor_id] = current
+        await listener_manager.broadcast(floor_id, {"type": "channel:state", "state": current})
+
+
+async def send_channel_state(ws: WebSocket, booth_id: str) -> None:
+    """Tell a newly connected original-channel listener about a two-way booth already on air there."""
+    try:
+        event_slug, room_id, language_code = parse_booth_id(booth_id)
+    except ValueError:
+        return
+    if language_code != "floor":
+        return
+    floor_id = make_booth_id(event_slug, room_id, "floor")
+    async with listener_manager._state_lock(floor_id):
+        current = floor_channel_state(event_slug, room_id)
+        # Recorded, so the broadcast that takes the return channel off air reaches this listener too.
+        _last_channel_states[floor_id] = current
+        if current != _NO_RETURN:
+            await ws.send_text(json.dumps({"type": "channel:state", "state": current}))

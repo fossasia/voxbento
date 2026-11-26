@@ -1818,6 +1818,10 @@ code { font-family: var(--font-mono); font-size: 0.85em; background: var(--color
 .rs-segments label:hover span { background: var(--color-surface-2); }
 .rs-segments input:checked + span { background: var(--color-primary); color: var(--color-surface); }
 .rs-segments input:focus-visible + span { outline: 2px solid var(--color-primary); outline-offset: -4px; }
+.rs-two-way { grid-column: 2; display: flex; align-items: flex-start; gap: 8px; margin: 0; cursor: pointer; font-size: 0.9rem; font-weight: 600; color: var(--color-text); }
+.rs-two-way[hidden] { display: none; }
+.rs-two-way input { margin-top: 3px; }
+.rs-two-way small { display: block; font-size: 0.8rem; font-weight: 400; color: var(--color-text-secondary); }
 .rs-delivery-error { grid-column: 1 / -1; margin: 0; padding: 8px 12px; border-radius: var(--radius-sm); border: 1px solid var(--color-warning); background: color-mix(in srgb, var(--color-warning) 8%, var(--color-surface)); color: var(--color-text); font-size: 0.85rem; }
 
 .rs-explanations { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px; margin: 0 0 14px; }
@@ -1929,6 +1933,7 @@ code { font-family: var(--font-mono); font-size: 0.85em; background: var(--color
 
 @media (max-width: 720px) {
   .rs-delivery-row, .room-lang { grid-template-columns: 1fr; }
+  .rs-two-way { grid-column: 1 / -1; }
   .audio-choices { grid-template-columns: 1fr; }
   .rs-explanations { grid-template-columns: 1fr; }
   .rs-segments span { padding: 8px 12px; }

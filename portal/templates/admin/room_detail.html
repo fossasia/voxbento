@@ -69,6 +69,9 @@
 {% elif just_updated %}
 <div class="alert alert-success" role="status">Languages saved.</div>
 {% endif %}
+{% if one_way_languages %}
+<div class="alert alert-info" role="status">{{ one_way_languages | join(', ') }} {{ 'is' if one_way_languages|length == 1 else 'are' }} no longer two-way. Turn two-way on again in Change languages if you still need it.</div>
+{% endif %}
 {% if kept_live_languages %}
 <div class="alert alert-warning" role="status">{{ kept_live_languages | join(', ') }} {{ 'booth is' if kept_live_languages|length == 1 else 'booths are' }} live right now, so {{ 'it was' if kept_live_languages|length == 1 else 'they were' }} kept. Change the languages again after the session to remove {{ 'it' if kept_live_languages|length == 1 else 'them' }}.</div>
 {% endif %}
