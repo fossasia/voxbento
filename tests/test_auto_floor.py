@@ -429,6 +429,30 @@ async def test_original_channel_follows_a_two_way_booth(seed, monkeypatch):
     assert _entry(await _listener_data(seed["owner"]), "floor")["return_whep_url"] is None
 
 
+async def test_original_channel_is_listed_for_a_two_way_booth_without_floor_audio(seed, monkeypatch):
+    from portal.config import settings
+    from portal.routers import listener
+
+    async def ensure(channel_id):
+        return None
+
+    monkeypatch.setattr(listener, "_ensure_mediamtx_path", ensure)
+    room_id = seed["room_id"]
+    await _update_room(room_id, jitsi_url="https://meet.example.org/Hall", floor_language_code="en")
+    assert _entry(await _listener_data(seed["owner"]), "floor") is None, "no floor audio and no two-way booth"
+
+    await _make_thai_two_way(room_id)
+    floor = _entry(await _listener_data(seed["owner"]), "floor")
+    assert floor["return_whep_url"] == f"{settings.mediamtx_whip_base}/floorcon/{room_id}/en/whep"
+    assert floor["floor_audio"] is False, "the page must not wait for floor audio that never comes"
+    config = await _embed_config(room_id, "floor")
+    assert config["return_whep_url"] and config["floor_audio"] is False
+
+    await _update_room(room_id, meeting_agent_enabled=True)
+    assert _entry(await _listener_data(seed["owner"]), "floor")["floor_audio"] is True
+    assert (await _embed_config(room_id, "floor"))["floor_audio"] is True
+
+
 async def test_embed_original_channel_follows_a_two_way_booth(seed):
     from portal.config import settings
 

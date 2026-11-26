@@ -86,7 +86,8 @@
     if (RETURN_WHEP_URL) {
       channelSource = ChannelSource.create({
         interpretationUrl: RETURN_WHEP_URL,
-        floorUrl: WHEP_URL,
+        // Without floor audio the channel is silent until the two-way booth is on air.
+        floorUrl: config.floor_audio === false ? null : WHEP_URL,
         audioEl: audioEl,
         standbyEl: document.createElement('audio'),
         audioDelayMs: config.audio_delay_ms,
@@ -94,6 +95,10 @@
         startOnFallback: true,
         // Both streams are this channel's own audio, so neither is labelled a fallback.
         onState: function(s, kind) { onPlayerState(s, kind === 'floor' ? null : kind); },
+        onSilent: function() {
+          lastPlayer = null;
+          setStatus('connecting', 'Waiting for the interpreter\u2026');
+        },
       });
     } else if (FLOOR_FALLBACK) {
       channelSource = ChannelSource.create({
