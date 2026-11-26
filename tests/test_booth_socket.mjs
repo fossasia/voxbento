@@ -4,9 +4,11 @@ import { readFileSync } from 'node:fs'
 import vm from 'node:vm'
 import { createBackoff, finalCloseMessage } from '../portal/static/js/booth-reconnect.js'
 import { micIsActive, watchMicTracks } from '../portal/static/js/mic-activity.js'
+import { offersChannel, outputShortcut, outputView } from '../portal/static/js/booth-output.js'
 
 const source = readFileSync(new URL('../portal/static/js/interpreter-booth.js', import.meta.url), 'utf8')
   .replace(/^import .* from '\.\/booth-reconnect.js'\n/, '')
+  .replace(/^import .* from '\.\/booth-output.js'\n/, '')
   .replace(/^import .* from '\.\/mic-activity.js'\n/, '')
   .replace('boot().catch((error) => {', 'Promise.resolve().catch((error) => {')
 
@@ -26,6 +28,7 @@ function harness({ getUserMedia = async () => ({ getAudioTracks: () => [] }) } =
   }
   const context = vm.createContext({
     console, URL, Promise, WebSocket: Socket, createBackoff, finalCloseMessage, micIsActive, watchMicTracks,
+    offersChannel, outputShortcut, outputView,
     document: { getElementById: (id) => id === 'interpreter-portal'
       ? { dataset: { boothId: 'test-1-en', eventSlug: 'test', roomId: '1' } } : null },
     localStorage: { getItem: () => null },

@@ -544,6 +544,27 @@ async def test_mission_control_gets_each_booths_direction(world):
     assert '"output_language_code": "en"' in page.text
 
 
+# ── Booth page monitor ──────────────────────────────────────────────────────
+
+
+@pytest.mark.anyio
+async def test_booth_page_never_offers_its_own_channel_as_relay(world):
+    async with get_session() as s:
+        room = await s.get(Room, world["room"])
+        room.relay_booth_id = world["thai"]
+        japanese = await create_booth(
+            s, event_id=world["event"], room_id=world["room"], language_code="ja", language_name="Japanese"
+        )
+        await s.flush()
+    async with _client() as c:
+        own = await c.get(f"/interpreter/{SLUG}/{world['room']}/th", cookies=world["cookie"])
+        other = await c.get(f"/interpreter/{SLUG}/{world['room']}/ja", cookies=world["cookie"])
+    assert "value='relay'" not in own.text
+    assert "value='relay'" in other.text
+    assert "id='output-switch'" in own.text
+    assert japanese
+
+
 # ── API v1 ──────────────────────────────────────────────────────────────────
 
 

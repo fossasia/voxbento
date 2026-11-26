@@ -195,6 +195,29 @@ Jitsi session; they do not validate a deployment host's available disk space.
 Transcription, Translation, and TTS workers are isolated from the main audio path. If an API provider lags, fails, or drops chunks, the core interpretation audio remains perfectly stable and unaffected.
 :::
 
+### Two-way booths
+
+A booth can be two-way (#1397): its interpreter switches between interpreting into the
+booth's language and back into the room's spoken language. The spoken language has its own
+MediaMTX path (`pycon2026/14/en` in an English room), created like booth paths. `booths.return_language_code`
+holds the setting, validated in one place (`portal/room_setup.py`) for room setup, booth
+edits and API v1 writes.
+
+The interpreter's browser sends `booth:set-output` over the booth WebSocket. The server
+records the new output in `BoothRegistry`, where one booth at a time may hold a room's
+return channel, then ends the booth's MediaMTX session on the channel it left and
+broadcasts the state. The browser publishes again with a fresh ticket, which the server
+binds to the new path, so listeners hear a short gap. The media auth hook refuses a ticket
+for any other path, and a ticket issued before a switch. Leaving, access revocation,
+reconnect grace expiry, Mission Control Stop and booth, room or event deletion end the
+booth's sessions on both paths and free the return channel. The direction is saved in
+`booth_live_state` and survives a portal restart.
+
+The floor caption feed (`/ws/captions/{event}-{room}-floor`) carries a listener-safe
+`channel:state` message `{return_on_air, whep_url, language_code}` when a two-way booth
+goes on or off air into the spoken language. Transcription stays on the booth's own path,
+so the return channel is not captioned.
+
 ## Booth Identity
 
 Every booth in Voxbento is uniquely identified by three coordinates:
