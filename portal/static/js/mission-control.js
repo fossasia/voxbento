@@ -273,7 +273,6 @@ function handleVolumeChange(boothId, volume) {
 
 const listenPath = (state) => state.output_mediamtx_path;
 
-/** Keep listening to a two-way booth when it switches channel. */
 // The picker shows the booth interpreting into the spoken language, which sets the floor language.
 function showFloorHolder(roomId) {
   const picker = floorPickers.get(roomId);
@@ -284,6 +283,7 @@ function showFloorHolder(roomId) {
   picker.setHeldBy(holder ? { code: holder.language_code, name: holder.language } : null);
 }
 
+/** Keep listening to a two-way booth when it switches channel. */
 function followOutput(boothId) {
   const entry = boothMap.get(boothId);
   if (!entry?.whep || entry.whepPath === listenPath(entry.state)) return;
