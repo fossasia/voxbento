@@ -403,5 +403,37 @@ console.log('\n── Original channel: floor first, a two-way booth while it is
   assert(clients.length === 0 && source.source() === null, 'without the option the guard still runs first');
 }
 
+console.log('\n── Original channel of a room without floor audio (part 2) ──');
+{
+  let silences = 0;
+  const { source, audioEl, states } = setup(0, { startOnFallback: true, floorUrl: null, onSilent: () => silences++ });
+  assert(clients.length === 0 && source.source() === null && silences === 1, 'nothing plays and the page is told');
+  source.setOnAir(true);
+  const booth = clients[0];
+  assert(kindOf(booth) === 'interpretation' && booth.audioEl === audioEl, 'the two-way booth plays on the player at once');
+  booth.live();
+  assert(source.source() === 'interpretation' && states.at(-1).state.audioActive, 'and is reported');
+  source.setOnAir(false);
+  advance(HANDOVER_GUARD_MS - 1);
+  assert(!booth.stopped && silences === 1, 'a short drop keeps it');
+  const reported = states.length;
+  advance(1);
+  assert(booth.stopped && source.source() === null && silences === 2, '3 s after it leaves the player stops');
+  assert(clients.length === 1 && states.length === reported, 'no floor starts, and the stop is not reported as a stream state');
+  source.setOnAir(true);
+  assert(clients.length === 2 && clients[1].audioEl === audioEl, 'back on air plays on the player again');
+  source.setAudioDelayMs(200);
+  source.resume();
+  source.stop();
+  assert(clients[1].stopped, 'stop ends it');
+}
+{
+  const { source } = setup(0, { startOnFallback: true, floorUrl: null });
+  source.setAudioDelayMs(100);
+  source.resume();
+  source.stop();
+  assert(clients.length === 0, 'silent without an onSilent callback, and every call is safe');
+}
+
 console.log('\n' + passed + ' passed, ' + failed + ' failed');
 process.exit(failed > 0 ? 1 : 0);

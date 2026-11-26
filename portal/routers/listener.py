@@ -173,8 +173,11 @@ async def listen_event_page(request: Request, event_slug: str, code: str | None 
             }
         )
 
-        # The floor is listed whenever it can carry audio, captions or not (#1082).
-        if r.floor_transcription_enabled or room_has_floor_audio(r):
+        # The floor is listed whenever it can carry audio, captions or not (#1082), and whenever a
+        # two-way booth can interpret into it, floor audio or not (#1397).
+        has_floor_audio = room_has_floor_audio(r)
+        return_url = return_whep_url(ev.slug, r, db_booths)
+        if r.floor_transcription_enabled or has_floor_audio or return_url:
             channel_id = make_mediamtx_path(ev.slug, r.id, "floor")
             spoken = r.floor_language_code if r.floor_language_code in LANGUAGE_NAMES else None
             booths_data.append(
@@ -189,7 +192,8 @@ async def listen_event_page(request: Request, event_slug: str, code: str | None 
                     "audio_delay_ms": r.audio_delay_ms,
                     "translation_enabled": r.floor_translation_enabled,
                     "translation_languages": lang_data,
-                    "return_whep_url": return_whep_url(ev.slug, r, db_booths),
+                    "return_whep_url": return_url,
+                    "floor_audio": has_floor_audio,
                 }
             )
             if r.floor_source != "program_ingest":
@@ -412,6 +416,7 @@ def _build_embed_context(
     audio_delay_ms: int,
     floor_fallback: FloorFallback | None,
     return_whep_url: str | None,
+    floor_audio: bool,
 ) -> dict[str, Any]:
     """Assemble the Jinja2 context for the embed template."""
     return {
@@ -433,6 +438,7 @@ def _build_embed_context(
         "audio_delay_ms": audio_delay_ms,
         "floor_fallback": floor_fallback,
         "return_whep_url": return_whep_url,
+        "floor_audio": floor_audio,
     }
 
 
@@ -464,6 +470,7 @@ async def _embed_listener_impl(
         # Only an interpreter channel falls back; the floor channel is the floor already, and
         # follows a two-way booth instead.
         return_url = None
+        has_floor_audio = room_has_floor_audio(room)
         if language_code.lower() == "floor":
             fallback = None
             return_url = return_whep_url(ev.slug, room, await list_booths_for_event(session, ev.id, limit=None))
@@ -505,6 +512,7 @@ async def _embed_listener_impl(
         audio_delay_ms=room.audio_delay_ms,
         floor_fallback=fallback,
         return_whep_url=return_url,
+        floor_audio=has_floor_audio,
     )
 
     return templates.TemplateResponse(request=request, name="embed.html", context=context, headers=response_headers)

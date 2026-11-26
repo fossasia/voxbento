@@ -34,7 +34,9 @@ const ChannelSource = {
    *
    * @param {object} opts
    * @param {string} opts.interpretationUrl – the booth's WHEP URL
-   * @param {string} opts.floorUrl – the room floor's WHEP URL
+   * @param {string|null} opts.floorUrl – the room floor's WHEP URL; null when the floor has no
+   *   audio, so "floor" means nothing plays
+   * @param {function} [opts.onSilent] – called when the player stops for a floor without audio
    * @param {HTMLAudioElement} opts.audioEl – the visible player the listener controls
    * @param {HTMLAudioElement} opts.standbyEl – an element the incoming stream warms up on
    * @param {number} opts.audioDelayMs
@@ -58,6 +60,8 @@ const ChannelSource = {
     let incoming = null;
     let guardTimer = null;
     let stopped = false;
+    // Stands in for the floor's client when the floor has no audio.
+    const silent = { stop() {}, setAudioDelayMs() {}, resume() {} };
 
     function wanted() {
       if (incoming) return incoming.kind;
@@ -109,7 +113,15 @@ const ChannelSource = {
     function switchTo(kind) {
       dropIncoming();
       if (active && active.kind === kind) return;
-      if (!active) {
+      if (kind === 'floor' && !opts.floorUrl) {
+        // Nothing to fall back to: stop at once rather than keep a stream that has no audio.
+        const previous = active;
+        active = { kind, client: silent, timer: null };
+        if (previous) previous.client.stop();
+        if (opts.onSilent) opts.onSilent();
+        return;
+      }
+      if (!active || active.client === silent) {
         active = startSlot(kind, audioEl);
         return;
       }
@@ -141,9 +153,9 @@ const ChannelSource = {
         evaluate();
       },
 
-      /** The stream in the player: 'interpretation', 'floor', or null while waiting. */
+      /** The stream in the player: 'interpretation', 'floor', or null while nothing plays. */
       source() {
-        return active ? active.kind : null;
+        return active && active.client !== silent ? active.kind : null;
       },
 
       setAudioDelayMs(ms) {

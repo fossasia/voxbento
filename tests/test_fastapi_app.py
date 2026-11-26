@@ -3521,6 +3521,7 @@ def test_build_embed_context_keys_and_fallbacks():
         audio_delay_ms=250,
         floor_fallback=None,
         return_whep_url=None,
+        floor_audio=True,
     )
 
     assert set(ctx.keys()) == {
@@ -3542,6 +3543,7 @@ def test_build_embed_context_keys_and_fallbacks():
         "audio_delay_ms",
         "floor_fallback",
         "return_whep_url",
+        "floor_audio",
     }
     # font is capitalised for display
     assert ctx["font_family"] == "Inter"
@@ -3570,6 +3572,7 @@ def test_build_embed_context_keys_and_fallbacks():
         audio_delay_ms=0,
         floor_fallback=None,
         return_whep_url=None,
+        floor_audio=True,
     )
     assert ctx2["target_lang_code"] == "es"
     assert ctx2["font_family"] == "Roboto"

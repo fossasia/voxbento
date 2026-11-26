@@ -239,7 +239,8 @@ function make(tagName, id) {
 const roomSelect = document.getElementById('room-select');
 roomSelect.innerHTML =
   '<option value="">-- Select Room --</option><option value="1">Main Hall</option><option value="2">Recovery Hall</option>' +
-  '<option value="3">Thai Hall</option><option value="4">Two-way Hall</option>';
+  '<option value="3">Thai Hall</option><option value="4">Two-way Hall</option>' +
+  '<option value="5">Quiet Hall</option>';
 const captionModeSelect = document.getElementById('caption-mode-select');
 captionModeSelect.innerHTML =
   '<option value="original">Original</option><option value="translated">Translated</option>';
@@ -269,7 +270,7 @@ const listenerData = make('script', 'listener-data');
 listenerData.textContent = JSON.stringify({
   eventSlug: 'demo',
   shareUrl: 'https://example.test/listener/demo',
-  rooms: [{ id: 1, floor_tts_enabled: true }, { id: 2, floor_tts_enabled: true }, { id: 3, floor_tts_enabled: false }, { id: 4, floor_tts_enabled: false }],
+  rooms: [{ id: 1, floor_tts_enabled: true }, { id: 2, floor_tts_enabled: true }, { id: 3, floor_tts_enabled: false }, { id: 4, floor_tts_enabled: false }, { id: 5, floor_tts_enabled: false }],
   booths: [
     { id: 'floor_1', room_id: 1, language_code: 'floor', language_name: 'Floor Audio', whep_url: 'http://mtx/floor/whep', audio_delay_ms: 0 },
     { id: 2, room_id: 1, language_code: 'es', language_name: 'Spanish', whep_url: 'http://mtx/es/whep', audio_delay_ms: 0 },
@@ -315,6 +316,18 @@ listenerData.textContent = JSON.stringify({
       whep_url: 'http://mtx/floor4/whep',
       audio_delay_ms: 0,
       return_whep_url: 'http://mtx/r4/en/whep',
+    },
+    // Room 5 has a two-way booth but no floor audio (#1397, part 2).
+    {
+      id: 'floor_5',
+      room_id: 5,
+      language_code: 'floor',
+      spoken_language_code: 'en',
+      language_name: 'English (original)',
+      whep_url: 'http://mtx/floor5/whep',
+      audio_delay_ms: 0,
+      return_whep_url: 'http://mtx/r5/en/whep',
+      floor_audio: false,
     },
   ],
 });
@@ -1212,6 +1225,23 @@ async function returnChannelTests() {
   choose(languageSelect, 'http://mtx/floor3/whep');
   captionsSocket().onmessage(channelStateMessage({ return_on_air: true, whep_url: 'http://mtx/x/whep', language_code: 'en' }));
   assert(whepOpts.whepUrl === 'http://mtx/floor3/whep' && running().length === 0, 'a floor without a two-way booth plays as before and ignores channel:state');
+  choose(roomSelect, '');
+
+  console.log('\n── Original channel of a room without floor audio (#1397, part 2) ──');
+  const before5 = channelClients.length;
+  choose(roomSelect, '5');
+  choose(languageSelect, 'http://mtx/floor5/whep');
+  assert(channelClients.length === before5 && statusText() === WAITING, 'nothing plays and it waits, got "' + statusText() + '"');
+  captionsSocket().onmessage(channelStateMessage({ return_on_air: true, whep_url: 'http://mtx/r5/en/whep', language_code: 'en' }));
+  const ret5 = channelClients[before5];
+  assert(ret5 && ret5.opts.whepUrl === 'http://mtx/r5/en/whep' && ret5.audioEl === player, 'the two-way booth plays on the player at once');
+  ret5.live();
+  assert(statusText() === 'Live (WebRTC)', 'and is Live, got "' + statusText() + '"');
+  captionsSocket().onmessage(channelStateMessage({ return_on_air: false, whep_url: null, language_code: null }));
+  assert(statusText() === WAITING, 'off air it waits, with no original audio promised, got "' + statusText() + '"');
+  now += 3000;
+  runTimers(3000);
+  assert(ret5.stopped && running().length === 0 && statusText() === WAITING, '3 s later the player stops and keeps waiting');
   choose(roomSelect, '');
   Date.now = realNow;
 }

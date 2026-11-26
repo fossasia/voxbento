@@ -252,6 +252,8 @@ var audioScheduler = null;
 // interprets back into the spoken language (channelSourceFollowsReturn).
 var channelSource = null;
 var channelSourceFollowsReturn = false;
+// That original channel in a room whose floor has no audio: only the two-way booth is heard on it.
+var returnWithoutFloor = false;
 // The booth's on_air from booth:state, and the last state of the stream in the player.
 var channelOnAir = false;
 var channelPlayerState = null;
@@ -268,6 +270,8 @@ function onFloorFallback() {
 function setLiveStatus(text) {
   if (onFloorFallback()) {
     setStatus(FLOOR_FALLBACK_STATUS, "live");
+  } else if (channelSourceFollowsReturn && returnWithoutFloor && !channelOnAir) {
+    setStatus(WAITING_STATUS, "waiting");
   } else if (channelSource !== null && !channelOnAir && (!channelSourceFollowsReturn || channelSource.source() !== "floor")) {
     setStatus(OFF_AIR_STATUS, "recovering");
   } else {
@@ -1333,9 +1337,11 @@ languageSelect.addEventListener("change", function () {
         // The floor plays at once; channel:state on this socket says when a two-way booth
         // interprets into the spoken language, and that booth plays instead.
         channelSourceFollowsReturn = true;
+        // Without floor audio the channel is silent until that booth is on air.
+        returnWithoutFloor = sourceData.floor_audio === false;
         channelSource = ChannelSource.create({
           interpretationUrl: sourceData.return_whep_url,
-          floorUrl: whepUrl,
+          floorUrl: returnWithoutFloor ? null : whepUrl,
           audioEl: audioEl,
           standbyEl: document.createElement("audio"),
           audioDelayMs: selectedAudioDelayMs,
@@ -1345,8 +1351,13 @@ languageSelect.addEventListener("change", function () {
             channelPlayerState = s;
             onState(s, false);
           },
+          onSilent: function () {
+            channelPlayerState = null;
+            setStatus(WAITING_STATUS, "waiting");
+            showAudioPlayer(false);
+          },
         });
-        setStatus("Connecting...", "recovering");
+        if (!returnWithoutFloor) setStatus("Connecting...", "recovering");
       } else if (languageCode === "floor") {
         // Floor audio has no WHIP ingest — start WHEP immediately.
         startWhepAndCaptions(whepUrl, null, selectedAudioDelayMs);

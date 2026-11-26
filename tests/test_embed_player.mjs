@@ -335,6 +335,22 @@ console.log('\n── Original channel follows a two-way booth (#1397, part 2) �
   assert(ret.stopped && running().length === 1 && status() === 'Live', 'one stream plays, Live again');
 }
 {
+  const QUIET = { ...BASE, whep_url: 'https://mtx.test/demo/5/floor/whep', caption_url: 'wss://portal.test/ws/captions/demo-5-floor',
+    source_lang_code: 'floor', target_lang_code: 'floor', return_whep_url: 'https://mtx.test/demo/5/en/whep', floor_audio: false };
+  const channel = (s) => ({ data: JSON.stringify({ type: 'channel:state', state: s }) });
+  await load(QUIET);
+  const player = page.els['embed-audio'];
+  assert(page.clients.length === 0 && status() === 'Waiting for the interpreter…', 'without floor audio nothing plays and it waits, got "' + status() + '"');
+  page.sockets[0].onmessage(channel({ return_on_air: true, whep_url: QUIET.return_whep_url, language_code: 'en' }));
+  const ret = page.clients[0];
+  assert(ret && ret.opts.whepUrl === QUIET.return_whep_url && ret.audioEl === player, 'the two-way booth plays on the player at once');
+  ret.live();
+  assert(status() === 'Live', 'and is Live');
+  page.sockets[0].onmessage(channel({ return_on_air: false, whep_url: null, language_code: null }));
+  advance(3000);
+  assert(ret.stopped && running().length === 0 && status() === 'Waiting for the interpreter…', '3 s after it leaves the player stops and waits');
+}
+{
   await load({ ...BASE, floor_fallback: FALLBACK });
   page.sockets[0].onmessage({ data: JSON.stringify({ type: 'channel:state', state: { return_on_air: true } }) });
   advance(3000);
