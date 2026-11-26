@@ -222,7 +222,11 @@ The floor caption feed (`/ws/captions/{event}-{room}-floor`) carries a listener-
 goes on or off air into the spoken language. On air there uses the same rule as a booth's
 `on_air` (unlocked, connected, and a MediaMTX publisher on the return path). While a booth
 outputs into the return channel its own channel reads off air, so its listeners hear the
-floor. Transcription stays on the booth's own path,
+floor. The listener page data gives the floor entry a `return_whep_url` when one of the
+room's booths is two-way into the spoken language (the embed config does the same for the
+floor channel). The player then plays the floor at once and the return stream while
+`return_on_air` is true, with the same make-before-break switch and 3 s guard as the floor
+fallback (`portal/static/js/channel-source.js`, `startOnFallback`). Transcription stays on the booth's own path,
 so the return channel is not captioned.
 
 ## Booth Identity

@@ -239,7 +239,7 @@ function make(tagName, id) {
 const roomSelect = document.getElementById('room-select');
 roomSelect.innerHTML =
   '<option value="">-- Select Room --</option><option value="1">Main Hall</option><option value="2">Recovery Hall</option>' +
-  '<option value="3">Thai Hall</option>';
+  '<option value="3">Thai Hall</option><option value="4">Two-way Hall</option>';
 const captionModeSelect = document.getElementById('caption-mode-select');
 captionModeSelect.innerHTML =
   '<option value="original">Original</option><option value="translated">Translated</option>';
@@ -269,7 +269,7 @@ const listenerData = make('script', 'listener-data');
 listenerData.textContent = JSON.stringify({
   eventSlug: 'demo',
   shareUrl: 'https://example.test/listener/demo',
-  rooms: [{ id: 1, floor_tts_enabled: true }, { id: 2, floor_tts_enabled: true }, { id: 3, floor_tts_enabled: false }],
+  rooms: [{ id: 1, floor_tts_enabled: true }, { id: 2, floor_tts_enabled: true }, { id: 3, floor_tts_enabled: false }, { id: 4, floor_tts_enabled: false }],
   booths: [
     { id: 'floor_1', room_id: 1, language_code: 'floor', language_name: 'Floor Audio', whep_url: 'http://mtx/floor/whep', audio_delay_ms: 0 },
     { id: 2, room_id: 1, language_code: 'es', language_name: 'Spanish', whep_url: 'http://mtx/es/whep', audio_delay_ms: 0 },
@@ -303,6 +303,17 @@ listenerData.textContent = JSON.stringify({
       translation_enabled: true,
       translation_languages: [{ code: 'en', name: 'English', tts_enabled: false }],
       floor_fallback: { whep_url: 'http://mtx/floor3/whep', booth_id: 'demo-3-floor', channel_id: 'demo/3/floor' },
+    },
+    // Room 4 has a Thai booth that is two-way into English (#1397, part 2).
+    {
+      id: 'floor_4',
+      room_id: 4,
+      language_code: 'floor',
+      spoken_language_code: 'en',
+      language_name: 'English (original)',
+      whep_url: 'http://mtx/floor4/whep',
+      audio_delay_ms: 0,
+      return_whep_url: 'http://mtx/r4/en/whep',
     },
   ],
 });
@@ -986,6 +997,7 @@ async function run() {
   assert(statusText() === 'Live (WebRTC + Translation)', 'a translation-only feed drop leaves the WebRTC badge alone, got "' + statusText() + '"');
 
   await floorFallbackTests();
+  await returnChannelTests();
   await deepLinkTests();
 
   console.log('\n' + passed + ' passed, ' + failed + ' failed');
@@ -1121,6 +1133,67 @@ async function floorFallbackTests() {
   captionsSocket().onmessage(boothStateMessage({ broadcast_unlocked: false, ingest_status: 'connected', on_air: false }));
   assert(roomSelect.value === '' && languageSelect.disabled, 'locking still resets the selections');
   assert(statusText() === 'Broadcast is currently locked by the organizers.', 'and shows the lock message');
+  Date.now = realNow;
+}
+
+function channelStateMessage(state) {
+  return { data: JSON.stringify({ type: 'channel:state', state }) };
+}
+
+async function returnChannelTests() {
+  console.log('\n── Original channel follows a two-way booth (#1397, part 2) ──');
+  const realNow = Date.now;
+  let now = 2000000;
+  Date.now = () => now;
+  const player = document.getElementById('audio-player');
+  const floorUrl = 'http://mtx/floor4/whep';
+  const running = () => channelClients.filter((c) => !c.stopped);
+  const before = channelClients.length;
+
+  choose(roomSelect, '4');
+  choose(languageSelect, floorUrl);
+  const floor = channelClients[before];
+  assert(floor && floor.opts.whepUrl === floorUrl && floor.audioEl === player, 'the floor plays at once, on the player');
+  assert(pendingTimers(3000) === 0, 'no guard before the floor');
+  assert(captionsSocket().url.endsWith('/ws/captions/demo-4-floor'), 'captions are the floor feed');
+  floor.live();
+  assert(statusText() === 'Live (WebRTC)', 'the floor is this channel, not a fallback, got "' + statusText() + '"');
+
+  captionsSocket().onmessage(boothStateMessage({ broadcast_unlocked: false, ingest_status: 'disconnected', on_air: false }));
+  assert(running().length === 1 && roomSelect.value === '4', 'a booth:state on the floor feed changes nothing');
+
+  captionsSocket().onmessage(channelStateMessage({ return_on_air: true, whep_url: 'http://mtx/r4/en/whep', language_code: 'en' }));
+  const ret = channelClients[before + 1];
+  assert(ret && ret.opts.whepUrl === 'http://mtx/r4/en/whep' && ret.audioEl !== player, 'the return stream warms up off the player');
+  assert(!floor.stopped, 'the floor plays until the return stream has audio');
+  ret.live();
+  assert(floor.stopped && ret.audioEl === player && running().length === 1, 'then the return stream takes over');
+  assert(statusText() === 'Live (WebRTC)', 'still Live (WebRTC)');
+
+  captionsSocket().onmessage(channelStateMessage({ return_on_air: false, whep_url: null, language_code: 'en' }));
+  assert(pendingTimers(3000) === 1 && running().length === 1 && running()[0] === ret, 'a drop keeps the return stream during the 3 s guard');
+  now += 3000;
+  runTimers(3000);
+  const floorAgain = channelClients[before + 2];
+  assert(floorAgain && floorAgain.opts.whepUrl === floorUrl, 'the floor comes back 3 s after the booth leaves');
+  floorAgain.live();
+  assert(ret.stopped && running().length === 1, 'one stream plays');
+
+  captionsSocket().onmessage(channelStateMessage(null));
+  captionsSocket().onmessage(channelStateMessage({ return_on_air: 'yes' }));
+  assert(running().length === 1 && running()[0] === floorAgain, 'malformed channel:state never switches');
+
+  captionsSocket().onclose({ code: 4003 });
+  assert(running().length === 0 && pendingTimers(5000) === 0, 'a 4003 close stops every stream');
+
+  choose(languageSelect, '');
+  choose(languageSelect, floorUrl);
+  choose(roomSelect, '3');
+  assert(running().length === 0, 'changing room stops the original channel');
+  choose(languageSelect, 'http://mtx/floor3/whep');
+  captionsSocket().onmessage(channelStateMessage({ return_on_air: true, whep_url: 'http://mtx/x/whep', language_code: 'en' }));
+  assert(whepOpts.whepUrl === 'http://mtx/floor3/whep' && running().length === 0, 'a floor without a two-way booth plays as before and ignores channel:state');
+  choose(roomSelect, '');
   Date.now = realNow;
 }
 

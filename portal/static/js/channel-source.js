@@ -41,6 +41,9 @@ const ChannelSource = {
    * @param {function} opts.createClient – returns a WHEP client (whep-listener.js)
    * @param {function} opts.onState – (whepState, kind) for the stream in the player
    * @param {function} [opts.now]
+   * @param {boolean} [opts.startOnFallback] – play the floor at once instead of after the guard,
+   *   for the original channel, where the floor is the default and the "interpretation" is a
+   *   two-way booth interpreting back into the spoken language
    */
   create(opts) {
     const now = opts.now || Date.now;
@@ -50,7 +53,7 @@ const ChannelSource = {
     let audioDelayMs = opts.audioDelayMs;
     let onAir = false;
     // Nothing has said the booth is on air yet, so the guard runs from the start.
-    let offAirSince = now();
+    let offAirSince = opts.startOnFallback ? now() - ChannelSource.HANDOVER_GUARD_MS : now();
     let active = null;
     let incoming = null;
     let guardTimer = null;

@@ -363,3 +363,57 @@ async def test_embed_scripts_stay_classic_for_sandboxed_iframes(seed):
 async def test_embed_without_floor_audio_has_no_fallback(seed):
     await _update_room(seed["room_id"], jitsi_url="https://meet.example.org/Hall")
     assert (await _embed_config(seed["room_id"], "th"))["floor_fallback"] is None
+
+
+# ── Original channel follows a two-way booth (#1397, part 2) ─────────────────
+
+
+async def _make_thai_two_way(room_id: int) -> None:
+    from sqlalchemy import select
+
+    from portal.database import get_session
+    from portal.models import DBBooth
+
+    async with get_session() as s:
+        booth = (await s.execute(select(DBBooth).where(DBBooth.room_id == room_id))).scalar_one()
+        booth.return_language_code = "en"
+
+
+async def test_original_channel_follows_a_two_way_booth(seed, monkeypatch):
+    from portal.config import settings
+    from portal.routers import listener
+
+    ensured = []
+
+    async def ensure(channel_id):
+        ensured.append(channel_id)
+
+    monkeypatch.setattr(listener, "_ensure_mediamtx_path", ensure)
+    room_id = seed["room_id"]
+    await _update_room(room_id, meeting_agent_enabled=True, floor_language_code="en")
+    data = await _listener_data(seed["owner"])
+    assert _entry(data, "floor")["return_whep_url"] is None, "no two-way booth, plain floor"
+    assert f"floorcon/{room_id}/en" not in ensured
+
+    await _make_thai_two_way(room_id)
+    data = await _listener_data(seed["owner"])
+    assert _entry(data, "floor")["return_whep_url"] == f"{settings.mediamtx_whip_base}/floorcon/{room_id}/en/whep"
+    assert f"floorcon/{room_id}/en" in ensured, "the return path exists before anyone reads it"
+    assert "return_whep_url" not in _entry(data, "th")
+
+    # A return language that no longer matches the spoken language is not followed.
+    await _update_room(room_id, floor_language_code="de")
+    assert _entry(await _listener_data(seed["owner"]), "floor")["return_whep_url"] is None
+
+
+async def test_embed_original_channel_follows_a_two_way_booth(seed):
+    from portal.config import settings
+
+    room_id = seed["room_id"]
+    await _update_room(room_id, meeting_agent_enabled=True, floor_language_code="en")
+    assert (await _embed_config(room_id, "floor"))["return_whep_url"] is None
+    await _make_thai_two_way(room_id)
+    config = await _embed_config(room_id, "floor")
+    assert config["return_whep_url"] == f"{settings.mediamtx_whip_base}/floorcon/{room_id}/en/whep"
+    assert config["floor_fallback"] is None
+    assert (await _embed_config(room_id, "th"))["return_whep_url"] is None, "only the original channel follows"

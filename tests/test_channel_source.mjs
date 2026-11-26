@@ -97,7 +97,7 @@ function createClient() {
   return client;
 }
 
-function setup(audioDelayMs = 0) {
+function setup(audioDelayMs = 0, extra = {}) {
   clients = [];
   timers.clear();
   clock = 1000;
@@ -113,6 +113,7 @@ function setup(audioDelayMs = 0) {
     createClient,
     onState: (state, kind) => states.push({ state, kind }),
     now: () => clock,
+    ...extra,
   });
   return { source, audioEl, standbyEl, states };
 }
@@ -373,6 +374,33 @@ console.log('\n── Hold: keep the stream that plays, stop switching ──');
   source.hold();
   advance(60000);
   assert(clients.length === 0 && timers.size === 0 && source.source() === null, 'hold during the guard starts nothing');
+}
+
+console.log('\n── Original channel: floor first, a two-way booth while it is on air (part 2) ──');
+{
+  const { source, audioEl, standbyEl } = setup(0, { startOnFallback: true });
+  assert(clients.length === 1 && kindOf(clients[0]) === 'floor' && clients[0].audioEl === audioEl, 'the floor plays at once');
+  assert(timers.size === 0, 'no guard runs while the floor plays');
+  const floor = clients[0];
+  floor.live();
+  source.setOnAir(true);
+  const booth = clients[1];
+  assert(kindOf(booth) === 'interpretation' && booth.audioEl === standbyEl && !floor.stopped, 'the return stream warms up muted');
+  booth.live();
+  assert(floor.stopped && source.source() === 'interpretation', 'the return stream takes over once it has audio');
+  source.setOnAir(false);
+  advance(HANDOVER_GUARD_MS - 1);
+  assert(clients.length === 2, 'a short drop keeps the return stream');
+  source.setOnAir(true);
+  source.setOnAir(false);
+  advance(HANDOVER_GUARD_MS);
+  assert(clients.length === 3 && kindOf(clients[2]) === 'floor', 'the floor comes back 3 s after the booth leaves');
+  clients[2].live();
+  assert(booth.stopped && source.source() === 'floor' && onPlayer(audioEl).length === 1, 'one stream on the player');
+}
+{
+  const { source } = setup(0, { startOnFallback: false });
+  assert(clients.length === 0 && source.source() === null, 'without the option the guard still runs first');
 }
 
 console.log('\n' + passed + ' passed, ' + failed + ' failed');

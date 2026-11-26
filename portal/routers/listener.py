@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import json
 import re
+from collections.abc import Iterable
 from pathlib import Path
 from typing import Any, TypedDict
 
@@ -33,7 +34,7 @@ from portal.join_code_limit import JoinCodeThrottled, verify_join_code
 from portal.models import Room
 from portal.overlay_channels import overlay_channels
 from portal.program_ingest import room_has_floor_audio
-from portal.room_setup import LANGUAGE_NAMES
+from portal.room_setup import LANGUAGE_NAMES, two_way_language
 from portal.utils import _ensure_mediamtx_path
 
 # Allowlists for embed theming params — no free-text values accepted.
@@ -100,6 +101,18 @@ def floor_fallback(event_slug: str, room: Room) -> FloorFallback | None:
         "booth_id": make_booth_id(event_slug, room.id, "floor"),
         "channel_id": channel_id,
     }
+
+
+def return_whep_url(event_slug: str, room: Room, booths: Iterable[Any]) -> str | None:
+    """The return channel the room's original channel follows, if one of its booths is two-way (#1397).
+
+    While a two-way booth interprets back into the spoken language, original-channel listeners
+    hear it there instead of the floor.
+    """
+    spoken = two_way_language(room.floor_language_code)
+    if spoken is None or not any(b.room_id == room.id and b.return_language_code == spoken for b in booths):
+        return None
+    return f"{settings.mediamtx_whip_base}/{make_mediamtx_path(event_slug, room.id, spoken)}/whep"
 
 
 @router.get("/listener/{event_slug}")
@@ -176,10 +189,15 @@ async def listen_event_page(request: Request, event_slug: str, code: str | None 
                     "audio_delay_ms": r.audio_delay_ms,
                     "translation_enabled": r.floor_translation_enabled,
                     "translation_languages": lang_data,
+                    "return_whep_url": return_whep_url(ev.slug, r, db_booths),
                 }
             )
             if r.floor_source != "program_ingest":
                 ensure_tasks.append(_ensure_mediamtx_path(channel_id))
+            if booths_data[-1]["return_whep_url"]:
+                ensure_tasks.append(
+                    _ensure_mediamtx_path(make_mediamtx_path(ev.slug, r.id, two_way_language(r.floor_language_code)))
+                )
 
     if ensure_tasks:
         await asyncio.gather(*ensure_tasks)
@@ -393,6 +411,7 @@ def _build_embed_context(
     allowed_origins_list: list[str],
     audio_delay_ms: int,
     floor_fallback: FloorFallback | None,
+    return_whep_url: str | None,
 ) -> dict[str, Any]:
     """Assemble the Jinja2 context for the embed template."""
     return {
@@ -413,6 +432,7 @@ def _build_embed_context(
         "allowed_origins_list": allowed_origins_list,
         "audio_delay_ms": audio_delay_ms,
         "floor_fallback": floor_fallback,
+        "return_whep_url": return_whep_url,
     }
 
 
@@ -441,8 +461,14 @@ async def _embed_listener_impl(
 
         room = await _resolve_embed_room(session, ev, room_id)
         booth_id, channel_id = await _resolve_embed_channel(session, ev, event_slug, room.id, language_code)
-        # Only an interpreter channel falls back; the floor channel is the floor already.
-        fallback = None if language_code.lower() == "floor" else floor_fallback(ev.slug, room)
+        # Only an interpreter channel falls back; the floor channel is the floor already, and
+        # follows a two-way booth instead.
+        return_url = None
+        if language_code.lower() == "floor":
+            fallback = None
+            return_url = return_whep_url(ev.slug, room, await list_booths_for_event(session, ev.id, limit=None))
+        else:
+            fallback = floor_fallback(ev.slug, room)
 
     whep_url = f"{settings.mediamtx_whip_base}/{channel_id}/whep"
     host = settings.public_base_url.replace("https://", "").replace("http://", "")
@@ -478,6 +504,7 @@ async def _embed_listener_impl(
         allowed_origins_list=allowed_origins_list,
         audio_delay_ms=room.audio_delay_ms,
         floor_fallback=fallback,
+        return_whep_url=return_url,
     )
 
     return templates.TemplateResponse(request=request, name="embed.html", context=context, headers=response_headers)

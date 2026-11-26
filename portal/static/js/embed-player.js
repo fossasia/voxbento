@@ -24,6 +24,9 @@
     const SOURCE_LANG = config.source_lang_code;
     // The floor this interpreter channel plays while its booth is off air (#1397), or null.
     const FLOOR_FALLBACK = config.floor_fallback || null;
+    // On the floor channel of a room with a two-way booth: that booth's return channel, which
+    // plays instead of the floor while the booth interprets into the spoken language, or null.
+    const RETURN_WHEP_URL = config.return_whep_url || null;
 
     const audioEl    = document.getElementById('embed-audio');
     const playBtn    = document.getElementById('play-btn');
@@ -68,7 +71,19 @@
     }
 
     let channelSource = null;
-    if (FLOOR_FALLBACK) {
+    if (RETURN_WHEP_URL) {
+      channelSource = ChannelSource.create({
+        interpretationUrl: RETURN_WHEP_URL,
+        floorUrl: WHEP_URL,
+        audioEl: audioEl,
+        standbyEl: document.createElement('audio'),
+        audioDelayMs: config.audio_delay_ms,
+        createClient: createWhepClient,
+        startOnFallback: true,
+        // Both streams are this channel's own audio, so neither is labelled a fallback.
+        onState: function(s) { onPlayerState(s); },
+      });
+    } else if (FLOOR_FALLBACK) {
       channelSource = ChannelSource.create({
         interpretationUrl: WHEP_URL,
         floorUrl: FLOOR_FALLBACK.whep_url,
@@ -132,7 +147,11 @@
         try {
           var msg = JSON.parse(ev.data);
           if (msg.type === 'booth:state') {
-            if (channelSource) channelSource.setOnAir(Boolean(msg.state) && msg.state.on_air === true);
+            if (channelSource && !RETURN_WHEP_URL) channelSource.setOnAir(Boolean(msg.state) && msg.state.on_air === true);
+            return;
+          }
+          if (msg.type === 'channel:state') {
+            if (channelSource && RETURN_WHEP_URL) channelSource.setOnAir(Boolean(msg.state) && msg.state.return_on_air === true);
             return;
           }
           if (!showCaptions) return;

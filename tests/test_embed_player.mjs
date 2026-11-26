@@ -297,5 +297,41 @@ console.log('\n── Captions still render with a fallback ──');
   assert(page.clients.length === 1 && page.clients[0].opts.whepUrl === BASE.whep_url, 'the same socket switches the audio');
 }
 
+console.log('\n── Original channel follows a two-way booth (#1397, part 2) ──');
+{
+  const FLOOR = { ...BASE, whep_url: 'https://mtx.test/demo/3/floor/whep', caption_url: 'wss://portal.test/ws/captions/demo-3-floor',
+    source_lang_code: 'floor', target_lang_code: 'floor', return_whep_url: 'https://mtx.test/demo/3/en/whep' };
+  const channel = (s) => ({ data: JSON.stringify({ type: 'channel:state', state: s }) });
+  await load(FLOOR);
+  const player = page.els['embed-audio'];
+  const floor = page.clients[0];
+  assert(floor && floor.opts.whepUrl === FLOOR.whep_url && floor.audioEl === player, 'the floor plays at once');
+  const ws = page.sockets[0];
+  assert(ws && ws.url === 'wss://portal.test/ws/captions/demo-3-floor?token=embed.jwt', 'captions off still opens the floor feed');
+  floor.live();
+  assert(status() === 'Live', 'the floor is this channel, not a fallback, got "' + status() + '"');
+  ws.onmessage(state({ on_air: true }));
+  assert(page.clients.length === 1, 'booth:state on the floor feed changes nothing');
+  ws.onmessage(channel(null));
+  assert(page.clients.length === 1, 'a malformed channel:state changes nothing');
+  ws.onmessage(channel({ return_on_air: true, whep_url: FLOOR.return_whep_url, language_code: 'en' }));
+  const ret = page.clients[1];
+  assert(ret.opts.whepUrl === FLOOR.return_whep_url && ret.audioEl !== player && !floor.stopped, 'the return stream warms up muted');
+  ret.live();
+  assert(floor.stopped && ret.audioEl === player && running().length === 1 && status() === 'Live', 'then takes over, still Live');
+  ws.onmessage(channel({ return_on_air: false, whep_url: null, language_code: 'en' }));
+  advance(3000);
+  const back = page.clients[2];
+  assert(back && back.opts.whepUrl === FLOOR.whep_url, 'the floor comes back 3 s after the booth leaves');
+  back.live();
+  assert(ret.stopped && running().length === 1, 'one stream plays');
+}
+{
+  await load({ ...BASE, floor_fallback: FALLBACK });
+  page.sockets[0].onmessage({ data: JSON.stringify({ type: 'channel:state', state: { return_on_air: true } }) });
+  advance(3000);
+  assert(page.clients.length === 1 && page.clients[0].opts.whepUrl === FALLBACK.whep_url, 'an interpreter channel ignores channel:state');
+}
+
 console.log('\n' + passed + ' passed, ' + failed + ' failed');
 process.exit(failed > 0 ? 1 : 0);

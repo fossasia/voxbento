@@ -46,6 +46,8 @@ In rooms with a floor source (the managed meeting feed turned on, or a program s
 
 If you pick an interpreter language and nobody is on air in it yet, or the organizers stopped that booth, you hear the original audio after about three seconds. The badge says **Original audio (interpreter off air)**. When the interpreter goes live, the player switches back by itself and says **Live (WebRTC)**. Your language, caption and translation choices stay as they were, and pause, volume and mute carry over. A short handover between two interpreters does not switch you.
 
+In a room with a two-way booth, the original channel also carries that booth while it interprets back into the spoken language, for example a Thai interpreter answering in English. You hear it in place of the room for as long as it is on air, then the room again about three seconds after it stops. The switch never plays both at once. The embedded player does the same on the original channel.
+
 A link with the spoken language, such as `?room=1&lang=en`, opens the original audio when no booth uses that language. Organizers can turn this off per room; then an off-air channel stays silent until its interpreter goes live. The embedded player does the same on an interpreter language: it plays the original audio while that interpreter is off air and says **Original audio**, and its Play, Pause and volume controls keep working across the switch. Once the embed session expires the player keeps whatever it is playing but stops switching; reloading the host page brings switching back.
 
 ---
