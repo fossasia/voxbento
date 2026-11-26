@@ -326,7 +326,6 @@ async def _embed_config(room_id: int, language: str) -> dict:
     assert resp.status_code == 200, resp.text
     match = re.search(r'<script type="application/json" id="embed-config">(.*?)</script>', resp.text, re.S)
     assert match, "embed config missing"
-    assert '<script type="module" src="/static/js/embed-player.js' in resp.text
     return json.loads(match.group(1))
 
 
@@ -345,6 +344,20 @@ async def test_embed_gets_the_same_floor_fallback(seed):
 
     await _update_room(room_id, auto_floor_enabled=False)
     assert (await _embed_config(room_id, "th"))["floor_fallback"] is None
+
+
+async def test_embed_scripts_stay_classic_for_sandboxed_iframes(seed):
+    """A module script needs CORS, so a sandbox="allow-scripts" iframe (opaque origin) would never run it."""
+    from portal.auth import create_embed_token
+
+    async with _client() as c:
+        resp = await c.get(
+            f"/embed/floorcon/{seed['room_id']}/th", params={"token": create_embed_token(event_slug="floorcon")}
+        )
+    assert resp.status_code == 200, resp.text
+    assert 'type="module"' not in resp.text
+    channel_source = resp.text.index('<script src="/static/js/channel-source.js')
+    assert channel_source < resp.text.index('<script src="/static/js/embed-player.js')
 
 
 async def test_embed_without_floor_audio_has_no_fallback(seed):

@@ -6,8 +6,10 @@
  * Loads the real module once per case against a small fake DOM, fake WHEP clients,
  * fake WebSockets, a fake clock and hand-run timers.
  */
+import fs from 'node:fs';
 import path from 'node:path';
-import { fileURLToPath, pathToFileURL } from 'node:url';
+import { fileURLToPath } from 'node:url';
+import vm from 'node:vm';
 
 let passed = 0;
 let failed = 0;
@@ -21,9 +23,12 @@ function assert(condition, message) {
   }
 }
 
-const MODULE = pathToFileURL(
-  path.join(path.dirname(fileURLToPath(import.meta.url)), '..', 'portal', 'static', 'js', 'embed-player.js'),
-).href;
+// Both are classic scripts, loaded in the order embed.html loads them.
+const JS_DIR = path.join(path.dirname(fileURLToPath(import.meta.url)), '..', 'portal', 'static', 'js');
+const CHANNEL_SOURCE = path.join(JS_DIR, 'channel-source.js');
+const EMBED_PLAYER = path.join(JS_DIR, 'embed-player.js');
+const EMBED_PLAYER_SRC = fs.readFileSync(EMBED_PLAYER, 'utf8');
+vm.runInThisContext(fs.readFileSync(CHANNEL_SOURCE, 'utf8'), { filename: CHANNEL_SOURCE });
 
 // ── Fake clock and timers ─────────────────────────────────────────────────
 
@@ -149,12 +154,11 @@ function setupPage(config, { captionsBox = false } = {}) {
   };
 }
 
-let loads = 0;
 async function load(config, options) {
   timers.clear();
   clock = 1000;
   setupPage(config, options);
-  await import(MODULE + '?case=' + loads++);
+  vm.runInThisContext(EMBED_PLAYER_SRC, { filename: EMBED_PLAYER });
   page.docListeners.DOMContentLoaded();
   return page;
 }

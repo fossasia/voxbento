@@ -7,12 +7,16 @@
  * timers, so the handover guard and the make-before-break switch can be checked
  * without a browser or media server.
  */
-import {
-  HANDOVER_GUARD_MS,
-  SWITCH_TIMEOUT_MS,
-  chooseSource,
-  createChannelSource,
-} from '../portal/static/js/channel-source.js';
+import fs from 'node:fs';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
+import vm from 'node:vm';
+
+// channel-source.js is a classic script that declares one global.
+const FILE = path.join(path.dirname(fileURLToPath(import.meta.url)), '..', 'portal', 'static', 'js', 'channel-source.js');
+const ChannelSource = vm.runInThisContext(fs.readFileSync(FILE, 'utf8') + '\n;ChannelSource', { filename: FILE });
+const { HANDOVER_GUARD_MS, SWITCH_TIMEOUT_MS, chooseSource } = ChannelSource;
+const createChannelSource = ChannelSource.create;
 
 let passed = 0;
 let failed = 0;

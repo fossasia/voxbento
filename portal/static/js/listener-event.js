@@ -1,4 +1,3 @@
-import { createChannelSource } from './channel-source.js';
 import { createDeliveryQueue } from './program-delivery.js';
 
 const captionDelivery = createDeliveryQueue();
@@ -1266,7 +1265,7 @@ languageSelect.addEventListener("change", function () {
         startWhepAndCaptions(whepUrl, null, selectedAudioDelayMs);
       } else if (sourceData && sourceData.floor_fallback) {
         var standbyEl = document.createElement("audio");
-        channelSource = createChannelSource({
+        channelSource = ChannelSource.create({
           interpretationUrl: whepUrl,
           floorUrl: sourceData.floor_fallback.whep_url,
           audioEl: audioEl,

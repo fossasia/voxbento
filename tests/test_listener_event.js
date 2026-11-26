@@ -9,7 +9,9 @@
  */
 'use strict';
 
+const fs = require('fs');
 const path = require('path');
+const vm = require('vm');
 const { pathToFileURL } = require('url');
 
 let passed = 0;
@@ -434,6 +436,9 @@ Object.assign(globalThis, {
   },
 });
 require(path.join(__dirname, '..', 'portal', 'static', 'js', 'tts-parser.js'));
+// channel-source.js is a classic script the page loads before listener-event.js.
+const CHANNEL_SOURCE = path.join(__dirname, '..', 'portal', 'static', 'js', 'channel-source.js');
+vm.runInThisContext(fs.readFileSync(CHANNEL_SOURCE, 'utf8'), { filename: CHANNEL_SOURCE });
 
 // A translation bundle as the server frames it: version byte, header length, JSON header, no audio.
 function bundleFrame(header) {

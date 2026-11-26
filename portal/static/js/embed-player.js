@@ -1,4 +1,4 @@
-import { createChannelSource } from './channel-source.js';
+'use strict';
 
 (function() {
   document.addEventListener('DOMContentLoaded', function() {
@@ -69,7 +69,7 @@ import { createChannelSource } from './channel-source.js';
 
     let channelSource = null;
     if (FLOOR_FALLBACK) {
-      channelSource = createChannelSource({
+      channelSource = ChannelSource.create({
         interpretationUrl: WHEP_URL,
         floorUrl: FLOOR_FALLBACK.whep_url,
         audioEl: audioEl,
