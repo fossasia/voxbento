@@ -327,11 +327,12 @@ console.log('\n── Original channel follows a two-way booth (#1397, part 2) �
   ret.live();
   assert(floor.stopped && ret.audioEl === player && running().length === 1 && status() === 'Live', 'then takes over, still Live');
   ws.onmessage(channel({ return_on_air: false, whep_url: null, language_code: 'en' }));
+  assert(status() === 'Interpreter off air…', 'a booth that just left is not shown as Live, got "' + status() + '"');
   advance(3000);
   const back = page.clients[2];
   assert(back && back.opts.whepUrl === FLOOR.whep_url, 'the floor comes back 3 s after the booth leaves');
   back.live();
-  assert(ret.stopped && running().length === 1, 'one stream plays');
+  assert(ret.stopped && running().length === 1 && status() === 'Live', 'one stream plays, Live again');
 }
 {
   await load({ ...BASE, floor_fallback: FALLBACK });

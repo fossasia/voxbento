@@ -70,7 +70,7 @@
         if (kind === 'floor') setStatus('live', 'Original audio');
         // Right after its booth goes off air the interpreter's stream can still look connected
         // while nothing comes, until the floor takes over.
-        else if (FLOOR_FALLBACK && !channelOnAir) setStatus('connecting', 'Interpreter off air\u2026');
+        else if (kind === 'interpretation' && !channelOnAir) setStatus('connecting', 'Interpreter off air\u2026');
         else setStatus('live', 'Live');
         playBtn.disabled = false;
         playBtn.textContent = playing ? '\u23f8  Pause' : '\u25b6  Play Audio';
@@ -93,7 +93,7 @@
         createClient: createWhepClient,
         startOnFallback: true,
         // Both streams are this channel's own audio, so neither is labelled a fallback.
-        onState: function(s) { onPlayerState(s); },
+        onState: function(s, kind) { onPlayerState(s, kind === 'floor' ? null : kind); },
       });
     } else if (FLOOR_FALLBACK) {
       channelSource = ChannelSource.create({
@@ -167,7 +167,11 @@
             return;
           }
           if (msg.type === 'channel:state') {
-            if (channelSource && RETURN_WHEP_URL) channelSource.setOnAir(Boolean(msg.state) && msg.state.return_on_air === true);
+            if (channelSource && RETURN_WHEP_URL) {
+              channelOnAir = Boolean(msg.state) && msg.state.return_on_air === true;
+              channelSource.setOnAir(channelOnAir);
+              if (lastPlayer) renderPlayerStatus(lastPlayer.s, lastPlayer.kind);
+            }
             return;
           }
           if (!showCaptions) return;
