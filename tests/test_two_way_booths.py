@@ -327,6 +327,17 @@ async def test_a_failed_return_language_read_refuses_the_switch(room, monkeypatc
 
 
 @pytest.mark.anyio
+async def test_the_active_interpreter_of_another_booth_is_refused(room):
+    ana = await join(room, "th", "Ana")
+    kai = await join(room, "ja", "Kai")
+    [error] = await set_output(room, "ja", ana, "return")
+    assert "active interpreter" in error["message"]
+    assert booths.get_booth_sync(room.booth_id("th")).output_language_code == "th"
+    assert booths.get_booth_sync(room.booth_id("ja")).output_language_code == "ja"
+    assert kai
+
+
+@pytest.mark.anyio
 async def test_a_return_language_made_invalid_later_is_refused(room):
     """The switch re-checks the database, so a stale two-way setting can't open a second publisher."""
     async with get_session() as session:
