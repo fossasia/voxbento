@@ -5,7 +5,8 @@
 // An interpreter handover drops the stream for a moment. Waiting this long before
 // falling back keeps listeners from bouncing to the floor and back.
 export const HANDOVER_GUARD_MS = 3000;
-// The new stream plays muted until it reports audio, or until this much time has passed.
+// The new stream plays muted until it reports audio, or until this much time (plus the
+// listener delay) has passed.
 export const SWITCH_TIMEOUT_MS = 5000;
 
 /**
@@ -22,7 +23,9 @@ export function chooseSource({ current, onAir, offAirForMs }) {
 /**
  * Plays one of two WHEP streams through `audioEl`, switching make-before-break: the
  * incoming stream starts on a muted standby element and only takes over the player once
- * it has audio (or after SWITCH_TIMEOUT_MS), so two streams are never audible at once.
+ * it has audio (or after SWITCH_TIMEOUT_MS), so two streams are never audible at once. With a
+ * listener delay the incoming stream first plays for that long, so its delay line is full when
+ * it takes over and the switch adds no silence.
  *
  * @param {object} opts
  * @param {string} opts.interpretationUrl – the booth's WHEP URL
@@ -54,7 +57,7 @@ export function createChannelSource(opts) {
   }
 
   function startSlot(kind, element) {
-    const slot = { kind, client: opts.createClient(), timer: null };
+    const slot = { kind, client: opts.createClient(), timer: null, filling: false };
     slot.client.start({
       whepUrl: kind === 'interpretation' ? opts.interpretationUrl : opts.floorUrl,
       audioEl: element,
@@ -66,7 +69,12 @@ export function createChannelSource(opts) {
 
   function onSlotState(slot, state) {
     if (slot === incoming) {
-      if (state.peerConnection === 'connected' && state.audioActive) promote(slot);
+      if (state.peerConnection === 'connected' && state.audioActive && !slot.filling) {
+        slot.filling = true;
+        clearTimeout(slot.timer);
+        if (audioDelayMs > 0) slot.timer = setTimeout(() => promote(slot), audioDelayMs);
+        else promote(slot);
+      }
     } else if (slot === active) {
       opts.onState(state, slot.kind);
     }
@@ -99,7 +107,7 @@ export function createChannelSource(opts) {
     }
     const slot = startSlot(kind, standbyEl);
     incoming = slot;
-    slot.timer = setTimeout(() => promote(slot), SWITCH_TIMEOUT_MS);
+    slot.timer = setTimeout(() => promote(slot), SWITCH_TIMEOUT_MS + audioDelayMs);
   }
 
   function evaluate() {

@@ -237,11 +237,12 @@ async function run() {
   await flush();
   lastPc.listeners.track({ track: { kind: 'audio' }, streams: [remote] });
   await flush();
+  const filled = delayedStandby.srcObject;
   delayedClient.setAudioElement(delayedPlayer, true);
   await flush();
   assert(
-    delayedPlayer.srcObject.id === 'delayed' && delayedStandby.srcObject === null,
-    'a delayed stream moves to the player through the delay line',
+    delayedPlayer.srcObject === filled && delayedStandby.srcObject === null,
+    'a delayed stream moves to the player with its filled delay line, not a new empty one',
   );
   delayedClient.stop();
 

@@ -275,6 +275,7 @@ console.log('\n── Pause, delay and resume ──');
   source.setAudioDelayMs(250);
   assert(floor.delays.at(-1) === 250 && booth.delays.at(-1) === 250, 'a delay change reaches both streams');
   booth.live();
+  advance(250);
   assert(booth.moves[0].autoplay === false, 'a listener pause carries across the switch');
   source.resume();
   assert(booth.resumed === 1 && floor.resumed === 0, 'tap to listen resumes the stream on the player');
@@ -286,6 +287,43 @@ console.log('\n── Pause, delay and resume ──');
   clients[1].live();
   assert(clients[1].moves[0].autoplay === true, 'a player that never loaded a stream counts as playing');
   assert(audioEl.paused === true, 'the controller never touches the player itself');
+}
+
+console.log('\n── Listener delay: the old stream plays until the new one fills its delay ──');
+{
+  const { source, audioEl } = setup(3000);
+  advance(HANDOVER_GUARD_MS);
+  const floor = clients[0];
+  floor.live();
+  source.setOnAir(true);
+  const booth = clients[1];
+  advance(1000);
+  booth.live();
+  advance(1000);
+  booth.live();
+  advance(1999);
+  assert(!floor.stopped && booth.moves.length === 0, 'the floor keeps playing while the booth fills its 3 s delay');
+  advance(1);
+  assert(floor.stopped && booth.moves.length === 1 && booth.moves[0].el === audioEl, 'after 3 s of booth audio the booth takes the player');
+  assert(timers.size === 0, 'repeated audio reports leave no extra timer');
+}
+{
+  const { source } = setup(3000);
+  advance(HANDOVER_GUARD_MS);
+  const floor = clients[0];
+  source.setOnAir(true);
+  advance(SWITCH_TIMEOUT_MS + 3000 - 1);
+  assert(!floor.stopped, 'the switch timeout grows by the listener delay');
+  advance(1);
+  assert(floor.stopped && source.source() === 'interpretation', 'and still ends the switch');
+}
+{
+  const { source } = setup(3000);
+  advance(HANDOVER_GUARD_MS);
+  source.setOnAir(true);
+  clients[1].live();
+  source.stop();
+  assert(timers.size === 0 && running().length === 0, 'stop while the delay fills leaves nothing behind');
 }
 
 console.log('\n── Teardown ──');

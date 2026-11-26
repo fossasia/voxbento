@@ -1046,6 +1046,8 @@ async function floorFallbackTests() {
   assert(booth.audioEl.muted === true && booth.opts.audioDelayMs === 400, 'muted, with the current room delay');
   assert(!floor.stopped && statusText() === FLOOR_STATUS, 'the floor keeps playing meanwhile');
   booth.live();
+  assert(!floor.stopped, 'with a 400 ms room delay the floor plays on while the booth fills its delay');
+  runTimers(400);
   assert(floor.stopped && booth.audioEl === player, 'the booth takes over the player once it has audio');
   assert(statusText() === 'Live (WebRTC)', 'the badge goes back to Live (WebRTC), got "' + statusText() + '"');
 
@@ -1057,6 +1059,7 @@ async function floorFallbackTests() {
   const floorAgain = channelClients[2];
   assert(floorAgain.opts.whepUrl === 'http://mtx/floor3/whep', 'a locked booth falls back to the floor');
   floorAgain.live();
+  runTimers(400);
   assert(booth.stopped && running().length === 1, 'one stream plays after the switch');
 
   captionsSocket().onclose({ code: 4001 });

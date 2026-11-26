@@ -456,8 +456,10 @@ function createWhepClient() {
         previous.srcObject = null;
       }
       if (currentStream) {
-        if (_audioDelayMs > 0) {
-          attachDelayedStream(currentStream, autoplay);
+        if (delayedAudio.output) {
+          // The delay line already holds the last _audioDelayMs of audio; a new one would start empty.
+          audioEl.srcObject = delayedAudio.output.stream;
+          playAudio(autoplay);
         } else {
           attachDirectStream(currentStream, autoplay);
         }
