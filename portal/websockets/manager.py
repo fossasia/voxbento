@@ -1227,7 +1227,10 @@ async def send_channel_state(ws: WebSocket, booth_id: str) -> None:
     floor_id = make_booth_id(event_slug, room_id, "floor")
     async with listener_manager._state_lock(floor_id):
         current = floor_channel_state(event_slug, room_id)
-        # Recorded, so the broadcast that takes the return channel off air reaches this listener too.
-        _last_channel_states[floor_id] = current
-        if current != _NO_RETURN:
+        if _last_channel_states.get(floor_id, _NO_RETURN) != current:
+            # A change not broadcast yet: send it to the whole feed (this socket is already in it),
+            # so recording it here can't make that broadcast skip the listeners connected earlier.
+            _last_channel_states[floor_id] = current
+            await listener_manager.broadcast(floor_id, {"type": "channel:state", "state": current})
+        elif current != _NO_RETURN:
             await ws.send_text(json.dumps({"type": "channel:state", "state": current}))

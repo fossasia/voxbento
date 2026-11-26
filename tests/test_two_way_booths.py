@@ -1040,20 +1040,57 @@ async def test_channel_state_follows_the_return_booth_on_and_off_air(media):
 @pytest.mark.anyio
 async def test_new_original_channel_listener_hears_about_a_return_already_on_air(media):
     room, client, paths, kicks = media
+    floor_id = room.booth_id("floor")
     ana = await join(room, "th", "Ana")
-    late = ListenerSocket()
-    await send_channel_state(late, room.booth_id("floor"))
-    assert late.sent == []
+    # Like ws_captions, each socket joins the feed before it is sent the current state.
+    idle, first, second = ListenerSocket(), ListenerSocket(), ListenerSocket()
+    listener_manager.add(idle, floor_id)
+    await send_channel_state(idle, floor_id)
+    listener_manager.remove(idle, floor_id)
+    assert idle.sent == []
     await set_output(room, "th", ana, "return")
     await go_live(room, client, paths, "th", ana)
-    await send_channel_state(late, room.booth_id("floor"))
-    assert late.sent == [{"type": "channel:state", "state": floor_channel_state(EVENT, room.id)}]
-    assert late.sent[0]["state"]["return_on_air"] is True
+    expected = [{"type": "channel:state", "state": floor_channel_state(EVENT, room.id)}]
+    try:
+        listener_manager.add(first, floor_id)
+        await send_channel_state(first, floor_id)
+        listener_manager.add(second, floor_id)
+        await send_channel_state(second, floor_id)
+    finally:
+        listener_manager.remove(first, floor_id)
+        listener_manager.remove(second, floor_id)
+    assert first.sent == expected and second.sent == expected
+    assert first.sent[0]["state"]["return_on_air"] is True
     # Other caption feeds and malformed ids get nothing.
     other = ListenerSocket()
     await send_channel_state(other, room.booth_id("th"))
     await send_channel_state(other, "malformed")
     assert other.sent == []
+
+
+@pytest.mark.anyio
+async def test_a_listener_joining_before_the_broadcast_does_not_hide_it_from_the_others(room):
+    """A listener connects after the registry changed but before that change is broadcast."""
+    floor_id = room.booth_id("floor")
+    early, late = ListenerSocket(), ListenerSocket()
+    listener_manager.add(early, floor_id)
+    listener_manager.add(late, floor_id)
+    try:
+        ana = await join(room, "th", "Ana")
+        booth = booths.get_booth_sync(room.booth_id("th"))
+        for output, on_air in (("return", True), ("primary", False)):
+            await booths.set_output(
+                booth.booth_id, ana, output, can_reassign=False, return_language_code="en", return_language="English"
+            )
+            booth.broadcast_unlocked, booth.ingest_status = True, "connected"
+            await send_channel_state(late, floor_id)
+            await manager_module.broadcast_channel_state(EVENT, room.id)
+            assert early.sent[-1]["state"]["return_on_air"] is on_air
+            assert late.sent[-1]["state"]["return_on_air"] is on_air
+            assert early.sent.count(early.sent[-1]) == 1
+    finally:
+        listener_manager.remove(early, floor_id)
+        listener_manager.remove(late, floor_id)
 
 
 @pytest.mark.anyio
