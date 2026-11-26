@@ -229,6 +229,13 @@ console.log('\n── Off-air booth plays the floor, then the interpretation (#1
   assert(floor.stopped && booth.audioEl === player && running().length === 1, 'the booth takes over the player');
   assert(status() === 'Live', 'and the status says Live');
 
+  ws.onmessage(state({ on_air: false }));
+  assert(status() === 'Interpreter off air…', 'a booth that just went off air is not shown as Live, got "' + status() + '"');
+  booth.live();
+  assert(status() === 'Interpreter off air…', 'a stale connected state from the old stream keeps it, got "' + status() + '"');
+  ws.onmessage(state({ on_air: true }));
+  assert(status() === 'Live' && page.clients.length === 2, 'back on air within the guard shows Live and starts nothing');
+
   player.volume = 0.4;
   assert(player.volume === 0.4, 'volume and mute stay on the one player across switches');
 

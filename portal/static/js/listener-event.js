@@ -223,11 +223,33 @@ var whepAudioLive = false;
 var audioScheduler = null;
 // Plays an interpreter channel or, while its booth is off air, the room floor.
 var channelSource = null;
+// The booth's on_air from booth:state, and the last state of the stream in the player.
+var channelOnAir = false;
+var channelPlayerState = null;
 var FLOOR_FALLBACK_STATUS = "Original audio (interpreter off air)";
+var OFF_AIR_STATUS = "Interpreter off air — switching to the original audio...";
 var WAITING_STATUS = "Broadcast not live yet — waiting...";
 
 function onFloorFallback() {
   return channelSource !== null && channelSource.source() === "floor";
+}
+
+// For a stream with audio. Right after its booth goes off air the interpreter's stream can
+// still look connected while nothing comes, until the floor takes over.
+function setLiveStatus(text) {
+  if (onFloorFallback()) {
+    setStatus(FLOOR_FALLBACK_STATUS, "live");
+  } else if (channelSource !== null && !channelOnAir) {
+    setStatus(OFF_AIR_STATUS, "recovering");
+  } else {
+    setStatus(text, "live");
+  }
+}
+
+function resetChannelSource() {
+  channelSource = null;
+  channelOnAir = false;
+  channelPlayerState = null;
 }
 
 function setStatus(text, cls) {
@@ -286,7 +308,7 @@ function onState(s, floorFallback) {
   if (whepPlaybackBlocked) {
     setStatus("Ready — tap to listen", "waiting");
   } else if (whepAudioLive) {
-    setStatus(floorFallback ? FLOOR_FALLBACK_STATUS : "Live (WebRTC)", "live");
+    setLiveStatus("Live (WebRTC)");
     showAudioPlayer(true);
   } else if (floorFallback) {
     // The floor retries on its own back-off; until it plays, the interpreter is still awaited.
@@ -330,7 +352,7 @@ function stopCurrentStream() {
   WhepListener.stop();
   if (channelSource) {
     channelSource.stop();
-    channelSource = null;
+    resetChannelSource();
   }
   stopTtsWs();
   pendingBoothId = null;
@@ -634,7 +656,7 @@ function openCaptionsWs(boothId) {
     if (captionsWs === ws && channelSource && (event.code === 4001 || event.code === 4003)) {
       // Without the socket the booth's status can't arrive, so nothing may keep playing on its own.
       channelSource.stop();
-      channelSource = null;
+      resetChannelSource();
       showAudioPlayer(false);
       setStatus("Access ended. Reload the page to join again.", "error");
     }
@@ -908,7 +930,10 @@ function handleCaptionsMessage(event) {
       var bstate = data.state || {};
       if (channelSource) {
         // Off air (organizer lock included) plays the floor and keeps every selection.
-        channelSource.setOnAir(bstate.on_air === true);
+        channelOnAir = bstate.on_air === true;
+        channelSource.setOnAir(channelOnAir);
+        // Relabel the stream in the player now: its own state may not change until the floor takes over.
+        if (channelPlayerState) onState(channelPlayerState, onFloorFallback());
         return;
       }
       // If we were waiting for the broadcast to go live, start WHEP or TTS now.
@@ -1273,6 +1298,7 @@ languageSelect.addEventListener("change", function () {
           audioDelayMs: selectedAudioDelayMs,
           createClient: createWhepClient,
           onState: function (s, kind) {
+            channelPlayerState = s;
             onState(s, kind === "floor");
           },
         });
@@ -1339,14 +1365,14 @@ function applyTtsOverlay() {
     } else {
       audioEl.muted = false;
       if (whepAudioLive) {
-        setStatus(onFloorFallback() ? FLOOR_FALLBACK_STATUS : "Live (WebRTC + Translation)", "live");
+        setLiveStatus("Live (WebRTC + Translation)");
       }
     }
   } else {
     audioEl.muted = false;
     // If WHEP audio is already playing, refresh the badge to WebRTC
     if (whepAudioLive) {
-      setStatus(onFloorFallback() ? FLOOR_FALLBACK_STATUS : "Live (WebRTC)", "live");
+      setLiveStatus("Live (WebRTC)");
     }
   }
 }

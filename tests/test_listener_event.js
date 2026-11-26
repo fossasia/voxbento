@@ -998,6 +998,7 @@ function boothStateMessage(state) {
 
 const ON_AIR = { broadcast_unlocked: true, ingest_status: 'connected', on_air: true };
 const FLOOR_STATUS = 'Original audio (interpreter off air)';
+const OFF_AIR = 'Interpreter off air — switching to the original audio...';
 const WAITING = 'Broadcast not live yet — waiting...';
 
 async function floorFallbackTests() {
@@ -1056,9 +1057,21 @@ async function floorFallbackTests() {
   assert(floor.stopped && booth.audioEl === player, 'the booth takes over the player once it has audio');
   assert(statusText() === 'Live (WebRTC)', 'the badge goes back to Live (WebRTC), got "' + statusText() + '"');
 
+  captionsSocket().onmessage(boothStateMessage({ ...ON_AIR, on_air: false }));
+  assert(statusText() === OFF_AIR, 'a booth that just went off air is not shown as Live, got "' + statusText() + '"');
+  captionsSocket().onmessage(boothStateMessage(ON_AIR));
+  assert(statusText() === 'Live (WebRTC)', 'back on air within the guard shows Live again, got "' + statusText() + '"');
+  assert(channelClients.length === 2 && pendingTimers(3000) === 0, 'and starts nothing new');
+
   captionsSocket().onmessage(boothStateMessage({ broadcast_unlocked: false, ingest_status: 'connected', on_air: false }));
   assert(roomSelect.value === '3' && languageSelect.value === thai, 'Mission Control Stop keeps the room and channel');
   assert(!languageSelect.disabled, 'the channel select stays usable');
+  assert(statusText() === OFF_AIR, 'during the guard the badge says the interpreter is off air, got "' + statusText() + '"');
+  booth.live();
+  assert(statusText() === OFF_AIR, 'a stale connected state from the old stream keeps it, got "' + statusText() + '"');
+  choose(translationSelect(), 'en');
+  assert(statusText() === OFF_AIR, 'so does turning translation on, got "' + statusText() + '"');
+  choose(translationSelect(), '');
   now += 3000;
   runTimers(3000);
   const floorAgain = channelClients[2];
@@ -1066,6 +1079,7 @@ async function floorFallbackTests() {
   floorAgain.live();
   runTimers(400);
   assert(booth.stopped && running().length === 1, 'one stream plays after the switch');
+  assert(statusText() === FLOOR_STATUS, 'the floor then shows as the original audio, got "' + statusText() + '"');
 
   captionsSocket().onclose({ code: 4001 });
   assert(running().length === 0, 'a 4001 close stops every stream');
