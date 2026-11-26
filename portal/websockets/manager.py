@@ -800,13 +800,18 @@ async def _confirm_and_resend(booth_id: str, path: str) -> None:
 async def on_air_loop(interval_seconds: float = 2.0) -> None:
     """Keep listeners' on-air status in step with MediaMTX, reading the path list only while someone listens."""
     while True:
-        if listener_manager.has_any_listeners():
-            await refresh_live_paths()
-            await listener_manager.refresh_booth_states()
-            await refresh_channel_states()
-        else:
-            # Nobody to notify, so stop reading MediaMTX. A stale list must not decide the next listener's status.
+        try:
+            if listener_manager.has_any_listeners():
+                await refresh_live_paths()
+                await listener_manager.refresh_booth_states()
+                await refresh_channel_states()
+            else:
+                # Nobody to notify, so stop reading MediaMTX. A stale list must not decide the next listener's status.
+                forget_live_paths()
+        except Exception:  # noqa: BLE001 - the loop must outlive any single bad tick
+            # Unknown again, so listeners fall back to the interpreter's own report until the next tick.
             forget_live_paths()
+            logger.exception("booth_on_air loop_error")
         await asyncio.sleep(interval_seconds)
 
 

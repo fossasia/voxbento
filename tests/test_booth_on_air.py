@@ -242,6 +242,34 @@ async def test_on_air_loop_reads_media_only_while_someone_listens(monkeypatch):
     assert booth_on_air.live_paths is None, "a stale list is forgotten"
 
 
+async def test_on_air_loop_outlives_a_failed_tick(monkeypatch, caplog):
+    from portal.websockets import manager
+
+    ticks = []
+
+    async def refresh():
+        booth_on_air.live_paths = frozenset()
+        raise RuntimeError("boom")
+
+    async def stop_after_two_ticks(_seconds):
+        ticks.append(booth_on_air.live_paths)
+        if len(ticks) == 2:
+            raise asyncio.CancelledError
+
+    monkeypatch.setattr(manager, "refresh_live_paths", refresh)
+    monkeypatch.setattr(manager.asyncio, "sleep", stop_after_two_ticks)
+
+    ws = _RecordingWebSocket()
+    manager.listener_manager.add(ws, "loop-2-th")
+    try:
+        with caplog.at_level(logging.ERROR, logger="portal.websockets.manager"), pytest.raises(asyncio.CancelledError):
+            await manager.on_air_loop()
+    finally:
+        manager.listener_manager.remove(ws, "loop-2-th")
+    assert ticks == [None, None], "the loop keeps running and a failed read leaves the paths unknown"
+    assert "booth_on_air loop_error" in caplog.text
+
+
 # ── Go-live is checked against MediaMTX at once ──────────────────────────────
 
 
