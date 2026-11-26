@@ -126,6 +126,9 @@ async function run() {
       this.paused = false;
       return Promise.resolve();
     },
+    pause() {
+      this.paused = true;
+    },
   };
   const playStates = [];
   failFetch = false;
@@ -202,6 +205,43 @@ async function run() {
   await flush();
   assert(earlyPlayer.srcObject.id === 'late' && earlyPlayer.paused === true, 'a paused move before the track keeps the player paused');
   early.stop();
+
+  // Like the listener's <audio autoplay>: loading a stream starts playback whatever was asked before.
+  function autoplayAudio() {
+    const el = fakeAudio();
+    let src = null;
+    Object.defineProperty(el, 'srcObject', {
+      get: () => src,
+      set(value) {
+        src = value;
+        if (value) el.paused = false;
+      },
+    });
+    return el;
+  }
+  const autoPlayer = autoplayAudio();
+  const autoEarly = vm.runInContext('createWhepClient()', context);
+  autoEarly.start({ whepUrl: 'http://mtx/th/whep', audioEl: fakeAudio() });
+  await flush();
+  autoEarly.setAudioElement(autoPlayer, false);
+  lastPc.listeners.track({ track: { kind: 'audio' }, streams: [{ id: 'late' }] });
+  await flush();
+  assert(autoPlayer.paused === true, 'an autoplay player stays paused when the track arrives after a paused switch');
+  autoEarly.stop();
+
+  // A paused listener whose stream reconnects stays paused (also true before #1397).
+  const reconnectPlayer = autoplayAudio();
+  const reconnecting = vm.runInContext('createWhepClient()', context);
+  reconnecting.start({ whepUrl: 'http://mtx/th/whep', audioEl: reconnectPlayer });
+  await flush();
+  lastPc.listeners.track({ track: { kind: 'audio' }, streams: [{ id: 'first' }] });
+  await flush();
+  assert(reconnectPlayer.paused === false, 'the first stream plays');
+  reconnectPlayer.pause();
+  lastPc.listeners.track({ track: { kind: 'audio' }, streams: [{ id: 'again' }] });
+  await flush();
+  assert(reconnectPlayer.srcObject.id === 'again' && reconnectPlayer.paused === true, 'a reconnect keeps the listener paused');
+  reconnecting.stop();
 
   // With a listener delay the stream reaches the element through a Web Audio delay line.
   class FakeAudioContext {

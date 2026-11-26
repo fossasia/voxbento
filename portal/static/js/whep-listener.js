@@ -285,6 +285,8 @@ function createWhepClient() {
           } else {
             attachDirectStream(stream, playOnTrack);
           }
+          // The listener's player has the autoplay attribute, so loading a stream starts it anyway.
+          if (!playOnTrack) _audioEl.pause();
         }
         emitState();
       });
