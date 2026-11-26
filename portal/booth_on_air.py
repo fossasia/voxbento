@@ -4,7 +4,8 @@ A booth is on air while Mission Control has it unlocked and its interpreter repo
 connected stream. The interpreter's browser can report connected after the stream died
 (#1357), so the MediaMTX path must also have a publisher. A path with ``alwaysAvailable``
 stays ready and keeps counting inbound bytes while empty, but its ``source`` is null
-without a publisher, so ``source`` is what is read here.
+without a publisher, so ``source`` is what is read here. A two-way booth outputting into
+its return language is on air there instead, never on its own channel.
 """
 
 from __future__ import annotations
@@ -47,10 +48,28 @@ found_live_at: dict[str, float] = {}
 _PUBLISHING = frozenset({"connected", "overloaded"})
 
 
+def _publishing(state: Mapping[str, object]) -> bool:
+    return state.get("broadcast_unlocked") is True and state.get("ingest_status") in _PUBLISHING
+
+
+def _outputs_into_return(state: Mapping[str, object]) -> bool:
+    output = state.get("output_language_code")
+    return bool(output) and output != state.get("language_code")
+
+
 def is_on_air(state: Mapping[str, object]) -> bool:
-    if state.get("broadcast_unlocked") is not True or state.get("ingest_status") not in _PUBLISHING:
+    """Whether the booth's own channel is on air. A two-way booth outputting into its return
+    language leaves its own channel silent, whatever its interpreter reports."""
+    if not _publishing(state) or _outputs_into_return(state):
         return False
     return live_paths is None or state.get("mediamtx_path") in live_paths
+
+
+def is_return_on_air(state: Mapping[str, object]) -> bool:
+    """Whether a two-way booth is on air into its return channel, by the same rule as is_on_air."""
+    if not _publishing(state) or not _outputs_into_return(state):
+        return False
+    return live_paths is None or state.get("output_mediamtx_path") in live_paths
 
 
 def forget_live_paths() -> None:
@@ -90,16 +109,15 @@ async def refresh_live_paths() -> None:
     live_paths = listed | newer
 
 
+def output_path(state: Mapping[str, object]) -> object:
+    """The path the booth publishes to now: its return path while it outputs there, else its own."""
+    return state.get("output_mediamtx_path") if _outputs_into_return(state) else state.get("mediamtx_path")
+
+
 def needs_confirm(state: Mapping[str, object]) -> bool:
     """The booth would be on air but the last path list, read before it went live, says no publisher."""
-    path = state.get("mediamtx_path")
-    return (
-        live_paths is not None
-        and isinstance(path, str)
-        and path not in live_paths
-        and state.get("broadcast_unlocked") is True
-        and state.get("ingest_status") in _PUBLISHING
-    )
+    path = output_path(state)
+    return live_paths is not None and isinstance(path, str) and path not in live_paths and _publishing(state)
 
 
 async def path_has_source(path: str) -> bool:

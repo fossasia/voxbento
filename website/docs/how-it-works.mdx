@@ -219,7 +219,10 @@ booth's sessions on both paths and free the return channel. The direction is sav
 
 The floor caption feed (`/ws/captions/{event}-{room}-floor`) carries a listener-safe
 `channel:state` message `{return_on_air, whep_url, language_code}` when a two-way booth
-goes on or off air into the spoken language. Transcription stays on the booth's own path,
+goes on or off air into the spoken language. On air there uses the same rule as a booth's
+`on_air` (unlocked, connected, and a MediaMTX publisher on the return path). While a booth
+outputs into the return channel its own channel reads off air, so its listeners hear the
+floor. Transcription stays on the booth's own path,
 so the return channel is not captioned.
 
 ## Booth Identity

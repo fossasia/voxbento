@@ -18,7 +18,15 @@ from sqlalchemy.exc import SQLAlchemyError
 import portal.webhooks.worker as _wh_worker
 from portal.auth import WSAuthError, can_perform_role
 from portal.booth_identity import make_booth_id, parse_booth_id
-from portal.booth_on_air import confirm_live_path, forget_live_paths, is_on_air, needs_confirm, refresh_live_paths
+from portal.booth_on_air import (
+    confirm_live_path,
+    forget_live_paths,
+    is_on_air,
+    is_return_on_air,
+    needs_confirm,
+    output_path,
+    refresh_live_paths,
+)
 from portal.booth_publish import (
     TICKET_TTL_SECS,
     end_publishers,
@@ -750,11 +758,15 @@ async def broadcast_booth_state(booth_id: str, state: dict) -> None:
     """Send the full state to the booth and the listener-safe status to its listeners."""
     await manager.broadcast(booth_id, {"type": "booth:state", "state": state})
     booth = booths.get_booth_sync(booth_id)
-    if booth is not None and listener_manager.has_listeners(booth_id):
+    if booth is not None and (
+        listener_manager.has_listeners(booth_id)
+        # A booth outputting into its return channel is heard on the room's floor feed.
+        or listener_manager.has_listeners(make_booth_id(booth.event_slug, booth.room_id, "floor"))
+    ):
         current = booth.as_public_dict()
         if needs_confirm(current):
             # Off the handler's path: the check can take a moment while the publisher connects.
-            task = asyncio.create_task(_confirm_and_resend(booth_id, current["mediamtx_path"]))
+            task = asyncio.create_task(_confirm_and_resend(booth_id, output_path(current)))
             _go_live_checks.add(task)
             task.add_done_callback(_go_live_checks.discard)
             track_task(task)
@@ -779,6 +791,7 @@ async def _confirm_and_resend(booth_id: str, path: str) -> None:
         booth = booths.get_booth_sync(booth_id)
         if booth is not None:
             await listener_manager.broadcast_booth_state(booth_id, booth.as_public_dict())
+            await broadcast_channel_state(booth.event_slug, booth.room_id)
 
 
 async def on_air_loop(interval_seconds: float = 2.0) -> None:
@@ -787,6 +800,7 @@ async def on_air_loop(interval_seconds: float = 2.0) -> None:
         if listener_manager.has_any_listeners():
             await refresh_live_paths()
             await listener_manager.refresh_booth_states()
+            await refresh_channel_states()
         else:
             # Nobody to notify, so stop reading MediaMTX. A stale list must not decide the next listener's status.
             forget_live_paths()
@@ -1238,7 +1252,7 @@ def floor_channel_state(event_slug: str, room_id: int) -> dict:
     booth = booths.room_return_booth(event_slug, room_id)
     if booth is None:
         return dict(_NO_RETURN)
-    on_air = booth.broadcast_unlocked and booth.ingest_status == "connected"
+    on_air = is_return_on_air(booth.as_public_dict())
     return {
         "return_on_air": on_air,
         "whep_url": f"{settings.mediamtx_whip_base}/{booth.output_mediamtx_path}/whep" if on_air else None,
@@ -1274,6 +1288,17 @@ async def broadcast_channel_state(event_slug: object, room_id: object) -> None:
             return
         _last_channel_states[floor_id] = current
         await listener_manager.broadcast(floor_id, {"type": "channel:state", "state": current})
+
+
+async def refresh_channel_states() -> None:
+    """Resend each watched floor feed its channel:state if it changed, e.g. the return stream went away."""
+    for booth_id in list(listener_manager._rooms):
+        try:
+            event_slug, room_id, language_code = parse_booth_id(booth_id)
+        except ValueError:
+            continue
+        if language_code == "floor":
+            await broadcast_channel_state(event_slug, room_id)
 
 
 async def send_channel_state(ws: WebSocket, booth_id: str) -> None:

@@ -1183,3 +1183,120 @@ async def test_booth_socket_dispatches_set_output_and_loads_the_return_language(
     )
     await handlers.ws_booth(ws, room.booth_id("th"))
     assert received == [(("en", "English"), {"type": "booth:set-output", "output": "return"})]
+
+
+# ── On air, by direction (#1397 parts 1 and 2 together) ──────────────────────
+
+
+@pytest.fixture
+def known_paths():
+    from portal import booth_on_air
+
+    booth_on_air.live_paths = None
+    yield booth_on_air
+    booth_on_air.live_paths = None
+
+
+@pytest.mark.anyio
+async def test_own_channel_is_off_air_while_the_booth_outputs_into_return(media, known_paths):
+    from portal.websockets.manager import listener_booth_state
+
+    room, client, paths, _kicks = media
+    ana = await join(room, "th", "Ana")
+    await set_output(room, "th", ana, "return")
+    await go_live(room, client, paths, "th", ana)
+    state = booths.get_booth_sync(room.booth_id("th")).as_public_dict()
+
+    # MediaMTX unknown: the interpreter's report alone must not put Thai on air.
+    assert listener_booth_state(state)["on_air"] is False
+    assert known_paths.is_return_on_air(state) is True
+    # MediaMTX known, even listing the Thai path: Thai still isn't what the booth sends.
+    known_paths.live_paths = frozenset({room.path("th"), room.path("en")})
+    assert listener_booth_state(state)["on_air"] is False
+    assert floor_channel_state(EVENT, room.id)["return_on_air"] is True
+
+    await set_output(room, "th", ana, "primary")
+    await go_live(room, client, paths, "th", ana)
+    state = booths.get_booth_sync(room.booth_id("th")).as_public_dict()
+    assert listener_booth_state(state)["on_air"] is True
+    assert known_paths.is_return_on_air(state) is False
+
+
+@pytest.mark.anyio
+async def test_return_needs_a_publisher_on_the_return_path(media, known_paths):
+    room, client, paths, _kicks = media
+    ana = await join(room, "th", "Ana")
+    await set_output(room, "th", ana, "return")
+    await go_live(room, client, paths, "th", ana)
+
+    known_paths.live_paths = frozenset({room.path("th")})
+    assert floor_channel_state(EVENT, room.id) == {"return_on_air": False, "whep_url": None, "language_code": "en"}
+    known_paths.live_paths = frozenset({room.path("en")})
+    assert floor_channel_state(EVENT, room.id)["return_on_air"] is True
+
+    booths.get_booth_sync(room.booth_id("th")).broadcast_unlocked = False
+    assert floor_channel_state(EVENT, room.id)["return_on_air"] is False
+
+
+@pytest.mark.anyio
+async def test_on_air_loop_tells_the_floor_feed_when_the_return_stream_goes(media, known_paths, monkeypatch):
+    room, client, paths, _kicks = media
+    floor_id = room.booth_id("floor")
+    listener = ListenerSocket()
+    listener_manager.add(listener, floor_id)
+    stray = ListenerSocket()
+    listener_manager.add(stray, "not a booth id")
+    try:
+        ana = await join(room, "th", "Ana")
+        await set_output(room, "th", ana, "return")
+        await go_live(room, client, paths, "th", ana)
+        await manager_module.broadcast_channel_state(EVENT, room.id)
+        assert listener.sent[-1]["state"]["return_on_air"] is True
+
+        async def path_gone():
+            known_paths.live_paths = frozenset()
+
+        async def one_tick(_seconds):
+            raise asyncio.CancelledError
+
+        monkeypatch.setattr(manager_module, "refresh_live_paths", path_gone)
+        monkeypatch.setattr(manager_module.asyncio, "sleep", one_tick)
+        with pytest.raises(asyncio.CancelledError):
+            await manager_module.on_air_loop()
+        assert listener.sent[-1] == {
+            "type": "channel:state",
+            "state": {"return_on_air": False, "whep_url": None, "language_code": "en"},
+        }
+        assert stray.sent == []
+    finally:
+        listener_manager.remove(listener, floor_id)
+        listener_manager.remove(stray, "not a booth id")
+
+
+@pytest.mark.anyio
+async def test_go_live_into_return_is_checked_on_the_return_path(media, known_paths, monkeypatch):
+    room, client, paths, _kicks = media
+    floor_id = room.booth_id("floor")
+    listener = ListenerSocket()
+    listener_manager.add(listener, floor_id)
+    checked: list[str] = []
+
+    async def confirm(path):
+        checked.append(path)
+        known_paths.live_paths = known_paths.live_paths | {path}
+        return True
+
+    monkeypatch.setattr(manager_module, "confirm_live_path", confirm)
+    try:
+        ana = await join(room, "th", "Ana")
+        await set_output(room, "th", ana, "return")
+        known_paths.live_paths = frozenset()  # read before the booth went live
+        await go_live(room, client, paths, "th", ana)
+        booth_id = room.booth_id("th")
+        await manager_module.broadcast_booth_state(booth_id, booths.get_booth_sync(booth_id).as_public_dict())
+        for _ in range(5):
+            await asyncio.sleep(0)
+        assert checked and set(checked) == {room.path("en")}, "only floor-feed listeners, and the return path"
+        assert listener.sent[-1]["state"]["return_on_air"] is True
+    finally:
+        listener_manager.remove(listener, floor_id)
