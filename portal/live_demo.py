@@ -54,11 +54,13 @@ from portal.transcription.providers.local import LocalProvider as LocalWhisper
 from portal.transcription.providers.local import get_model as get_whisper_model
 from portal.transcription.providers.local import is_model_loaded as whisper_loaded
 from portal.transcription.worker import PROVIDERS as SPEECH_PROVIDERS
+from portal.translations.constants import TranslationProviderEnum
 from portal.translations.engine import Language, TranslationContext
 from portal.translations.providers.local import LocalProvider as LocalTranslator
 from portal.translations.providers.local import get_download_progress, get_model_and_tokenizer, trigger_download
 from portal.translations.providers.local import is_model_loaded as translator_loaded
 from portal.translations.registry import NLLB_200_DISTILLED_600M
+from portal.translations.scheduler import StaleTranslationJob
 from portal.translations.vocabulary import (
     VocabularyEntryInput,
     VocabularyOverlapIndex,
@@ -67,6 +69,7 @@ from portal.translations.vocabulary import (
     validate_vocabulary_entry,
 )
 from portal.translations.worker import ENGINES as TRANSLATION_ENGINES
+from portal.translations.worker import scheduler_for
 from portal.tts.providers.base import TTSProvider, get_tts_provider
 from portal.tts.providers.supertonic import SupertonicTTSProvider
 
@@ -874,16 +877,42 @@ def _translator() -> LocalTranslator:
     return _translator_instance
 
 
+#: The demo's place in the local model's scheduler: every demo session together counts as one
+#: room, so the demo takes its turn with the event rooms on the same model and never crowds them out.
+DEMO_SCHEDULER_ROOM = "live-demo"
+
+
 async def _local_translate(text: str, request: DemoRequest, targets: Sequence[DemoLanguage]) -> dict[str, str]:
     """Translate as the booth pipeline does: the local engine's ``translate_batch``, with the
-    glossary for each language in the translation context."""
-    rows = await _translator().translate_batch(
-        Language(request.source.code, request.source.name),
-        [Language(target.code, target.name) for target in targets],
-        [text],
-        TranslationContext(vocabulary={target.code: entries_for(request.glossary, target.code) for target in targets}),
-        model=settings.live_demo_translation_model,
-    )
+    glossary for each language in the translation context.
+
+    The demo shares the CTranslate2 translators with the booths, so it waits for a slot in the
+    same scheduler (#1188); one slot covers the whole batch, which the model runs one language
+    at a time. When the demo's queue is full, or the segment waited longer than the translation
+    lag budget for its slot (#1189), this segment shows no translation.
+    """
+    model = settings.live_demo_translation_model
+    job = scheduler_for(TranslationProviderEnum.LOCAL.value, model).admit(DEMO_SCHEDULER_ROOM, DEMO_SCHEDULER_ROOM)
+    if job is None:
+        logger.debug("[LiveDemo] Translation queue full; skipping a segment")
+        return {target.code: "" for target in targets}
+    try:
+        async with job:
+            rows = await _translator().translate_batch(
+                Language(request.source.code, request.source.name),
+                [Language(target.code, target.name) for target in targets],
+                [text],
+                TranslationContext(
+                    vocabulary={target.code: entries_for(request.glossary, target.code) for target in targets}
+                ),
+                model=model,
+            )
+    except StaleTranslationJob:
+        # Only entering the slot raises it; the engine was never called for this segment.
+        logger.debug("[LiveDemo] Translation waited too long for the engine; skipping a segment")
+        return {target.code: "" for target in targets}
+    finally:
+        job.close()
     return {target.code: translated or "" for target, translated in zip(targets, rows[0], strict=True)}
 
 

@@ -68,6 +68,7 @@ Cascade: deletes rooms + booths when event is deleted.
 | `floor_translation_enabled` | Boolean | Default False |
 | `floor_translation_provider` | String(50) nullable | — |
 | `floor_translation_model` | String(100) nullable | — |
+| `monitor_floor_enabled`, `monitor_meeting_enabled` | Boolean | Room Settings controls for interpreter monitor choices. Both default on (migration 049). |
 | `floor_source_language_code` | String(20) | Default `'en'` |
 | `floor_tts_enabled` | Boolean | Default False; controls whether TTS is generated for floor audio translations |
 | `floor_tts_provider` | String(20) | Default `'deepgram'`; TTS engine — `'deepgram'` (cloud) or `'supertonic'` (self-hosted ONNX) |
@@ -310,7 +311,7 @@ Tracks which languages the translation worker should generate for a given room o
 | 046 | `046_live_demo_room_ai.py` | Transitional room-linked demo settings and daily limit |
 | 047 | `047_live_demo_independent_ai.py` | Independent demo providers, models, encrypted keys, persona/style; removes room link |
 | 044 | `044_youtube_connections.py` | `youtube_connections` table (one per event), `rooms.youtube_broadcast_id`, `rooms.youtube_stream_id` (#1087) |
-| 048 | `048_youtube_captions_language.py` | `rooms.youtube_captions_language` — the room's YouTube CC track language (#1087, plan 006) |
+| 050 | `050_youtube_captions_language.py` | `rooms.youtube_captions_language` — the room's YouTube CC track language (#1087, plan 006) |
 
 Run migrations: `uv run alembic upgrade head`
 
@@ -386,7 +387,7 @@ write-only, never serialize or log), `scope` (String(500)), nullable
 `youtube_broadcast_id` (String(32)) and `youtube_stream_id` (String(64)). Helpers live in
 `portal/youtube_account.py` (`get_connection`, `link_broadcast`, `unlink_event_rooms`).
 
-## Migration 048 — Captions on YouTube (#1087, plan 006)
+## Migration 050 — Captions on YouTube (#1087, plan 006)
 
 `rooms.youtube_captions_language` (nullable String(20)): `NULL` = off, `"floor"` = the
 spoken language, otherwise one of the room's `room_translation_languages.language_code`.
@@ -421,6 +422,13 @@ No links or email content are shown in the administration history.
 `email_settings` holds one row (id 1) of branding shared by every email:
 `show_logo` (default true) and an optional https `logo_url` (empty means the
 VoxBento logo served by the site). No row means the defaults.
+
+## Migration 048 — meeting reports phase 2 (#1080)
+
+Adds `events.meeting_analysis_auto` (default false: write a report when a channel's
+captions stop), `meeting_reports.transcript_language` (nullable: the translation a
+report read from `transcript_translations`; NULL for the spoken transcript) and
+`meeting_reports.automatic` (default false). See `docs/meeting-analysis.md`.
 
 ## Migration 045 — meeting reports (#1080)
 
@@ -493,3 +501,8 @@ transaction; the MediaMTX auth callback reserves a session before negotiation.
 Final floor sequence increments atomically and survives worker/portal restarts.
 Raw credentials are only returned at create/rotate. YouTube keys exist only in
 relay mode, encrypted (migration 028).
+
+## OAuth Tables & Expiration Handling (#980)
+
+- `oauth_authorization_codes`: stores authorization codes with `expires_at: DateTime(tz)`. Exposes `is_expired` property that normalizes SQLite-stripped naive datetimes to UTC-aware before comparison against `utc_now()`.
+- `oauth_tokens`: stores access and refresh token hashes with `expires_at: DateTime(tz)`. Exposes `is_expired` property used across token exchange and `require_oauth_scope` API dependencies to enforce consistent expiry boundaries across SQLite and PostgreSQL backends.

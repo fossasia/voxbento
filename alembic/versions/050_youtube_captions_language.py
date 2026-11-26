@@ -1,7 +1,7 @@
 """add the room's YouTube caption language (#1087, plan 006)
 
-Revision ID: 048
-Revises: 047
+Revision ID: 050
+Revises: 049
 Create Date: 2026-11-22 12:00:00.000000
 
 """
@@ -15,8 +15,8 @@ import sqlalchemy as sa
 from alembic import op
 
 # revision identifiers, used by Alembic.
-revision: str = "048"
-down_revision: Union[str, Sequence[str], None] = "047"
+revision: str = "050"
+down_revision: Union[str, Sequence[str], None] = "049"
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
 

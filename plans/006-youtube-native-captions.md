@@ -10,7 +10,7 @@ other caption languages remain available through VoxBento's listener page.
 [#1153](https://github.com/fossasia/voxbento/pull/1153) delivered the text-sending
 engine and the connections that pass it finished captions/translations. Part 2
 (branch `feat/1087-youtube-captions-controls`) adds the owner's **Captions on YouTube**
-control, migration 048, broadcast set-up, restart recovery and stop/replace/shutdown
+control, migration 050, broadcast set-up, restart recovery and stop/replace/shutdown
 handling (`portal/youtube_caption_sync.py`). Steps 1–6 below are implemented; step 7,
 the rehearsal on a real broadcast, is still pending. Contributors: @hazelmayank (part 1).
 

@@ -87,6 +87,10 @@ uv run pytest tests/ -v
 
 CI runs the checks above (except `uv run ruff format .`), and also runs a separate Docker build and full-stack smoke test. Your PR will be blocked if any of these CI checks fail.
 
+CI runs pytest in six groups balanced by the measured times in `tests/.test_durations`. To reproduce a group locally, run `uv run pytest tests/ --splits 6 --group 1 --durations-path tests/.test_durations` with the group number from CI.
+
+Every Monday at 03:17 UTC, **Refresh stable test durations** times the full suite on Linux. It opens or updates one PR against `dev` when the new timings are predicted to shorten the slowest group by at least ten seconds. Maintainers can also run the workflow manually with `force`. The workflow uses `DURATIONS_PR_TOKEN` when configured, otherwise the repository workflow token. For the fallback, enable **Allow GitHub Actions to create and approve pull requests** in the repository’s Actions settings.
+
 ---
 
 ## 3. How the Platform Works
