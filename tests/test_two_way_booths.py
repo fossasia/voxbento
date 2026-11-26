@@ -77,7 +77,7 @@ def test_two_way_needs_a_real_spoken_language():
         ("fr", "th", "en", [], "back into the room's spoken language, English"),
         ("floor", "th", "en", [], "back into the room's spoken language, English"),
         ("en", "en", "en", [], "The English booth already interprets into English"),
-        ("en", "th", "en", ["en"], "already has a English booth"),
+        ("en", "th", "en", ["en"], "already has its own English booth"),
     ],
 )
 def test_return_language_rules(return_code, booth, spoken, others, message):

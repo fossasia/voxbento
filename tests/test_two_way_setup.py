@@ -180,7 +180,7 @@ def test_parse_plan_refuses_two_way_next_to_a_spoken_language_booth():
         catalog,
         existing_booth_codes=["en"],
     )
-    assert any("already has a English booth" in error for error in errors)
+    assert any("already has its own English booth" in error for error in errors)
 
 
 def test_parse_plan_keeps_a_booth_two_way_while_it_interprets_into_its_return():
@@ -475,7 +475,7 @@ async def test_booth_two_way_refused_next_to_a_spoken_language_booth(world):
             cookies=world["cookie"],
         )
     assert response.status_code == 400
-    assert "already has a English booth" in response.text
+    assert "already has its own English booth" in response.text
 
 
 @pytest.mark.anyio
