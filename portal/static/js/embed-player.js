@@ -105,7 +105,6 @@
     }
 
     function stopChannelSource() {
-      if (!channelSource) return;
       channelSource.stop();
       channelSource = null;
     }
