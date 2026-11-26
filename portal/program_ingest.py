@@ -33,7 +33,7 @@ from portal.database import get_session
 from portal.globals import get_http_client
 from portal.models import Event, Room
 from portal.outage_log import OutageLog
-from portal.transcription.aggregator import CLEAR_CAPTION
+from portal.transcription.aggregator import CLEAR_CAPTION, supersede_captions
 from portal.transcription.process import audio_progress
 from portal.transcription.providers.base import ProviderConfig, ProviderEnum, get_api_key
 from portal.transcription.worker import active_workers, start_transcription_worker, stop_transcription_worker
@@ -719,7 +719,9 @@ async def reconcile_processing(
     if current.worker_config and current.worker_config != config:
         if not await stop_room_worker(current, booth_id, room.id):
             return
-        # The old worker's unfinished words went with it: take them off listeners' screens.
+        # The old worker's unfinished words went with it: take them off listeners' screens, and keep
+        # anything it still finishes (a provider can outlive the stop) from coming back after the clear.
+        supersede_captions(booth_id)
         await broadcast_transcription(booth_id, CLEAR_CAPTION)
     started = await start_transcription_worker(
         event_slug=event.slug,

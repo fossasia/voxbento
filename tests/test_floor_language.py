@@ -338,7 +338,7 @@ async def test_floor_captions_and_segments_carry_the_worker_language(world, monk
 
 @pytest.mark.anyio
 async def test_partial_captions_carry_the_worker_language():
-    from portal.transcription.aggregator import CaptionAggregator, caption_language
+    from portal.transcription.aggregator import CaptionAggregator, CaptionSource, caption_source
 
     sent = []
 
@@ -346,7 +346,7 @@ async def test_partial_captions_carry_the_worker_language():
         sent.append(payload)
 
     async def run():
-        caption_language.set("th")
+        caption_source.set(CaptionSource("th"))
         aggregator = CaptionAggregator(broadcast)
         await aggregator.handle_partial("booth-1", "Sawasdee")
         await aggregator.handle_interim("booth-1", "khrap")

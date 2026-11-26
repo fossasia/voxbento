@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
 import struct
 from datetime import datetime, timedelta, timezone
@@ -9,6 +10,7 @@ from uuid import uuid4
 
 import httpx
 import pytest
+from sqlalchemy import select
 
 from fastapi_app import app
 from portal import floor_language
@@ -17,8 +19,12 @@ from portal.auth import create_user_token, decode_token, generate_admin_csrf_tok
 from portal.config import settings
 from portal.database import configure, create_user, dispose, get_session, init_db
 from portal.models import Event, Room, RoomTranslationLanguage, TranscriptSegment
+from portal.transcription import aggregator as aggregator_module
+from portal.transcription import worker as worker_module
 from portal.transcription.aggregator import CLEAR_CAPTION, CaptionAggregator
+from portal.transcription.providers.base import ProviderConfig, TranscriptionProvider
 from portal.transcription.worker import active_workers
+from portal.translations.worker import TranslationWorker
 from portal.websockets.manager import tts_manager
 
 
@@ -861,3 +867,100 @@ async def test_program_floor_language_restart_waits_for_a_failed_stop(environmen
     stop.assert_awaited_once()
     assert start.await_count == starts
     broadcast.assert_not_awaited()
+
+
+class BlockedProvider(TranscriptionProvider):
+    """Holds its first chunk like a slow engine call, then returns a sentence and the start of the next."""
+
+    def __init__(self):
+        self.entered = asyncio.Event()
+        self.release = asyncio.Event()
+
+    async def process_chunk(self, chunk, language_code, model_variant, config, booth_state=None):
+        self.entered.set()
+        await self.release.wait()
+        return "Hello everyone and welcome to the session. And now"
+
+
+class EndlessStdout:
+    """One chunk of audio, then a feed that stays open."""
+
+    def __init__(self):
+        self.sent = False
+
+    async def readexactly(self, n):
+        if not self.sent:
+            self.sent = True
+            return b"\0" * n
+        await asyncio.Event().wait()
+
+
+class EndlessProcess:
+    returncode = None
+
+    def __init__(self):
+        self.stdout = EndlessStdout()
+
+
+@contextlib.asynccontextmanager
+async def endless_ffmpeg(*_args):
+    yield EndlessProcess()
+
+
+@pytest.mark.anyio
+async def test_program_floor_language_switch_keeps_the_old_worker_off_screen(environment, monkeypatch):
+    """#1397: words the old worker finishes after the switch's clear are stored, never shown or translated."""
+    client, event, rooms, media, *_ = environment
+    room = rooms[0]
+    booth_id = f"program-test-{room.id}-floor"
+    sent = []
+
+    async def broadcast(booth, payload):
+        sent.append(payload)
+
+    provider = BlockedProvider()
+    monkeypatch.setitem(worker_module.PROVIDERS, "blocked", provider)
+    monkeypatch.setattr(worker_module, "FfmpegProcess", endless_ffmpeg)
+    monkeypatch.setattr(ingest, "broadcast_transcription", broadcast)
+    monkeypatch.setattr(ingest, "stop_transcription_worker", worker_module.stop_transcription_worker)
+    translate = AsyncMock()
+    monkeypatch.setattr(TranslationWorker, "handle_translation", translate)
+    offered = []
+    monkeypatch.setattr(aggregator_module.youtube_captions, "offer", lambda *args: offered.append(args))
+    tasks_before = asyncio.all_tasks()
+
+    await connect_whip(client, event, room, media)
+    await ingest.reconcile_once()
+    old = worker_module.TranscriptionWorkerSession(
+        event.slug, "floor", booth_id, broadcast, "blocked", "tiny", ProviderConfig(api_key=None), "en", room.id
+    )
+    active_workers[booth_id] = old
+    old.start()
+    await asyncio.wait_for(provider.entered.wait(), 2)
+
+    async with get_session() as session:
+        (await session.get(Room, room.id)).floor_language_override = "de"
+    await ingest.reconcile_once()
+    assert booth_id not in active_workers
+    assert sent == [CLEAR_CAPTION]
+
+    provider.release.set()
+    segment = None
+    for _ in range(200):
+        async with get_session() as session:
+            segment = await session.scalar(select(TranscriptSegment).where(TranscriptSegment.room_id == room.id))
+        if segment is not None:
+            break
+        await asyncio.sleep(0.01)
+    for task in asyncio.all_tasks() - tasks_before:
+        if task is not asyncio.current_task():
+            task.cancel()
+
+    assert sent == [CLEAR_CAPTION]
+    assert (segment.text, segment.language_code, segment.source_language_code) == (
+        "Hello everyone and welcome to the session.",
+        "floor",
+        "en",
+    )
+    translate.assert_not_awaited()
+    assert offered == []

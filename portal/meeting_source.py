@@ -37,7 +37,7 @@ from portal.program_ingest import (
     pipeline_problem,
     room_lock,
 )
-from portal.transcription.aggregator import CLEAR_CAPTION
+from portal.transcription.aggregator import CLEAR_CAPTION, supersede_captions
 from portal.transcription.process import audio_progress
 from portal.transcription.providers.base import ProviderConfig, ProviderEnum, get_api_key
 from portal.transcription.worker import start_transcription_worker, stop_transcription_worker
@@ -438,7 +438,9 @@ async def reconcile_room(
     config = (room.floor_transcription_provider, room.floor_transcription_model, language)
     if current.worker_config and current.worker_config != config:
         await _stop_worker(current, booth_id)
-        # The old worker's unfinished words went with it: take them off listeners' screens.
+        # The old worker's unfinished words went with it: take them off listeners' screens, and keep
+        # anything it still finishes (a provider can outlive the stop) from coming back after the clear.
+        supersede_captions(booth_id)
         await broadcast_transcription(booth_id, CLEAR_CAPTION)
     started = await start_transcription_worker(
         event_slug=event.slug,
