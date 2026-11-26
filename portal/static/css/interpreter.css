@@ -584,6 +584,25 @@ label {
   border-color: var(--bx-live-ink);
 }
 
+/* Cough key: hold to cut the microphone. Amber while held, so it reads as "paused", not "off air". */
+.header-btn--cough {
+  background: var(--bx-surface);
+  color: var(--bx-text);
+  border-color: var(--bx-border-strong);
+  touch-action: none;
+  user-select: none;
+  -webkit-user-select: none;
+  -webkit-touch-callout: none;
+}
+
+.header-btn--cough.pressed,
+.header-btn--cough.pressed:hover:not(:disabled) {
+  background: var(--vb-color-warning);
+  color: var(--vb-color-text);
+  border-color: var(--vb-color-warning-text);
+  box-shadow: inset 0 2px 6px color-mix(in srgb, var(--vb-color-warning-text) 35%, transparent);
+}
+
 /* Handover button state machine (grey / green / flashing yellow) */
 .header-btn--handover.state-grey {
   background: #fff;

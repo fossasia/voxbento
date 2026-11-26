@@ -4,13 +4,17 @@ import { readFileSync } from 'node:fs'
 import vm from 'node:vm'
 import { createBackoff, finalCloseMessage } from '../portal/static/js/booth-reconnect.js'
 import { micIsActive, watchMicTracks } from '../portal/static/js/mic-activity.js'
+import { createCoughKey, isCoughShortcut, isTypingTarget, micTrackEnabled } from '../portal/static/js/cough-key.js'
 
 const source = readFileSync(new URL('../portal/static/js/interpreter-booth.js', import.meta.url), 'utf8')
   .replace(/^import .* from '\.\/booth-reconnect.js'\n/, '')
   .replace(/^import .* from '\.\/mic-activity.js'\n/, '')
+  .replace(/^import .* from '\.\/cough-key.js'\n/m, '')
   .replace('boot().catch((error) => {', 'Promise.resolve().catch((error) => {')
 
-function harness({ getUserMedia = async () => ({ getAudioTracks: () => [] }) } = {}) {
+const coughKeyModule = { createCoughKey, isCoughShortcut, isTypingTarget, micTrackEnabled }
+
+function harness({ getUserMedia = async () => ({ getAudioTracks: () => [] }), realBoothState = false } = {}) {
   const timers = new Map()
   const sockets = []
   const events = []
@@ -26,6 +30,7 @@ function harness({ getUserMedia = async () => ({ getAudioTracks: () => [] }) } =
   }
   const context = vm.createContext({
     console, URL, Promise, WebSocket: Socket, createBackoff, finalCloseMessage, micIsActive, watchMicTracks,
+    ...coughKeyModule,
     document: { getElementById: (id) => id === 'interpreter-portal'
       ? { dataset: { boothId: 'test-1-en', eventSlug: 'test', roomId: '1' } } : null },
     localStorage: { getItem: () => null },
@@ -40,15 +45,21 @@ function harness({ getUserMedia = async () => ({ getAudioTracks: () => [] }) } =
     setBadge = (_, label) => events.push(label);
     showError = (message) => events.push(message);
     acquireJwt = async () => {};
-    applyBoothState = (payload) => {
+    if (!${realBoothState}) applyBoothState = (payload) => {
       state.activeInterpreterId = payload.active_interpreter_id;
       state.broadcastUnlocked = payload.broadcast_unlocked;
     };
+    setBoothVolume = () => {};
+    startBoothAudioListening = () => {};
+    attemptRelayStart = () => events.push('publish-starting');
     joinMonitoringFeed = () => events.push('monitor-started');
     stopLiveIngest = async () => { events.push('publish-stopped'); state.ingestConnected = false; };
     renderMicControls = () => {};
     startMicMeter = () => {};
-    globalThis.api = { state, connectWebSocket, reconnectBackoff, watchMicDevice, currentMicActive, ensureMicStream };
+    globalThis.api = {
+      state, connectWebSocket, reconnectBackoff, watchMicDevice, currentMicActive, ensureMicStream,
+      applyBoothState, coughKey, syncMicTracks, toggleMicMute,
+    };
   `, context)
   return { ...context.api, timers, sockets, events }
 }
@@ -210,6 +221,107 @@ for (let attempt = 0; attempt < 3; attempt++) {
   assert.equal(await retry, stream)
 }
 
+// The cough key (#1395) only cuts the microphone track; Mute and a handover always win over it.
+{
+  async function liveBooth() {
+    const booth = harness({ realBoothState: true })
+    booth.state.joinRequested = true
+    const opening = booth.connectWebSocket()
+    booth.sockets[0].open()
+    await opening
+    booth.sockets[0].message({ type: 'booth:joined', participant_id: 'me', state: {
+      active_interpreter_id: 'me', broadcast_unlocked: true, participants: [],
+    } })
+    const track = { enabled: true }
+    booth.state.micStream = { getAudioTracks: () => [track] }
+    booth.syncMicTracks()
+    booth.state.ingestConnected = true
+    return { booth, track }
+  }
+
+  {
+    const { booth, track } = await liveBooth()
+    assert.equal(booth.state.micMuted, false, 'going live unmutes the active interpreter')
+    assert.equal(track.enabled, true)
+    const sent = booth.sockets[0].sent.length
+    assert.equal(booth.coughKey.press('key'), true)
+    assert.equal(track.enabled, false, 'holding the cough key cuts the microphone')
+    assert.equal(booth.currentMicActive(), true, 'the interpreter is still live while coughing')
+    booth.coughKey.release('key')
+    assert.equal(track.enabled, true, 'letting go brings the microphone back')
+    assert.equal(booth.sockets[0].sent.length, sent, 'a cough sends nothing to the server')
+  }
+
+  {
+    const { booth, track } = await liveBooth()
+    booth.coughKey.press('key')
+    booth.coughKey.press('pointer:1')
+    booth.coughKey.release('key')
+    assert.equal(track.enabled, false, 'the cough lasts while any source is held')
+    booth.coughKey.release('pointer:1')
+    assert.equal(track.enabled, true)
+  }
+
+  {
+    // A handover in the middle of a cough, before the publish connected: the passive
+    // interpreter's microphone must stay off once the cough is let go.
+    const { booth, track } = await liveBooth()
+    booth.state.ingestConnected = false
+    booth.coughKey.press('key')
+    booth.applyBoothState({ active_interpreter_id: 'backup', broadcast_unlocked: true, participants: [] })
+    assert.equal(booth.state.micMuted, true)
+    assert.equal(booth.coughKey.isHeld(), false, 'a handover ends the cough')
+    booth.coughKey.release('key')
+    assert.equal(track.enabled, false, 'letting go after a handover leaves the microphone off')
+    assert.equal(booth.coughKey.press('key'), false, 'a passive interpreter cannot cough')
+  }
+
+  {
+    // Publishing again (a WHIP retry) re-applies the microphone state and must keep the cough.
+    const { booth, track } = await liveBooth()
+    booth.coughKey.press('key')
+    booth.syncMicTracks()
+    assert.equal(track.enabled, false, 'restarting the publish keeps a held cough silent')
+  }
+
+  {
+    // Losing the right to publish while coughing: the track stays off until the stop finishes
+    // and the cough is let go.
+    const { booth, track } = await liveBooth()
+    booth.coughKey.press('key')
+    booth.applyBoothState({ active_interpreter_id: 'me', broadcast_unlocked: false, participants: [] })
+    assert.equal(track.enabled, false)
+    await Promise.resolve()
+    await Promise.resolve()
+    assert.equal(booth.state.relayingOut, false, 'the publish stopped')
+    assert.equal(track.enabled, false, 'the held cough still keeps the microphone off')
+    booth.coughKey.release('key')
+    assert.equal(track.enabled, true)
+  }
+
+  {
+    const { booth, track } = await liveBooth()
+    booth.coughKey.press('key')
+    await booth.toggleMicMute()
+    assert.equal(booth.state.micMuted, true)
+    assert.equal(booth.coughKey.isHeld(), false, 'pressing Mute ends the cough')
+    booth.coughKey.release('key')
+    assert.equal(track.enabled, false, 'letting go after Mute leaves the microphone muted')
+    assert.equal(booth.coughKey.press('key'), false, 'the cough key does nothing while muted')
+    assert.equal(track.enabled, false)
+  }
+
+  {
+    // A revoked session mutes for good, whatever the cough key is doing.
+    const { booth, track } = await liveBooth()
+    booth.coughKey.press('key')
+    booth.sockets[0].close(4003)
+    assert.equal(booth.coughKey.isHeld(), false)
+    booth.coughKey.release('key')
+    assert.equal(track.enabled, false)
+  }
+}
+
 console.log('Booth socket lifecycle checks passed')
 
 // Switching floor sources must release the old player so both feeds never play together.
@@ -227,7 +339,7 @@ console.log('Booth socket lifecycle checks passed')
     'jitsi-frame': frame,
   }
   const context = vm.createContext({
-    URL, URLSearchParams, createBackoff, localStorage: { getItem: () => null },
+    URL, URLSearchParams, createBackoff, ...coughKeyModule, localStorage: { getItem: () => null },
     document: { getElementById: (id) => elements[id] },
     createWhepClient: () => ({
       start: ({ whepUrl }) => switches.push(whepUrl),
