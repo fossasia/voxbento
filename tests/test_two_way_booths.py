@@ -871,6 +871,29 @@ async def test_booth_socket_survives_a_failed_return_language_read(monkeypatch, 
     assert "Could not read the return language" in caplog.text
 
 
+@pytest.mark.anyio
+async def test_a_failed_read_on_a_new_socket_keeps_a_live_booths_direction(room, monkeypatch):
+    from sqlalchemy.exc import OperationalError
+
+    from portal.websockets import handlers
+
+    ana = await join(room, "th", "Ana")
+    assert await set_output(room, "th", ana, "return") == []
+
+    async def broken(_booth_id):
+        raise OperationalError("select", {}, Exception("down"))
+
+    monkeypatch.setattr(handlers, "load_booth_return_language", broken)
+    # A coordinator opens the booth during a database blip.
+    return_language = await handlers._booth_return_language(room.booth_id("th"))
+    ws = MockWebSocket()
+    session = room.session("th", None, "room_coordinator", session_key="user:Bo", return_language=return_language)
+    await _handle_join(ws, session, {"type": "booth:join", "display_name": "Bo", "language": "Thai"})
+    booth = booths.get_booth_sync(room.booth_id("th"))
+    assert booth.output_language_code == "en", "the live direction is kept"
+    assert booth.return_language_code == "en"
+
+
 # ── Attendance ──────────────────────────────────────────────────────────────
 
 

@@ -23,6 +23,7 @@ from portal.auth import (
     user_session_is_valid,
 )
 from portal.database import get_booth_language_name, get_session, get_user_by_id
+from portal.globals import booths
 from portal.join_code_limit import JoinCodeThrottled
 from portal.room_setup import load_booth_return_language
 from portal.websockets.manager import (
@@ -58,12 +59,19 @@ router = APIRouter()
 
 
 async def _booth_return_language(booth_id: str) -> tuple[str, str] | None:
-    """The booth's return language when it is two-way (#1397); None if not, or if the read fails."""
+    """The booth's return language when it is two-way (#1397), or None if not.
+
+    If the read fails, the booth keeps what it has in memory: a database blip while someone
+    joins must not switch a live two-way booth back to its own channel.
+    """
     try:
         return await load_booth_return_language(booth_id)
     except SQLAlchemyError:
         _log.warning("Could not read the return language of booth %s", booth_id, exc_info=True)
-        return None
+        booth = booths.get_booth_sync(booth_id)
+        if booth is None or not booth.return_language_code:
+            return None
+        return booth.return_language_code, booth.return_language
 
 
 @router.websocket("/ws/booth/{booth_id}")
