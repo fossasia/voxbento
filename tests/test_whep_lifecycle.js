@@ -39,7 +39,7 @@ function harness(options = {}) {
     async setRemoteDescription(value) { this.answers.push(value); }
     close() { this.connectionState = 'closed'; }
   }
-  const audio = { srcObject: null, muted: false, paused: true, play() { this.paused = false; return Promise.resolve(); } };
+  const audio = { srcObject: null, muted: false, paused: true, play() { this.paused = false; return Promise.resolve(); }, pause() { this.paused = true; } };
   const context = vm.createContext({
     RTCPeerConnection: Peer, URL, AbortController,
     fetch(url, options) {
