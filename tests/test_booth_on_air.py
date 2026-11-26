@@ -249,9 +249,11 @@ async def test_on_air_loop_reads_media_only_while_someone_listens(monkeypatch):
 def fresh_confirmations(monkeypatch):
     monkeypatch.setattr(booth_on_air, "CONFIRM_RETRY_SECONDS", 0)
     booth_on_air.confirmed_at.clear()
+    booth_on_air.found_live_at.clear()
     booth_on_air.path_get_outage.failures = 0
     yield
     booth_on_air.confirmed_at.clear()
+    booth_on_air.found_live_at.clear()
 
 
 async def _background_done() -> None:
@@ -413,3 +415,35 @@ async def test_booth_gone_before_the_check_ends(monkeypatch):
     monkeypatch.setattr(manager.listener_manager, "broadcast_booth_state", record)
     await manager._confirm_and_resend("deleted-1-th", "deleted/1/th")
     assert sent == [], "a booth removed meanwhile is not announced"
+
+
+async def test_list_read_in_flight_keeps_a_newer_go_live(monkeypatch):
+    """A tick that read the list before the publisher arrived must not undo the go-live check."""
+    release = asyncio.Event()
+    started = asyncio.Event()
+
+    async def handler(request):
+        if "/paths/list" in request.url.path:
+            started.set()
+            await release.wait()
+            return httpx.Response(200, json={"items": [{"name": "race/1/th", "source": None}]})
+        return SOURCE
+
+    async with _media(handler) as client:
+        monkeypatch.setattr(booth_on_air, "get_http_client", lambda: client)
+        booth_on_air.live_paths = frozenset()
+        tick = asyncio.create_task(booth_on_air.refresh_live_paths())
+        await started.wait()
+        assert await booth_on_air.confirm_live_path("race/1/th") is True
+        release.set()
+        await tick
+        assert booth_on_air.live_paths == {"race/1/th"}
+
+        # A list read that starts after the check is newer and wins.
+        release.clear()
+        started.clear()
+        tick = asyncio.create_task(booth_on_air.refresh_live_paths())
+        await started.wait()
+        release.set()
+        await tick
+        assert booth_on_air.live_paths == frozenset()

@@ -38,6 +38,9 @@ path_get_outage = OutageLog(logger, "booth_on_air path_get_unavailable")
 # When each path was last checked on go-live; a path is in flight while its check runs.
 confirmed_at: dict[str, float] = {}
 confirming: set[str] = set()
+# When a go-live check last found each path's publisher, so a path list read that started
+# earlier (still in flight) does not drop it again.
+found_live_at: dict[str, float] = {}
 
 
 # "overloaded" is set when the booth's transcription fails; the interpreter is still publishing.
@@ -58,6 +61,7 @@ def forget_live_paths() -> None:
 async def refresh_live_paths() -> None:
     """Read every MediaMTX path once and keep the names of those with a publisher."""
     global live_paths
+    started = monotonic()
     try:
         response = await get_http_client().get(
             f"{settings.mediamtx_api_base}/v3/paths/list?itemsPerPage=1000", timeout=PATH_LIST_TIMEOUT
@@ -72,11 +76,17 @@ async def refresh_live_paths() -> None:
         path_list_outage.failed()
         return
     path_list_outage.recovered()
+    newer = set()
+    for path, at in list(found_live_at.items()):
+        if at > started:
+            newer.add(path)
+        else:
+            del found_live_at[path]
     live_paths = frozenset(
         item["name"]
         for item in items
         if isinstance(item, dict) and isinstance(item.get("name"), str) and item.get("source")
-    )
+    ) | newer
 
 
 def needs_confirm(state: Mapping[str, object]) -> bool:
@@ -125,6 +135,7 @@ async def confirm_live_path(path: str) -> bool:
                 await asyncio.sleep(CONFIRM_RETRY_SECONDS)
             live = await path_has_source(path)
             if live:
+                found_live_at[path] = monotonic()
                 break
     except (httpx.HTTPError, ValueError):
         path_get_outage.failed()
