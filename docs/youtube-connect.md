@@ -176,7 +176,7 @@ which the room page script reads from the page's `csrf-token` meta tag.
   (`connected_at`), the last sign-in-again error and timestamps.
 - `rooms.youtube_broadcast_id`, `rooms.youtube_stream_id`: the room's broadcast and
   the stream bound to it.
-- `rooms.youtube_captions_language` (migration 048): `NULL` (off), `floor` or a
+- `rooms.youtube_captions_language` (migration 050): `NULL` (off), `floor` or a
   translation language code. The caption address itself is never stored.
 
 Access tokens live only in the portal's memory (one portal replica), are refreshed
