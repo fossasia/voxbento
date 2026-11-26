@@ -85,6 +85,8 @@ Before starting booth playback, the listener page waits for a live and unlocked 
 
 `on_air` is worked out on the server: the booth is unlocked, its interpreter reports a connected stream, and MediaMTX has a publisher on the booth path. The portal reads the MediaMTX path list once every two seconds while listeners are connected and pushes a new status when it changes. Booth paths are `alwaysAvailable`, so an empty one stays ready and keeps counting bytes; only its `source` shows whether anyone publishes. When MediaMTX cannot be read, `on_air` falls back to the lock and the interpreter's own report, and the outage is logged once.
 
+When a room has a floor source and **Play the original audio while an interpreter is off air** is on, each interpreter channel on the listener page carries a `floor_fallback` (the floor's WHEP URL). Off air for three seconds in a row, the page plays the floor; the guard keeps a quick handover from bouncing listeners. When the booth comes back on air the page starts its stream on a muted standby element and moves it into the player once it has audio (or after five seconds), then stops the floor, so two streams are never heard at once. Captions stay on the chosen channel. Without a fallback the page behaves as before: it waits silently and stops when the booth is locked. The floor is listed as its own channel whenever it can carry audio, captions or not, labelled with the spoken language when that is known.
+
     For devices that do not handle WebRTC reliably, MediaMTX also produces HLS segments on a separate port. The listener page loads hls.js and falls back to HLS automatically when WHEP is unavailable. HLS introduces roughly three seconds of additional latency but works on virtually any device.
 
     :::tip

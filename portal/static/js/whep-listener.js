@@ -441,6 +441,32 @@ function createWhepClient() {
       emitState();
     },
 
+    /**
+     * Move playback to another element without renegotiating, e.g. from a muted
+     * standby element to the visible player once this stream is the one to hear.
+     * @param {HTMLAudioElement} audioEl
+     * @param {boolean} autoplay – false keeps the new element paused
+     */
+    setAudioElement(audioEl, autoplay = true) {
+      if (audioEl === _audioEl) return;
+      const previous = _audioEl;
+      _audioEl = audioEl;
+      if (previous) {
+        previous.pause();
+        previous.srcObject = null;
+      }
+      if (currentStream) {
+        if (_audioDelayMs > 0) {
+          attachDelayedStream(currentStream, autoplay);
+        } else {
+          attachDirectStream(currentStream, autoplay);
+        }
+        // The player has the autoplay attribute, which would start it anyway.
+        if (!autoplay) audioEl.pause();
+      }
+      emitState();
+    },
+
     resume() {
       resumeDelayedContext();
       if (_audioEl && _audioEl.srcObject && _audioEl.paused) {

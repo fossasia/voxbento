@@ -18,7 +18,7 @@ from portal.auth import (
     is_cookie_secure,
     is_listener_token,
 )
-from portal.booth_identity import make_booth_id
+from portal.booth_identity import make_booth_id, make_mediamtx_path
 from portal.config import settings
 from portal.database import (
     get_event_by_slug,
@@ -31,6 +31,8 @@ from portal.database import (
 from portal.globals import _JS_CACHE_BUST, asset_version_context
 from portal.join_code_limit import JoinCodeThrottled, verify_join_code
 from portal.overlay_channels import overlay_channels
+from portal.program_ingest import room_has_floor_audio
+from portal.room_setup import LANGUAGE_NAMES
 from portal.utils import _ensure_mediamtx_path
 
 # Allowlists for embed theming params — no free-text values accepted.
@@ -101,8 +103,17 @@ async def listen_event_page(request: Request, event_slug: str, code: str | None 
 
     booths_data = []
     ensure_tasks = []
+    floor_audio = {r.id: room_has_floor_audio(r) for r in rooms}
     for b in db_booths:
         channel_id = b.mediamtx_path
+        floor_fallback = None
+        if b.room.auto_floor_enabled and floor_audio.get(b.room_id):
+            floor_channel_id = make_mediamtx_path(ev.slug, b.room_id, "floor")
+            floor_fallback = {
+                "whep_url": f"{settings.mediamtx_whip_base}/{floor_channel_id}/whep",
+                "booth_id": make_booth_id(ev.slug, b.room_id, "floor"),
+                "channel_id": floor_channel_id,
+            }
         booth_lang_data = [
             {"code": lang.language_code, "name": lang.language_name} for lang in b.translation_languages if lang.enabled
         ]
@@ -117,6 +128,7 @@ async def listen_event_page(request: Request, event_slug: str, code: str | None 
                 "audio_delay_ms": b.room.audio_delay_ms,
                 "translation_enabled": getattr(b, "translation_enabled", False),
                 "translation_languages": booth_lang_data,
+                "floor_fallback": floor_fallback,
             }
         )
         ensure_tasks.append(_ensure_mediamtx_path(channel_id))
@@ -138,16 +150,17 @@ async def listen_event_page(request: Request, event_slug: str, code: str | None 
             }
         )
 
-        if r.floor_transcription_enabled:
-            from portal.booth_identity import make_mediamtx_path
-
+        # The floor is listed whenever it can carry audio, captions or not (#1082).
+        if r.floor_transcription_enabled or floor_audio[r.id]:
             channel_id = make_mediamtx_path(ev.slug, r.id, "floor")
+            spoken = r.floor_language_code if r.floor_language_code in LANGUAGE_NAMES else None
             booths_data.append(
                 {
                     "id": f"floor_{r.id}",
                     "room_id": r.id,
                     "language_code": "floor",
-                    "language_name": "Floor Audio (Original)",
+                    "spoken_language_code": spoken,
+                    "language_name": f"{LANGUAGE_NAMES[spoken]} (original)" if spoken else "Floor Audio (Original)",
                     "channel_id": channel_id,
                     "whep_url": f"{settings.mediamtx_whip_base}/{channel_id}/whep",
                     "audio_delay_ms": r.audio_delay_ms,
