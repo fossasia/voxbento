@@ -133,5 +133,56 @@ await test('without a notifier a failure still restores the select', async () =>
   assert.equal(select.value, 'en');
 });
 
+await test('a two-way booth holding the floor shows its language and disables the picker', async () => {
+  const calls = [];
+  const { label, select } = render(async (url) => {
+    calls.push(url);
+    return { ok: true };
+  });
+  const hint = label.children.find((node) => node.tag === 'span');
+  label.setHeldBy({ code: 'th', name: 'Thai' });
+  assert.equal(select.value, 'th');
+  assert.equal(select.disabled, true);
+  assert.match(hint.textContent, /Set by the Thai booth/);
+  label.setHeldBy(null);
+  assert.equal(select.value, 'en', 'the saved choice comes back');
+  assert.equal(select.disabled, false);
+  assert.equal(hint.textContent, '');
+  assert.deepEqual(calls, [], 'following the booth never posts');
+});
+
+await test('a held booth language missing from the choices is added', async () => {
+  const { label, select } = render(async () => ({ ok: true }));
+  label.setHeldBy({ code: 'ja', name: 'Japanese' });
+  label.setHeldBy({ code: 'ja', name: 'Japanese' });
+  assert.deepEqual(select.children.map((o) => o.value), ['en', 'th', 'ja']);
+  assert.equal(select.value, 'ja');
+});
+
+await test('a request that ends while a booth holds the floor keeps the picker disabled', async () => {
+  let label;
+  ({ label } = render(async () => {
+    label.setHeldBy({ code: 'th', name: 'Thai' });
+    return { ok: true };
+  }));
+  const select = label.children.find((node) => node.tag === 'select');
+  select.value = 'th';
+  await select.listeners.change();
+  assert.equal(select.disabled, true);
+});
+
+await test('a page loaded while a booth holds the floor starts held and returns to the manual choice', async () => {
+  const held = {
+    id: 8,
+    floor_language: { ...room.floor_language, value: 'th', manual: 'en', held_by: { code: 'th', name: 'Thai' } },
+  };
+  const label = renderFloorLanguage(held, { doc: fakeDoc(), fetchImpl: async () => ({ ok: true }) });
+  const select = label.children.find((node) => node.tag === 'select');
+  assert.equal(select.value, 'th');
+  assert.equal(select.disabled, true);
+  label.setHeldBy(null);
+  assert.equal(select.value, 'en');
+});
+
 console.debug = realDebug;
 console.log(`\n${passed} passed, 0 failed\n`);

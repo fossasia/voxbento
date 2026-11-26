@@ -229,7 +229,9 @@ Used by: listener pages, subtitling overlays.
 ## Floor language (#1397)
 
 `portal/floor_language.py` holds the language spoken on each room's floor right now:
-a two-way booth outputting into the spoken language (`set_booth_language`), else
+a two-way booth outputting into the spoken language (`set_booth_language`, called by
+`BoothRegistry._claim` and `_reset_output`, so every switch, release and restore goes
+through it), else
 Mission Control's choice (`rooms.floor_language_override`), else
 `rooms.floor_language_code`. Both floor reconcilers read `current(room)` for the worker's
 language and restart the worker when it changes; a change counts only once it has held

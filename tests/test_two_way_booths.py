@@ -1300,3 +1300,71 @@ async def test_go_live_into_return_is_checked_on_the_return_path(media, known_pa
         assert listener.sent[-1]["state"]["return_on_air"] is True
     finally:
         listener_manager.remove(listener, floor_id)
+
+
+# ── The floor language follows the booth's direction (#1397, part 3) ─────────
+
+
+@pytest.mark.anyio
+async def test_the_floor_language_follows_the_booth_direction(room):
+    from portal import floor_language
+
+    spoken = Room(id=room.id, floor_language_code="en", floor_language_override="de")
+    ana = await join(room, "th", "Ana")
+    assert floor_language.requested(spoken) == "de", "the Mission Control choice while nobody is on return"
+
+    await set_output(room, "th", ana, "return")
+    assert floor_language.requested(spoken) == "th", "a booth on return output wins over the manual choice"
+    assert floor_language.booth_holding(room.id) == "th"
+    await set_output(room, "th", ana, "return")
+    assert floor_language.booth_holding(room.id) == "th", "a repeated switch changes nothing"
+
+    await set_output(room, "th", ana, "primary")
+    assert floor_language.requested(spoken) == "de" and floor_language.booth_holding(room.id) is None
+
+
+@pytest.mark.anyio
+async def test_every_release_gives_the_floor_language_back(media):
+    from portal import floor_language
+
+    room, client, paths, _kicks = media
+    ana = await join(room, "th", "Ana")
+
+    await set_output(room, "th", ana, "return")
+    await _handle_set_broadcast_unlocked(
+        MockWebSocket(), room.session("th", None, role="room_coordinator"), {"unlocked": False}
+    )
+    assert floor_language.booth_holding(room.id) is None, "Mission Control Stop"
+
+    await set_output(room, "th", ana, "return")
+    record = booths.get_booth_sync(room.booth_id("th")).participants[ana]
+    await release_participant(room.session("th", ana, connection_id=record.connection_id), immediate=True)
+    assert floor_language.booth_holding(room.id) is None, "the interpreter left"
+
+    ana = await join(room, "th", "Ana")
+    await set_output(room, "th", ana, "return")
+    await booths.remove_booth(EVENT, room.id, "th")
+    assert floor_language.booth_holding(room.id) is None, "the booth was deleted"
+
+
+@pytest.mark.anyio
+async def test_a_handover_between_booths_keeps_the_floor_with_the_new_one(room):
+    from portal import floor_language
+
+    ana = await join(room, "th", "Ana")
+    ken = await join(room, "ja", "Ken")
+    await set_output(room, "th", ana, "return")
+    await set_output(room, "th", ana, "primary")
+    await set_output(room, "ja", ken, "return")
+    assert floor_language.booth_holding(room.id) == "ja"
+    await set_output(room, "th", ana, "primary")  # a late, repeated switch from the first booth
+    assert floor_language.booth_holding(room.id) == "ja"
+
+
+@pytest.mark.anyio
+async def test_a_restored_booth_holds_the_floor_again():
+    from portal import floor_language
+
+    registry = BoothRegistry()
+    await registry.restore([_record("ev-1-th", "en")])
+    assert floor_language.booth_holding(1) == "th", "after a portal restart the floor follows the booth again"

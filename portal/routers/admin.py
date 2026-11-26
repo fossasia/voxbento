@@ -691,13 +691,19 @@ def _floor_language_state(room: Room, room_booths: list[DBBooth]) -> dict | None
     if not room.has_floor_captions or not room.floor_language_code:
         return None
     value = floor_language.requested(room)
+    manual = room.floor_language_override or room.floor_language_code
     codes = floor_language.choices(room, room_booths)
-    if value not in codes:
-        # Picked before the language was taken out of the room: still shown, so it can be changed back.
-        codes.append(value)
+    for code in (manual, value):
+        if code not in codes:
+            # Picked before the language was taken out of the room: still shown, so it can be changed back.
+            codes.append(code)
+    held = floor_language.booth_holding(room.id)
     return {
         "value": value,
+        "manual": manual,
         "choices": [{"code": code, "name": language_name(code)} for code in codes],
+        # A two-way booth interpreting into the spoken language sets the floor language meanwhile.
+        "held_by": {"code": held, "name": language_name(held)} if held else None,
     }
 
 

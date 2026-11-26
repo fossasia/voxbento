@@ -23,6 +23,8 @@ const roomsContainer = document.getElementById('rooms-container');
 
 /** @type {Map<string, {state:object, ws:WebSocket|null, whep:object|null, audioElement:HTMLAudioElement|null, currentVolume:number, pendingFocusId:string}>} */
 const boothMap = new Map();
+// room id -> that room's floor language picker, which follows a two-way booth (#1397).
+const floorPickers = new Map();
 
 function el(tag, className, text) {
   const node = document.createElement(tag);
@@ -122,7 +124,9 @@ function renderFloorCaptions(room) {
   const status = el('span', 'mc-pill', 'Checking…');
   box.append(label, status);
   if (room.floor_language) {
-    box.appendChild(renderFloorLanguage(room, { notify: (message) => showToast(message, 'error') }));
+    const picker = renderFloorLanguage(room, { notify: (message) => showToast(message, 'error') });
+    floorPickers.set(room.id, picker);
+    box.appendChild(picker);
   }
 
   if (room.floor_source === 'program_ingest') {
@@ -212,6 +216,7 @@ function connectWs(boothId) {
       entry.state = { ...data.state, room_name: data.state.room_name ?? entry.state.room_name };
       followOutput(boothId);
       renderCard(boothId);
+      showFloorHolder(entry.state.room_id);
     }
     // Silently ignore booth:joined — we do not join as a participant.
   };
@@ -269,6 +274,16 @@ function handleVolumeChange(boothId, volume) {
 const listenPath = (state) => state.output_mediamtx_path;
 
 /** Keep listening to a two-way booth when it switches channel. */
+// The picker shows the booth interpreting into the spoken language, which sets the floor language.
+function showFloorHolder(roomId) {
+  const picker = floorPickers.get(roomId);
+  if (!picker) return;
+  const holder = [...boothMap.values()]
+    .map((entry) => entry.state)
+    .find((s) => s.room_id === roomId && s.output_language_code && s.output_language_code !== s.language_code);
+  picker.setHeldBy(holder ? { code: holder.language_code, name: holder.language } : null);
+}
+
 function followOutput(boothId) {
   const entry = boothMap.get(boothId);
   if (!entry?.whep || entry.whepPath === listenPath(entry.state)) return;

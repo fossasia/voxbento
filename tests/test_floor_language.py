@@ -247,12 +247,24 @@ async def test_mission_control_shows_the_floor_language_picker(world):
     [hall] = await mission_control_rooms(world["coordinator"])
     assert hall["floor_language"] == {
         "value": "en",
+        "manual": "en",
         "choices": [
             {"code": "en", "name": "English"},
             {"code": "th", "name": "Thai"},
             {"code": "de", "name": "German"},
         ],
+        "held_by": None,
     }
+
+    # A two-way booth on return output holds the floor; the manual choice comes back after.
+    async with get_session() as s:
+        (await s.get(Room, world["room"])).floor_language_override = "de"
+    floor_language.set_booth_language(world["room"], f"summit-{world['room']}-th", "th")
+    [hall] = await mission_control_rooms(world["coordinator"])
+    assert hall["floor_language"]["value"] == "th"
+    assert hall["floor_language"]["manual"] == "de"
+    assert hall["floor_language"]["held_by"] == {"code": "th", "name": "Thai"}
+    floor_language.set_booth_language(world["room"], f"summit-{world['room']}-th", None)
 
     # A choice whose language was later taken out of the room is still shown.
     async with get_session() as s:

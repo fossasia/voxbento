@@ -44,6 +44,12 @@ def requested(room: Room) -> str | None:
     return room.floor_language_override or room.floor_language_code
 
 
+def booth_holding(room_id: int) -> str | None:
+    """The language of the two-way booth that holds the room's floor, or None."""
+    held = _booths.get(room_id)
+    return held[1] if held is not None else None
+
+
 def current(room: Room) -> str | None:
     """The language the floor worker transcribes in: the requested one once it has held for DEBOUNCE_SECS."""
     wanted = requested(room)
