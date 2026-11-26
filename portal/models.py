@@ -205,6 +205,13 @@ class Room(Base):
         provider = (self.floor_transcription_provider or "").strip().lower()
         return bool(self.floor_transcription_enabled) and provider not in {"", "none"}
 
+    @validates("floor_language_code")
+    def _drop_stale_floor_language_override(self, _key: str, value: str | None) -> str | None:
+        # A Mission Control floor language was picked for the old spoken language (#1397).
+        if value != self.floor_language_code:
+            self.floor_language_override = None
+        return value
+
     def __repr__(self) -> str:
         return f"<Room id={self.id} name={self.display_name!r}>"
 

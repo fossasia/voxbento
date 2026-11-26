@@ -279,6 +279,19 @@ async def test_mission_control_shows_the_floor_language_picker(world):
     assert hall["floor_language"] is None
 
 
+@pytest.mark.anyio
+async def test_changing_the_spoken_language_drops_the_mission_control_choice(world):
+    async with get_session() as s:
+        (await s.get(Room, world["room"])).floor_language_override = "de"
+    async with get_session() as s:
+        hall = await s.get(Room, world["room"])
+        assert hall.floor_language_override == "de", "loading the room keeps the choice"
+        hall.floor_language_code = "en"
+        assert hall.floor_language_override == "de", "saving the same spoken language keeps it"
+        hall.floor_language_code = "fr"
+    assert await stored_override(world["room"]) is None, "a choice made for the old spoken language"
+
+
 # ── Captions carry the language they were transcribed in ─────────────────
 
 

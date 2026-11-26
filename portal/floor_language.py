@@ -12,7 +12,8 @@ back inside that window restart nothing, and quick back and forth restarts the w
 once per window.
 
 In memory, for one portal replica like ``BoothRegistry``. The Mission Control choice is stored
-on the room, so it survives a restart; a booth's direction comes back with booth recovery.
+on the room, so it survives a restart, and is dropped when the room's spoken language changes;
+a booth's direction comes back with booth recovery.
 """
 
 from __future__ import annotations

@@ -65,7 +65,7 @@ Cascade: deletes rooms + booths when event is deleted.
 | `floor_transcription_provider` | String(20) | Default `'local'` |
 | `floor_transcription_model` | String(40) | Default `'tiny'` |
 | `floor_language_code` | String(10) nullable | — |
-| `floor_language_override` | String(10) nullable | Migration 052; Mission Control's choice of the language spoken on the floor right now, None for `floor_language_code` (#1397, `portal/floor_language.py`) |
+| `floor_language_override` | String(10) nullable | Migration 052; Mission Control's choice of the language spoken on the floor right now, None for `floor_language_code`; cleared when `floor_language_code` changes (#1397, `portal/floor_language.py`) |
 | `floor_translation_enabled` | Boolean | Default False |
 | `floor_translation_provider` | String(50) nullable | — |
 | `floor_translation_model` | String(100) nullable | — |
