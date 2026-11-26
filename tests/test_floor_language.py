@@ -233,6 +233,22 @@ async def test_bad_floor_language_requests_change_nothing(world, auto_csrf, body
 
 
 @pytest.mark.anyio
+async def test_a_language_floor_translation_cannot_translate_from_is_refused_with_why(world, auto_csrf):
+    async with get_session() as s:
+        hall = await s.get(Room, world["room"])
+        hall.floor_translation_enabled = True
+        hall.floor_translation_provider, hall.floor_translation_model = "local", "nllb-200-distilled-600M"
+        await create_booth(s, event_id=world["event"], room_id=hall.id, language_code="az", language_name="Azerbaijani")
+    async with client(world["admin"]) as c:
+        refused = await c.post(f"/api/rooms/{world['room']}/floor-language", json={"language_code": "az"})
+        unknown = await c.post(f"/api/rooms/{world['room']}/floor-language", json={"language_code": "fr"})
+    assert refused.status_code == 400
+    assert "doesn't support Azerbaijani" in refused.json()["detail"]
+    assert unknown.json()["detail"] == "Pick the room's spoken language or one of its listener languages."
+    assert await stored_override(world["room"]) is None
+
+
+@pytest.mark.anyio
 async def test_floor_language_needs_room_access_and_csrf(world, auto_csrf):
     async with client(world["stranger"]) as c:
         response = await c.post(f"/api/rooms/{world['room']}/floor-language", json={"language_code": "th"})

@@ -2484,8 +2484,13 @@ async def api_set_floor_language(room_id: int, data: FloorLanguageRequest):
         if not room:
             raise HTTPException(status_code=404, detail="Invalid room")
         if data.language_code not in floor_language.choices(room, await list_booths_for_room(session, room.id)):
+            # A room language left out because floor translation can't translate from it says so.
+            unsupported = room.floor_translation_enabled and language_support_error(
+                room.floor_translation_provider, room.floor_translation_model, [data.language_code]
+            )
             raise HTTPException(
-                status_code=400, detail="Pick the room's spoken language or one of its listener languages."
+                status_code=400,
+                detail=unsupported or "Pick the room's spoken language or one of its listener languages.",
             )
         override = None if data.language_code == room.floor_language_code else data.language_code
         if override != room.floor_language_override:
