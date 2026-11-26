@@ -5,6 +5,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 from urllib.parse import urlparse
 
 import httpx
+import numpy as np
 import pytest
 
 import portal.globals as pg
@@ -589,14 +590,14 @@ class TestTranscriptionProviders:
 
             # Mock a segment with valid speech
             mock_segment = MagicMock()
-            mock_segment.text = "Hello world"
+            mock_segment.text = " Hello world"
 
             mock_word1 = MagicMock()
-            mock_word1.word = "Hello"
+            mock_word1.word = " Hello"
             mock_word1.end = 1.5
 
             mock_word2 = MagicMock()
-            mock_word2.word = "world"
+            mock_word2.word = " world"
             mock_word2.end = 2.0
 
             mock_segment.words = [mock_word1, mock_word2]
@@ -630,7 +631,7 @@ class _Word:
 class _Segment:
     def __init__(self, *words: _Word) -> None:
         self.words = list(words)
-        self.text = " ".join(w.word for w in words)
+        self.text = "".join(w.word for w in words)
 
 
 @pytest.mark.anyio
@@ -641,7 +642,7 @@ async def test_local_whisper_drops_only_the_overlap_it_actually_heard_again():
     from portal.transcription.providers.local import OVERLAP_BYTES, LocalProvider
 
     heard: list[float] = []
-    words = [_Segment(_Word("early", 0.5), _Word("late", 1.5))]
+    words = [_Segment(_Word(" early", 0.5), _Word(" late", 1.5))]
 
     class FakeModel:
         def transcribe(self, audio, **kwargs):
@@ -661,6 +662,30 @@ async def test_local_whisper_drops_only_the_overlap_it_actually_heard_again():
         assert len(state.overlap_buffer) == OVERLAP_BYTES
         # Without session state there is no overlap at all.
         assert await provider.process_chunk(b"\0" * 64000, "en", "tiny", config) == "early late"
+
+
+@pytest.mark.parametrize(
+    ("language", "words", "expected"),
+    [
+        # Thai has no spaces between words, and Whisper returns sub-word pieces.
+        ("th", [" สวัส", "ดี", "ครับ"], "สวัสดีครับ"),
+        ("en", [" Welcome", " to", " the", " talk."], "Welcome to the talk."),
+    ],
+)
+def test_local_whisper_keeps_the_spacing_whisper_returned(language, words, expected):
+    from portal.transcription.providers.local import LocalProvider
+
+    segment = _Segment(*(_Word(word, 0.5 + i) for i, word in enumerate(words)))
+
+    class FakeModel:
+        def transcribe(self, audio, **kwargs):
+            return [segment], None
+
+    with patch("portal.transcription.providers.local.get_model", return_value=FakeModel()):
+        result = LocalProvider()._run_inference(
+            np.zeros(16000, np.float32), language, "tiny", None, overlap_seconds=0.0
+        )
+    assert result == expected
 
 
 @pytest.mark.anyio

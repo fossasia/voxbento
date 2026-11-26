@@ -159,17 +159,19 @@ class LocalProvider(TranscriptionProvider):
             initial_prompt=prompt,
         )
 
+        # Whisper keeps a leading space on each word where the language has one, and none in
+        # Thai, Japanese or Chinese, so the pieces are joined as they came.
         valid_words = []
         for segment in segments:
             if not getattr(segment, "words", None):
                 # Fallback if words aren't available
-                valid_words.append(segment.text.strip())
+                valid_words.append(segment.text)
                 continue
 
             for word in segment.words:
                 # Skip words inside the overlap, already captioned from the previous chunk. Its real
                 # length is used: none for the first chunk, less than 1.0 s after a short one.
                 if word.end > overlap_seconds:
-                    valid_words.append(word.word.strip())
+                    valid_words.append(word.word)
 
-        return " ".join(valid_words).strip()
+        return "".join(valid_words).strip()
