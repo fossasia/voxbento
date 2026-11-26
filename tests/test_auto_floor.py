@@ -129,6 +129,29 @@ def _past() -> object:
             True,
         ),
         ({"floor_source": "program_ingest", "program_session_id": "0b7c6a2e-2f51-4f45-9a43-1f1b0a2d9c11"}, True),
+        # RTMPS floors carry AAC, which WebRTC listeners can't play.
+        *(
+            (
+                {
+                    "floor_source": "program_ingest",
+                    "program_ingest_mode": mode,
+                    "program_key_hash": "h",
+                    "program_key_expires_at": "future",
+                    "program_session_id": "0b7c6a2e-2f51-4f45-9a43-1f1b0a2d9c11",
+                },
+                False,
+            )
+            for mode in ("rtmps", "rtmps_relay")
+        ),
+        (
+            {
+                "floor_source": "program_ingest",
+                "program_ingest_mode": "whip",
+                "program_key_hash": "h",
+                "program_key_expires_at": "future",
+            },
+            True,
+        ),
         # A program-ingest room's meeting link is not its floor.
         ({"floor_source": "program_ingest", "jitsi_url": "https://meet.example.org/Hall"}, False),
     ],
