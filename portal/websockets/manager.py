@@ -18,7 +18,7 @@ from sqlalchemy.exc import SQLAlchemyError
 import portal.webhooks.worker as _wh_worker
 from portal.auth import WSAuthError, can_perform_role
 from portal.booth_identity import booth_id_to_mediamtx_path, parse_booth_id
-from portal.booth_on_air import forget_live_paths, is_on_air, refresh_live_paths
+from portal.booth_on_air import confirm_live_path, forget_live_paths, is_on_air, needs_confirm, refresh_live_paths
 from portal.booth_publish import (
     TICKET_TTL_SECS,
     end_publishers,
@@ -737,6 +737,11 @@ tts_manager = TTSConnectionManager()
 async def broadcast_booth_state(booth_id: str, state: dict) -> None:
     """Send the full state to the booth and the listener-safe status to its listeners."""
     await manager.broadcast(booth_id, {"type": "booth:state", "state": state})
+    booth = booths.get_booth_sync(booth_id)
+    if booth is not None and listener_manager.has_listeners(booth_id):
+        current = booth.as_public_dict()
+        if needs_confirm(current):
+            await confirm_live_path(current["mediamtx_path"])
     await listener_manager.broadcast_booth_state(booth_id, state)
 
 

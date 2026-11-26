@@ -240,3 +240,150 @@ async def test_on_air_loop_reads_media_only_while_someone_listens(monkeypatch):
         await manager.on_air_loop()
     assert reads == [1], "no listeners, no MediaMTX read"
     assert booth_on_air.live_paths is None, "a stale list is forgotten"
+
+
+# ── Go-live is checked against MediaMTX at once ──────────────────────────────
+
+
+def _path_get(calls: list[str], answer):
+    def handler(request):
+        calls.append(request.url.path)
+        return answer(request) if callable(answer) else answer
+
+    return handler
+
+
+async def _go_live_with_listener(booth: str, handler, monkeypatch) -> _RecordingWebSocket:
+    from portal.globals import booths
+    from portal.websockets.manager import broadcast_booth_state, listener_manager
+
+    ws = _RecordingWebSocket()
+    listener_manager.add(ws, booth)
+    client = _media(handler)
+    monkeypatch.setattr(booth_on_air, "get_http_client", lambda: client)
+    # The last tick saw the path without a publisher; the interpreter is live now.
+    booth_on_air.live_paths = frozenset()
+    await _live_booth(booth)
+    await broadcast_booth_state(booth, booths.get_booth_sync(booth).as_public_dict())
+    return ws
+
+
+@pytest.fixture(autouse=True)
+def fresh_confirmations():
+    booth_on_air.confirmed_at.clear()
+    booth_on_air.path_get_outage.failures = 0
+    yield
+    booth_on_air.confirmed_at.clear()
+
+
+async def test_go_live_reaches_listeners_without_waiting_for_the_next_tick(monkeypatch):
+    from portal.websockets.manager import listener_manager
+
+    calls: list[str] = []
+    ws = await _go_live_with_listener(
+        "golive-2-th",
+        _path_get(calls, httpx.Response(200, json={"name": "golive/2/th", "source": {"id": "x"}})),
+        monkeypatch,
+    )
+    listener_manager.remove(ws, "golive-2-th")
+    assert ws.sent[-1]["state"]["on_air"] is True
+    assert calls == ["/v3/paths/get/golive/2/th"]
+    assert booth_on_air.live_paths == frozenset({"golive/2/th"})
+
+
+@pytest.mark.parametrize(
+    "response",
+    [httpx.Response(404), httpx.Response(200, json={"name": "golive/3/th", "source": None})],
+)
+async def test_go_live_without_a_publisher_stays_off_air(monkeypatch, response):
+    from portal.websockets.manager import listener_manager
+
+    calls: list[str] = []
+    booth = f"golive-3{response.status_code}-th"
+    ws = await _go_live_with_listener(booth, _path_get(calls, response), monkeypatch)
+    listener_manager.remove(ws, booth)
+    assert ws.sent[-1]["state"]["on_air"] is False
+    assert len(calls) == 1 and booth_on_air.live_paths == frozenset()
+
+
+@pytest.mark.parametrize(
+    "response", [httpx.Response(500), httpx.Response(200, json=[1]), httpx.Response(200, content=b"x")]
+)
+async def test_go_live_check_failure_keeps_the_broadcast(monkeypatch, caplog, response):
+    from portal.websockets.manager import listener_manager
+
+    caplog.set_level(logging.WARNING, logger="portal.booth_on_air")
+    booth = f"golive-4{len(response.content)}-th"
+    ws = await _go_live_with_listener(booth, _path_get([], response), monkeypatch)
+    listener_manager.remove(ws, booth)
+    assert ws.sent and ws.sent[-1]["state"]["on_air"] is False, "the status still goes out"
+    assert [r.getMessage() for r in caplog.records] == ["booth_on_air path_get_unavailable"]
+
+
+async def test_go_live_check_recovery_is_logged(monkeypatch, caplog):
+    caplog.set_level(logging.WARNING, logger="portal.booth_on_air")
+    booth_on_air.path_get_outage.failed()
+    booth_on_air.live_paths = frozenset()
+    async with _media(lambda request: httpx.Response(200, json={"source": {"id": "x"}})) as client:
+        monkeypatch.setattr(booth_on_air, "get_http_client", lambda: client)
+        await booth_on_air.confirm_live_path("golive/5/th")
+    assert any("path_get_unavailable recovered" in r.getMessage() for r in caplog.records)
+
+
+async def test_go_live_checks_are_bounded(monkeypatch):
+    calls: list[str] = []
+    release = asyncio.Event()
+
+    async def slow(request):
+        calls.append(request.url.path)
+        await release.wait()
+        return httpx.Response(200, json={"source": None})
+
+    booth_on_air.live_paths = frozenset()
+    async with httpx.AsyncClient(transport=httpx.MockTransport(slow)) as client:
+        monkeypatch.setattr(booth_on_air, "get_http_client", lambda: client)
+        first = asyncio.create_task(booth_on_air.confirm_live_path("flap/1/th"))
+        await asyncio.sleep(0)
+        await asyncio.gather(*(booth_on_air.confirm_live_path("flap/1/th") for _ in range(20)))
+        release.set()
+        await first
+        for _ in range(20):
+            await booth_on_air.confirm_live_path("flap/1/th")
+        assert calls == ["/v3/paths/get/flap/1/th"], "one check in flight and at most one per interval"
+
+        monkeypatch.setattr(booth_on_air, "monotonic", lambda: 10**9)
+        await booth_on_air.confirm_live_path("flap/1/th")
+    assert len(calls) == 2, "a later go-live is checked again"
+
+
+async def test_no_check_when_not_needed(monkeypatch):
+    from portal.globals import booths
+    from portal.websockets.manager import broadcast_booth_state, listener_manager
+
+    calls: list[str] = []
+    client = _media(_path_get(calls, httpx.Response(200, json={"source": {"id": "x"}})))
+    monkeypatch.setattr(booth_on_air, "get_http_client", lambda: client)
+    await _live_booth("golive-6-th")
+    state = booths.get_booth_sync("golive-6-th").as_public_dict()
+
+    await broadcast_booth_state("golive-6-th", state)  # nobody listens
+    ws = _RecordingWebSocket()
+    listener_manager.add(ws, "golive-6-th")
+    try:
+        booth_on_air.live_paths = None  # unknown: the interpreter's report already decides
+        await broadcast_booth_state("golive-6-th", state)
+        booth_on_air.live_paths = frozenset({"golive/6/th"})  # already known live
+        await broadcast_booth_state("golive-6-th", state)
+        booth_on_air.live_paths = frozenset()
+        await broadcast_booth_state("gone-6-th", {"booth_id": "gone-6-th"})  # left the registry
+    finally:
+        listener_manager.remove(ws, "golive-6-th")
+    assert calls == []
+
+
+async def test_go_live_check_never_invents_a_list(monkeypatch):
+    booth_on_air.live_paths = None  # forgotten while the check ran
+    async with _media(lambda request: httpx.Response(200, json={"source": {"id": "x"}})) as client:
+        monkeypatch.setattr(booth_on_air, "get_http_client", lambda: client)
+        await booth_on_air.confirm_live_path("golive/7/th")
+    assert booth_on_air.live_paths is None
