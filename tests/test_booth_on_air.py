@@ -447,3 +447,39 @@ async def test_list_read_in_flight_keeps_a_newer_go_live(monkeypatch):
         release.set()
         await tick
         assert booth_on_air.live_paths == frozenset()
+
+
+async def test_shutdown_cancels_go_live_checks_before_the_client_closes(monkeypatch):
+    import portal.globals as pg
+    from fastapi_app import app, lifespan
+    from portal.config import settings
+    from portal.globals import booths
+    from portal.websockets import manager
+
+    monkeypatch.setattr(settings, "mediamtx_auth_hook_secret", "test-mediamtx-auth-hook-secret-for-testing-1234567890")
+    monkeypatch.setattr("portal.config.Settings.validate_production_secrets", lambda self: None)
+    started = asyncio.Event()
+    client_closed_at_cancel = []
+
+    async def slow_check(path):
+        started.set()
+        try:
+            await asyncio.Event().wait()
+        except asyncio.CancelledError:
+            client_closed_at_cancel.append(pg.shared_http_client.is_closed)
+            raise
+
+    monkeypatch.setattr(manager, "confirm_live_path", slow_check)
+    monkeypatch.setattr(manager, "needs_confirm", lambda state: True)
+    booth = "shutdown-1-th"
+    ws = _RecordingWebSocket()
+    async with lifespan(app):
+        await _live_booth(booth)
+        manager.listener_manager.add(ws, booth)
+        try:
+            await manager.broadcast_booth_state(booth, booths.get_booth_sync(booth).as_public_dict())
+            await started.wait()
+        finally:
+            manager.listener_manager.remove(ws, booth)
+    assert client_closed_at_cancel == [False], "the check is cancelled while the shared client is still open"
+    assert not manager._go_live_checks

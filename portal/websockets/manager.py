@@ -742,8 +742,22 @@ async def broadcast_booth_state(booth_id: str, state: dict) -> None:
         current = booth.as_public_dict()
         if needs_confirm(current):
             # Off the handler's path: the check can take a moment while the publisher connects.
-            track_task(asyncio.create_task(_confirm_and_resend(booth_id, current["mediamtx_path"])))
+            task = asyncio.create_task(_confirm_and_resend(booth_id, current["mediamtx_path"]))
+            _go_live_checks.add(task)
+            task.add_done_callback(_go_live_checks.discard)
+            track_task(task)
     await listener_manager.broadcast_booth_state(booth_id, state)
+
+
+# Running go-live checks, cancelled at shutdown before the shared HTTP client closes.
+_go_live_checks: set[asyncio.Task] = set()
+
+
+async def cancel_go_live_checks() -> None:
+    checks = list(_go_live_checks)
+    for task in checks:
+        task.cancel()
+    await asyncio.gather(*checks, return_exceptions=True)
 
 
 async def _confirm_and_resend(booth_id: str, path: str) -> None:

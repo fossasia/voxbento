@@ -82,11 +82,12 @@ async def refresh_live_paths() -> None:
             newer.add(path)
         else:
             del found_live_at[path]
-    live_paths = frozenset(
+    listed = frozenset(
         item["name"]
         for item in items
         if isinstance(item, dict) and isinstance(item.get("name"), str) and item.get("source")
-    ) | newer
+    )
+    live_paths = listed | newer
 
 
 def needs_confirm(state: Mapping[str, object]) -> bool:

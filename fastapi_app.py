@@ -101,7 +101,7 @@ async def lifespan(app: FastAPI):
     # Reference via module attribute so test-time monkey-patching of
     # portal.webhooks.worker.webhook_worker_loop is respected.
     import portal.websockets.reaper as _reaper_mod
-    from portal.websockets.manager import manager, on_air_loop
+    from portal.websockets.manager import cancel_go_live_checks, manager, on_air_loop
 
     manager.set_membership_checker(_reaper_mod.check_booth_memberships)
     manager.set_token_checker(_reaper_mod.check_booth_tokens)
@@ -148,6 +148,8 @@ async def lifespan(app: FastAPI):
     for task in tasks_to_cancel:
         task.cancel()
     await asyncio.gather(*tasks_to_cancel, return_exceptions=True)
+    # A go-live check still reading MediaMTX would open a fresh client once the shared one closes.
+    await cancel_go_live_checks()
 
     if pg.shared_http_client:
         await pg.shared_http_client.aclose()
