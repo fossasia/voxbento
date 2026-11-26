@@ -244,18 +244,16 @@ class BoothRegistry:
             del self._return_claims[(booth.event_slug, booth.room_id, booth.output_language_code)]
             booth.output_language_code = booth.language_code
             self._refresh_taken(booth.event_slug, booth.room_id)
-            if booth.room_id is not None:
-                # The floor is back to the room's own language (or the Mission Control choice).
-                floor_language.set_booth_language(booth.room_id, booth.booth_id, None)
+            # The floor is back to the room's own language (or the Mission Control choice).
+            floor_language.set_booth_language(booth.room_id, booth.booth_id, None)
 
     def _claim(self, booth: Booth, code: str) -> None:
         """Point *booth* at the return channel *code*, which nobody else holds. Caller holds the lock."""
         self._return_claims[(booth.event_slug, booth.room_id, code)] = booth.booth_id
         booth.output_language_code = code
         self._refresh_taken(booth.event_slug, booth.room_id)
-        if booth.room_id is not None:
-            # The person on the floor now speaks the booth's language, so the floor AI follows it.
-            floor_language.set_booth_language(booth.room_id, booth.booth_id, booth.language_code)
+        # The person on the floor now speaks the booth's language, so the floor AI follows it.
+        floor_language.set_booth_language(booth.room_id, booth.booth_id, booth.language_code)
 
     def _refresh_taken(self, event_slug: str, room_id: int | None) -> None:
         """Tell the room's two-way booths which other booth holds their return channel now."""
