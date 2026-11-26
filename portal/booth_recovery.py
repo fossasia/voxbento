@@ -12,6 +12,7 @@ portal has been down. ``restore`` reads the rows back at startup, unless they ar
 older than ``booth_state_max_age_seconds``. The active interpreter comes back as a
 disconnected placeholder that only the same session can reclaim, and expires
 after ``booth_restart_grace_seconds`` if nobody does.
+A two-way booth comes back interpreting into the same channel (#1397).
 
 Nothing here runs on the live path: a failed save is logged once per outage
 (``portal.outage_log``) and retried, and a failed restore starts with empty booths
@@ -53,6 +54,7 @@ _RECORD_FIELDS = (
     "active_invite_public_id",
     "active_mic_active",
     "active_ingest_connected",
+    "output_language_code",
 )
 
 

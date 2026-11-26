@@ -14,6 +14,7 @@
  * The page passes its data in data-config on #mission-control (no inline script).
  */
 
+import { directionLabel } from './booth-output.js';
 import { renderFloorLanguage } from './floor-language.js';
 
 const root = document.getElementById('mission-control');
@@ -209,6 +210,7 @@ function connectWs(boothId) {
 
     if (data.type === 'booth:state') {
       entry.state = { ...data.state, room_name: data.state.room_name ?? entry.state.room_name };
+      followOutput(boothId);
       renderCard(boothId);
     }
     // Silently ignore booth:joined — we do not join as a participant.
@@ -249,9 +251,10 @@ function handleVolumeChange(boothId, volume) {
   const vol = parseInt(volume, 10);
 
   if (vol > 0 && !entry.whep) {
-    const whepUrl = `${config.whipBase}/${entry.state.mediamtx_path}/whep`;
+    // A two-way booth is heard on the channel it interprets into now (#1397).
+    entry.whepPath = listenPath(entry.state);
     const whep = window.createWhepClient();
-    whep.start({ whepUrl, audioEl: entry.audioElement });
+    whep.start({ whepUrl: `${config.whipBase}/${entry.whepPath}/whep`, audioEl: entry.audioElement });
     entry.whep = whep;
   } else if (vol === 0 && entry.whep) {
     entry.whep.stop();
@@ -261,6 +264,17 @@ function handleVolumeChange(boothId, volume) {
   if (entry.audioElement) {
     entry.audioElement.volume = vol / 100;
   }
+}
+
+const listenPath = (state) => state.output_mediamtx_path;
+
+/** Keep listening to a two-way booth when it switches channel. */
+function followOutput(boothId) {
+  const entry = boothMap.get(boothId);
+  if (!entry?.whep || entry.whepPath === listenPath(entry.state)) return;
+  entry.whep.stop();
+  entry.whep = null;
+  handleVolumeChange(boothId, entry.currentVolume);
 }
 
 // ---------------------------------------------------------------------------
@@ -311,6 +325,8 @@ function renderCard(boothId) {
   const title = el('h3', 'mc-booth-title', s.language);
   title.appendChild(el('span', 'mc-booth-code', s.language_code));
   head.appendChild(title);
+  const direction = directionLabel(s);
+  if (direction) head.appendChild(el('span', 'mc-pill', direction));
   head.appendChild(el('span', `mc-pill ${onAir ? 'is-on' : 'is-off'}`, onAir ? '● On air' : 'Not on air'));
   card.appendChild(head);
 

@@ -142,6 +142,12 @@
                 <label><input type="radio" name="delivery_{{ code }}" value="{{ value }}" required {% if delivery == value %}checked{% endif %}><span>{{ label }}<small>{{ delivery_hints[value] }}</small></span></label>
                 {% endfor %}
               </div>
+              {% if code != plan.spoken_language %}
+              <label class="rs-two-way" data-rs-two-way>
+                <input type="checkbox" name="two_way_{{ code }}" value="{{ plan.spoken_language }}" {% if code in plan.two_way %}checked data-rs-was-two-way{% endif %}>
+                <span>Two-way with <span data-rs-two-way-name>{{ language_name(plan.spoken_language) }}</span><small>With an interpreter, the booth can also interpret back into {{ language_name(plan.spoken_language) }}.</small></span>
+              </label>
+              {% endif %}
               <p class="rs-delivery-error" data-rs-delivery-error role="status" {% if delivery in delivery_labels %}hidden{% endif %}>
                 {%- if delivery == 'both' %}{{ language_name(code) }} used to offer both an interpreter and AI. Choose one way for listeners to get it before saving.
                 {%- else %}Choose how listeners get {{ language_name(code) }}.{% endif -%}
@@ -159,6 +165,10 @@
               <label><input type="radio" value="{{ value }}" required {% if loop.first %}checked{% endif %}><span>{{ label }}<small>{{ delivery_hints[value] }}</small></span></label>
               {% endfor %}
             </div>
+            <label class="rs-two-way" data-rs-two-way>
+              <input type="checkbox">
+              <span>Two-way with <span data-rs-two-way-name></span><small>With an interpreter, the booth can also interpret back into the room's language.</small></span>
+            </label>
             <p class="rs-delivery-error" data-rs-delivery-error role="status" hidden></p>
           </li>
         </template>

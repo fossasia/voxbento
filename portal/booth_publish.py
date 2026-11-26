@@ -10,6 +10,10 @@ The ticket is only checked when the WHIP session starts, so the MediaMTX
 session it opened is recorded per booth. When that interpreter leaves the booth
 (revocation, removal, grace expiry) or Mission Control stops it, the portal
 kicks that session itself instead of relying on the interpreter's browser (#1285).
+
+A two-way booth (#1397) publishes to its own path or to its return language's path,
+whichever it outputs into now. The ticket is bound to that path, and the sessions the
+booth opened are kept with the path they publish to, so either one can be ended.
 """
 
 from __future__ import annotations
@@ -25,7 +29,8 @@ from uuid import UUID
 import httpx
 from fastapi import HTTPException
 
-from portal.booth_identity import booth_id_to_mediamtx_path
+from portal.booth_identity import booth_id_to_mediamtx_path, make_mediamtx_path, parse_booth_id
+from portal.booth_state import Booth
 from portal.globals import booths
 from portal.roles import Permission, has_permission
 
@@ -75,6 +80,29 @@ def _prune(now: float) -> None:
         _tickets.popitem(last=False)
 
 
+def publish_path(booth: Booth) -> str:
+    """The path the booth's active interpreter may publish to now, derived on the server only.
+
+    Raises ``ValueError`` for a booth ID that names no event, room and language.
+    """
+    if booth.outputs_into_return:
+        return make_mediamtx_path(booth.event_slug, booth.room_id, booth.output_language_code)
+    return booth_id_to_mediamtx_path(booth.booth_id)
+
+
+def publish_refusal(booth: Booth) -> str | None:
+    """Why nobody in *booth* may publish to its path now, or None.
+
+    A two-way booth interpreting into this booth's language holds that channel (#1397).
+    """
+    if booth.outputs_into_return:
+        return None
+    owner = booths.return_claim_owner(booth.event_slug, booth.room_id, booth.language_code)
+    if owner is not None and owner.booth_id != booth.booth_id:
+        return f"The {owner.language} booth is interpreting into {booth.language} right now."
+    return None
+
+
 def issue_ticket(booth_id: str, participant_id: str, path: str) -> str:
     """Mint a ticket that lets *participant_id* publish to *path* once."""
     now = time.monotonic()
@@ -105,6 +133,12 @@ def still_entitled(ticket: PublishTicket) -> bool:
     """
     booth = booths.get_booth_sync(ticket.booth_id)
     if booth is None or not booth.broadcast_unlocked:
+        return False
+    # The booth may have switched channel since the ticket was issued (#1397).
+    try:
+        if publish_path(booth) != ticket.path or publish_refusal(booth) is not None:
+            return False
+    except ValueError:
         return False
     participant = booth.participants.get(ticket.participant_id)
     return bool(
@@ -163,6 +197,19 @@ def take_booth_publishers(booth_id: str) -> list[Publisher]:
     return list(_publishers.pop(booth_id, {}).values())
 
 
+def take_path_publishers(booth_id: str, path: str) -> list[Publisher]:
+    """Claim the booth's recorded sessions on *path*, e.g. the channel a two-way booth left."""
+    sessions = _publishers.get(booth_id)
+    if not sessions:
+        return []
+    taken = [publisher for publisher in sessions.values() if publisher.path == path]
+    for publisher in taken:
+        del sessions[publisher.session_id]
+    if not sessions:
+        del _publishers[booth_id]
+    return taken
+
+
 async def _kick_session(path: str, source_type: str, session_id: str) -> None:
     # Imported here, not at the top: program_ingest imports this module (circular import).
     from portal import program_ingest
@@ -187,46 +234,67 @@ async def end_publishers(publishers: list[Publisher], *, only_while_locked: bool
         except (httpx.HTTPError, HTTPException, ValueError) as exc:
             logger.warning("Could not end the publisher of booth %s (%s)", publisher.booth_id, type(exc).__name__)
             _remember(publisher)
-    if publishers:
-        await _end_unowned_source(publishers[0].booth_id, publishers[0].path, only_while_locked=only_while_locked)
+    for booth_id, path in dict.fromkeys((publisher.booth_id, publisher.path) for publisher in publishers):
+        await _end_unowned_source(booth_id, path, only_while_locked=only_while_locked)
 
 
-async def _end_unowned_source(booth_id: str, path: str, *, only_while_locked: bool = False) -> None:
+async def _end_unowned_source(
+    booth_id: str, path: str, *, only_while_locked: bool = False, known: frozenset[str] | None = None
+) -> None:
+    """End the source publishing to *path* unless it is a recorded session or another booth owns the path.
+
+    The recorded sessions are *known*, or else the booth's records.
+
+    A two-way booth's return path belongs to whichever booth interprets into it now (#1397).
+    """
     from portal import program_ingest  # circular import, see _kick_session
 
     try:
         current = await program_ingest.media_path(path)
         source = current.source if current else None
-        if source is not None and source.id not in _publishers.get(booth_id, {}):
-            booth = booths.get_booth_sync(booth_id)
-            if only_while_locked and booth is not None and booth.broadcast_unlocked:
-                return
-            await _kick_session(path, source.type, source.id)
+        recorded = known if known is not None else _publishers.get(booth_id, {})
+        if source is None or source.id in recorded:
+            return
+        if booths.output_owner_sync(path) not in (None, booth_id):
+            return
+        booth = booths.get_booth_sync(booth_id)
+        if only_while_locked and booth is not None and booth.broadcast_unlocked:
+            return
+        await _kick_session(path, source.type, source.id)
     except (httpx.HTTPError, HTTPException, ValueError) as exc:
         logger.warning("Could not check the source of booth %s (%s)", booth_id, type(exc).__name__)
 
 
-async def stop_booth_publish(booth_id: str, publishers: list[Publisher], *, only_while_locked: bool = False) -> None:
-    """Best effort: end *publishers* and whatever else publishes to the booth's path.
+async def stop_booth_publish(
+    booth_id: str,
+    publishers: list[Publisher],
+    *,
+    only_while_locked: bool = False,
+    return_language_code: str | None = None,
+) -> None:
+    """Best effort: end *publishers* and whatever else publishes to the booth's paths.
 
-    With *only_while_locked* (Mission Control Stop) the path's current source is
+    The paths are the booth's own and, for a two-way booth, its return language's: pass
+    *return_language_code* when the booth may already be gone from memory. The return
+    path's source is left alone while another booth interprets into it.
+
+    With *only_while_locked* (Mission Control Stop) a path's current source is
     left alone once the booth is unlocked again: it then belongs to a new publisher.
     """
-    from portal import program_ingest  # circular import, see _kick_session
-
     await end_publishers(publishers, only_while_locked=only_while_locked)
-    known = {publisher.session_id for publisher in publishers}
+    known = frozenset(publisher.session_id for publisher in publishers)
     try:
-        path = booth_id_to_mediamtx_path(booth_id)
-        current = await program_ingest.media_path(path)
-        source = current.source if current else None
-        if source is not None and source.id not in known:
-            booth = booths.get_booth_sync(booth_id)
-            if only_while_locked and booth is not None and booth.broadcast_unlocked:
-                return
-            await _kick_session(path, source.type, source.id)
-    except (httpx.HTTPError, HTTPException, ValueError) as exc:
+        event_slug, room_id, language_code = parse_booth_id(booth_id)
+    except ValueError as exc:
         logger.warning("Could not stop the publisher of booth %s (%s)", booth_id, type(exc).__name__)
+        return
+    paths = [make_mediamtx_path(event_slug, room_id, language_code)]
+    booth = booths.get_booth_sync(booth_id)
+    return_code = return_language_code or (booth.return_language_code if booth is not None else None)
+    if return_code:
+        paths.append(make_mediamtx_path(event_slug, room_id, return_code))
+    for path in paths:
+        await _end_unowned_source(booth_id, path, only_while_locked=only_while_locked, known=known)
 
 
 def clear_tickets() -> None:

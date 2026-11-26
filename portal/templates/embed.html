@@ -88,6 +88,8 @@
       "captions_enabled": {{ captions_enabled | tojson }},
       "token": {{ token | tojson }},
       "audio_delay_ms": {{ audio_delay_ms | tojson }},
+      "floor_fallback": {{ floor_fallback | tojson }},
+      "return_whep_url": {{ return_whep_url | tojson }},
       "source_lang_code": "{{ language_code }}",
       "target_lang_code": "{{ target_lang_code }}",
       "headless": {{ headless | tojson }},
@@ -95,6 +97,7 @@
       "allowed_origins": {{ allowed_origins_list | tojson }}
     }
   </script>
+  <script src="/static/js/channel-source.js?v={{ js_version }}"></script>
   <script src="/static/js/embed-player.js?v={{ js_version }}"></script>
   {% include "_auth_sync.html" %}
 

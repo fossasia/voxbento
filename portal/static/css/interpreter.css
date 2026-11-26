@@ -460,6 +460,57 @@ label {
   height: 1.25rem;
 }
 
+/* ── Two-way output switch (#1397) ───────────────────────────────────── */
+.output-switch {
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+  width: 100%;
+}
+
+.output-switch[hidden] {
+  display: none;
+}
+
+.output-switch-buttons {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 10rem), 1fr));
+  gap: 0.5rem;
+}
+
+.output-btn {
+  padding: 0.6rem 1rem;
+  font: inherit;
+  font-weight: 600;
+  color: var(--bx-text);
+  background: var(--bx-surface-2);
+  border: 2px solid var(--bx-border-strong);
+  border-radius: var(--bx-radius-sm);
+  cursor: pointer;
+}
+
+.output-btn[aria-pressed='true'] {
+  color: var(--bx-accent-ink);
+  border-color: var(--bx-accent);
+  box-shadow: inset 0 0 0 1px var(--bx-accent);
+}
+
+.output-btn:focus-visible {
+  outline: 3px solid var(--bx-accent);
+  outline-offset: 2px;
+}
+
+.output-btn:disabled {
+  cursor: not-allowed;
+  opacity: 0.6;
+}
+
+.output-status {
+  font-size: 0.85rem;
+  font-weight: 600;
+  color: var(--bx-text);
+}
+
 /* ── Live badge ──────────────────────────────────────────────────────── */
 .live-badge {
   display: inline-flex;

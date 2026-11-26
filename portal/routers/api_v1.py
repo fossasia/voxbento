@@ -34,10 +34,18 @@ from portal.models import (
 )
 from portal.rate_limit import auth_rate_limiter
 from portal.roles import EVENT_OWNER
+from portal.room_setup import (
+    ReturnLanguageInUse,
+    drop_mismatched_returns,
+    return_language_error,
+    return_language_owner,
+    return_owner_error,
+)
 from portal.transcription.constants import ProviderEnum
 from portal.transcription.worker import active_workers, start_transcription_worker, stop_transcription_worker
 from portal.translations.constants import TranslationProviderEnum
 from portal.translations.model_languages import language_support_error
+from portal.websockets.manager import note_return_language
 from portal.websockets.revocation import revoke_booths_for_deleted_entity
 
 logger = logging.getLogger(__name__)
@@ -869,9 +877,21 @@ async def upsert_room(
 
     payload_dict = payload.model_dump(exclude_unset=True)
     room, action, status_code_ret = await _create_or_update_base_room(db, event, eventyay_room_id, payload_dict)
+    # Two-way booths interpret back into the spoken language, so they lose it when it changes (#1397).
+    try:
+        one_way = await drop_mismatched_returns(
+            db, room.id, room.floor_language_code, booths.outputting_into_return(event.slug, room.id)
+        )
+    except ReturnLanguageInUse as exc:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc))
 
     if "target_languages" in payload_dict and payload_dict["target_languages"] is not None:
         requested_langs = set(payload_dict["target_languages"])
+        for code in sorted(requested_langs):
+            # A booth that stays two-way into this language already covers it.
+            owner = await return_language_owner(db, room.id, code)
+            if owner is not None and owner.language_code in requested_langs:
+                raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=return_owner_error(owner))
         await _sync_target_languages_and_booths(db, event, room, eventyay_room_id, requested_langs, token)
 
     # Audit Logging
@@ -887,6 +907,8 @@ async def upsert_room(
     await db.flush()
 
     returned_booths = await _build_booths_response(db, event.slug, room.id)
+    for code in one_way:
+        await note_return_language(make_booth_id(event.slug, room.id, code), None, "")
 
     return {"status": "success", "room_id": room.id, "booths": returned_booths}
 
@@ -976,6 +998,7 @@ async def list_booths(
         {
             "id": b.id,
             "language_code": b.language_code,
+            "return_language_code": b.return_language_code,
             "whip_path": make_mediamtx_path(event.slug, target_room_id, b.language_code),
             "created_at": b.created_at.isoformat(),
         }
@@ -1013,9 +1036,17 @@ async def get_booth(
     return {
         "id": booth.id,
         "language_code": booth.language_code,
+        "return_language_code": booth.return_language_code,
         "whip_path": make_mediamtx_path(event.slug, target_room_id, booth.language_code),
         "created_at": booth.created_at.isoformat(),
     }
+
+
+class BoothCreate(BaseModel):
+    """Optional body for creating a booth."""
+
+    # Two-way booth (#1397): the room's spoken language, which the booth can also interpret into.
+    return_language_code: str | None = Field(None, max_length=2)
 
 
 @router.post("/events/{event_slug}/rooms/{room_id}/booths/{language_code}")
@@ -1023,10 +1054,11 @@ async def create_booth(
     event_slug: str,
     room_id: int | str,
     language_code: str,
+    body: BoothCreate | None = None,
     db: AsyncSession = Depends(get_db_session),
     token: OAuthToken = Depends(require_oauth_scope("booths:write")),
 ):
-    """Create a new language booth for a room within an event."""
+    """Create a new language booth for a room within an event, optionally two-way."""
     event = await _get_event_for_request(db, event_slug, write_lock=True)
     if not event:
         raise HTTPException(status_code=404, detail="Event not found")
@@ -1045,15 +1077,41 @@ async def create_booth(
     )
     if result.scalars().first():
         raise HTTPException(status_code=409, detail="Booth already exists")
+    owner = await return_language_owner(db, target_room_id, language_code)
+    if owner is not None:
+        raise HTTPException(status_code=409, detail=return_owner_error(owner))
+    return_code = body.return_language_code.strip().lower() if body and body.return_language_code else None
+    if return_code is not None:
+        room_row = await db.get(Room, target_room_id)
+        others = (await db.scalars(select(DBBooth.language_code).where(DBBooth.room_id == target_room_id))).all()
+        error = return_language_error(
+            return_code,
+            booth_language=language_code,
+            spoken_language=room_row.floor_language_code if room_row else None,
+            other_booth_languages=others,
+        )
+        if error:
+            raise HTTPException(status_code=422, detail=error)
 
     from portal.booth_identity import make_mediamtx_path
 
-    booth = DBBooth(room_id=target_room_id, language_code=language_code, event_id=event.id, language_name=language_code)
+    booth = DBBooth(
+        room_id=target_room_id,
+        language_code=language_code,
+        event_id=event.id,
+        language_name=language_code,
+        return_language_code=return_code,
+    )
     db.add(booth)
     await db.flush()
 
     whip_path = make_mediamtx_path(event.slug, target_room_id, language_code)
-    return {"status": "success", "booth_id": booth.id, "whip_path": whip_path}
+    return {
+        "status": "success",
+        "booth_id": booth.id,
+        "whip_path": whip_path,
+        "return_language_code": return_code,
+    }
 
 
 @router.delete("/events/{event_slug}/rooms/{room_id}/booths/{language_code}")

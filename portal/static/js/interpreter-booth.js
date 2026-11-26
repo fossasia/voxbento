@@ -1,4 +1,5 @@
 import { createBackoff, finalCloseMessage } from './booth-reconnect.js'
+import { offersChannel, outputShortcut, outputView } from './booth-output.js'
 import { micIsActive, watchMicTracks } from './mic-activity.js'
 
 const portal = document.getElementById('interpreter-portal')
@@ -55,6 +56,10 @@ const state = {
   reconnectTimer: null,
   /** Set by boot() once the booth should be joined on every socket that opens. */
   joinRequested: false,
+  /** The MediaMTX path the server says this booth outputs into (two-way booths switch it, #1397). */
+  outputPath: '',
+  /** The last booth:state, for the two-way switch. */
+  boothState: null,
 }
 
 const reconnectBackoff = createBackoff()
@@ -100,6 +105,11 @@ const elements = {
   listenerUrlDisplay: document.getElementById('listener-url-display'),
   copyListenerUrl: document.getElementById('copy-listener-url'),
   muteLabel: document.getElementById('mute-label'),
+  outputSwitch: document.getElementById('output-switch'),
+  outputPrimary: document.getElementById('output-primary'),
+  outputReturn: document.getElementById('output-return'),
+  outputStatus: document.getElementById('output-status'),
+  outputReason: document.getElementById('output-reason'),
   preflightRetry: document.getElementById('preflight-retry'),
   checkMicPermission: document.getElementById('check-mic-permission'),
 }
@@ -271,6 +281,7 @@ function handleServerMessage(data) {
       reconcileIngestAfterRejoin()
     } else {
       state.monitoringStarted = true
+      syncMonitorOptions()
       joinMonitoringFeed()
     }
     render()
@@ -422,6 +433,15 @@ function bindEventHandlers() {
     })
   }
 
+  elements.outputPrimary?.addEventListener('click', () => requestOutput('primary'))
+  elements.outputReturn?.addEventListener('click', () => requestOutput('return'))
+  document.addEventListener('keydown', (event) => {
+    const output = outputShortcut(event)
+    if (!output || !outputView(state.boothState, outputViewer())) return
+    event.preventDefault()
+    requestOutput(output)
+  })
+
   document.addEventListener('keydown', (event) => {
     if (event.code !== 'Space') return
     const tag = document.activeElement?.tagName?.toLowerCase()
@@ -552,6 +572,10 @@ async function fetchIngestReachability() {
 
 function applyBoothState(payload, { skipAutoStart = false } = {}) {
   const previousActiveInterpreterId = state.activeInterpreterId
+  const previousOutputPath = state.outputPath
+  state.boothState = payload
+  state.outputPath = payload.output_mediamtx_path || state.channelId
+  const switchedChannel = Boolean(previousOutputPath) && state.outputPath !== previousOutputPath
 
   state.participants = payload.participants || []
   state.activeInterpreterId = payload.active_interpreter_id || null
@@ -599,7 +623,19 @@ function applyBoothState(payload, { skipAutoStart = false } = {}) {
 
   const lostPublishingRights = lostActivePublisher || lockedWhilePublishing
 
-  if (lostPublishingRights) {
+  if (switchedChannel) {
+    syncMonitorOptions()
+    if (boothListening) {
+      stopBoothAudioListening()
+      startBoothAudioListening()
+    }
+  }
+
+  if (switchedChannel && !lostPublishingRights && state.ingestConnected) {
+    // The server moved this booth to its other channel and ended the old session (#1397):
+    // publish again with a fresh ticket for the new path.
+    republishOnNewChannel()
+  } else if (lostPublishingRights) {
     state.relayingOut = true
     if (state.micStream) {
       state.micStream.getAudioTracks().forEach((t) => { t.enabled = false })
@@ -912,7 +948,11 @@ function setRelayListening(listening) {
 let boothListening = false
 
 function startBoothAudioListening() {
-  const whepUrl = state.whepUrl || (state.whipBase && state.channelId ? `${state.whipBase}/${encodeURIComponent(state.channelId)}/whep` : '')
+  // A two-way booth's teammates hear whichever channel it interprets into now (#1397).
+  const switched = state.outputPath && state.outputPath !== state.channelId
+  const whepUrl = switched && state.whipBase
+    ? `${state.whipBase}/${state.outputPath}/whep`
+    : state.whepUrl || (state.whipBase && state.channelId ? `${state.whipBase}/${encodeURIComponent(state.channelId)}/whep` : '')
   if (!whepUrl || !boothWhep) return
   if (boothListening) return
 
@@ -1220,14 +1260,17 @@ function settlePublishTicket(data) {
   const { resolve, reject, timer } = pendingPublishTicket
   pendingPublishTicket = null
   clearTimeout(timer)
-  if (data.ticket) resolve(data.ticket)
+  if (data.ticket) resolve({ ticket: data.ticket, path: data.path })
   else reject(new Error(data.error || 'Publish ticket refused'))
 }
 
 /** POST the local SDP offer to MediaMTX with a fresh publish ticket and apply the answer. */
 async function doWhipIngest(peerConnection) {
-  const whipUrl = `${state.whipBase}/${encodeURIComponent(state.channelId)}/whip`
-  const ticket = await requestPublishTicket()
+  const { ticket, path } = await requestPublishTicket()
+  // The ticket is bound to the path the server chose: a two-way booth's current channel (#1397).
+  const whipUrl = path
+    ? `${state.whipBase}/${path}/whip`
+    : `${state.whipBase}/${encodeURIComponent(state.channelId)}/whip`
   const response = await fetch(whipUrl, {
     method: 'POST',
     headers: { 'Content-Type': 'application/sdp', Authorization: `Bearer ${ticket}` },
@@ -1365,6 +1408,7 @@ const _RELAY_MAX_ATTEMPTS = 8
 function attemptRelayStart(attempt) {
   if (attempt >= _RELAY_MAX_ATTEMPTS) { state.ingestStarting = false; return }
   window.setTimeout(async () => {
+    const startedFor = state.outputPath
     if (!state.joined || !state.participantId) { state.ingestStarting = false; return }
     if (state.activeInterpreterId !== state.participantId) { state.ingestStarting = false; return }
     // Broadcast must be unlocked by Mission Control before any ingest can start.
@@ -1410,7 +1454,9 @@ function attemptRelayStart(attempt) {
         state.peerConnection = null
       }
       state.whipResourceUrl = null
-      if (error.message.includes('409') && attempt < _RELAY_MAX_ATTEMPTS - 1) {
+      // A two-way booth that switched channel mid-handshake retries on its new path.
+      const switched = startedFor !== state.outputPath
+      if ((switched || error.message.includes('409')) && attempt < _RELAY_MAX_ATTEMPTS - 1) {
         attemptRelayStart(attempt + 1)
         return
       }
@@ -1462,6 +1508,61 @@ function render() {
   renderMicControls()
   renderHandoverButton()
   renderLiveBadge()
+  renderOutputSwitch()
+}
+
+// ── Two-way output (#1397) ────────────────────────────────────────────────────
+
+function outputViewer() {
+  const me = state.participants.find((p) => p.participant_id === state.participantId)
+  return { participantId: state.participantId, canSetActive: Boolean(me?.can_set_active) }
+}
+
+function requestOutput(output) {
+  const view = outputView(state.boothState, outputViewer())
+  const button = view?.buttons.find((b) => b.output === output)
+  if (!button || button.disabled || button.pressed) return
+  wsSend({ type: 'booth:set-output', output })
+}
+
+function renderOutputSwitch() {
+  if (!elements.outputSwitch) return
+  const view = outputView(state.boothState, outputViewer())
+  elements.outputSwitch.hidden = !view
+  if (!view) return
+  const [primary, ret] = view.buttons
+  ;[[elements.outputPrimary, primary], [elements.outputReturn, ret]].forEach(([el, button]) => {
+    setTextIfChanged(el, button.label)
+    el.setAttribute('aria-pressed', String(button.pressed))
+    el.disabled = button.disabled
+    el.title = button.reason || `${button.label} (${button.shortcut})`
+  })
+  setTextIfChanged(elements.outputStatus, view.status)
+  setTextIfChanged(elements.outputReason, view.reason)
+}
+
+/** Publish again on the booth's new channel after the server switched it. */
+function republishOnNewChannel() {
+  state.relayingOut = true
+  stopLiveIngest().catch(() => {}).then(() => {
+    state.relayingOut = false
+    if (state.boothState) applyBoothState(state.boothState)
+    render()
+  })
+}
+
+/** Never offer the monitor a channel this booth interprets into (#1397). */
+function syncMonitorOptions() {
+  const selector = document.getElementById('monitor-source')
+  const relay = selector?.querySelector("option[value='relay']")
+  if (!relay) return
+  const allowed = offersChannel(state.relayWhepUrl, state.outputPath)
+  relay.hidden = !allowed
+  relay.disabled = !allowed
+  if (!allowed && selector.value === 'relay') {
+    selector.value = 'off'
+    joinMonitoringFeed()
+  }
 }
 
 /**

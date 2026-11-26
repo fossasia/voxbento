@@ -285,6 +285,8 @@ function createWhepClient() {
           } else {
             attachDirectStream(stream, playOnTrack);
           }
+          // The listener's player has the autoplay attribute, so loading a stream starts it anyway.
+          if (!playOnTrack) _audioEl.pause();
         }
         emitState();
       });
@@ -438,6 +440,37 @@ function createWhepClient() {
           attachDirectStream(currentStream, autoplay);
         }
       }
+      emitState();
+    },
+
+    /**
+     * Move playback to another element without renegotiating, e.g. from a muted
+     * standby element to the visible player once this stream is the one to hear.
+     * @param {HTMLAudioElement} audioEl
+     * @param {boolean} autoplay – false keeps the new element paused
+     */
+    setAudioElement(audioEl, autoplay = true) {
+      if (audioEl === _audioEl) return;
+      const previous = _audioEl;
+      _audioEl = audioEl;
+      if (previous) {
+        previous.pause();
+        previous.srcObject = null;
+      }
+      if (currentStream) {
+        if (delayedAudio.output) {
+          // The delay line already holds the last _audioDelayMs of audio; a new one would start empty.
+          audioEl.srcObject = delayedAudio.output.stream;
+          playAudio(autoplay);
+        } else {
+          attachDirectStream(currentStream, autoplay);
+        }
+      } else {
+        // The track arrives later and plays only if this says so.
+        playOnTrack = autoplay;
+      }
+      // The player has the autoplay attribute, which would start it anyway.
+      if (!autoplay) audioEl.pause();
       emitState();
     },
 

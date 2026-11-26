@@ -21,6 +21,10 @@ Active interpreter Go Live
    -rtsp_transport tcp → PCM s16le mono at provider.sample_rate (16kHz, 24kHz for OpenAI) → stdout pipe
 ```
 
+A two-way booth's worker (#1397) stays on the booth's own path. While the booth interprets
+into the room's spoken language, its own channel is silent and emits no captions, and the
+return channel's speech is not transcribed.
+
 ### 2. Floor Audio Pipeline
 ```
 Jitsi Meet Floor Conference

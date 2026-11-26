@@ -115,6 +115,16 @@
           </button>
         </div>
         <span id='handover-announcer' class='sr-only' role='status'></span>
+
+        <div id='output-switch' class='output-switch' role='group' aria-labelledby='output-switch-label' hidden>
+          <span id='output-switch-label' class='deck-hint'>Interpret into</span>
+          <div class='output-switch-buttons'>
+            <button id='output-primary' type='button' class='output-btn' aria-pressed='true' aria-keyshortcuts='Alt+1' aria-describedby='output-reason'></button>
+            <button id='output-return' type='button' class='output-btn' aria-pressed='false' aria-keyshortcuts='Alt+2' aria-describedby='output-reason'></button>
+          </div>
+          <span id='output-status' class='output-status' role='status'></span>
+          <span id='output-reason' class='deck-hint'></span>
+        </div>
       </section>
 
     </main>
