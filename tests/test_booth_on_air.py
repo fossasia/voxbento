@@ -471,6 +471,9 @@ async def test_shutdown_cancels_go_live_checks_before_the_client_closes(monkeypa
 
     monkeypatch.setattr(manager, "confirm_live_path", slow_check)
     monkeypatch.setattr(manager, "needs_confirm", lambda state: True)
+    # The lifespan installs the real membership and token checkers; later booth socket tests expect none.
+    monkeypatch.setattr(manager.manager, "membership_checker", manager.manager.membership_checker)
+    monkeypatch.setattr(manager.manager, "token_checker", manager.manager.token_checker)
     booth = "shutdown-1-th"
     ws = _RecordingWebSocket()
     async with lifespan(app):
