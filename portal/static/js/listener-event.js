@@ -242,7 +242,7 @@ function onFloorFallback() {
 function setLiveStatus(text) {
   if (onFloorFallback()) {
     setStatus(FLOOR_FALLBACK_STATUS, "live");
-  } else if (channelSource !== null && !channelSourceFollowsReturn && !channelOnAir) {
+  } else if (channelSource !== null && !channelOnAir && (!channelSourceFollowsReturn || channelSource.source() !== "floor")) {
     setStatus(OFF_AIR_STATUS, "recovering");
   } else {
     setStatus(text, "live");
@@ -933,7 +933,10 @@ function handleCaptionsMessage(event) {
 
     if (data.type === "channel:state") {
       if (channelSource && channelSourceFollowsReturn) {
-        channelSource.setOnAir(Boolean(data.state && data.state.return_on_air === true));
+        channelOnAir = Boolean(data.state && data.state.return_on_air === true);
+        channelSource.setOnAir(channelOnAir);
+        // Relabel now: the two-way booth's stream can still look connected until the floor takes over.
+        if (channelPlayerState) onState(channelPlayerState, false);
       }
       return;
     }
@@ -1311,6 +1314,7 @@ languageSelect.addEventListener("change", function () {
           createClient: createWhepClient,
           startOnFallback: true,
           onState: function (s) {
+            channelPlayerState = s;
             onState(s, false);
           },
         });

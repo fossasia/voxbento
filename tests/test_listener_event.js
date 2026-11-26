@@ -1177,6 +1177,7 @@ async function returnChannelTests() {
   assert(running().length === 1 && roomSelect.value === '4', 'a booth:state on the floor feed changes nothing');
 
   captionsSocket().onmessage(channelStateMessage({ return_on_air: true, whep_url: 'http://mtx/r4/en/whep', language_code: 'en' }));
+  assert(statusText() === 'Live (WebRTC)', 'the floor stays Live while the return stream warms up, got "' + statusText() + '"');
   const ret = channelClients[before + 1];
   assert(ret && ret.opts.whepUrl === 'http://mtx/r4/en/whep' && ret.audioEl !== player, 'the return stream warms up off the player');
   assert(!floor.stopped, 'the floor plays until the return stream has audio');
@@ -1186,12 +1187,14 @@ async function returnChannelTests() {
 
   captionsSocket().onmessage(channelStateMessage({ return_on_air: false, whep_url: null, language_code: 'en' }));
   assert(pendingTimers(3000) === 1 && running().length === 1 && running()[0] === ret, 'a drop keeps the return stream during the 3 s guard');
+  assert(statusText() === OFF_AIR, 'and says the interpreter is off air, not Live, got "' + statusText() + '"');
   now += 3000;
   runTimers(3000);
   const floorAgain = channelClients[before + 2];
   assert(floorAgain && floorAgain.opts.whepUrl === floorUrl, 'the floor comes back 3 s after the booth leaves');
   floorAgain.live();
   assert(ret.stopped && running().length === 1, 'one stream plays');
+  assert(statusText() === 'Live (WebRTC)', 'the floor is Live again, got "' + statusText() + '"');
 
   captionsSocket().onmessage(channelStateMessage(null));
   captionsSocket().onmessage(channelStateMessage({ return_on_air: 'yes' }));
