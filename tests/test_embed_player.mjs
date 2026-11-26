@@ -233,8 +233,23 @@ console.log('\n── Off-air booth plays the floor, then the interpretation (#1
   assert(player.volume === 0.4, 'volume and mute stay on the one player across switches');
 
   ws.onclose({ code: 4001 });
-  assert(running().length === 0 && timers.size === 0, 'a 4001 close stops every stream and timer');
+  assert(running().length === 1 && !booth.stopped && booth.audioEl === player, 'an expired session keeps the booth playing');
   assert(status() === 'Session expired', 'and shows the expired session');
+  advance(60000);
+  assert(page.sockets.length === 1 && page.clients.length === 2 && timers.size === 0, 'and never reconnects or switches again');
+}
+{
+  await load({ ...BASE, floor_fallback: FALLBACK });
+  const ws = page.sockets[0];
+  advance(3000);
+  const floor = page.clients[0];
+  floor.live();
+  ws.onmessage(state({ on_air: true }));
+  const booth = page.clients[1];
+  ws.onclose({ code: 4001 });
+  assert(!floor.stopped && booth.stopped && floor.audioEl === page.els['embed-audio'], 'expiry mid-switch keeps the floor in the player');
+  advance(60000);
+  assert(running().length === 1 && page.clients.length === 2 && timers.size === 0, 'and the floor stays');
 }
 
 console.log('\n── 4003 and dropped sockets ──');

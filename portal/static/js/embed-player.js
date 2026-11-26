@@ -227,7 +227,12 @@
         };
         ws.onmessage = handleCaptionMessage;
         ws.onclose = function(ev) {
-          if (ev.code === 4001) { stopChannelSource(); setExpired(); return; }
+          // 4001: the embed session expired. Keep what plays now; a reload brings switching back.
+          if (ev.code === 4001) {
+            if (channelSource) channelSource.hold();
+            setExpired();
+            return;
+          }
           // 4003: the token is for another event, so reconnecting cannot help.
           if (ev.code === 4003 && channelSource) {
             stopChannelSource();

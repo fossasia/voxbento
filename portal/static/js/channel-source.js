@@ -153,6 +153,14 @@ const ChannelSource = {
         if (active) active.client.resume();
       },
 
+      /** Keeps the stream in the player and stops switching, for when the booth status can no longer arrive. */
+      hold() {
+        stopped = true;
+        clearTimeout(guardTimer);
+        guardTimer = null;
+        dropIncoming();
+      },
+
       stop() {
         stopped = true;
         clearTimeout(guardTimer);

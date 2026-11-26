@@ -351,5 +351,29 @@ console.log('\n── Teardown ──');
   assert(source.source() === null, 'nothing plays after stop');
 }
 
+console.log('\n── Hold: keep the stream that plays, stop switching ──');
+{
+  const { source, audioEl } = setup();
+  advance(HANDOVER_GUARD_MS);
+  const floor = clients[0];
+  floor.live();
+  source.setOnAir(true);
+  const booth = clients[1];
+  source.hold();
+  assert(!floor.stopped && booth.stopped && onPlayer(audioEl).length === 1, 'hold mid-switch keeps the floor and drops the incoming booth');
+  assert(timers.size === 0, 'and cancels the switch timeout');
+  source.setOnAir(false);
+  source.setOnAir(true);
+  advance(60000);
+  assert(clients.length === 2 && source.source() === 'floor', 'later on-air changes switch nothing');
+}
+{
+  const { source } = setup();
+  advance(1000);
+  source.hold();
+  advance(60000);
+  assert(clients.length === 0 && timers.size === 0 && source.source() === null, 'hold during the guard starts nothing');
+}
+
 console.log('\n' + passed + ' passed, ' + failed + ' failed');
 process.exit(failed > 0 ? 1 : 0);
