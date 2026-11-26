@@ -232,7 +232,8 @@ Used by: listener pages, subtitling overlays.
 a two-way booth outputting into the spoken language (`set_booth_language`, called by
 `BoothRegistry._claim` and `_reset_output`, so every switch, release and restore goes
 through it), else
-Mission Control's choice (`rooms.floor_language_override`), else
+Mission Control's choice (`rooms.floor_language_override`, offered by `choices()`, which
+leaves out languages a fixed-language floor translation model cannot translate from), else
 `rooms.floor_language_code`. Both floor reconcilers read `current(room)` for the worker's
 language and restart the worker when it changes; a change counts only once it has held
 for 1 s, so a switch back inside that window restarts nothing. The restart sends a

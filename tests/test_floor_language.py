@@ -136,6 +136,22 @@ def test_choices_are_the_spoken_language_then_the_listener_languages():
     assert floor_language.choices(hall, booths) == ["en", "th", "de"]
 
 
+def test_choices_leave_out_languages_the_floor_translation_model_cannot_translate_from():
+    hall = room()
+    hall.translation_languages = [
+        RoomTranslationLanguage(language_code="de", language_name="German", enabled=True),
+        RoomTranslationLanguage(language_code="no", language_name="Norwegian", enabled=True),
+    ]
+    booths = [type("Booth", (), {"language_code": code})() for code in ("th", "az")]
+    hall.floor_translation_enabled = False
+    hall.floor_translation_provider, hall.floor_translation_model = "local", "nllb-200-distilled-600M"
+    assert floor_language.choices(hall, booths) == ["en", "th", "az", "de", "no"], "translation off: every language"
+    hall.floor_translation_enabled = True
+    assert floor_language.choices(hall, booths) == ["en", "th", "de"], "NLLB has no Azerbaijani or Norwegian code"
+    hall.floor_translation_provider, hall.floor_translation_model = "openai", "gpt-4o-mini"
+    assert floor_language.choices(hall, booths) == ["en", "th", "az", "de", "no"], "a service without a fixed list"
+
+
 # ── Mission Control ──────────────────────────────────────────────────────
 
 

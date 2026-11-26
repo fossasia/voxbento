@@ -23,6 +23,7 @@ import time
 from collections.abc import Iterable
 
 from portal.models import DBBooth, Room
+from portal.translations.model_languages import unsupported_languages
 
 DEBOUNCE_SECS = 1.0
 
@@ -88,10 +89,18 @@ def set_booth_language(room_id: int, booth_id: str, language: str | None) -> Non
 
 
 def choices(room: Room, booths: Iterable[DBBooth]) -> list[str]:
-    """What Mission Control may pick: the spoken language first, then the room's listener languages."""
+    """What Mission Control may pick: the spoken language first, then the room's listener languages.
+
+    With floor translation on, a language its model cannot translate from is left out: picking it
+    would stop translation without saying so. The spoken language was checked when it was saved.
+    """
     codes = [
         room.floor_language_code,
         *(booth.language_code for booth in booths),
         *(lang.language_code for lang in room.translation_languages if lang.enabled),
     ]
-    return list(dict.fromkeys(code for code in codes if code and code != "floor"))
+    codes = list(dict.fromkeys(code for code in codes if code and code != "floor"))
+    if not room.floor_translation_enabled:
+        return codes
+    lacking = set(unsupported_languages(room.floor_translation_provider, room.floor_translation_model, codes))
+    return [code for code in codes if code == room.floor_language_code or code not in lacking]

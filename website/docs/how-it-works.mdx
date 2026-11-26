@@ -339,7 +339,9 @@ coordinators) next to a microphone and connection check.
 person may run. Each room shows its floor captions' state with Start and Stop
 (through `/api/rooms/{room_id}/floor-transcription/*`) and a **Floor language** picker
 (the spoken language or one of the room's listener languages) for when the floor
-switches language. While a two-way booth interprets into the spoken language the picker
+switches language. With floor translation on, it leaves out languages the translation model
+can't translate from. A two-way booth in such a language still gets floor captions, but no
+translation while it interprets into the spoken language. While a two-way booth interprets into the spoken language the picker
 shows that booth's language and is disabled; the Mission Control choice comes back when
 the booth switches back or stops. Each booth card shows
 who is in the booth and who is live, a listen-in slider, Go live / Stop broadcast
