@@ -1302,6 +1302,19 @@ async def test_go_live_into_return_is_checked_on_the_return_path(media, known_pa
         listener_manager.remove(listener, floor_id)
 
 
+@pytest.mark.anyio
+async def test_a_booth_outside_any_room_still_broadcasts_its_state():
+    from portal.booth_state import Booth
+
+    booth = Booth(booth_id="legacy-th", event_slug="", language_code="th", language="Thai", channel_id="legacy")
+    booths._booths[booth.booth_id] = booth
+    try:
+        # No listeners of its own, and no room whose floor feed could be asked about.
+        await manager_module.broadcast_booth_state(booth.booth_id, booth.as_public_dict())
+    finally:
+        del booths._booths[booth.booth_id]
+
+
 # ── The floor language follows the booth's direction (#1397, part 3) ─────────
 
 

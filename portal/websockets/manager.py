@@ -761,7 +761,10 @@ async def broadcast_booth_state(booth_id: str, state: dict) -> None:
     if booth is not None and (
         listener_manager.has_listeners(booth_id)
         # A booth outputting into its return channel is heard on the room's floor feed.
-        or listener_manager.has_listeners(make_booth_id(booth.event_slug, booth.room_id, "floor"))
+        or (
+            booth.outputs_into_return
+            and listener_manager.has_listeners(make_booth_id(booth.event_slug, booth.room_id, "floor"))
+        )
     ):
         current = booth.as_public_dict()
         if needs_confirm(current):
