@@ -311,3 +311,42 @@ async def test_join_code_event_still_requires_the_code(seed):
 
     data = await _listener_data(params="?code=ROOM42")
     assert _entry(data, "th")["floor_fallback"] is not None
+
+
+# ── Embed ────────────────────────────────────────────────────────────────────
+
+
+async def _embed_config(room_id: int, language: str) -> dict:
+    from portal.auth import create_embed_token
+
+    async with _client() as c:
+        resp = await c.get(
+            f"/embed/floorcon/{room_id}/{language}", params={"token": create_embed_token(event_slug="floorcon")}
+        )
+    assert resp.status_code == 200, resp.text
+    match = re.search(r'<script type="application/json" id="embed-config">(.*?)</script>', resp.text, re.S)
+    assert match, "embed config missing"
+    assert '<script type="module" src="/static/js/embed-player.js' in resp.text
+    return json.loads(match.group(1))
+
+
+async def test_embed_gets_the_same_floor_fallback(seed):
+    from portal.config import settings
+
+    room_id = seed["room_id"]
+    await _update_room(room_id, meeting_agent_enabled=True)
+    config = await _embed_config(room_id, "th")
+    assert config["floor_fallback"] == {
+        "whep_url": f"{settings.mediamtx_whip_base}/floorcon/{room_id}/floor/whep",
+        "booth_id": f"floorcon-{room_id}-floor",
+        "channel_id": f"floorcon/{room_id}/floor",
+    }
+    assert (await _embed_config(room_id, "floor"))["floor_fallback"] is None, "the floor channel needs no fallback"
+
+    await _update_room(room_id, auto_floor_enabled=False)
+    assert (await _embed_config(room_id, "th"))["floor_fallback"] is None
+
+
+async def test_embed_without_floor_audio_has_no_fallback(seed):
+    await _update_room(seed["room_id"], jitsi_url="https://meet.example.org/Hall")
+    assert (await _embed_config(seed["room_id"], "th"))["floor_fallback"] is None

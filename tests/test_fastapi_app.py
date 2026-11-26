@@ -3519,6 +3519,7 @@ def test_build_embed_context_keys_and_fallbacks():
         postmessage_target_origin="*",
         allowed_origins_list=[],
         audio_delay_ms=250,
+        floor_fallback=None,
     )
 
     assert set(ctx.keys()) == {
@@ -3538,6 +3539,7 @@ def test_build_embed_context_keys_and_fallbacks():
         "postmessage_target_origin",
         "allowed_origins_list",
         "audio_delay_ms",
+        "floor_fallback",
     }
     # font is capitalised for display
     assert ctx["font_family"] == "Inter"
@@ -3564,6 +3566,7 @@ def test_build_embed_context_keys_and_fallbacks():
         postmessage_target_origin="*",
         allowed_origins_list=[],
         audio_delay_ms=0,
+        floor_fallback=None,
     )
     assert ctx2["target_lang_code"] == "es"
     assert ctx2["font_family"] == "Roboto"
