@@ -111,7 +111,12 @@ def _past() -> object:
     [
         ({"floor_source": "jitsi_bot"}, False),
         ({"floor_source": "jitsi_bot", "meeting_agent_enabled": True}, True),
-        ({"floor_source": "jitsi_bot", "jitsi_url": "https://meet.example.org/Hall"}, True),
+        # Guided setup saves a meeting link for every room; only the running agent puts audio on the floor.
+        ({"floor_source": "jitsi_bot", "jitsi_url": "https://meet.example.org/Hall"}, False),
+        (
+            {"floor_source": "jitsi_bot", "jitsi_url": "https://meet.example.org/Hall", "meeting_agent_enabled": True},
+            True,
+        ),
         ({"floor_source": "program_ingest"}, False),
         ({"floor_source": "program_ingest", "program_key_hash": "h", "program_key_expires_at": "future"}, True),
         ({"floor_source": "program_ingest", "program_key_hash": "h", "program_key_expires_at": "past"}, False),
@@ -257,6 +262,20 @@ async def test_room_without_floor_source(seed):
     data = await _listener_data(seed["owner"])
     assert _entry(data, "th")["floor_fallback"] is None, "floor captions alone are not floor audio"
     assert _entry(data, "floor") is not None, "floor captions still list the floor as before"
+
+
+async def test_meeting_link_without_the_agent_is_not_floor_audio(seed):
+    from portal.room_setup import default_jitsi_url
+
+    await _update_room(seed["room_id"], jitsi_url=default_jitsi_url("floorcon", "Main Hall"), floor_language_code="en")
+    data = await _listener_data(seed["owner"])
+    assert _entry(data, "th")["floor_fallback"] is None
+    assert _entry(data, "floor") is None, "a saved meeting link alone does not list the floor"
+
+    await _update_room(seed["room_id"], floor_transcription_enabled=True)
+    data = await _listener_data(seed["owner"])
+    assert _entry(data, "floor") is not None, "floor captions still list the floor"
+    assert _entry(data, "th")["floor_fallback"] is None
 
 
 async def test_program_ingest_floor_gets_fallback_without_creating_the_path(seed, monkeypatch):

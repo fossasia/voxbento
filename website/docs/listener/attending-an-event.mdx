@@ -42,11 +42,11 @@ If the stream briefly drops — for example, during an interpreter handoff betwe
 
 ### Original Audio While the Interpreter Is Off Air
 
-In rooms with a floor source (the meeting feed or a program stream), the language list also has the room's spoken language, for example **English (original)**. It plays the room as it sounds.
+In rooms with a floor source (the managed meeting feed turned on, or a program stream), the language list also has the room's spoken language, for example **English (original)**. It plays the room as it sounds.
 
 If you pick an interpreter language and nobody is on air in it yet, or the organizers stopped that booth, you hear the original audio after about three seconds. The badge says **Original audio (interpreter off air)**. When the interpreter goes live, the player switches back by itself and says **Live (WebRTC)**. Your language, caption and translation choices stay as they were, and pause, volume and mute carry over. A short handover between two interpreters does not switch you.
 
-A link with the spoken language, such as `?room=1&lang=en`, opens the original audio when no booth uses that language. Organizers can turn this off per room; then an off-air channel stays silent until its interpreter goes live.
+A link with the spoken language, such as `?room=1&lang=en`, opens the original audio when no booth uses that language. Organizers can turn this off per room; then an off-air channel stays silent until its interpreter goes live. The embedded player is unchanged: it plays the interpreter channel straight away and does not switch to the original audio.
 
 ---
 

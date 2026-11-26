@@ -185,10 +185,14 @@ def has_valid_credential(room: Room) -> bool:
 
 
 def room_has_floor_audio(room: Room) -> bool:
-    """Whether the room has a floor source that can carry audio, whether or not floor captions are on."""
+    """Whether the room has a floor source that can carry audio, whether or not floor captions are on.
+
+    A meeting room counts only while its managed meeting agent is on: guided setup saves a meeting
+    link for every room, and the link alone never puts audio on the floor path.
+    """
     if room.floor_source == "program_ingest":
         return has_valid_credential(room) or bool(room.program_session_id)
-    return bool(room.meeting_agent_enabled or room.jitsi_url)
+    return bool(room.meeting_agent_enabled)
 
 
 def publish_permitted(room: Room, protocol: str, digest: str) -> bool:
