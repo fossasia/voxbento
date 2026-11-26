@@ -54,7 +54,7 @@ const state = {
   handoffInitiatorId: null,
   /** Track whether booth audio WHEP has been auto-started for passive */
   boothAudioAutoStarted: false,
-  /** The Jitsi monitor is loaded once; rejoining after a reconnect keeps it. */
+  /** A booth reconnect keeps the selected floor monitor playing. */
   monitoringStarted: false,
   /** Set when the page is closing or the server ended the session for good. */
   stopReconnecting: false,
@@ -83,7 +83,6 @@ const elements = {
   handoverAnnouncer: document.getElementById('handover-announcer'),
   liveBadge: document.getElementById('live-badge'),
   liveBadgeText: document.getElementById('live-badge-text'),
-  passRelay: document.getElementById('pass-relay'),
   relayAudio: document.getElementById('relay-audio'),
   relayDeviceSelect: document.getElementById('relay-device-select'),
   showVirtualRelayDevices: document.getElementById('show-virtual-relay-devices'),
@@ -353,10 +352,6 @@ function bindEventHandlers() {
   elements.toggleMic.addEventListener('click', async () => {
     await toggleMicMute()
   })
-
-  if (elements.passRelay) {
-    elements.passRelay.addEventListener('click', toggleRelayAudio)
-  }
 
   if (elements.relayDeviceSelect && elements.relayAudio) {
     elements.relayDeviceSelect.addEventListener('change', async () => {
@@ -717,7 +712,49 @@ function joinBooth() {
   wsSend(payload)
 }
 
+const floorMonitor = typeof createWhepClient === 'function' ? createWhepClient() : null
+
 function joinMonitoringFeed() {
+  const selector = document.getElementById('monitor-source')
+  if (!selector) return
+  selector.disabled = false
+  selector.onchange = joinMonitoringFeed
+  const roomAudio = selector.value === 'floor'
+  const useMeeting = selector.value === 'jitsi'
+  const useRelay = selector.value === 'relay'
+  if (state.relayListening && !useRelay) setRelayListening(false)
+  document.getElementById('meeting-player').classList.toggle('hidden', !useMeeting)
+  document.getElementById('floor-player').classList.toggle('hidden', !roomAudio)
+  const hlsPlayer = document.getElementById('floor-hls')
+  if (roomAudio) {
+    elements.jitsiFrame.removeAttribute('src')
+    if (hlsPlayer) {
+      hlsPlayer.src = hlsPlayer.dataset.url
+      return
+    }
+    const audio = document.getElementById('floor-audio')
+    const status = document.getElementById('floor-status')
+    status.textContent = 'Connecting to room audio…'
+    floorMonitor.start({
+      whepUrl: audio.dataset.url,
+      audioEl: audio,
+      onState: (st) => {
+        let message = 'Connecting to room audio…'
+        if (st.audioActive) message = 'Listening to room audio'
+        else if (st.playbackBlocked) message = 'Press play to hear room audio'
+        else if (st.retrying) message = 'Waiting for the room floor feed…'
+        setTextIfChanged(status, message)
+      },
+    })
+    return
+  }
+  hlsPlayer?.removeAttribute('src')
+  floorMonitor?.stop()
+  if (!useMeeting) {
+    elements.jitsiFrame.removeAttribute('src')
+    if (useRelay && !state.relayListening) setRelayListening(true)
+    return
+  }
   try {
     const rawUrl = portal.dataset.jitsiUrl
     if (!rawUrl) {
@@ -870,19 +907,16 @@ function startRelayPlayback() {
 }
 
 function stopRelayPlayback() {
-  state.relayListening = false
   state.relayPlayback = null
   if (relayWhep) relayWhep.stop()
 }
 
-function toggleRelayAudio() {
-  if (!state.relay.relay) return
-  if (state.relayListening) {
-    stopRelayPlayback()
-  } else {
-    state.relayListening = true
-    startRelayPlayback()
-  }
+/** Turn relay listening on or off; the "Listen to" picker drives this (joinMonitoringFeed). */
+function setRelayListening(listening) {
+  if (listening && !state.relay.relay) return
+  state.relayListening = listening
+  if (listening) startRelayPlayback()
+  else stopRelayPlayback()
   renderRelay()
 }
 
@@ -894,7 +928,10 @@ function applyRelay(data) {
   const action = relayPlaybackAction({ listening: state.relayListening, prevRelay: prev.relay, nextRelay: next.relay })
   state.relay = next
   if (action === 'stop') {
-    stopRelayPlayback()
+    setRelayListening(false)
+    // The relay is gone, so the picker can't stay on it.
+    const selector = document.getElementById('monitor-source')
+    if (selector && selector.value === 'relay') selector.value = 'off'
   } else if (action === 'switch') {
     // The output device and volume belong to the audio element, so they carry over.
     relayWhep.stop()
@@ -914,13 +951,12 @@ function renderRelay() {
   }
   if (elements.relaySource) setTextIfChanged(elements.relaySource, relayDescription({ relay, isRelayBooth }))
   if (elements.relayControls) elements.relayControls.hidden = !relay
-  if (elements.passRelay) {
-    elements.passRelay.classList.toggle('btn-primary', state.relayListening)
-    elements.passRelay.setAttribute('aria-pressed', String(state.relayListening))
-    setTextIfChanged(
-      elements.passRelay,
-      state.relayListening ? 'Stop listening to the relay' : `Listen to the relay${relay ? ` (${relay.language_name})` : ''}`,
-    )
+  // The picker's Relay option follows the room's relay too.
+  const option = document.getElementById('monitor-relay-option')
+  if (option) {
+    option.hidden = !relay
+    option.disabled = !relay
+    setTextIfChanged(option, relay ? `Relay (${relay.language_name})` : 'Relay')
   }
 }
 
@@ -1492,7 +1528,6 @@ function renderRoleControls() {
 
   if (elements.handoverBtn) elements.handoverBtn.style.display = canGo ? '' : 'none'
   if (elements.toggleMic) elements.toggleMic.style.display = canGo ? '' : 'none'
-  if (elements.passRelay) elements.passRelay.style.display = canGo ? '' : 'none'
 }
 
 function renderParticipants() {

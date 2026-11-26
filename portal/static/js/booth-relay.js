@@ -34,7 +34,7 @@ export function relayDescription({ relay, isRelayBooth }) {
   if (!relay.on_air) {
     return `The ${relay.language_name} booth is the relay, but it is off air right now. Listen to the floor until it is back.`
   }
-  return `The ${relay.language_name} booth is the relay for this room.`
+  return `The ${relay.language_name} booth is the relay for this room. Choose Relay under Listen to to hear it.`
 }
 
 /** What screen readers hear when the relay changes, or '' when nothing worth saying changed. */

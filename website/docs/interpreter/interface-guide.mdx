@@ -4,7 +4,7 @@ sidebarTitle: "Interface Guide"
 description: "A visual map of the Voxbento Interpreter Booth, explaining every control, indicator, and panel."
 ---
 
-When you join a booth in Voxbento, you'll see a unified interface that combines the live event floor audio (via Jitsi), your microphone controls, and the participant list.
+When you join a booth in Voxbento, you'll see a unified interface that combines the live event floor monitor, your microphone controls, and the participant list.
 
 Here is a visual breakdown of the booth:
 
@@ -23,13 +23,9 @@ The top bar is your primary command center for publishing audio to the event.
 Always use the top control bar's **UNMUTE** button to manage your microphone. The Jitsi iframe in the center is for **receive-only** floor audio. If you unmute inside the Jitsi interface, you will broadcast your voice back to the presenters, not to the translation listeners!
 :::
 
-## 2. The Jitsi Iframe (Floor Audio)
+## 2. Floor Monitor
 
-The large central video area is the Jitsi Meet iframe. 
-
-- This is where you will see the presenters' screenshare and hear the original floor audio.
-- The booth automatically handles echo cancellation so that the Jitsi audio coming from your speakers does not bleed into your interpreter microphone.
-- You can use the Jitsi controls at the bottom of the video frame to adjust the volume of the floor audio or hide/show participant thumbnails.
+Choose a feed under **Listen to**. **Room floor audio** plays the room’s configured audio desk, encoder, or managed meeting feed. **Room Jitsi meeting** opens the room’s meeting with video. If your event owner configured a relay booth, you can select its language here too.
 
 ## 3. Participants Panel
 
@@ -57,5 +53,5 @@ The `Booth Chat` panel is a private text channel for everyone inside your specif
 ## 6. Relay Audio & Diagnostics
 
 At the very bottom of the sidebar are two collapsable sections:
-- **Relay Audio**: If the room has a relay booth, you can listen to that interpreter's translation (e.g., listening to the Spanish booth to translate into English) instead of the main floor audio. The badge shows whether the relay booth is **On air** or **Off air**; when it is off air, listen to the floor until it is back. When a coordinator changes the relay in Mission Control, the card and the audio switch on their own, without a reload. If your booth is the relay, the card says so and has nothing to play: other booths listen to you.
+- **Relay Audio**: If the room has a relay booth, choose **Relay** under **Listen to** to hear that interpreter's translation (e.g., listening to the Spanish booth to translate into English) instead of the main floor audio; this card sets its output device and volume. The badge shows whether the relay booth is **On air** or **Off air**; when it is off air, listen to the floor until it is back. When a coordinator changes the relay in Mission Control, the **Relay** option, this card and the audio switch on their own, without a reload. If your booth is the relay, the card says so and has nothing to play: other booths listen to you.
 - **Diagnostics**: Displays low-level connection information (like `Ingest disconnected`). If you are having trouble going live, a Coordinator may ask you to open this panel to check for WebRTC errors.
