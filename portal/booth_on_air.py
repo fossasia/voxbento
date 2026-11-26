@@ -9,6 +9,7 @@ without a publisher, so ``source`` is what is read here.
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from collections.abc import Mapping
 from time import monotonic
@@ -23,8 +24,11 @@ logger = logging.getLogger(__name__)
 
 PATH_LIST_TIMEOUT = 3.0
 PATH_GET_TIMEOUT = 1.0
-# A flapping client can't make more than one go-live check per path in this window.
+# A flapping client can't start more than one go-live check per path in this window, and a
+# check reads the path at most CONFIRM_ATTEMPTS times.
 CONFIRM_INTERVAL_SECONDS = 1.0
+CONFIRM_ATTEMPTS = 6
+CONFIRM_RETRY_SECONDS = 0.25
 
 # Paths that had a publisher at the last read, or None when that is unknown (no read yet,
 # no listeners, or MediaMTX unreachable). Unknown falls back to the interpreter's own report.
@@ -87,33 +91,48 @@ def needs_confirm(state: Mapping[str, object]) -> bool:
     )
 
 
-async def confirm_live_path(path: str) -> None:
-    """Read one path now so a booth going live is not reported off air until the next tick."""
+async def path_has_source(path: str) -> bool:
+    response = await get_http_client().get(
+        f"{settings.mediamtx_api_base}/v3/paths/get/{path}", timeout=PATH_GET_TIMEOUT
+    )
+    if response.status_code == 404:
+        return False
+    response.raise_for_status()
+    body = response.json()
+    if not isinstance(body, dict):
+        raise ValueError("Invalid MediaMTX path")
+    return bool(body.get("source"))
+
+
+async def confirm_live_path(path: str) -> bool:
+    """Read one path now so a booth going live is not reported off air until the next tick.
+
+    The booth reports its stream connected as soon as the WHIP answer arrives, before ICE has
+    finished and MediaMTX shows the publisher, so the path is read a few times. Returns True when
+    it found the publisher and marked the path live.
+    """
     global live_paths
     now = monotonic()
     if path in confirming or now - confirmed_at.get(path, -CONFIRM_INTERVAL_SECONDS) < CONFIRM_INTERVAL_SECONDS:
-        return
+        return False
     for stale in [p for p, at in confirmed_at.items() if now - at >= CONFIRM_INTERVAL_SECONDS]:
         del confirmed_at[stale]
     confirmed_at[path] = now
     confirming.add(path)
     try:
-        response = await get_http_client().get(
-            f"{settings.mediamtx_api_base}/v3/paths/get/{path}", timeout=PATH_GET_TIMEOUT
-        )
-        if response.status_code == 404:
-            live = False
-        else:
-            response.raise_for_status()
-            body = response.json()
-            if not isinstance(body, dict):
-                raise ValueError("Invalid MediaMTX path")
-            live = bool(body.get("source"))
+        for attempt in range(CONFIRM_ATTEMPTS):
+            if attempt:
+                await asyncio.sleep(CONFIRM_RETRY_SECONDS)
+            live = await path_has_source(path)
+            if live:
+                break
     except (httpx.HTTPError, ValueError):
         path_get_outage.failed()
-        return
+        return False
     finally:
         confirming.discard(path)
     path_get_outage.recovered()
-    if live_paths is not None:
-        live_paths = live_paths | {path} if live else live_paths - {path}
+    if live_paths is None:
+        return False
+    live_paths = live_paths | {path} if live else live_paths - {path}
+    return live

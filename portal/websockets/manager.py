@@ -741,8 +741,17 @@ async def broadcast_booth_state(booth_id: str, state: dict) -> None:
     if booth is not None and listener_manager.has_listeners(booth_id):
         current = booth.as_public_dict()
         if needs_confirm(current):
-            await confirm_live_path(current["mediamtx_path"])
+            # Off the handler's path: the check can take a moment while the publisher connects.
+            track_task(asyncio.create_task(_confirm_and_resend(booth_id, current["mediamtx_path"])))
     await listener_manager.broadcast_booth_state(booth_id, state)
+
+
+async def _confirm_and_resend(booth_id: str, path: str) -> None:
+    """Tell listeners a booth is on air as soon as MediaMTX shows its publisher."""
+    if await confirm_live_path(path):
+        booth = booths.get_booth_sync(booth_id)
+        if booth is not None:
+            await listener_manager.broadcast_booth_state(booth_id, booth.as_public_dict())
 
 
 async def on_air_loop(interval_seconds: float = 2.0) -> None:
