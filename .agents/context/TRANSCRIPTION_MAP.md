@@ -249,7 +249,8 @@ The worker session sets `caption_source` (a ContextVar in `aggregator.py`, one
 translates from the segment's language (older rows fall back to the room), so a
 target equal to it gets the original text with no engine or TTS call, and a YouTube
 track in that language gets the original words. Overlay lines set `lang` from
-`source_language`. A floor meeting report on its own transcript is written in the
+`source_language`, and the listener page labels a floor caption with that language when it
+is not the room's spoken language. A floor meeting report on its own transcript is written in the
 language most of its session's segments were spoken in.
 
 ## Program floor ingest (#690)

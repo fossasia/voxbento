@@ -292,6 +292,7 @@ listenerData.textContent = JSON.stringify({
       language_name: 'English (original)',
       whep_url: 'http://mtx/floor3/whep',
       audio_delay_ms: 0,
+      translation_languages: [{ code: 'de', name: 'German', tts_enabled: false }],
     },
     {
       id: 30,
@@ -998,6 +999,7 @@ async function run() {
 
   await floorFallbackTests();
   await returnChannelTests();
+  await captionLanguageTests();
   await deepLinkTests();
 
   console.log('\n' + passed + ' passed, ' + failed + ' failed');
@@ -1219,6 +1221,37 @@ function translationSelect() {
 }
 
 // The page reads ?room= and ?lang= once, when it loads, so each case loads a fresh copy.
+async function captionLanguageTests() {
+  console.log('\n── Floor captions name the language spoken on the floor (#1397, part 3) ──');
+  const label = () => historyBox.children[historyBox.children.length - 1].querySelector('.lang-label').textContent;
+  const caption = (id, text, sourceLanguage) =>
+    captionsSocket().onmessage({
+      data: JSON.stringify({ type: 'caption', status: 'final', segment_id: id, text, source_language: sourceLanguage }),
+    });
+  choose(roomSelect, '3');
+  choose(languageSelect, 'http://mtx/floor3/whep');
+  caption('l1', 'Hello', 'en');
+  assert(label() === 'English (original)', 'the spoken language keeps the channel name, got "' + label() + '"');
+  caption('l2', 'Sawasdee', 'th');
+  assert(label() === 'Thai', 'another room language is named, got "' + label() + '"');
+  caption('l2b', 'Hallo', 'de');
+  assert(label() === 'German', 'a listener language of the room is named, got "' + label() + '"');
+  caption('l3', 'Bonjour', 'fr');
+  assert(label() === 'FR', 'a language the page has no name for shows its code, got "' + label() + '"');
+  caption('l4', 'Hello again');
+  assert(label() === 'English (original)', 'a caption without a language keeps the channel name');
+  choose(languageSelect, 'http://mtx/th/whep');
+  caption('l5', 'Sawasdee', 'en');
+  assert(label() === 'Thai', 'an interpreter channel keeps its own name');
+  choose(languageSelect, '');
+  choose(roomSelect, '2');
+  choose(languageSelect, 'http://mtx/floor2/whep');
+  caption('l6', 'Bonjour', 'fr');
+  assert(label() === 'Floor Audio', 'a floor without a spoken language keeps its name');
+  choose(languageSelect, '');
+  choose(roomSelect, '');
+}
+
 async function deepLinkTests() {
   console.log('\n── Deep links to the floor (#1397) ──');
   const cases = [

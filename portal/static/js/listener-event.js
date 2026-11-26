@@ -126,6 +126,32 @@ function fillCaptionLine(div, langName, text) {
   div.querySelector(".untrusted-text").textContent = text;
 }
 
+// Floor captions carry the language spoken on the floor (#1397). Label a line with it when it
+// is not the room's spoken language, for example a question asked in Spanish in an English room.
+function captionLangName(data, channelName) {
+  var opt = languageSelect.options[languageSelect.selectedIndex];
+  var code = typeof data.source_language === "string" ? data.source_language : "";
+  var spoken = opt ? opt.dataset.spokenLanguageCode : "";
+  if (!opt || opt.dataset.languageCode !== "floor" || !spoken || !code || code === spoken) {
+    return channelName;
+  }
+  var room = String(currentRoomId);
+  var inRoom = boothsData.filter(function (b) {
+    return String(b.room_id) === room;
+  });
+  var booth = inRoom.find(function (b) {
+    return b.language_code === code;
+  });
+  if (booth) return booth.language_name;
+  var floor = inRoom.find(function (b) {
+    return b.language_code === "floor";
+  });
+  var listed = ((floor && floor.translation_languages) || []).find(function (l) {
+    return l.code === code;
+  });
+  return listed ? listed.name : code.toUpperCase();
+}
+
 applyCaptionSize();
 
 const eventDataEl = document.getElementById("listener-data");
@@ -687,7 +713,7 @@ function renderItem(data) {
           ? document.getElementById("segment-" + data.segment_id)
           : null;
         var srcLangOpt = languageSelect.options[languageSelect.selectedIndex];
-        var srcLangName = srcLangOpt ? srcLangOpt.text : "Source";
+        var srcLangName = captionLangName(data, srcLangOpt ? srcLangOpt.text : "Source");
 
         if (!existingBlock) {
           var block = document.createElement("div");
@@ -1010,6 +1036,7 @@ function handleCaptionsMessage(event) {
             status: "partial",
             text: data.text,
             segment_id: sid,
+            source_language: data.source_language,
           });
         }
       } else if (data.status === "final") {
@@ -1042,6 +1069,7 @@ function handleCaptionsMessage(event) {
           status: "final",
           text: data.text,
           segment_id: sid,
+          source_language: data.source_language,
         });
       } else if (data.status === "clear") {
         var currentBox = document.getElementById("caption-current");
