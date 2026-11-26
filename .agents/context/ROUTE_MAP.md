@@ -199,6 +199,7 @@ with `?error=invalid_role&role=…` and the page explains why.
 | `portal/routers/meeting_analysis.py` | Room meeting reports page, report generation, Markdown download and status API |
 | `portal/room_setup.py` | Room plan parsing, available AI services, booth/translation-language reconciliation, and room summaries; uses existing tables |
 | `portal/workspace_routing.py` | `/workspace` handler mapping, legacy organizer redirects, and template URL context |
+| `portal/routers/webhooks.py` | Webhook subscription management API and available events |
 | `portal/websockets/manager.py` | `ws_booth` and `ws_captions` endpoints |
 | `portal/websockets/handlers.py` | Specific `_handle_*` logic for WS messages |
 | `fastapi_app.py` | Application lifespan, router include aggregation |
@@ -295,8 +296,11 @@ the admin CSRF token (`require_admin_csrf`, `X-CSRF-Token`).
 - `POST /workspace/events/{event_id}/rooms/{room_id}/analysis/`: event owners,
   origin-checked. Form `session` (`{channel}:{first segment id}`, one of the
   channel's sessions as listed on the page), or `channel` alone for its latest
-  session; `channel` is `floor` or a booth language code with stored segments. Redirects with `?error=disabled|busy|channel`; one report per room
-  is written at a time, in a tracked background task.
+  session; `channel` is `floor` or a booth language code with stored segments. Optional `language`: write the report
+  from the session's translation into that language (`transcript_translations`). Redirects with
+  `?error=disabled|busy|channel|language`; one report per room is written at a time, in a tracked background task.
+  Events with `meeting_analysis_auto` also get reports when a channel's captions stop (no route; `portal/meeting_analysis/auto.py`).
+  `GET /mission-control/{event_slug}/` passes each enabled room's reports URL in `data-config`. Mission Control and the workspace room embed its role-scoped panel with `?panel=1`.
 - `GET /workspace/events/{event_id}/rooms/{room_id}/analysis/{report_id}/`:
   owners and coordinators; one report with Summary and Transcript tabs. The
   transcript shows the segments of the report's session up to `covered_until`.
@@ -333,3 +337,8 @@ behavior. See `website/docs/api/authentication.mdx` for integration rollout.
 
 `POST /login` requires verified email and uses the `login` rate-limit bucket:
 10 attempts per normalized email per hour. There is no separate admin sign-in form.
+
+## OAuth Routes (#980)
+
+- `POST /oauth/token`: exchanges authorization code for access and refresh tokens. Validates client, PKCE verifier, and enforces `auth_code.is_expired` with portable UTC timezone normalization.
+- Protected API endpoints (`portal/routers/api_v1.py`) use `require_oauth_scope`, verifying client active status, scope membership, and `oauth_token.is_expired` boundary.
