@@ -1963,6 +1963,7 @@ def _process_room_general_section(room: Room, form: FormData) -> None:
         room.display_name = display_name
     room.jitsi_url = jitsi_url if jitsi_url else None
     room.audio_delay_ms = audio_delay_ms
+    room.auto_floor_enabled = form.get("auto_floor_enabled") == "on"
 
 
 async def _process_room_relay_section(session: AsyncSession, room: Room, event_id: int, form: FormData) -> None:

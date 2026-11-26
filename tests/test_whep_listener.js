@@ -126,6 +126,9 @@ async function run() {
       this.paused = false;
       return Promise.resolve();
     },
+    pause() {
+      this.paused = true;
+    },
   };
   const playStates = [];
   failFetch = false;
@@ -147,6 +150,141 @@ async function run() {
   await flush();
   WhepListener.stop();
   assert(playStates[playStates.length - 1].playbackBlocked === false, 'stop clears playbackBlocked');
+
+  console.log('\n── Moving playback to another element (#1397) ──');
+
+  function fakeAudio() {
+    return {
+      paused: true,
+      srcObject: null,
+      play() {
+        this.paused = false;
+        return Promise.resolve();
+      },
+      pause() {
+        this.paused = true;
+      },
+    };
+  }
+  const standby = fakeAudio();
+  const player = fakeAudio();
+  const moveStates = [];
+  const client = vm.runInContext('createWhepClient()', context);
+  client.start({ whepUrl: 'http://mtx/th/whep', audioEl: standby, onState: (s) => moveStates.push(s) });
+  client.setAudioElement(standby);
+  assert(standby.srcObject === null && moveStates.length === 0, 'moving to the same element is a no-op');
+  client.setAudioElement(player);
+  assert(player.srcObject === null, 'moving before the stream arrives attaches nothing yet');
+  client.setAudioElement(standby);
+  await flush();
+  const remote = { id: 'booth' };
+  lastPc.listeners.track({ track: { kind: 'audio' }, streams: [remote] });
+  await flush();
+  assert(standby.srcObject === remote && standby.paused === false, 'the stream first plays on the standby element');
+
+  client.setAudioElement(player, true);
+  await flush();
+  assert(standby.srcObject === null && standby.paused === true, 'the standby element is emptied and paused');
+  assert(player.srcObject === remote && player.paused === false, 'the same stream plays on the player, no new session');
+  assert(moveStates[moveStates.length - 1].audioActive === true, 'the move reports the player as active');
+
+  const other = fakeAudio();
+  client.setAudioElement(other, false);
+  await flush();
+  assert(other.srcObject === remote && other.paused === true, 'autoplay false keeps the new element paused');
+  assert(player.srcObject === null, 'the old player no longer holds the stream');
+  client.stop();
+
+  // A switch can time out before the new stream has its track; the listener's pause must still hold.
+  const earlyPlayer = fakeAudio();
+  const early = vm.runInContext('createWhepClient()', context);
+  early.start({ whepUrl: 'http://mtx/th/whep', audioEl: fakeAudio() });
+  await flush();
+  early.setAudioElement(earlyPlayer, false);
+  lastPc.listeners.track({ track: { kind: 'audio' }, streams: [{ id: 'late' }] });
+  await flush();
+  assert(earlyPlayer.srcObject.id === 'late' && earlyPlayer.paused === true, 'a paused move before the track keeps the player paused');
+  early.stop();
+
+  // Like the listener's <audio autoplay>: loading a stream starts playback whatever was asked before.
+  function autoplayAudio() {
+    const el = fakeAudio();
+    let src = null;
+    Object.defineProperty(el, 'srcObject', {
+      get: () => src,
+      set(value) {
+        src = value;
+        if (value) el.paused = false;
+      },
+    });
+    return el;
+  }
+  const autoPlayer = autoplayAudio();
+  const autoEarly = vm.runInContext('createWhepClient()', context);
+  autoEarly.start({ whepUrl: 'http://mtx/th/whep', audioEl: fakeAudio() });
+  await flush();
+  autoEarly.setAudioElement(autoPlayer, false);
+  lastPc.listeners.track({ track: { kind: 'audio' }, streams: [{ id: 'late' }] });
+  await flush();
+  assert(autoPlayer.paused === true, 'an autoplay player stays paused when the track arrives after a paused switch');
+  autoEarly.stop();
+
+  // A paused listener whose stream reconnects stays paused (also true before #1397).
+  const reconnectPlayer = autoplayAudio();
+  const reconnecting = vm.runInContext('createWhepClient()', context);
+  reconnecting.start({ whepUrl: 'http://mtx/th/whep', audioEl: reconnectPlayer });
+  await flush();
+  lastPc.listeners.track({ track: { kind: 'audio' }, streams: [{ id: 'first' }] });
+  await flush();
+  assert(reconnectPlayer.paused === false, 'the first stream plays');
+  reconnectPlayer.pause();
+  lastPc.listeners.track({ track: { kind: 'audio' }, streams: [{ id: 'again' }] });
+  await flush();
+  assert(reconnectPlayer.srcObject.id === 'again' && reconnectPlayer.paused === true, 'a reconnect keeps the listener paused');
+  reconnecting.stop();
+
+  // With a listener delay the stream reaches the element through a Web Audio delay line.
+  class FakeAudioContext {
+    constructor() {
+      this.state = 'running';
+    }
+    resume() {
+      return Promise.resolve();
+    }
+    close() {
+      return Promise.resolve();
+    }
+    createMediaStreamSource() {
+      return { connect() {}, disconnect() {} };
+    }
+    createDelay() {
+      return { delayTime: {}, connect() {}, disconnect() {} };
+    }
+    createMediaStreamDestination() {
+      return { stream: { id: 'delayed', getTracks: () => [] } };
+    }
+  }
+  const delayed = vm.createContext({
+    ...context,
+    window: { AudioContext: FakeAudioContext },
+    document: { createElement: fakeAudio, addEventListener() {}, removeEventListener() {} },
+  });
+  vm.runInContext(source, delayed);
+  const delayedClient = vm.runInContext('createWhepClient()', delayed);
+  const delayedStandby = fakeAudio();
+  const delayedPlayer = fakeAudio();
+  delayedClient.start({ whepUrl: 'http://mtx/th/whep', audioEl: delayedStandby, audioDelayMs: 500 });
+  await flush();
+  lastPc.listeners.track({ track: { kind: 'audio' }, streams: [remote] });
+  await flush();
+  const filled = delayedStandby.srcObject;
+  delayedClient.setAudioElement(delayedPlayer, true);
+  await flush();
+  assert(
+    delayedPlayer.srcObject === filled && delayedStandby.srcObject === null,
+    'a delayed stream moves to the player with its filled delay line, not a new empty one',
+  );
+  delayedClient.stop();
 
   console.log('\n' + passed + ' passed, ' + failed + ' failed');
   process.exit(failed > 0 ? 1 : 0);
