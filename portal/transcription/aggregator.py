@@ -4,6 +4,7 @@ import asyncio
 import logging
 import time
 import uuid
+from contextvars import ContextVar
 from dataclasses import dataclass, field
 from weakref import WeakValueDictionary
 
@@ -18,6 +19,10 @@ from portal.transcription.timing import SegmentTiming, segment_timing, timing_me
 
 logger = logging.getLogger(__name__)
 _floor_locks: WeakValueDictionary[int, asyncio.Lock] = WeakValueDictionary()
+CLEAR_CAPTION = {"type": "caption", "status": "clear", "text": ""}
+# The language the running transcription worker transcribes in, set by its session task. The
+# aggregators are built inside each provider, so they read it from the task context (#1397).
+caption_language: ContextVar[str | None] = ContextVar("caption_language", default=None)
 
 
 def floor_caption_lock(room_id: int) -> asyncio.Lock:
@@ -27,6 +32,12 @@ def floor_caption_lock(room_id: int) -> asyncio.Lock:
         lock = asyncio.Lock()
         _floor_locks[room_id] = lock
     return lock
+
+
+def language_tag() -> dict:
+    """``source_language`` for a caption payload, when the worker's language is known."""
+    language = caption_language.get()
+    return {"source_language": language} if language else {}
 
 
 @dataclass
@@ -77,6 +88,7 @@ class CaptionAggregator:
                 "status": "partial",
                 "text": state.current_utterance,
                 "segment_id": state.segment_id,
+                **language_tag(),
                 **await self.partial_timing(booth_id),
             },
         )
@@ -112,7 +124,7 @@ class CaptionAggregator:
         preview = f"{state.current_utterance} {text.strip()}".strip()
         await self.broadcast_callback(
             booth_id, {"type": "caption", "status": "partial", "text": preview,
-                       "segment_id": state.segment_id, **await self.partial_timing(booth_id)}
+                       "segment_id": state.segment_id, **language_tag(), **await self.partial_timing(booth_id)}
         )
 
     async def handle_chunk(self, booth_id: str, text: str):
@@ -170,6 +182,7 @@ class CaptionAggregator:
                     "status": "partial",
                     "text": state.current_utterance,
                     "segment_id": state.segment_id,
+                    **language_tag(),
                     **await self.partial_timing(booth_id),
                 },
             )
@@ -251,6 +264,7 @@ class CaptionAggregator:
             "status": "final",
             "text": final_text,
             "segment_id": segment_id,
+            **language_tag(),
             **timing_metadata(),
         }
         if seq is not None:
@@ -269,7 +283,9 @@ class CaptionAggregator:
             async def _save_and_translate():
                 """Persist a sequenced caption and pass its identity to asynchronous translation."""
                 try:
-                    db_segment_id = await save_transcript_segment(booth_id, final_text, self.room_id)
+                    db_segment_id = await save_transcript_segment(
+                        booth_id, final_text, self.room_id, caption_language.get()
+                    )
                     if db_segment_id is not None:
                         from portal.translations.worker import TranslationWorker
 

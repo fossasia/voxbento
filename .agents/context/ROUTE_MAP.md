@@ -320,6 +320,11 @@ the admin CSRF token (`require_admin_csrf`, `X-CSRF-Token`).
   the legacy `running`, `stage` and `bot_reachable` fields with their original
   meaning: `stage` is the raw floor-bot stage (`launching`, `in_meeting`, `dead`, …;
   `unknown` when the service is unreachable); the managed lifecycle is in `state`.
+- `POST /api/rooms/{room_id}/floor-language` (room coordinators and owners, CSRF)
+  takes `{language_code}`: the room's spoken language or one of its listener
+  languages (booths and enabled translation languages), else 400; other keys or
+  types 422. Returns `{language_code}`, the language the floor is transcribed in
+  once it has held for a second (a two-way booth on return output wins, #1397).
 
 `POST /oauth/token` accepts an optional `event` slug for the authorization-code
 grant. A mismatch is rejected before code consumption or membership grants.

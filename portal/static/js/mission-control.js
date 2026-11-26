@@ -7,12 +7,14 @@
  *   - See who is in each booth, who is live and who is speaking
  *   - Listen in through a per-booth volume slider (WHEP)
  *   - Turn a booth's broadcast on or off
- *   - Start and stop the floor captions of each room
+ *   - Start and stop the floor captions of each room, and pick the language spoken on the floor
  *   - Browse room reports and generate notes for a session
  *   - Open a booth themselves
  *
  * The page passes its data in data-config on #mission-control (no inline script).
  */
+
+import { renderFloorLanguage } from './floor-language.js';
 
 const root = document.getElementById('mission-control');
 const config = JSON.parse(root?.dataset.config || '{}');
@@ -118,6 +120,9 @@ function renderFloorCaptions(room) {
   const label = el('span', 'mc-captions-label', 'Floor captions');
   const status = el('span', 'mc-pill', 'Checking…');
   box.append(label, status);
+  if (room.floor_language) {
+    box.appendChild(renderFloorLanguage(room, { notify: (message) => showToast(message, 'error') }));
+  }
 
   if (room.floor_source === 'program_ingest') {
     status.textContent = 'From the program feed';

@@ -338,7 +338,7 @@ class TranslationWorker:
     async def _resolve_job_context(self, session, room_id: int, segment, booth_id_str: str) -> _JobContext | None:
         """Fetch the room/booth config and validate that all required settings exist."""
         if segment.booth_id is None:
-            context = await self._resolve_floor_context(session, room_id, booth_id_str)
+            context = await self._resolve_floor_context(session, room_id, segment, booth_id_str)
         else:
             context = await self._resolve_booth_context(session, room_id, segment)
 
@@ -354,8 +354,8 @@ class TranslationWorker:
 
         return context
 
-    async def _resolve_floor_context(self, session, room_id: int, booth_id_str: str) -> _JobContext | None:
-        """Floor translation configuration from the room."""
+    async def _resolve_floor_context(self, session, room_id: int, segment, booth_id_str: str) -> _JobContext | None:
+        """Floor translation configuration from the room, translating from the language the segment was spoken in."""
         from sqlalchemy import select
         from sqlalchemy.orm import selectinload
 
@@ -373,7 +373,8 @@ class TranslationWorker:
             provider=room.floor_translation_provider,
             model=room.floor_translation_model,
             enabled_langs=_enabled_translation_langs(room),
-            source_lang_code=room.floor_language_code,
+            # Segments stored before #1397 have no language of their own.
+            source_lang_code=segment.source_language_code or room.floor_language_code,
         )
 
     async def _resolve_booth_context(self, session, room_id: int, segment) -> _JobContext | None:

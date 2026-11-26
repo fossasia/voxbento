@@ -86,6 +86,7 @@ VoxBento is a production-grade **browser-first interpretation booth console** fo
 | `portal/program_relay.py` | YouTube RTMPS destination management and relay health convergence |
 | `portal/youtube_account.py` | Google OAuth and YouTube Live API metadata (no media): Sign in with YouTube, broadcast linking, YouTube status |
 | `portal/outage_log.py` | `OutageLog` — reconcile loops log a repeating failure once per outage, not per tick |
+| `portal/floor_language.py` | Language spoken on each room's floor right now (two-way booth, Mission Control choice, spoken language), debounced for the floor worker (#1397) |
 | `portal/booth_recovery.py` | Saves each booth's Go Live switch and active interpreter to `booth_live_state` and restores them at startup (TD-03) |
 | `portal/attendance.py` | `AttendanceTracker` — interpreter visits and interpreting time from booth state, batched writes to `interpreter_attendance` (#1215) |
 | `portal/live_demo.py` | Home-page live demo (`/ws/demo/live`): local Whisper → NLLB → Supertonic pipeline, site + visitor glossary, admission limits, and the admin-edited `live_demo_settings` row (`/admin/live-demo/`) |

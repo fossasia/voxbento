@@ -136,7 +136,12 @@ class TranscriptionWorkerSession:
                         if actual_language == "floor":
                             actual_language = ""
 
+                        from portal.transcription.aggregator import caption_language
                         from portal.transcription.providers.base import AudioIngester, StreamingProvider
+
+                        # Every caption this session publishes is in its language, even one finalized
+                        # after the room's floor language has moved on (#1397).
+                        caption_language.set(actual_language or None)
 
                         if isinstance(self.provider, StreamingProvider):
                             ingester = AudioIngester(process, sample_rate=self.sample_rate)

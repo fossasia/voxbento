@@ -140,6 +140,9 @@ class Room(Base):
     )
     floor_transcription_model: Mapped[str] = mapped_column(String(40), default="tiny", server_default=sa.text("'tiny'"))
     floor_language_code: Mapped[str | None] = mapped_column(String(10), nullable=True, default=None)
+    # Mission Control's choice of the language spoken on the floor right now (#1397); None is the spoken language.
+    # A two-way booth outputting into the spoken language overrides it while it does (portal/floor_language.py).
+    floor_language_override: Mapped[str | None] = mapped_column(String(10), nullable=True, default=None)
     floor_source: Mapped[str] = mapped_column(String(20), default="jitsi_bot", server_default="jitsi_bot")
     meeting_agent_enabled: Mapped[bool] = mapped_column(Boolean, default=False, server_default="0")
     program_key_hash: Mapped[str | None] = mapped_column(String(64), nullable=True)
@@ -301,6 +304,9 @@ class TranscriptSegment(Base):
         ForeignKey("booths.id", ondelete="CASCADE"), nullable=True, default=None
     )
     language_code: Mapped[str] = mapped_column(String(10))
+    # The language the words were transcribed in; language_code is the channel ("floor" or a booth's language).
+    # None on segments stored before #1397.
+    source_language_code: Mapped[str | None] = mapped_column(String(10), nullable=True, default=None)
     text: Mapped[str] = mapped_column(Text)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
 

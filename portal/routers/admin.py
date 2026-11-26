@@ -16,7 +16,7 @@ import pycountry
 from fastapi import APIRouter, Depends, Form, HTTPException, Query, Request, status
 from fastapi.responses import JSONResponse, RedirectResponse, Response
 from fastapi.templating import Jinja2Templates
-from pydantic import BaseModel
+from pydantic import BaseModel, ConfigDict
 from sqlalchemy import delete, func, select
 from sqlalchemy import inspect as sa_inspect
 from sqlalchemy.exc import IntegrityError, SQLAlchemyError
@@ -24,7 +24,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import joinedload
 from starlette.datastructures import FormData
 
-from portal import live_demo, live_demo_ai, meeting_source
+from portal import floor_language, live_demo, live_demo_ai, meeting_source
 from portal import roles as roles_module
 from portal.auth import (
     ADMIN_CSRF_COOKIE,
@@ -156,6 +156,7 @@ from portal.room_setup import (
     brand_name,
     default_jitsi_url,
     engine_catalog,
+    language_name,
     load_snapshot,
     parse_plan,
     room_audio_choice,
@@ -673,6 +674,21 @@ def _mission_control_reports(event: Event, room_id: int, principal: dict, is_adm
     return {"url": f"{prefix}/events/{event.id}/rooms/{room_id}/analysis/"}
 
 
+def _floor_language_state(room: Room, room_booths: list[DBBooth]) -> dict | None:
+    """What Mission Control's floor language picker shows, or None when the room has no floor captions."""
+    if not room.has_floor_captions or not room.floor_language_code:
+        return None
+    value = floor_language.requested(room)
+    codes = floor_language.choices(room, room_booths)
+    if value not in codes:
+        # Picked before the language was taken out of the room: still shown, so it can be changed back.
+        codes.append(value)
+    return {
+        "value": value,
+        "choices": [{"code": code, "name": language_name(code)} for code in codes],
+    }
+
+
 @router.get("/mission-control/{event_slug}/")
 async def mission_control_grid(request: Request, event_slug: str, user=Depends(require_user)):
     is_admin, _ = await get_accessible_event_ids(request, user_id=int(user["sub"]))
@@ -728,6 +744,7 @@ async def mission_control_grid(request: Request, event_slug: str, user=Depends(r
                 "name": room.display_name,
                 "floor_captions": room.has_floor_captions,
                 "floor_source": room.floor_source or "jitsi_bot",
+                "floor_language": _floor_language_state(room, [b for b in db_booths if b.room_id == room.id]),
                 "reports": _mission_control_reports(event, room.id, principal, is_admin),
             }
             for room in await list_rooms_for_event(session, event.id)
@@ -2386,6 +2403,34 @@ async def api_floor_transcription_status(room_id: int):
     # the managed lifecycle is reported separately in "state".
     body["bot_reachable"], body["stage"], body["running"] = await meeting_source.bot_stage(event.slug, room.id)
     return body
+
+
+class FloorLanguageRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    language_code: str
+
+
+@router.post(
+    "/api/rooms/{room_id}/floor-language",
+    dependencies=[Depends(require_room_event_access), Depends(require_admin_csrf)],
+)
+async def api_set_floor_language(room_id: int, data: FloorLanguageRequest):
+    """Mission Control's choice of the language spoken on the floor (#1397); captions follow it after a second."""
+    async with get_session() as session:
+        room = await get_room_by_id(session, room_id)
+        if not room:
+            raise HTTPException(status_code=404, detail="Invalid room")
+        if data.language_code not in floor_language.choices(room, await list_booths_for_room(session, room.id)):
+            raise HTTPException(
+                status_code=400, detail="Pick the room's spoken language or one of its listener languages."
+            )
+        override = None if data.language_code == room.floor_language_code else data.language_code
+        if override != room.floor_language_override:
+            # Before the commit, so a reconcile tick that reads the new choice also sees the debounce window.
+            floor_language.note_change(room.id)
+            room.floor_language_override = override
+    return {"language_code": floor_language.requested(room)}
 
 
 @router.post(

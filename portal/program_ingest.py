@@ -25,7 +25,7 @@ from pydantic import BaseModel, Field, model_validator
 from sqlalchemy import func, select
 from sqlalchemy.exc import SQLAlchemyError
 
-from portal import program_relay
+from portal import floor_language, program_relay
 from portal.booth_identity import make_booth_id, make_mediamtx_path, parse_booth_id
 from portal.booth_publish import authorize_booth_publish
 from portal.config import settings
@@ -33,6 +33,7 @@ from portal.database import get_session
 from portal.globals import get_http_client
 from portal.models import Event, Room
 from portal.outage_log import OutageLog
+from portal.transcription.aggregator import CLEAR_CAPTION
 from portal.transcription.process import audio_progress
 from portal.transcription.providers.base import ProviderConfig, ProviderEnum, get_api_key
 from portal.transcription.worker import active_workers, start_transcription_worker, stop_transcription_worker
@@ -713,10 +714,13 @@ async def reconcile_processing(
     current.state, current.reason = "receiving", "Audio received; starting transcription."
     current.processing_state, current.processing_reason = "starting", "Starting the transcription worker."
     api_key = get_api_key(event, ProviderEnum(room.floor_transcription_provider))
-    config = (room.floor_transcription_provider, room.floor_transcription_model, room.floor_language_code)
+    language = floor_language.current(room)
+    config = (room.floor_transcription_provider, room.floor_transcription_model, language)
     if current.worker_config and current.worker_config != config:
         if not await stop_room_worker(current, booth_id, room.id):
             return
+        # The old worker's unfinished words went with it: take them off listeners' screens.
+        await broadcast_transcription(booth_id, CLEAR_CAPTION)
     started = await start_transcription_worker(
         event_slug=event.slug,
         language_code="floor",
@@ -725,7 +729,7 @@ async def reconcile_processing(
         provider=room.floor_transcription_provider,
         model_size=room.floor_transcription_model,
         config=ProviderConfig(api_key=api_key),
-        transcription_language=room.floor_language_code,
+        transcription_language=language,
         room_id=room.id,
         restart_on_key_change=True,
     )

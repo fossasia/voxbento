@@ -184,8 +184,8 @@ Jitsi session; they do not validate a deployment host's available disk space.
 1. **Audio Ingest:** The worker uses FFmpeg to pull the live audio stream from MediaMTX via RTSP (`rtsp://mediamtx:8554/{event_slug}/{room_id}/{language_code}` or `rtsp://mediamtx:8554/{event_slug}/{room_id}/floor`).
 2. **Transcoding:** FFmpeg transcodes the audio to PCM S16LE (mono, 16kHz or 24kHz depending on the provider) and pipes it to the selected `TranscriptionProvider`.
 3. **Speech-to-Text (Transcription):** The provider sends audio to an AI service (OpenAI, Deepgram, Atlas Cloud, ElevenLabs, NVIDIA, or Local Whisper). The Atlas Cloud adapter submits WAV chunks to Seed ASR 2.0 once and polls the asynchronous prediction. The `CaptionAggregator` receives raw text, splitting sentences and instantly broadcasting partial updates to listeners (`/ws/captions/{channel_id}`).
-4. **Finalization:** Once a full sentence is formed, the aggregator saves it to the database as a canonical `transcript_segment`.
-5. **Text-to-Text (Translation & AI Interpretation):** If target languages are enabled, the Translation Worker detects the finalized segment and generates translations using LLMs (Anthropic, OpenAI, Groq, Gemini, or an OpenAI-compatible server the operator runs, set with `SELF_HOSTED_LLM_BASE_URL`) or local NLLB models the operator lists in `LOCAL_TRANSLATION_MODELS`. Translation prompts dynamically integrate the room's configured **AI interpreter persona** and **interpretation style**, as well as matching domain terms from the room's **AI vocabulary glossary**, ensuring consistent, conference-grade terminology.
+4. **Finalization:** Once a full sentence is formed, the aggregator saves it to the database as a canonical `transcript_segment`, with the language it was transcribed in. Floor transcription follows the language spoken on the floor: Mission Control's **Floor language** choice, or the language of a two-way booth while it interprets back into the spoken language. The floor worker restarts in the new language once a change has held for one second, so switching back within that second restarts nothing.
+5. **Text-to-Text (Translation & AI Interpretation):** If target languages are enabled, the Translation Worker detects the finalized segment and translates it from the language it was spoken in. A target in that same language gets the original text, with no translation and no AI voice. Other targets get translations generated using LLMs (Anthropic, OpenAI, Groq, Gemini, or an OpenAI-compatible server the operator runs, set with `SELF_HOSTED_LLM_BASE_URL`) or local NLLB models the operator lists in `LOCAL_TRANSLATION_MODELS`. Translation prompts dynamically integrate the room's configured **AI interpreter persona** and **interpretation style**, as well as matching domain terms from the room's **AI vocabulary glossary**, ensuring consistent, conference-grade terminology.
 6. **Broadcast:** Translations are saved to the database and immediately broadcast as `translated_caption` events via the target booth's caption feed (`/ws/captions/{booth_id}`).
 
 7. **Text-to-Speech (TTS):** If a room language uses **AI voice**, the `TTSWorker` instantly receives the finalized translated text and synthesizes speech using the room's configured provider — **Deepgram Aura** (cloud WebSocket), **ElevenLabs v4** (cloud HTTP streaming; speaks 90+ languages including Thai) or **Supertonic** (self-hosted, in-process ONNX).
@@ -302,7 +302,9 @@ coordinators) next to a microphone and connection check.
 
 **Mission Control** (`/mission-control/{event}/`) shows one section per room the
 person may run. Each room shows its floor captions' state with Start and Stop
-(through `/api/rooms/{room_id}/floor-transcription/*`), and each booth card shows
+(through `/api/rooms/{room_id}/floor-transcription/*`) and a **Floor language** picker
+(the spoken language or one of the room's listener languages) for when the floor
+switches language, and each booth card shows
 who is in the booth and who is live, a listen-in slider, Go live / Stop broadcast
 and **Open booth**. The owner's room page is split into tabs (Languages, Room audio,
 AI settings, Settings); the open tab is remembered per room so saving a setting returns

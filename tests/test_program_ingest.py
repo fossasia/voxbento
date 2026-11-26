@@ -11,12 +11,13 @@ import httpx
 import pytest
 
 from fastapi_app import app
+from portal import floor_language
 from portal import program_ingest as ingest
 from portal.auth import create_user_token, decode_token, generate_admin_csrf_token
 from portal.config import settings
 from portal.database import configure, create_user, dispose, get_session, init_db
 from portal.models import Event, Room, RoomTranslationLanguage, TranscriptSegment
-from portal.transcription.aggregator import CaptionAggregator
+from portal.transcription.aggregator import CLEAR_CAPTION, CaptionAggregator
 from portal.transcription.worker import active_workers
 from portal.websockets.manager import tts_manager
 
@@ -808,3 +809,55 @@ async def test_deleted_event_feed_is_released_while_media_listing_fails(environm
     async with get_session() as session:
         assert (await session.get(Room, room.id)).program_session_id is None
     assert (await client.post("/internal/media-auth", json=credentials(room, token))).status_code == 401
+
+
+@pytest.mark.anyio
+async def test_program_floor_worker_follows_the_floor_language(environment, monkeypatch):
+    """#1397: the program feed's worker restarts once in the language picked, after the debounce."""
+    client, event, rooms, media, _, start, stop, *_ = environment
+    room = rooms[0]
+    clock = [100.0]
+    monkeypatch.setattr(floor_language, "clock", lambda: clock[0])
+    broadcast = AsyncMock()
+    monkeypatch.setattr(ingest, "broadcast_transcription", broadcast)
+    async with get_session() as session:
+        session.add(RoomTranslationLanguage(room_id=room.id, language_code="th", language_name="Thai", enabled=True))
+    _, auth = await connect_whip(client, event, room, media)
+    await ingest.reconcile_once()
+    assert start.await_args.kwargs["transcription_language"] == "en"
+    booth_id = f"program-test-{room.id}-floor"
+    stop.reset_mock()
+
+    response = await client.post(f"/api/rooms/{room.id}/floor-language", json={"language_code": "th"})
+    assert response.status_code == 200, response.text
+    media[auth["path"]]["bytesReceived"] = 20
+    await ingest.reconcile_once()
+    assert stop.await_count == 0
+    assert start.await_args.kwargs["transcription_language"] == "en"
+
+    clock[0] += 1
+    media[auth["path"]]["bytesReceived"] = 30
+    await ingest.reconcile_once()
+    stop.assert_awaited_once_with(booth_id)
+    broadcast.assert_awaited_once_with(booth_id, CLEAR_CAPTION)
+    assert start.await_args.kwargs["transcription_language"] == "th"
+
+
+@pytest.mark.anyio
+async def test_program_floor_language_restart_waits_for_a_failed_stop(environment, monkeypatch):
+    """A worker that would not stop is not replaced, and no clear is sent for it."""
+    client, event, rooms, media, _, start, stop, *_ = environment
+    room = rooms[0]
+    broadcast = AsyncMock()
+    monkeypatch.setattr(ingest, "broadcast_transcription", broadcast)
+    await connect_whip(client, event, room, media)
+    await ingest.reconcile_once()
+    starts = start.await_count
+    async with get_session() as session:
+        (await session.get(Room, room.id)).floor_language_override = "de"
+    stop.reset_mock()
+    stop.side_effect = RuntimeError("stuck")
+    await ingest.reconcile_once()
+    stop.assert_awaited_once()
+    assert start.await_count == starts
+    broadcast.assert_not_awaited()

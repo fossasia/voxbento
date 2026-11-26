@@ -65,6 +65,7 @@ Cascade: deletes rooms + booths when event is deleted.
 | `floor_transcription_provider` | String(20) | Default `'local'` |
 | `floor_transcription_model` | String(40) | Default `'tiny'` |
 | `floor_language_code` | String(10) nullable | — |
+| `floor_language_override` | String(10) nullable | Migration 053; Mission Control's choice of the language spoken on the floor right now, None for `floor_language_code` (#1397, `portal/floor_language.py`) |
 | `floor_translation_enabled` | Boolean | Default False |
 | `floor_translation_provider` | String(50) nullable | — |
 | `floor_translation_model` | String(100) nullable | — |
@@ -181,6 +182,7 @@ Unique on `(user_id, booth_id)`.
 | `event_id` | FK → events.id CASCADE | — |
 | `channel_id` | String(100) | `floor-{room_id}` or `{booth_id}` |
 | `text` | Text | The final canonical transcription text |
+| `source_language_code` | String(10) nullable | Migration 053; the language the worker transcribed the segment in, while `language_code` stays the channel (`floor` or a booth language). None on older rows (#1397) |
 | `start_time` | Float | Timestamp from audio stream |
 | `end_time` | Float | Timestamp from audio stream |
 | `created_at` | DateTime(tz) | UTC |
@@ -311,6 +313,7 @@ Tracks which languages the translation worker should generate for a given room o
 | 046 | `046_live_demo_room_ai.py` | Transitional room-linked demo settings and daily limit |
 | 047 | `047_live_demo_independent_ai.py` | Independent demo providers, models, encrypted keys, persona/style; removes room link |
 | 044 | `044_youtube_connections.py` | `youtube_connections` table (one per event), `rooms.youtube_broadcast_id`, `rooms.youtube_stream_id` (#1087) |
+| 053 | `053_floor_language.py` | `rooms.floor_language_override`, `transcript_segments.source_language_code` (#1397) |
 
 Run migrations: `uv run alembic upgrade head`
 
