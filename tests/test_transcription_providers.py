@@ -5,10 +5,12 @@ from unittest.mock import AsyncMock, MagicMock, patch
 from urllib.parse import urlparse
 
 import httpx
+import numpy as np
 import pytest
 
 import portal.globals as pg
 from portal.transcription.providers.base import ProviderConfig, TranscriptionProvider, pcm_to_wav
+from portal.transcription.providers.local import LocalProvider
 
 
 def _atlas_response(status: int, body: object) -> httpx.Response:
@@ -713,10 +715,6 @@ async def test_chunks_still_queued_when_the_audio_ends_are_transcribed():
 async def test_local_whisper_preserves_cjk_and_thai_token_spacing():
     """Issue #1400: Whisper sub-word pieces for languages without word spaces
     (Thai, Japanese, Chinese) must not be broken apart by injected spaces."""
-    import numpy as np
-
-    from portal.transcription.providers.local import LocalProvider
-
     provider = LocalProvider()
 
     # Thai sub-word character sequence
@@ -753,10 +751,6 @@ async def test_local_whisper_preserves_cjk_and_thai_token_spacing():
 @pytest.mark.anyio
 async def test_local_whisper_retains_english_word_spacing():
     """Standard English Whisper tokens with leading spaces must preserve word separation."""
-    import numpy as np
-
-    from portal.transcription.providers.local import LocalProvider
-
     provider = LocalProvider()
     en_words = [_Word("Welcome", 0.5), _Word(" to", 1.0), _Word(" VoxBento", 1.5)]
     mock_segment_en = MagicMock()
@@ -774,10 +768,6 @@ async def test_local_whisper_retains_english_word_spacing():
 @pytest.mark.anyio
 async def test_local_whisper_fallback_when_segment_words_absent():
     """When word-level timestamps are not provided, segment text is preserved directly."""
-    import numpy as np
-
-    from portal.transcription.providers.local import LocalProvider
-
     provider = LocalProvider()
     mock_segment = MagicMock()
     mock_segment.words = None
