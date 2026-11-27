@@ -480,8 +480,6 @@ function bindEventHandlers() {
 
   document.addEventListener('keyup', (event) => {
     if (event.code === 'KeyC') {
-      const tag = document.activeElement?.tagName?.toLowerCase()
-      if (tag === 'input' || tag === 'textarea' || tag === 'select') return
       coughKey.release('key')
     }
   })
