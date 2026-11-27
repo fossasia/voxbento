@@ -711,51 +711,55 @@ async def test_chunks_still_queued_when_the_audio_ends_are_transcribed():
     assert any("words 1000." in text for text in captions), captions
 
 
-@pytest.mark.anyio
-async def test_local_whisper_preserves_cjk_and_thai_token_spacing():
+@pytest.mark.parametrize(
+    ("language", "words", "segment_text", "expected"),
+    [
+        (
+            "th",
+            [
+                _Word("ส", 0.1),
+                _Word("ว", 0.2),
+                _Word("ั", 0.3),
+                _Word("ส", 0.4),
+                _Word("ด", 0.5),
+                _Word("ี", 0.6),
+            ],
+            "สวัสดี",
+            "สวัสดี",
+        ),
+        (
+            "ja",
+            [_Word("今日", 0.5), _Word("は", 0.8), _Word("世界", 1.2)],
+            "今日は世界",
+            "今日は世界",
+        ),
+    ],
+)
+def test_local_whisper_preserves_non_spaced_token_spacing(
+    language: str, words: list[_Word], segment_text: str, expected: str
+) -> None:
     """Issue #1400: Whisper sub-word pieces for languages without word spaces
     (Thai, Japanese, Chinese) must not be broken apart by injected spaces."""
     provider = LocalProvider()
-
-    # Thai sub-word character sequence
-    thai_words = [
-        _Word("ส", 0.1),
-        _Word("ว", 0.2),
-        _Word("ั", 0.3),
-        _Word("ส", 0.4),
-        _Word("ด", 0.5),
-        _Word("ี", 0.6),
-    ]
-    mock_segment_thai = MagicMock()
-    mock_segment_thai.words = thai_words
-    mock_segment_thai.text = "สวัสดี"
+    mock_segment = MagicMock()
+    mock_segment.words = words
+    mock_segment.text = segment_text
 
     mock_model = MagicMock()
-    mock_model.transcribe.return_value = ([mock_segment_thai], None)
+    mock_model.transcribe.return_value = ([mock_segment], None)
 
     with patch("portal.transcription.providers.local.get_model", return_value=mock_model):
         audio_data = np.zeros(16000, dtype=np.float32)
-        assert provider._run_inference(audio_data, "th", "tiny", None, overlap_seconds=0.0) == "สวัสดี"
-
-    # Japanese / Chinese token sequence
-    ja_words = [_Word("今日", 0.5), _Word("は", 0.8), _Word("世界", 1.2)]
-    mock_segment_ja = MagicMock()
-    mock_segment_ja.words = ja_words
-    mock_segment_ja.text = "今日は世界"
-    mock_model.transcribe.return_value = ([mock_segment_ja], None)
-
-    with patch("portal.transcription.providers.local.get_model", return_value=mock_model):
-        assert provider._run_inference(audio_data, "ja", "tiny", None, overlap_seconds=0.0) == "今日は世界"
+        assert provider._run_inference(audio_data, language, "tiny", None, overlap_seconds=0.0) == expected
 
 
-@pytest.mark.anyio
-async def test_local_whisper_retains_english_word_spacing():
+def test_local_whisper_retains_english_word_spacing() -> None:
     """Standard English Whisper tokens with leading spaces must preserve word separation."""
     provider = LocalProvider()
-    en_words = [_Word("Welcome", 0.5), _Word(" to", 1.0), _Word(" VoxBento", 1.5)]
+    en_words = [_Word(" Welcome", 0.5), _Word(" to", 1.0), _Word(" VoxBento", 1.5)]
     mock_segment_en = MagicMock()
     mock_segment_en.words = en_words
-    mock_segment_en.text = "Welcome to VoxBento"
+    mock_segment_en.text = " Welcome to VoxBento"
 
     mock_model = MagicMock()
     mock_model.transcribe.return_value = ([mock_segment_en], None)
@@ -765,8 +769,7 @@ async def test_local_whisper_retains_english_word_spacing():
         assert provider._run_inference(audio_data, "en", "tiny", None, overlap_seconds=0.0) == "Welcome to VoxBento"
 
 
-@pytest.mark.anyio
-async def test_local_whisper_fallback_when_segment_words_absent():
+def test_local_whisper_fallback_when_segment_words_absent() -> None:
     """When word-level timestamps are not provided, segment text is preserved directly."""
     provider = LocalProvider()
     mock_segment = MagicMock()
