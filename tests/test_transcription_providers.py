@@ -596,7 +596,7 @@ class TestTranscriptionProviders:
             mock_word1.end = 1.5
 
             mock_word2 = MagicMock()
-            mock_word2.word = "world"
+            mock_word2.word = " world"
             mock_word2.end = 2.0
 
             mock_segment.words = [mock_word1, mock_word2]
@@ -630,7 +630,7 @@ class _Word:
 class _Segment:
     def __init__(self, *words: _Word) -> None:
         self.words = list(words)
-        self.text = " ".join(w.word for w in words)
+        self.text = "".join(w.word for w in words)
 
 
 @pytest.mark.anyio
@@ -641,7 +641,7 @@ async def test_local_whisper_drops_only_the_overlap_it_actually_heard_again():
     from portal.transcription.providers.local import OVERLAP_BYTES, LocalProvider
 
     heard: list[float] = []
-    words = [_Segment(_Word("early", 0.5), _Word("late", 1.5))]
+    words = [_Segment(_Word("early", 0.5), _Word(" late", 1.5))]
 
     class FakeModel:
         def transcribe(self, audio, **kwargs):
@@ -707,3 +707,85 @@ async def test_chunks_still_queued_when_the_audio_ends_are_transcribed():
     process = EndedProcess(b"\0" * (three_seconds * 2 + 1000))
     await SlowProvider().run_stream(process, "en", "m", ProviderConfig(None), broadcast, "b")
     assert any("words 1000." in text for text in captions), captions
+
+
+@pytest.mark.anyio
+async def test_local_whisper_preserves_cjk_and_thai_token_spacing():
+    """Issue #1400: Whisper sub-word pieces for languages without word spaces
+    (Thai, Japanese, Chinese) must not be broken apart by injected spaces."""
+    import numpy as np
+
+    from portal.transcription.providers.local import LocalProvider
+
+    provider = LocalProvider()
+
+    # Thai sub-word character sequence
+    thai_words = [
+        _Word("ส", 0.1),
+        _Word("ว", 0.2),
+        _Word("ั", 0.3),
+        _Word("ส", 0.4),
+        _Word("ด", 0.5),
+        _Word("ี", 0.6),
+    ]
+    mock_segment_thai = MagicMock()
+    mock_segment_thai.words = thai_words
+    mock_segment_thai.text = "สวัสดี"
+
+    mock_model = MagicMock()
+    mock_model.transcribe.return_value = ([mock_segment_thai], None)
+
+    with patch("portal.transcription.providers.local.get_model", return_value=mock_model):
+        audio_data = np.zeros(16000, dtype=np.float32)
+        assert provider._run_inference(audio_data, "th", "tiny", None, overlap_seconds=0.0) == "สวัสดี"
+
+    # Japanese / Chinese token sequence
+    ja_words = [_Word("今日", 0.5), _Word("は", 0.8), _Word("世界", 1.2)]
+    mock_segment_ja = MagicMock()
+    mock_segment_ja.words = ja_words
+    mock_segment_ja.text = "今日は世界"
+    mock_model.transcribe.return_value = ([mock_segment_ja], None)
+
+    with patch("portal.transcription.providers.local.get_model", return_value=mock_model):
+        assert provider._run_inference(audio_data, "ja", "tiny", None, overlap_seconds=0.0) == "今日は世界"
+
+
+@pytest.mark.anyio
+async def test_local_whisper_retains_english_word_spacing():
+    """Standard English Whisper tokens with leading spaces must preserve word separation."""
+    import numpy as np
+
+    from portal.transcription.providers.local import LocalProvider
+
+    provider = LocalProvider()
+    en_words = [_Word("Welcome", 0.5), _Word(" to", 1.0), _Word(" VoxBento", 1.5)]
+    mock_segment_en = MagicMock()
+    mock_segment_en.words = en_words
+    mock_segment_en.text = "Welcome to VoxBento"
+
+    mock_model = MagicMock()
+    mock_model.transcribe.return_value = ([mock_segment_en], None)
+
+    with patch("portal.transcription.providers.local.get_model", return_value=mock_model):
+        audio_data = np.zeros(16000, dtype=np.float32)
+        assert provider._run_inference(audio_data, "en", "tiny", None, overlap_seconds=0.0) == "Welcome to VoxBento"
+
+
+@pytest.mark.anyio
+async def test_local_whisper_fallback_when_segment_words_absent():
+    """When word-level timestamps are not provided, segment text is preserved directly."""
+    import numpy as np
+
+    from portal.transcription.providers.local import LocalProvider
+
+    provider = LocalProvider()
+    mock_segment = MagicMock()
+    mock_segment.words = None
+    mock_segment.text = " ข้อความทดสอบ "
+
+    mock_model = MagicMock()
+    mock_model.transcribe.return_value = ([mock_segment], None)
+
+    with patch("portal.transcription.providers.local.get_model", return_value=mock_model):
+        audio_data = np.zeros(16000, dtype=np.float32)
+        assert provider._run_inference(audio_data, "th", "tiny", None, overlap_seconds=0.0) == "ข้อความทดสอบ"
