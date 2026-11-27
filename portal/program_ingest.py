@@ -476,18 +476,22 @@ async def authorize_publish(data: MediaAuth) -> None:
                 )
             )
             is_new_room = not room.program_session_id and not room.program_backup_connected_at
-            if is_new_room and room.program_ingest_mode in program_relay.SRT_MODES:
-                srt_count = await session.scalar(
-                    select(func.count())
-                    .select_from(Room)
-                    .join(Event)
-                    .where(
-                        Event.deleted_at.is_(None),
-                        (Room.program_session_id.is_not(None) | Room.program_backup_connected_at.is_not(None)),
-                        Room.floor_source == "program_ingest",
-                        Room.program_ingest_mode.in_(program_relay.SRT_MODES),
+            is_new_feed = (
+                room.program_backup_connected_at is None if is_backup else room.program_session_id is None
+            )
+            if is_new_feed and room.program_ingest_mode in program_relay.SRT_MODES:
+                srt_count = (
+                    await session.scalar(
+                        select(func.count(Room.program_session_id) + func.count(Room.program_backup_connected_at))
+                        .select_from(Room)
+                        .join(Event)
+                        .where(
+                            Event.deleted_at.is_(None),
+                            Room.floor_source == "program_ingest",
+                            Room.program_ingest_mode.in_(program_relay.SRT_MODES),
+                        )
                     )
-                )
+                ) or 0
                 if srt_count >= settings.program_contribution_max:
                     raise HTTPException(429, "Gateway at contribution capacity")
             if is_new_room and count >= settings.program_ingest_max_rooms:

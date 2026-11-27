@@ -274,6 +274,96 @@ async def test_backup_single_publisher_and_capacity_limits(backup_env, monkeypat
 
 
 @pytest.mark.anyio
+async def test_contribution_max_counts_each_primary_and_backup_feed(backup_env, monkeypatch):
+    """Verify program_contribution_max counts each connected primary and backup feed (1 unit each)."""
+    client = backup_env["client"]
+    event = backup_env["event"]
+    room = backup_env["room"]
+
+    async with get_session() as session:
+        stored = await session.get(Room, room.id)
+        stored.program_backup_enabled = True
+        await ingest.generate_backup_srt_passphrase(stored)
+        pass_prim = ingest.decrypt_val(stored.program_srt_passphrase_enc)
+        pass_back = ingest.decrypt_val(stored.program_backup_key_enc)
+        backup_env["configured_paths"].add(f"{event.slug}/{room.id}/floor", pass_prim)
+        backup_env["configured_paths"].add(f"{event.slug}/{room.id}/floor_backup", pass_back)
+
+        room2 = Room(
+            event_id=event.id,
+            display_name="Room 2",
+            floor_transcription_enabled=True,
+            floor_language_code="en",
+            floor_source="program_ingest",
+            program_ingest_mode=relay.SRT_MODE,
+        )
+        session.add(room2)
+        await session.flush()
+        await ingest.generate_srt_passphrase(room2)
+        pass_prim2 = ingest.decrypt_val(room2.program_srt_passphrase_enc)
+        backup_env["configured_paths"].add(f"{event.slug}/{room2.id}/floor", pass_prim2)
+        await session.commit()
+
+    # Cap at 1: primary consumes 1 unit; backup on same room must hit 429
+    monkeypatch.setattr(settings, "program_contribution_max", 1)
+    r1_prim = await client.post(
+        "/internal/media-auth",
+        json={
+            "action": "publish",
+            "path": f"{event.slug}/{room.id}/floor",
+            "protocol": "srt",
+            "id": str(uuid4()),
+            "ip": "198.51.100.1",
+            "password": pass_prim,
+        },
+    )
+    assert r1_prim.status_code == 204
+
+    r1_back_blocked = await client.post(
+        "/internal/media-auth",
+        json={
+            "action": "publish",
+            "path": f"{event.slug}/{room.id}/floor_backup",
+            "protocol": "srt",
+            "id": str(uuid4()),
+            "ip": "198.51.100.2",
+            "password": pass_back,
+        },
+    )
+    assert r1_back_blocked.status_code == 429
+    assert "Gateway at contribution capacity" in r1_back_blocked.text
+
+    # Raise cap to 2: backup on same room succeeds (consuming unit 2), third feed on room2 hits 429
+    monkeypatch.setattr(settings, "program_contribution_max", 2)
+    r1_back = await client.post(
+        "/internal/media-auth",
+        json={
+            "action": "publish",
+            "path": f"{event.slug}/{room.id}/floor_backup",
+            "protocol": "srt",
+            "id": str(uuid4()),
+            "ip": "198.51.100.2",
+            "password": pass_back,
+        },
+    )
+    assert r1_back.status_code == 204
+
+    r2_prim_blocked = await client.post(
+        "/internal/media-auth",
+        json={
+            "action": "publish",
+            "path": f"{event.slug}/{room2.id}/floor",
+            "protocol": "srt",
+            "id": str(uuid4()),
+            "ip": "198.51.100.3",
+            "password": pass_prim2,
+        },
+    )
+    assert r2_prim_blocked.status_code == 429
+    assert "Gateway at contribution capacity" in r2_prim_blocked.text
+
+
+@pytest.mark.anyio
 async def test_backup_credentials_revocation_kicks_backup(backup_env):
     client = backup_env["client"]
     event = backup_env["event"]
