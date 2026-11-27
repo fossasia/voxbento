@@ -43,6 +43,7 @@ function createAudioScheduler(audioCtx, opts) {
     ? opts.comfortNoiseLevelDb : -40;
   var COMFORT_NOISE_FADE_SEC = typeof opts.comfortNoiseFadeSec === 'number'
     ? opts.comfortNoiseFadeSec : 0.5;
+  var destination = opts.destination || audioCtx.destination;
 
   /** @type {number} audioCtx.currentTime when the last scheduled buffer ends */
   var nextScheduledTime = 0;
@@ -92,7 +93,7 @@ function createAudioScheduler(audioCtx, opts) {
       comfortNoiseGain.gain.linearRampToValueAtTime(
         1, audioCtx.currentTime + COMFORT_NOISE_FADE_SEC
       );
-      comfortNoiseGain.connect(audioCtx.destination);
+      comfortNoiseGain.connect(destination);
 
       comfortNoiseSource = audioCtx.createBufferSource();
       comfortNoiseSource.buffer = getComfortNoiseBuffer();
@@ -193,7 +194,7 @@ function createAudioScheduler(audioCtx, opts) {
 
       var source = audioCtx.createBufferSource();
       source.buffer = audioBuffer;
-      source.connect(audioCtx.destination);
+      source.connect(destination);
       source.start(startTime);
 
       var endTime = startTime + audioBuffer.duration;

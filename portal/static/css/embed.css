@@ -61,6 +61,7 @@ body {
   transition: background 0.3s;
 }
 .status-dot.live       { background: #22c55e; box-shadow: 0 0 6px #22c55e88; }
+.status-dot.captions   { background: #22c55e; box-shadow: 0 0 6px #22c55e88; }
 .status-dot.error      { background: #ef4444; }
 .status-dot.connecting { background: var(--primary); animation: pulse 1.2s infinite; }
 
@@ -70,6 +71,9 @@ body {
 }
 
 /* ── Play button ─────────────────────────────────────────────────────── */
+.play-btn[hidden] {
+  display: none;
+}
 .play-btn {
   display: flex;
   align-items: center;
