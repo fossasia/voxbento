@@ -55,6 +55,10 @@ reconnect budget, so fixing a wrong URL recovers a room that shows **Needs atten
 - There is at most one agent process per room. Repeated **Connect** clicks
   adopt the running agent instead of joining a second participant, and the floor
   worker is keyed by the canonical floor booth ID.
+- Floor caption sequence numbers persist per room across transcription restarts
+  and switches between meeting audio and program ingest. Listeners can keep their
+  language selected while processing recovers; new sentences append to caption
+  history and translated speech resumes without resetting the player.
 - Replacing the event's speech-provider API key restarts affected floor processing
   on the next reconciliation pass. Saving the same key again keeps the worker running.
 - A failed agent restarts after 2, 5, 10, 20 and 30 seconds, up to
@@ -74,9 +78,10 @@ reconnect budget, so fixing a wrong URL recovers a room that shows **Needs atten
   disconnect that cannot reach the floor-bot service returns `202` with
   `cleanup_pending: true`; the desired state is already cleared and the stale
   agent is stopped on the next successful reconcile.
-- Rooms of a deleted event (`DELETE /api/v1/events/{slug}`) no longer count as wanting an
-  agent. The next reconcile stops their agent and floor transcription worker, within 30
-  seconds when no other room wants one.
+- Rooms of a deleted event (`DELETE /api/v1/events/{slug}`), and rooms the admin pages
+  delete outright (alone or with their event), no longer count as wanting an agent. The
+  next reconcile stops their agent and floor transcription worker, within 30 seconds when
+  no other room wants one.
 - When the agent has been the only participant for `BOT_EMPTY_ROOM_GRACE_SECONDS`
   (default 90, set on the `floor-bot` service) it leaves the meeting. The portal
   treats this as a stop, not a failure: the room's agent is switched off, floor
@@ -86,6 +91,17 @@ reconnect budget, so fixing a wrong URL recovers a room that shows **Needs atten
 
 ## Deployment
 
+- When upgrading from worker-local Jitsi caption counters, reload each open
+  listener page once after deploying the updated portal. The previous counter was
+  never stored, so its last value cannot be recovered safely from the database.
+  A portal replacement closes the old TTS socket; the existing listener does not
+  reconnect that socket automatically. Reloading aligns the player with the new
+  durable stream. Subsequent transcription-worker restarts and source switches
+  preserve its position without another reload.
+- During a caption-counter database outage, original captions continue with
+  unique segment IDs. Storage, translation and synthesized speech for those
+  segments are unavailable; sequenced processing resumes when the database
+  recovers. Captions for a deleted room are discarded.
 - The `floor-bot` service must be reachable from the portal at `FLOOR_BOT_BASE`
   (default `http://floor-bot:8080`) and must not be exposed publicly.
 - The bundled Jitsi is joined through `JITSI_INTERNAL_BASE`. A meeting on another

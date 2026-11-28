@@ -115,6 +115,10 @@ class TranslationEngine(ABC):
     the model and credentials arrive with each call.
     """
 
+    #: How many calls the engine serves at once. The worker's scheduler never has more than
+    #: this in flight against the engine; further calls wait their turn there (#1188).
+    max_concurrency: int = 4
+
     @property
     @abstractmethod
     def kind(self) -> EngineKind:
@@ -174,8 +178,8 @@ async def translate_each(
 
     Every call starts at once: ``len(texts) * len(targets)`` of them, with no limit here.
     That is safe only while the caller bounds how much it sends, as the worker does today
-    with one text and one target per call. Bounding concurrency across rooms is the
-    scheduler's job (#1188), and a model that can translate several targets in one pass
+    with one text and one target per call, each holding one of the scheduler's slots
+    (#1188). A model that can translate several targets in one pass
     should do that in its own ``translate_batch`` instead of using this helper (#1190).
     """
     if not targets or not texts:
