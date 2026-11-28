@@ -160,6 +160,7 @@ with `?error=invalid_role&role=…` and the page explains why.
 | POST | `…/booths/{booth_id}/transcription-settings` | — | Updates provider/model; starts/stops worker |
 | POST | `…/booths/{booth_id}/tokens/` | — | Creates InviteToken with optional expiry |
 | POST | `…/booths/{booth_id}/tokens/{token_id}/revoke` | — | Marks token as used (revokes) |
+| POST | `…/booths/{booth_id}/edit` | — | Updates language name/code; a code change returns 409 while the booth has participants, Go Live on or a worker |
 | GET | `/admin/events/{event_id}/members/` | `admin/event_members.html` | EventMembership list |
 | POST | `/admin/events/{event_id}/members/` | — | Upserts EventMembership by email + role |
 | POST | `/admin/events/{event_id}/members/{membership_id}/delete` | — | Removes EventMembership |
