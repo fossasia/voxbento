@@ -548,7 +548,7 @@ def clean_speech_term(term: str) -> str:
     return " ".join(_CONTROL_CHARS.sub(" ", term).split())
 
 
-def _estimated_keyterm_tokens(term: str) -> int:
+def estimated_keyterm_tokens(term: str) -> int:
     # Roughly three characters a token, rounded up; no tokenizer is shared with Deepgram.
     return max(1, -(-len(term) // 3))
 
@@ -558,7 +558,7 @@ def fit_speech_terms(
     *,
     max_terms: int = MAX_KEYTERMS,
     budget: int = MAX_KEYTERM_TOKENS,
-    cost: Callable[[str], int] = _estimated_keyterm_tokens,
+    cost: Callable[[str], int] = estimated_keyterm_tokens,
 ) -> list[str]:
     """Each term once, cleaned, in the given order, while ``cost`` stays within ``budget``.
 
@@ -589,7 +589,7 @@ async def speech_keyterms(
     *,
     max_terms: int = MAX_KEYTERMS,
     budget: int = MAX_KEYTERM_TOKENS,
-    cost: Callable[[str], int] = _estimated_keyterm_tokens,
+    cost: Callable[[str], int] = estimated_keyterm_tokens,
 ) -> list[str]:
     """The glossary's source terms for a room, to help speech recognition hear them.
 
