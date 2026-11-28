@@ -533,9 +533,34 @@ async def test_a_read_that_overlaps_an_invalidation_is_not_cached():
     await asyncio.sleep(0)
     cache.invalidate_room("conf", 1)  # the room's glossary is edited while the old read runs
     release.set()
-    assert (await slow_read).terms[0].target_term == "old"
+    assert (await slow_read).terms == ()  # the outdated glossary is not used
     # The old read was not stored: the next request reads the edited glossary.
     assert (await cache.get("conf-1-de")).terms[0].target_term == "new"
+
+
+@pytest.mark.anyio
+async def test_an_older_refresh_that_finishes_last_is_not_broadcast():
+    release_old = asyncio.Event()
+    versions = ["old", "new"]
+
+    async def loader(_booth_id: str) -> BoothGlossary:
+        version = versions.pop(0)
+        if version == "old":
+            await release_old.wait()
+        return BoothGlossary(terms=(_term(1, "term", version),))
+
+    cache = GlossaryCache(loader=loader, ttl=60, clock=_Clock())
+    # Two saved edits in the same room, each refreshing the booth in its own task.
+    cache.invalidate_room("conf", 1)
+    older = asyncio.create_task(cache.refresh("conf-1-de"))
+    await asyncio.sleep(0)
+    cache.invalidate_room("conf", 1)
+    newer = await cache.refresh("conf-1-de")
+    release_old.set()
+
+    assert newer is not None and newer.terms[0].target_term == "new"
+    assert await older is None  # nothing outdated is sent to the booth
+    assert cache.peek("conf-1-de") is newer
 
 
 @pytest.mark.anyio

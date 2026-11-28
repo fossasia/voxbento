@@ -333,7 +333,8 @@ class GlossaryCache:
         return entry[1] if entry is not None else EMPTY_GLOSSARY
 
     async def refresh(self, booth_id: str) -> BoothGlossary | None:
-        """Read the glossary again; None when the read failed (the last one stays cached)."""
+        """Read the glossary again; None when the read failed (the last one stays cached)
+        or a room edit overtook it."""
         generation = self._generation(booth_id)
         try:
             glossary = await self._loader(booth_id)
@@ -344,6 +345,9 @@ class GlossaryCache:
             self._store(booth_id, fallback, self._clock() + self._retry_after, generation)
             return None
         self._outage.recovered()
+        if generation != self._generation(booth_id):
+            # A room edit overtook this read; that edit's own refresh sends the newer glossary.
+            return None
         self._store(booth_id, glossary, self._clock() + self._ttl, generation)
         return glossary
 
