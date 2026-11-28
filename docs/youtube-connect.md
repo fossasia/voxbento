@@ -1,5 +1,8 @@
 # Sign in with YouTube (#1087)
 
+Organisers use it from **Room audio → From a YouTube stream** (the guide for all YouTube
+routes; see `website/docs/admin/youtube.mdx`) or from **From streaming software**.
+
 An event owner connects the event's YouTube channel once, then picks each room's
 broadcast from a list (or pastes its link). In relay mode
 ([RTMPS relay](program-relay.md)) VoxBento then fills in the YouTube stream key

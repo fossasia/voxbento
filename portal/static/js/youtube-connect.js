@@ -307,11 +307,12 @@ const outcome = params.get('youtube');
 if (outcome) {
   const [text, tone] = outcomes[outcome] || [''];
   say(text, tone);
-  // Back from Google: show the streaming-software panel this flow started from.
-  const encoder = document.querySelector('input[name="audio_choice"][value="encoder"]');
-  if (encoder && !encoder.checked) {
-    encoder.checked = true;
-    encoder.dispatchEvent(new Event('change'));
+  // Back from Google: reopen the YouTube guide this flow started from (or, without it, streaming software).
+  const source = document.querySelector('input[name="audio_choice"][value="youtube"]')
+    || document.querySelector('input[name="audio_choice"][value="encoder"]');
+  if (source && !source.checked) {
+    source.checked = true;
+    source.dispatchEvent(new Event('change'));
   }
   params.delete('youtube');
   const query = params.toString();

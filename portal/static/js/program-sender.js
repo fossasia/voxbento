@@ -60,7 +60,8 @@ let recorder = null;
 let capturing = false;
 // Changed only by an explicit pick, so recovering from an unplugged USB input waits for that input.
 let preferredDevice = savedDevice();
-let source = normalizeSource(savedSource());
+// `?source=tab` (the YouTube guide's link) starts on the browser-tab source; otherwise the last one used.
+let source = normalizeSource(new URLSearchParams(window.location.search).get('source') || savedSource());
 // Bumped by stop(); a connect() that resumes under an older generation is abandoned.
 let generation = 0;
 // Bumped by releaseInput(); recovery for an input that was since released or replaced is abandoned.
