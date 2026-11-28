@@ -4223,7 +4223,7 @@ async def api_admin_get_transcripts(
             saved_codes = await session.scalars(
                 select(BoothTranslationLanguage.language_code)
                 .join(DBBooth, BoothTranslationLanguage.booth_id == DBBooth.id)
-                .where(DBBooth.room_id == room_id, DBBooth.language_code == language_code)
+                .where(DBBooth.room_id == room_id, func.lower(DBBooth.language_code) == language_code)
             )
             try:
                 target_lang = resolve_translation_language(target_lang, saved_codes.all())
@@ -4234,8 +4234,8 @@ async def api_admin_get_transcripts(
                 .join(TranscriptSegment)
                 .where(
                     TranscriptSegment.room_id == room_id,
-                    TranscriptSegment.language_code == language_code,
                     # Rows saved before codes were normalized can be in any case.
+                    func.lower(TranscriptSegment.language_code) == language_code,
                     func.lower(TranscriptTranslation.language_code) == target_lang,
                 )
                 .order_by(
@@ -4257,7 +4257,10 @@ async def api_admin_get_transcripts(
         else:
             stmt = (
                 select(TranscriptSegment)
-                .where(TranscriptSegment.room_id == room_id, TranscriptSegment.language_code == language_code)
+                .where(
+                    TranscriptSegment.room_id == room_id,
+                    func.lower(TranscriptSegment.language_code) == language_code,
+                )
                 .order_by(TranscriptSegment.created_at)
             )
             result = await session.execute(stmt)

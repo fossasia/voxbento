@@ -173,3 +173,34 @@ async def test_api_transcripts_accepts_a_saved_booth_target_language(client):
 
     r = await client.get(f"{base}?target_lang=fr-CA")
     assert r.status_code == 400
+
+
+@pytest.mark.anyio
+async def test_api_transcripts_reads_rows_saved_with_an_uppercase_source_code(client):
+    """Segments and booths written before codes were lowercased stay readable from the lowercased path code."""
+    from sqlalchemy import update
+
+    from portal.database import create_booth, get_session
+    from portal.models import BoothTranslationLanguage, DBBooth, TranscriptSegment, TranscriptTranslation
+
+    token, ev_a, room_a, _room_b = await _setup()
+    client.cookies.set("user_token", token)
+    async with get_session() as s:
+        booth = await create_booth(s, event_id=ev_a, room_id=room_a, language_code="en", language_name="English")
+        s.add(BoothTranslationLanguage(booth_id=booth.id, language_code="pt-BR", language_name="Portuguese"))
+        # The model lowercases on assignment, so write the old uppercase value directly.
+        await s.execute(update(DBBooth).where(DBBooth.id == booth.id).values(language_code="EN"))
+        segment = TranscriptSegment(room_id=room_a, language_code="EN", text="Hello")
+        s.add(segment)
+        await s.flush()
+        s.add(TranscriptTranslation(segment_id=segment.id, language_code="pt-BR", text="Olá"))
+        await s.commit()
+    base = f"/api/workspace/events/{ev_a}/rooms/{room_a}/transcripts/en"
+
+    r = await client.get(base)
+    assert r.status_code == 200
+    assert [t["text"] for t in r.json()] == ["Hello"]
+
+    r = await client.get(f"{base}?target_lang=pt-BR")
+    assert r.status_code == 200
+    assert [t["text"] for t in r.json()] == ["Olá"]
