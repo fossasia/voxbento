@@ -13,6 +13,7 @@ from portal.transcription.timing import segment_timing, timing_metadata
 from portal.translations.constants import OPENAI_COMPATIBLE_ENDPOINTS, TranslationProviderEnum
 from portal.translations.engine import EngineKind, Language, TranslationContext, TranslationEngine
 from portal.translations.keys import get_translation_api_key
+from portal.translations.metrics import FAILED, STALE, TRANSLATED, translation_metrics
 from portal.translations.providers import local as local_provider
 from portal.translations.providers.anthropic import AnthropicProvider
 from portal.translations.providers.base import ProviderEngine
@@ -500,10 +501,19 @@ class TranslationWorker:
 
         if job is None:
             logger.warning(f"[{booth_id_str}] Queue full for {lang_code}. Dropping segment {seq}.")
+            translation_metrics.record(provider, model, room.id, FAILED)
             await tts_manager.broadcast_bundle(
                 room.id, lang_code, booth_id_str, b"", uuid_segment_id, seq, text, "", "pipeline_failed"
             )
             return
+
+        recorded = False
+        start_lag = latency = None
+
+        def record(kind: str) -> None:
+            nonlocal recorded
+            translation_metrics.record(provider, model, room.id, kind, start_lag=start_lag, latency=latency)
+            recorded = True
 
         try:
             # Resolved before waiting for an engine slot: the glossary is optional context, and a
@@ -532,6 +542,7 @@ class TranslationWorker:
             translated_text = None
             nobody_listens = False
             async with job:
+                start_lag = job.waited
                 # Enforce a strict timeout on inference (12s for cloud, 60s for local). Checked once
                 # the segment has its turn, so a download that started while it waited still counts.
                 # A download runs in its own thread and holds no slot, so nothing queues behind it.
@@ -544,32 +555,38 @@ class TranslationWorker:
                     nobody_listens = audience is None
                     synthesize_audio = audience == LISTENERS
                 if not downloading and not nobody_listens:
-                    translated_text = await self._infer_holding_slot(
-                        job,
-                        timeout_val,
-                        booth_id_str,
-                        provider,
-                        model,
-                        api_key,
-                        text,
-                        lang_code,
-                        lang_name,
-                        source_lang_code,
-                        source_lang_name,
-                        room,
-                        vocabulary_entries,
-                    )
+                    started = time.monotonic()
+                    try:
+                        translated_text = await self._infer_holding_slot(
+                            job,
+                            timeout_val,
+                            booth_id_str,
+                            provider,
+                            model,
+                            api_key,
+                            text,
+                            lang_code,
+                            lang_name,
+                            source_lang_code,
+                            source_lang_name,
+                            room,
+                            vocabulary_entries,
+                        )
+                    finally:
+                        latency = time.monotonic() - started
 
             if nobody_listens:
                 logger.info("[%s] Nobody listens to %s any more. Skipping segment %s.", booth_id_str, lang_code, seq)
                 return
 
             if downloading:
+                record(FAILED)
                 # Told after the slot is free, so the next segment does not wait for this broadcast.
                 await self._drop_while_downloading(room.id, lang_code, booth_id_str, model, uuid_segment_id, seq, text)
                 return
 
             if translated_text is None:
+                record(FAILED)
                 await tts_manager.broadcast_bundle(
                     room.id, lang_code, booth_id_str, b"", uuid_segment_id, seq, text, "", "pipeline_failed"
                 )
@@ -582,6 +599,7 @@ class TranslationWorker:
                 await tts_manager.broadcast_bundle(
                     room.id, lang_code, booth_id_str, b"", uuid_segment_id, seq, text, "", None, audio_pending=False
                 )
+                record(TRANSLATED)
                 return
 
             # Save to DB using an independent session to avoid concurrent transaction crashes
@@ -625,6 +643,7 @@ class TranslationWorker:
                     room.id, lang_code, translated_text, timing.source_received_at_ms if timing else None
                 )
 
+            record(TRANSLATED)
             # Saved and delivered: the segment leaves its language's queue, so slow speech
             # synthesis below does not hold back new segments.
             job.close()
@@ -657,11 +676,14 @@ class TranslationWorker:
             )
 
         except StaleTranslationJob as stale:
+            translation_metrics.record(provider, model, room.id, STALE, start_lag=stale.waited)
             await self._drop_stale(room.id, lang_code, booth_id_str, uuid_segment_id, seq, text, stale.waited)
         except Exception as e:
             logger.error(
                 f"[{booth_id_str}] Translation failed for {lang_code}: {e} (api_key is None? {api_key is None})"
             )
+            if not recorded:
+                record(FAILED)
             await tts_manager.broadcast_bundle(
                 room.id, lang_code, booth_id_str, b"", uuid_segment_id, seq, text, "", "pipeline_failed"
             )
