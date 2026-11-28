@@ -5,12 +5,12 @@ from __future__ import annotations
 import pytest
 from fastapi.testclient import TestClient
 from httpx import ASGITransport, AsyncClient
-from sqlalchemy import select
+from sqlalchemy import select, update
 
 from fastapi_app import app
 from portal.config import settings
 from portal.database import configure, create_booth, create_event, create_room, dispose, get_session, init_db
-from portal.models import DBBooth
+from portal.models import DBBooth, Event
 
 client = TestClient(app, raise_server_exceptions=False)
 
@@ -77,6 +77,20 @@ async def test_whip_url_rejects_invalid_language_after_access_check(event_with_b
 async def test_delete_booth_uses_the_normalized_language_code(event_with_booth, authorized_client):
     """An uppercase code in the path deletes the stored (lowercase) booth, not only the in-memory one."""
     response = await authorized_client.delete(f"/api/events/PyCon/rooms/{event_with_booth}/booths/EN")
+
+    assert response.status_code == 204
+    async with get_session() as session:
+        assert await session.scalar(select(DBBooth).where(DBBooth.room_id == event_with_booth)) is None
+
+
+@pytest.mark.anyio
+async def test_delete_booth_reaches_an_event_stored_with_a_mixed_case_slug(event_with_booth, authorized_client):
+    """Rows written before slugs were lowercased on assignment keep their case; the lowercased lookup must still match."""
+    async with get_session() as session:
+        await session.execute(update(Event).where(Event.slug == "pycon").values(slug="PyCon"))
+        await session.commit()
+
+    response = await authorized_client.delete(f"/api/events/PyCon/rooms/{event_with_booth}/booths/en")
 
     assert response.status_code == 204
     async with get_session() as session:

@@ -5,7 +5,7 @@ import logging
 import jwt as pyjwt
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 from sqlalchemy.orm.exc import ObjectDeletedError, StaleDataError
@@ -379,6 +379,18 @@ def _validate_booth_path(event_slug: str, language_code: str) -> tuple[str, str]
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
 
 
+def _event_slug_matches(slug: str):
+    """Match a normalized slug against ``Event.slug`` regardless of the stored case.
+
+    Rows written before slugs were lowercased on assignment can still hold mixed-case slugs.
+    """
+    return func.lower(Event.slug) == slug
+
+
+async def _get_live_event_by_normalized_slug(session: AsyncSession, slug: str) -> Event | None:
+    return await session.scalar(select(Event).where(_event_slug_matches(slug), Event.deleted_at.is_(None)).limit(1))
+
+
 @router.delete("/events/{event_slug}/rooms/{room_id}/booths/{language_code}", status_code=status.HTTP_204_NO_CONTENT)
 async def delete_booth_by_language(
     request: Request,
@@ -393,7 +405,7 @@ async def delete_booth_by_language(
     booth_id = make_booth_id(event_slug, room_id, language_code)
     room_db_id = room_id
     async with get_session() as session:
-        event = await session.scalar(select(Event).where(Event.slug == event_slug, Event.deleted_at.is_(None)))
+        event = await _get_live_event_by_normalized_slug(session, event_slug)
         if not event:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Event not found")
         await _verify_event_access(
@@ -408,7 +420,7 @@ async def delete_booth_by_language(
         stmt = (
             select(DBBooth)
             .join(Event)
-            .where(Event.slug == event_slug, DBBooth.room_id == room_id, DBBooth.language_code == language_code)
+            .where(DBBooth.event_id == event.id, DBBooth.room_id == room_id, DBBooth.language_code == language_code)
         )
         db_booth = await session.scalar(stmt)
         if db_booth:
@@ -572,8 +584,7 @@ async def delete_event_booth(
     room_id = 0
     async with get_session() as session:
         # Find the event
-        event_query = await session.execute(select(Event).where(Event.slug == event_slug, Event.deleted_at.is_(None)))
-        event = event_query.scalar_one_or_none()
+        event = await _get_live_event_by_normalized_slug(session, event_slug)
         if not event:
             raise HTTPException(status_code=404, detail="Event not found")
 
@@ -768,7 +779,7 @@ async def event_booth_whip_url(
     event_slug, language_code = _validate_booth_path(event_slug, language_code)
     if room_id is None:
         async with get_session() as session:
-            ev = await get_event_by_slug(session, event_slug)
+            ev = await _get_live_event_by_normalized_slug(session, event_slug)
             if ev:
                 rooms = await list_rooms_for_event(session, ev.id)
                 if len(rooms) > 1:
@@ -781,7 +792,7 @@ async def event_booth_whip_url(
             room_id = 1
 
     async with get_session() as session:
-        event = await get_event_by_slug(session, event_slug)
+        event = await _get_live_event_by_normalized_slug(session, event_slug)
         if event is None:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Event not found")
         auth_payload = await _verify_resource_access(
@@ -831,7 +842,7 @@ async def api_transcription_start(
     event_slug, language_code = _validate_booth_path(event_slug, language_code)
     booth_id = make_booth_id(event_slug, room_id, language_code)
     async with get_session() as session:
-        event = await get_event_by_slug(session, event_slug)
+        event = await _get_live_event_by_normalized_slug(session, event_slug)
         if event is None:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Event not found")
         await _verify_resource_access(
@@ -850,7 +861,7 @@ async def api_transcription_start(
             .join(Event)
             .options(selectinload(DBBooth.event))
             .where(
-                Event.slug == event_slug,
+                _event_slug_matches(event_slug),
                 Event.deleted_at.is_(None),
                 DBBooth.room_id == room_id,
                 DBBooth.language_code == language_code,
@@ -905,7 +916,7 @@ async def api_transcription_stop(
     event_slug, language_code = _validate_booth_path(event_slug, language_code)
     booth_id = make_booth_id(event_slug, room_id, language_code)
     async with get_session() as session:
-        event = await get_event_by_slug(session, event_slug)
+        event = await _get_live_event_by_normalized_slug(session, event_slug)
         if event is None:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Event not found")
         await _verify_resource_access(
