@@ -14,7 +14,7 @@ depends_on = None
 
 def upgrade() -> None:
     with op.batch_alter_table("rooms") as batch:
-        batch.add_column(sa.Column("meeting_agent_enabled", sa.Boolean(), nullable=False, server_default="0"))
+        batch.add_column(sa.Column("meeting_agent_enabled", sa.Boolean(), nullable=False, server_default=sa.false()))
 
 
 def downgrade() -> None:

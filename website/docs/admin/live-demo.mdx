@@ -6,8 +6,8 @@ description: "Switch the home page's live speech demo on or off, set its limits,
 
 The home page has a **Your voice** demo: a visitor presses the microphone, speaks, and
 sees live captions, translations into up to three languages, and hears one of them read
-aloud. It runs on the server's own models (Whisper for speech, NLLB for translation and
-Supertonic for the voice), so it uses no provider keys but does use the server's CPU.
+aloud. Choose the server's own models (Whisper, NLLB and Supertonic) or configure the
+demo's own hosted services and API keys.
 
 Admins manage it at **Admin → Live demo** (`/admin/live-demo/`).
 
@@ -20,6 +20,31 @@ normally. Tick it again when the server has room.
 A server that should never run it can set `LIVE_DEMO_ENABLED=false`; the page then says
 the demo is off on this server, whatever is saved.
 
+## AI engines
+
+The demo runs on one of two sources, chosen under **AI engines**:
+
+- **This server's built-in models.** Whisper, NLLB and Supertonic on the server's CPU. Free
+  and needs no keys; pick the Whisper size here.
+- **Choose services for this demo.** Select caption and translation provider/model pairs,
+  a voice provider, an optional voice ID, interpreter persona and style. These settings
+  belong to the demo and require no event or room. Both modes use the site glossary.
+
+Enter the demo's API keys in the corresponding password fields. They are encrypted at
+rest and never displayed again. Blank preserves a saved key; **Remove saved key** deletes
+it. Changing providers clears the old key, so enter the new provider's key when switching.
+Local models need no key. Missing or unreadable keys keep the demo unavailable and show
+an explanation to Admins. NVIDIA speech also requires the server's `NVIDIA_FUNCTION_ID`
+and the optional `nvidia-riva-client` dependency. Hosted services bill the demo's keys, independently of events.
+
+After Stop, OpenAI realtime and ElevenLabs speech allow up to three seconds for delayed
+final transcripts before closing the connection. A slower response can miss that deadline.
+
+**Demo minutes per day** limits accepted audio, not currency; pricing depends on the chosen
+services and number of target languages. The UTC-day usage counter resets on portal restart.
+Migration 045 disables any older room-linked demo and removes its link. Configure the demo's
+own services and credentials, then enable it again. Customer keys are never copied.
+
 ## Limits
 
 | Setting | What it does |
@@ -28,7 +53,8 @@ the demo is off on this server, whatever is saved.
 | Time limit per try | Longest single try, in seconds. |
 | Tries per visitor per hour | Counted per network address. |
 | Languages per try | How many languages a visitor can translate into. Each one adds a translation for every sentence. |
-| Speech recognition model | Tiny is fastest, Small most accurate. Base suits most CPUs. |
+| Demo minutes per day | Visitor audio accepted per UTC day, across everyone. Once used up, the demo rests until the next day and a try in progress ends. |
+| Speech recognition model | Built-in models only. Tiny is fastest, Small most accurate. Base suits most CPUs. |
 | Speak the translations aloud | Turn off to save CPU; captions and translations keep working. |
 
 ## Site glossary

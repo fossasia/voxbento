@@ -36,11 +36,18 @@ class Settings(BaseSettings):
     # http://{jitsi_domain}. Set to https://... for production HTTPS.
     jitsi_base_url: str = ""
     jitsi_internal_base: str = ""
+    mediamtx_hls_base: str = "/hls"
     mediamtx_whip_base: str = "http://localhost:8889"
     # MediaMTX Control API (port 9997). Used to dynamically create named
     # paths with alwaysAvailable so WHEP readers survive publisher handoffs.
     mediamtx_api_base: str = "http://localhost:9997"
     mediamtx_rtsp_base: str = "rtsp://mediamtx:8554"
+    max_transcription_workers: int = Field(
+        default=10,
+        ge=1,
+        le=100,
+        description="Maximum concurrent transcription workers allowed across all booths.",
+    )
     floor_bot_base: str = "http://floor-bot:8080"
     meeting_agent_max_restarts: int = 5  # Automatic agent restarts per incident before reporting degraded.
     meeting_agent_no_audio_secs: float = 45.0
@@ -60,6 +67,18 @@ class Settings(BaseSettings):
     program_relay_control_secret: str = ""
     program_relay_max: int = 4
     program_relay_allowed_hosts: str = "a.rtmps.youtube.com,b.rtmps.youtube.com"
+    # "Sign in with YouTube" (Google OAuth web client). Off unless both are set.
+    youtube_oauth_client_id: str = ""
+    youtube_oauth_client_secret: str = Field(default="", repr=False)
+    youtube_status_cache_secs: float = 60.0  # Two list calls per refresh per open linked room.
+
+    @property
+    def youtube_connect_enabled(self) -> bool:
+        return bool(self.youtube_oauth_client_id and self.youtube_oauth_client_secret)
+
+    @property
+    def youtube_redirect_uri(self) -> str:
+        return f"{self.public_base_url.rstrip('/')}/youtube/oauth/callback"
 
     @property
     def rtmps_ingest_enabled(self) -> bool:
@@ -178,6 +197,8 @@ class Settings(BaseSettings):
                 "PROGRAM_RELAY_ENABLED requires PROGRAM_RELAY_CONTROL_SECRET (at least 32 characters), "
                 "shared with the program-relay service. Generate one with: openssl rand -hex 32"
             )
+        if bool(self.youtube_oauth_client_id) != bool(self.youtube_oauth_client_secret):
+            raise RuntimeError("Set both YOUTUBE_OAUTH_CLIENT_ID and YOUTUBE_OAUTH_CLIENT_SECRET, or neither.")
         # Every outgoing email is encrypted at rest in the outbox, so sign-in links,
         # invitations and password resets cannot be sent without this key.
         encryption_keys = [
@@ -200,6 +221,18 @@ class Settings(BaseSettings):
     self_hosted_llm_base_url: str = ""
     self_hosted_llm_api_key: str = Field(default="", repr=False)
     self_hosted_llm_models: str = ""
+    # Translation requests in flight at once: to the self-hosted server across all rooms, and
+    # from each event to a hosted provider (OpenAI, Gemini, ...). Further requests
+    # wait, with rooms taking turns. Each local model's limit comes from its CPU threads instead.
+    self_hosted_llm_concurrency: int = Field(default=4, ge=1)
+    translation_api_concurrency: int = Field(default=32, ge=1)
+    # Seconds a segment may wait for its translation engine to start. A segment that would wait
+    # longer is dropped as stale, so a backed-up language catches up with the speaker. 0 = never.
+    translation_max_lag_seconds: float = Field(default=4.0, ge=0)
+
+    # Built-in translation models this server offers to events (#1191), comma-separated; the
+    # first is the default. Models are large, so only the operator chooses what may be downloaded.
+    local_translation_models: str = "nllb-200-distilled-600M"
 
     # Supertonic synthesis quality/speed trade-off. Fewer diffusion steps =
     # faster (lower real-time factor) at a small quality cost. 4 keeps CPU
@@ -210,6 +243,11 @@ class Settings(BaseSettings):
     # (uses all physical cores).
     supertonic_intra_op_threads: int = 0
 
+    meeting_analysis_ollama_base_url: str = "http://localhost:11434"
+    meeting_analysis_ollama_num_ctx: int = 32768
+    # Automatic meeting reports (#1080): written only for a session with at least this many
+    # transcript lines, so a short sound check or a brief test leaves no report behind.
+    meeting_analysis_auto_min_lines: int = Field(default=20, ge=1)
     # Home-page live demo (/ws/demo/live): visitors speak and get captions, translations and a
     # voice from the server's own models. Public, so its load is capped per server and per IP.
     # Admins switch it on at /admin/live-demo/ (off until then); False forbids it on this server.
@@ -298,6 +336,30 @@ class Settings(BaseSettings):
         if self.self_hosted_llm_allows(model):
             return model
         return self.self_hosted_llm_model_list[0] if self.self_hosted_llm_enabled else None
+
+    @field_validator("local_translation_models")
+    @classmethod
+    def validate_local_translation_models(cls, value: str) -> str:
+        """Model names are stored on rooms and booths, whose columns hold 100 characters."""
+        if any(len(m.strip()) > 100 for m in value.split(",")):
+            raise ValueError("each LOCAL_TRANSLATION_MODELS name must be 100 characters or fewer")
+        return value
+
+    @property
+    def local_translation_model_list(self) -> tuple[str, ...]:
+        """The built-in translation models events may use, in the order the operator listed them."""
+        return tuple(dict.fromkeys(m.strip() for m in self.local_translation_models.split(",") if m.strip()))
+
+    def local_translation_allows(self, model: str | None) -> bool:
+        """Whether rooms and booths may use ``model`` as their built-in translator right now."""
+        return model in self.local_translation_model_list
+
+    def local_translation_model_or_default(self, model: str | None) -> str | None:
+        """``model`` when allowed, else the default (first listed) model, else None when none is offered."""
+        if self.local_translation_allows(model):
+            return model
+        models = self.local_translation_model_list
+        return models[0] if models else None
 
 
 settings = Settings()

@@ -262,3 +262,19 @@ async def test_elevenlabs_skips_empty_text(elevenlabs_api):
     requests, _ = elevenlabs_api
     assert await _speak("  ") == []
     assert requests == []
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("voice_id", ["", "custom-elevenlabs-voice"])
+async def test_elevenlabs_factory_voice_id_reaches_request(elevenlabs_api, voice_id):
+    requests, answers = elevenlabs_api
+    answers["eleven_v4_turbo"] = (200, (b"\x00\x01",))
+    provider = get_tts_provider("elevenlabs", elevenlabs_api_key="xi-secret", elevenlabs_voice_id=voice_id)
+
+    async def on_audio(_):
+        pass
+
+    await provider.synthesize_stream(text_chunks=_achunks("Hello"), language_code="en", voice="", on_audio=on_audio)
+    assert json.loads(requests[0].content)["inputs"][0]["voice_id"] == (
+        voice_id or elevenlabs.ELEVENLABS_DEFAULT_VOICE_ID
+    )

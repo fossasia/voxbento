@@ -1,7 +1,10 @@
 FROM mcr.microsoft.com/playwright/python:v1.40.0-jammy
 
-# Install system dependencies (pulseaudio/ffmpeg)
-RUN apt-get update && apt-get install -y \
+# The Ubuntu mirrors can be unreachable over HTTP from CI builders.
+# Fail on incomplete indexes rather than trying to install from a partial update.
+RUN sed -i -E 's@http://((archive|security|ports)\.ubuntu\.com/)@https://\1@g' /etc/apt/sources.list \
+    && apt-get -o Acquire::Retries=3 -o Acquire::https::Timeout=30 update --error-on=any \
+    && apt-get -o Acquire::Retries=3 -o Acquire::https::Timeout=30 install -y \
     ffmpeg \
     pulseaudio \
     dbus \
