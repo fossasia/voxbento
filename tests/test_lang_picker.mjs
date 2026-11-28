@@ -7,7 +7,7 @@
 import assert from 'node:assert/strict';
 
 import { initLangPicker, matchLanguages } from '../portal/static/js/lang-picker.js';
-import { syncModelOptions } from '../portal/static/js/model-filter.js';
+import { bindModelFilter, syncModelOptions } from '../portal/static/js/model-filter.js';
 
 // A just-enough DOM for the picker: elements, children, events and class toggles.
 class FakeElement {
@@ -185,6 +185,20 @@ assert.deepEqual(matchLanguages(LANGUAGES, new Set(), 'zzz'), [], 'no match');
 
   syncModelOptions(options, 'unknown', 'provider');
   assert.ok(options.every((o) => o.hidden && o.disabled), 'a provider without models hides all');
+}
+
+// bindModelFilter reports the visible models after the first sync and after each change.
+{
+  const option = (provider) => ({ dataset: { provider }, selected: false, hidden: false, disabled: false });
+  const handlers = {};
+  const providerSelect = { value: 'local', addEventListener(type, handler) { handlers[type] = handler; } };
+  const reported = [];
+  bindModelFilter(providerSelect, { options: [option('local'), option('openai'), option('openai')] }, 'provider',
+    (visible) => reported.push(visible.length));
+  assert.deepEqual(Object.keys(handlers), ['change'], 'the filter listens for change, which keyboard selection also fires');
+  providerSelect.value = 'openai';
+  handlers.change();
+  assert.deepEqual(reported, [1, 2]);
 }
 
 console.log('lang-picker and model-filter tests passed');
