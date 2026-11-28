@@ -620,7 +620,8 @@ async function run() {
   ttsToggle.checked = true;
   ttsToggle.dispatchEvent(new Event('change'));
   choose(document.getElementById('translation-lang-select'), 'fr');
-  assert(Boolean(ttsSocket()) && ttsSocket().url.endsWith('/ws/tts/2/fr/demo-2-floor'), 'French speech opens the room TTS feed');
+  assert(Boolean(ttsSocket()) && new URL(ttsSocket().url).pathname === '/ws/tts/2/fr/demo-2-floor', 'French speech opens the room TTS feed');
+  assert(new URL(ttsSocket().url).searchParams.get('replay') === '1', 'TTS feed opts into replay');
 
   // Before the restart: sentence 1 plays; sentence 2's audio is still being synthesized.
   for (const stage of ['caption', 'text', 'audio']) sendFloorSegment(1, 'before-1', 'Before 1', 'Avant 1', stage);
@@ -910,6 +911,97 @@ async function run() {
   feedSockets().pop().onclose({ code: 1006 });
   assert(pendingTimers(1000) === 1, 'the translation-only feed still reconnects');
   assert(statusText() === 'Live (WebRTC + Translation)', 'a translation-only feed drop leaves the WebRTC badge alone, got "' + statusText() + '"');
+
+  console.log('\n── Broadcast lock pause, auto-resume, and replay isolation (#1390) ──');
+
+  // Switch to an interpreter booth (Spanish) with translation enabled.
+  choose(roomSelect, '1');
+  choose(languageSelect, 'http://mtx/es/whep');
+  const boothCapWs = captionsSocket();
+  assert(new URL(boothCapWs.url).searchParams.get('replay') === '1', 'captions socket opts into replay');
+  // Unlock the booth so it goes live.
+  boothCapWs.onmessage({
+    data: JSON.stringify({
+      type: 'booth:state',
+      state: { booth_id: 'demo-1-es', broadcast_unlocked: true, ingest_status: 'connected' },
+    }),
+  });
+  assert(whepOpts && whepOpts.whepUrl === 'http://mtx/es/whep', 'unlocked booth starts WHEP');
+  boothCapWs.onmessage({
+    data: JSON.stringify({ type: 'caption', status: 'final', segment_id: 'pre-lock-1', seq: 1, text: 'Before pause' }),
+  });
+
+  // Coordinator locks the booth: WHEP stops, selections & history stay intact, badge shows paused.
+  boothCapWs.onmessage({
+    data: JSON.stringify({
+      type: 'booth:state',
+      state: { booth_id: 'demo-1-es', broadcast_unlocked: false, ingest_status: 'disconnected' },
+    }),
+  });
+  assert(roomSelect.value === '1', 'room selection is preserved on broadcast lock');
+  assert(languageSelect.value === 'http://mtx/es/whep', 'source channel selection is preserved on broadcast lock');
+  assert(historyBox.textContent.includes('Before pause'), 'caption history is preserved on broadcast lock');
+  assert(statusText().includes('paused'), 'status shows paused rather than Disconnected, got "' + statusText() + '"');
+
+  // Coordinator unlocks the booth: WHEP auto-resumes without user interaction.
+  whepOpts = null;
+  boothCapWs.onmessage({
+    data: JSON.stringify({
+      type: 'booth:state',
+      state: { booth_id: 'demo-1-es', broadcast_unlocked: true, ingest_status: 'connected' },
+    }),
+  });
+  assert(whepOpts && whepOpts.whepUrl === 'http://mtx/es/whep', 'unlocking automatically resumes WHEP');
+
+  // Replayed captions & text-only TTS bundles render deduplicated without stalling live expectedSeq.
+  choose(roomSelect, '2');
+  choose(languageSelect, 'http://mtx/floor2/whep');
+  voiceToggle.checked = true;
+  voiceToggle.dispatchEvent(new Event('change'));
+  choose(translationSelect, 'fr');
+  const replayCapWs = captionsSocket();
+  const replayTtsWs = feedSockets().pop();
+  const timersBeforeReplay = fakeTimers.size;
+  replayCapWs.onmessage({
+    data: JSON.stringify({
+      type: 'caption',
+      status: 'final',
+      segment_id: 'rep-1',
+      seq: 10,
+      text: 'Replayed source',
+      replay: true,
+    }),
+  });
+  replayTtsWs.onmessage({
+    data: bundleFrame({
+      segment_id: 'rep-1',
+      seq: 10,
+      caption: 'Replayed source',
+      translation: 'Source rejouée',
+      error: null,
+      audio_pending: false,
+      replay: true,
+    }),
+  });
+  assert(historyBox.textContent.includes('Replayed source'), 'replayed caption renders immediately');
+  assert(historyBox.textContent.includes('Source rejouée'), 'replayed translation renders in the same block');
+  assert(fakeTimers.size === timersBeforeReplay, 'replayed items do not arm delay or seqWait timers');
+
+  // Next live segment seq=20 must play immediately without waiting 65s for seq=10..19.
+  const playedBefore = scheduledSegments.length;
+  replayTtsWs.onmessage({
+    data: bundleFrame({
+      segment_id: 'live-20',
+      seq: 20,
+      caption: 'Live twenty',
+      translation: 'Vingt en direct',
+      error: null,
+      audio_pending: false,
+    }),
+  });
+  assert(historyBox.textContent.includes('Vingt en direct'), 'live segment after replay renders immediately');
+  assert(pendingTimers(65000) === 0, 'replay did not poison expectedSeq or trigger a 65s wait');
+  assert(scheduledSegments.length >= playedBefore, 'live queue stays healthy after replay');
 
   console.log('\n' + passed + ' passed, ' + failed + ' failed');
   process.exit(failed > 0 ? 1 : 0);

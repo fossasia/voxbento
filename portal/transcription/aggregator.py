@@ -81,24 +81,28 @@ class CaptionAggregator:
             },
         )
 
-    async def partial_timing(self, booth_id: str) -> dict:
-        """Return program presentation metadata when available, without blocking live text on DB errors."""
-        if self.room_id is None or not booth_id.endswith("-floor"):
+    async def partial_timing(self, booth_id: str) -> dict[str, int | str]:
+        """Return wall-clock presentation metadata for room channels, adding program sync offset when configured."""
+        if self.room_id is None:
             return {}
-        try:
-            async with get_session() as session:
-                room = await session.get(Room, self.room_id)
-                if room and room.floor_source == "program_ingest":
-                    now = int(time.time() * 1000)
-                    return {
-                        "source_received_at_ms": now,
-                        "server_sent_at_ms": now,
-                        "sync_offset_ms": room.program_sync_offset_ms,
-                        "timestamp_basis": "stt_receive_wall_clock",
-                    }
-        except SQLAlchemyError:
-            logger.debug("[%s] Partial-caption timing unavailable during database failure.", booth_id, exc_info=True)
-        return {}
+        now = int(time.time() * 1000)
+        sync_offset_ms: int | None = None
+        if booth_id.endswith("-floor"):
+            try:
+                async with get_session() as session:
+                    room = await session.get(Room, self.room_id)
+                    if room and room.floor_source == "program_ingest":
+                        sync_offset_ms = room.program_sync_offset_ms
+            except SQLAlchemyError:
+                logger.debug("[%s] Partial-caption timing unavailable during database failure.", booth_id, exc_info=True)
+        meta: dict[str, int | str] = {
+            "source_received_at_ms": now,
+            "server_sent_at_ms": now,
+            "timestamp_basis": "stt_receive_wall_clock",
+        }
+        if sync_offset_ms is not None:
+            meta["sync_offset_ms"] = sync_offset_ms
+        return meta
 
     async def handle_interim(self, booth_id: str, text: str):
         """Show words still being recognised after the ones already settled, without keeping them.
@@ -197,7 +201,9 @@ class CaptionAggregator:
         self._seq_counter += 1
         seq = self._seq_counter
         segment_id = state.segment_id
-        timing = None
+        now_ms = int(time.time() * 1000)
+        start_ms = int(state.utterance_start_time * 1000) if state.utterance_start_time else now_ms
+        timing: SegmentTiming | None = SegmentTiming(start_ms, None, caption_received_at_ms=now_ms)
         if floor:
             try:
                 allocation = await self._allocate_floor_sequence(state)
@@ -207,7 +213,7 @@ class CaptionAggregator:
                     booth_id,
                     exc_info=True,
                 )
-                allocation = (None, None)
+                allocation = (None, timing)
             if allocation is None:
                 self.states[booth_id] = CaptionState(booth_id=booth_id)
                 return
@@ -223,7 +229,7 @@ class CaptionAggregator:
         state.current_word_count = 0
         state.segment_id = str(uuid.uuid4())
 
-    async def _allocate_floor_sequence(self, state: CaptionState) -> tuple[int, SegmentTiming | None] | None:
+    async def _allocate_floor_sequence(self, state: CaptionState) -> tuple[int, SegmentTiming] | None:
         """Commit a room sequence, returning no allocation if the floor room was deleted."""
         async with get_session() as session:
             room = await session.scalar(select(Room).where(Room.id == self.room_id))
@@ -237,11 +243,10 @@ class CaptionAggregator:
             )
             if seq is None:
                 return None
-            timing = None
-            if room.floor_source == "program_ingest":
-                timing = SegmentTiming(
-                    int((state.utterance_start_time or time.time()) * 1000), room.program_sync_offset_ms
-                )
+            now_ms = int(time.time() * 1000)
+            start_ms = int(state.utterance_start_time * 1000) if state.utterance_start_time else now_ms
+            sync_offset_ms = room.program_sync_offset_ms if room.floor_source == "program_ingest" else None
+            timing = SegmentTiming(start_ms, sync_offset_ms, caption_received_at_ms=now_ms)
         return seq, timing
 
     async def publish_final(self, booth_id: str, final_text: str, segment_id: str, seq: int | None):
@@ -251,7 +256,7 @@ class CaptionAggregator:
             "status": "final",
             "text": final_text,
             "segment_id": segment_id,
-            **timing_metadata(),
+            **timing_metadata(for_caption=True),
         }
         if seq is not None:
             payload["seq"] = seq
@@ -261,7 +266,8 @@ class CaptionAggregator:
             # Non-blocking: queues the caption for the room's YouTube caption track, if one is set up.
             # YouTube numbers its own posts, so original text is offered even without a room sequence.
             timing = segment_timing.get()
-            youtube_captions.offer(self.room_id, "floor", final_text, timing.source_received_at_ms if timing else None)
+            offered_at_ms = timing.source_received_at_ms if timing and timing.sync_offset_ms is not None else None
+            youtube_captions.offer(self.room_id, "floor", final_text, offered_at_ms)
 
         if self.room_id is not None and seq is not None:
             from portal.database import save_transcript_segment

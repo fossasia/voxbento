@@ -270,7 +270,7 @@ function onState(s) {
   whepPlaybackBlocked = Boolean(s.playbackBlocked) && s.peerConnection === "connected";
   updateTapToListen();
   whepAudioLive = s.peerConnection === "connected" && s.audioActive && !whepPlaybackBlocked;
-  if (ttsStatusHeld) {
+  if (ttsStatusHeld || isBroadcastLocked) {
     return;
   }
   if (whepPlaybackBlocked) {
@@ -299,6 +299,8 @@ var pendingAudioDelayMs = 0;
 var pendingTtsLang = null; // TTS language to start once live
 var pendingRoomId = null;
 var lastBroadcastUnlocked = null; // last broadcast_unlocked seen for the selected booth
+var isBroadcastLocked = false;
+var finalizedSegmentIds = new Set();
 var segmentStore = Object.create(null);
 var expectedSeq = null;
 var isSegmentPlaying = false;
@@ -323,6 +325,8 @@ function stopCurrentStream() {
   pendingTtsLang = null;
   pendingRoomId = null;
   lastBroadcastUnlocked = null;
+  isBroadcastLocked = false;
+  finalizedSegmentIds.clear();
   currentRoomId = null;
   currentSourceType = null;
 
@@ -360,6 +364,29 @@ function stopCurrentStream() {
   resetCaptions();
 
   setStatus("Waiting for selection...", "waiting");
+}
+
+function pauseActiveBroadcast() {
+  isBroadcastLocked = true;
+  captionDelivery.reset();
+  speechDelivery.reset();
+  stopTtsWs();
+  resetSegmentQueue();
+  if (audioScheduler) {
+    audioScheduler.reset();
+    audioScheduler = null;
+  }
+  WhepListener.stop();
+  pendingWhepUrl = null;
+  pendingAudioDelayMs = 0;
+  pendingBoothId = null;
+  pendingTtsLang = null;
+  pendingRoomId = null;
+  showAudioPlayer(false);
+  audioEl.muted = false;
+  whepPlaybackBlocked = false;
+  updateTapToListen();
+  setStatus("Broadcast paused by organizers — waiting to resume...", "waiting");
 }
 
 function startTtsWs(roomId, langCode, boothId, audioDelayMs) {
@@ -400,22 +427,51 @@ function openTtsWs(roomId, langCode, boothId) {
     "/" +
     langCode +
     "/" +
-    boothId;
+    boothId +
+    "?replay=1";
   var ws = new WebSocket(wsUrl);
   ttsWs = ws;
   ws.binaryType = "arraybuffer";
   updateTapToListen();
 
   ws.onmessage = function (event) {
+    if (ttsWs !== ws) return;
     // Reset on data rather than on open: a refused socket opens before it closes.
     ttsRetryDelayMs = 1000;
     if (event.data instanceof ArrayBuffer) {
       try {
         var frame = window.TTSParser.parseFrame(event.data);
+        if (frame.header.replay) {
+          var waitingEl = document.getElementById("waiting-text");
+          if (waitingEl) waitingEl.classList.add("listener-hidden");
+          var replaySid = frame.header.segment_id || (frame.header.seq ? "seq-" + frame.header.seq : null);
+          if (frame.header.caption && replaySid && !document.getElementById("segment-" + replaySid)) {
+            renderItem({
+              type: "caption",
+              status: "final",
+              text: frame.header.caption,
+              segment_id: replaySid,
+            });
+          }
+          if (frame.header.translation && replaySid) {
+            renderItem({
+              type: "translation",
+              status: "final",
+              text: frame.header.translation,
+              language_code: langCode,
+              segment_id: replaySid,
+            });
+          }
+          return;
+        }
         if (!event.programDelivered) {
-          speechDelivery.schedule(frame.header, () => {
-            if (ttsWs) ttsWs.onmessage({data: event.data, programDelivered: true});
-          });
+          speechDelivery.schedule(
+            frame.header,
+            () => {
+              if (ttsWs === ws) ws.onmessage({ data: event.data, programDelivered: true });
+            },
+            currentAudioDelayMs,
+          );
           return;
         }
         var seq = frame.header.seq;
@@ -581,6 +637,8 @@ function applyCurrentRoomAudioDelay() {
     .then(function (delayMs) {
       if (delayMs === currentAudioDelayMs) return;
       currentAudioDelayMs = delayMs;
+      captionDelivery.updateDelay(delayMs);
+      speechDelivery.updateDelay(delayMs);
       if (currentSourceType === "whep" && WhepListener.setAudioDelayMs) {
         WhepListener.setAudioDelayMs(delayMs);
       }
@@ -600,10 +658,13 @@ function openCaptionsWs(boothId) {
   if (!boothId) return;
   var wsProto = window.location.protocol === "https:" ? "wss:" : "ws:";
   var ws = new WebSocket(
-    wsProto + "//" + window.location.host + "/ws/captions/" + boothId,
+    wsProto + "//" + window.location.host + "/ws/captions/" + boothId + "?replay=1",
   );
   captionsWs = ws;
-  ws.onmessage = handleCaptionsMessage;
+  ws.onmessage = function (event) {
+    if (captionsWs !== ws) return;
+    handleCaptionsMessage(event);
+  };
   ws.onopen = function () {
     captionsRetryDelayMs = 1000;
   };
@@ -869,60 +930,96 @@ function finishSegmentWithDelay(seg, seqId) {
   }, readingDelayMs);
 }
 
+function recordFinalizedSegmentId(segmentId) {
+  if (!segmentId) return;
+  finalizedSegmentIds.add(segmentId);
+  if (finalizedSegmentIds.size > 200) {
+    var oldest = finalizedSegmentIds.values().next().value;
+    finalizedSegmentIds.delete(oldest);
+  }
+}
+
 function handleCaptionsMessage(event) {
   try {
     var data = JSON.parse(event.data);
-    if (!event.programDelivered && ['caption', 'translation', 'translated_caption'].includes(data.type)) {
-      captionDelivery.schedule(data, () => handleCaptionsMessage({data: event.data, programDelivered: true}));
+    if (!event.programDelivered && !data.replay && ['caption', 'translation', 'translated_caption'].includes(data.type)) {
+      var activeWs = captionsWs;
+      var deliveryKey = data.status === "partial" ? data.segment_id || null : null;
+      captionDelivery.schedule(
+        data,
+        () => {
+          if (captionsWs === activeWs) {
+            handleCaptionsMessage({ data: event.data, programDelivered: true });
+          }
+        },
+        currentAudioDelayMs,
+        deliveryKey,
+      );
       return;
     }
     var waitingText = document.getElementById("waiting-text");
 
     if (data.type === "booth:state") {
       var bstate = data.state || {};
-      // If we were waiting for the broadcast to go live, start WHEP or TTS now.
-      // A locked booth stays silent for listeners even if ingest reports connected.
+      var wasUnlocked = lastBroadcastUnlocked === true;
+      lastBroadcastUnlocked = bstate.broadcast_unlocked;
+      // If we were waiting for the broadcast to go live (initial lock or pause), resume from current UI state.
       if (
         bstate.ingest_status === "connected" &&
         bstate.broadcast_unlocked === true
       ) {
-        if (pendingWhepUrl) {
-          var url = pendingWhepUrl;
-          var delayMs = pendingAudioDelayMs;
+        if (pendingWhepUrl || isBroadcastLocked) {
+          var selectedOpt = languageSelect.options[languageSelect.selectedIndex];
+          var whepUrl = pendingWhepUrl || (selectedOpt ? selectedOpt.value : "");
+          var boothObjId = selectedOpt ? selectedOpt.dataset.boothObjId : null;
+          var sourceData = boothObjId
+            ? boothsData.find((b) => b.id.toString() === boothObjId.toString())
+            : null;
+          var delayMs = pendingWhepUrl
+            ? pendingAudioDelayMs
+            : normalizeAudioDelayMs(sourceData ? sourceData.audio_delay_ms : currentAudioDelayMs);
+          isBroadcastLocked = false;
           pendingWhepUrl = null;
           pendingAudioDelayMs = 0;
           pendingBoothId = null;
-          startWhepStream(url, delayMs);
-        } else if (pendingTtsLang) {
-          var plang = pendingTtsLang;
-          var prid = pendingRoomId;
-          var ttsDelayMs = pendingAudioDelayMs;
-          var pBoothId = pendingBoothId;
           pendingTtsLang = null;
-          pendingAudioDelayMs = 0;
           pendingRoomId = null;
-          pendingBoothId = null;
-          startTtsWs(prid, plang, pBoothId, ttsDelayMs);
-          setStatus("Live (TTS Audio)", "live");
+          if (whepUrl) {
+            setStatus("Connecting...", "recovering");
+            startWhepStream(whepUrl, delayMs);
+          }
+          applyTtsOverlay();
         }
       }
-      // Booths start locked, so only tear down when the organizers lock a
-      // booth that was unlocked (floor booths are never locked this way).
-      var wasUnlocked = lastBroadcastUnlocked === true;
-      lastBroadcastUnlocked = bstate.broadcast_unlocked;
+      // Booths start locked, so only pause when the organizers lock an
+      // unlocked booth (floor booths are never locked this way).
       if (wasUnlocked && bstate.broadcast_unlocked === false) {
-        stopCurrentStream();
-        setStatus("Broadcast is currently locked by the organizers.", "error");
-        roomSelect.value = "";
-        languageSelect.innerHTML =
-          '<option value="">-- Select Language --</option>';
-        languageSelect.disabled = true;
-        captionModeSelect.disabled = true;
-        captionModeSelect.value = "original";
-        translationLangSelect.innerHTML = "";
-        var transGroup = document.getElementById("translation-lang-group");
-        if (transGroup) transGroup.hidden = true;
-        applyCaptionMode();
+        pauseActiveBroadcast();
+      }
+      return;
+    }
+
+    if (data.replay) {
+      if (data.type === "caption" && data.status === "final") {
+        if (waitingText) waitingText.classList.add("listener-hidden");
+        var replaySid = data.segment_id || (data.seq ? "seq-" + data.seq : null);
+        if (replaySid && !document.getElementById("segment-" + replaySid)) {
+          renderItem({
+            type: "caption",
+            status: "final",
+            text: data.text,
+            segment_id: replaySid,
+          });
+        }
+        recordFinalizedSegmentId(data.segment_id);
+      } else if (data.type === "translation" || data.type === "translated_caption") {
+        if (waitingText) waitingText.classList.add("listener-hidden");
+        var replayTransSid = data.segment_id || (data.seq ? "seq-" + data.seq : null);
+        renderItem({
+          ...data,
+          type: "translation",
+          segment_id: replayTransSid,
+        });
       }
       return;
     }
@@ -932,7 +1029,7 @@ function handleCaptionsMessage(event) {
 
       if (data.status === "partial") {
         var sid = data.segment_id;
-        if (sid) {
+        if (sid && !finalizedSegmentIds.has(sid)) {
           renderItem({
             type: "caption",
             status: "partial",
@@ -941,6 +1038,8 @@ function handleCaptionsMessage(event) {
           });
         }
       } else if (data.status === "final") {
+        recordFinalizedSegmentId(data.segment_id);
+        captionDelivery.cancelByKey(data.segment_id);
         if (expectedSeq === null && data.seq) expectedSeq = data.seq;
         var mode = captionModeSelect ? captionModeSelect.value : "original";
         var isTranslationActive =
@@ -1273,6 +1372,10 @@ function applyTtsOverlay() {
   );
 
   stopTtsWs(); // Stop any existing TTS stream
+  if (isBroadcastLocked || pendingWhepUrl !== null) {
+    audioEl.muted = false;
+    return;
+  }
 
   // We need the TTS stream if we want synchronized TTS audio OR if we want translation text
   var mode = captionModeSelect ? captionModeSelect.value : "original";

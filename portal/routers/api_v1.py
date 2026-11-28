@@ -38,6 +38,7 @@ from portal.transcription.constants import ProviderEnum
 from portal.transcription.worker import active_workers, start_transcription_worker, stop_transcription_worker
 from portal.translations.constants import TranslationProviderEnum
 from portal.translations.model_languages import language_support_error
+from portal.websockets.manager import listener_manager, tts_manager
 from portal.websockets.revocation import revoke_booths_for_deleted_entity
 
 logger = logging.getLogger(__name__)
@@ -496,6 +497,8 @@ async def delete_event(
         await booths.remove_booth(event_slug, b["room_id"], b["language_code"])
 
     await revoke_booths_for_deleted_entity(db, level="event", target_id=event.id)
+    listener_manager.clear_event(event_slug)
+    tts_manager.clear_event(event_slug)
     event.deleted_at = datetime.now(timezone.utc)
 
     audit = OAuthAuditLog(
@@ -923,6 +926,8 @@ async def delete_room(
         await booths.remove_booth(event_slug, b["room_id"], b["language_code"])
 
     await revoke_booths_for_deleted_entity(db, level="room", target_id=room.id)
+    listener_manager.clear_room(event_slug, room.id)
+    tts_manager.clear_room(event_slug, room.id)
     await delete_db_room(db, room.id)
 
     audit = OAuthAuditLog(
