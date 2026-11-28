@@ -1,4 +1,4 @@
-FROM mcr.microsoft.com/playwright/python:v1.40.0-jammy
+FROM mcr.microsoft.com/playwright/python:v1.65.2-jammy
 
 # The Ubuntu mirrors can be unreachable over HTTP from CI builders.
 # Fail on incomplete indexes rather than trying to install from a partial update.
