@@ -115,4 +115,4 @@ async def test_tts_manager_tracks_audio_vs_text_only_subscribers():
     manager.remove(text_ws, 1, "es", "floor_1")
     assert manager.has_listeners(1, "es", "floor_1") is False
     assert manager._get_key(1, "es", "floor_1") not in manager._rooms
-    assert manager._get_key(1, "es", "floor_1") not in manager._audio_rooms
+    assert text_ws not in manager._text_only_sockets
