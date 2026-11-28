@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import time
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 
 from portal import youtube_captions
@@ -19,13 +20,17 @@ from portal.translations.providers.base import ProviderEngine
 from portal.translations.providers.gemini import GeminiProvider
 from portal.translations.providers.local import LocalProvider
 from portal.translations.providers.openai import OpenAIProvider
+from portal.translations.registry import get_translation_model
 from portal.translations.scheduler import StaleTranslationJob, TranslationJob, TranslationScheduler
-from portal.translations.vocabulary import resolve_vocabulary_entries
+from portal.translations.vocabulary import VocabularyEntryInput, resolve_vocabulary_entries
 
 logger = logging.getLogger(__name__)
 
 #: The glossary is optional context, so its lookup must never eat into the inference budget.
 VOCABULARY_LOOKUP_TIMEOUT = 2.0
+
+# A stalled WebSocket must not retain a shared batch admission indefinitely.
+BATCH_DELIVERY_TIMEOUT = 5.0
 
 openai_provider = OpenAIProvider()
 
@@ -177,6 +182,14 @@ class _JobContext:
     source_lang_code: str | None
 
 
+@dataclass(frozen=True)
+class _BatchTarget:
+    code: str
+    name: str
+    booth_id: str
+    synthesize_audio: bool
+
+
 def _enabled_translation_langs(owner) -> list:
     """Enabled translation languages for a room or booth.
 
@@ -259,7 +272,7 @@ class TranslationWorker:
         *,
         arrived_at: float | None = None,
     ) -> list:
-        """Run the translation tasks of a resolved job: one per language with listeners."""
+        """Translate active languages, batching targets when the model supports it."""
         tasks = self._build_language_tasks(
             job, segment_id, text, booth_id_str, uuid_segment_id, seq, arrived_at=arrived_at
         )
@@ -412,6 +425,15 @@ class TranslationWorker:
     ) -> list:
         """Construct the async translation and broadcast tasks for a resolved job."""
         tasks = []
+        batch_targets = []
+        entry = get_translation_model(job.model)
+        engine = ENGINES.get(job.provider)
+        use_batch = (
+            entry is not None
+            and entry.supports_multi_target_batch
+            and engine is not None
+            and engine.kind is EngineKind.CT2_SEQ2SEQ
+        )
         for lang in job.enabled_langs:
             target_booth_id = f"{job.event.slug}-{job.room.id}-{lang.language_code}"
 
@@ -432,6 +454,11 @@ class TranslationWorker:
                 if audience is None:
                     continue
 
+                if use_batch:
+                    batch_targets.append(
+                        _BatchTarget(lang.language_code, lang.language_name, target_booth_id, audience == LISTENERS)
+                    )
+                    continue
                 tasks.append(
                     self._translate_and_broadcast(
                         job.event,
@@ -456,6 +483,12 @@ class TranslationWorker:
                     )
                 )
 
+        if batch_targets:
+            tasks.append(
+                self._translate_batch_and_broadcast(
+                    job, batch_targets, segment_id, text, booth_id_str, uuid_segment_id, seq, arrived_at=arrived_at
+                )
+            )
         return tasks
 
     def _get_translation_api_key(self, event: Event, provider: str) -> str | None:
@@ -569,91 +602,18 @@ class TranslationWorker:
                 await self._drop_while_downloading(room.id, lang_code, booth_id_str, model, uuid_segment_id, seq, text)
                 return
 
-            if translated_text is None:
-                await tts_manager.broadcast_bundle(
-                    room.id, lang_code, booth_id_str, b"", uuid_segment_id, seq, text, "", "pipeline_failed"
-                )
-                return
-
-            if not translated_text.strip():
-                # The engine ran and had nothing to say for this segment, which is not a failure.
-                # Close the segment (no error, no audio to wait for) so listeners move on without
-                # a message; there is nothing to store or speak.
-                await tts_manager.broadcast_bundle(
-                    room.id, lang_code, booth_id_str, b"", uuid_segment_id, seq, text, "", None, audio_pending=False
-                )
-                return
-
-            # Save to DB using an independent session to avoid concurrent transaction crashes
-            async with get_session() as local_session:
-                translation = TranscriptTranslation(segment_id=segment_id, language_code=lang_code, text=translated_text)
-                local_session.add(translation)
-                await local_session.flush()
-
-            # Broadcast Stage 1 (Text Ready) immediately with empty audio. It says whether speech
-            # follows, so a listener who joined after the audience check does not wait for one.
-            await tts_manager.broadcast_bundle(
-                room.id,
+            await self._deliver_translation(
+                translated_text,
+                room,
                 lang_code,
+                segment_id,
+                text,
                 booth_id_str,
-                b"",
                 uuid_segment_id,
                 seq,
-                text,
-                translated_text,
-                None,
-                audio_pending=synthesize_audio,
-            )
-            if target_booth_id:
-                from portal.websockets.manager import listener_manager
-
-                await listener_manager.broadcast(
-                    target_booth_id,
-                    {
-                        "type": "translated_caption",
-                        "status": "final",
-                        "text": translated_text,
-                        "segment_id": uuid_segment_id,
-                        "seq": seq,
-                        **timing_metadata(),
-                    },
-                )
-            if booth_id_str.endswith("-floor"):
-                # Non-blocking: queues the translation for the room's YouTube caption track, if it asks for this language.
-                timing = segment_timing.get()
-                youtube_captions.offer(
-                    room.id, lang_code, translated_text, timing.source_received_at_ms if timing else None
-                )
-
-            # Saved and delivered: the segment leaves its language's queue, so slow speech
-            # synthesis below does not hold back new segments.
-            job.close()
-
-            if not synthesize_audio:
-                return
-
-            from portal.tts.worker import synthesize
-
-            timeout_s = max(2.0, 0.3 * len(translated_text))
-            error = None
-            audio_bytes = b""
-
-            try:
-                synth_bytes = await asyncio.wait_for(synthesize(room.id, translated_text, lang_code), timeout=timeout_s)
-                if synth_bytes:
-                    audio_bytes = synth_bytes
-                else:
-                    error = "tts_unavailable"
-            except asyncio.TimeoutError:
-                logger.warning(f"[{booth_id_str}] TTS timeout for {lang_code} after {timeout_s}s.")
-                error = "tts_timeout"
-            except Exception as e:
-                logger.error(f"[{booth_id_str}] TTS error for {lang_code}: {e}")
-                error = "tts_error"
-
-            # Broadcast Stage 2 (Audio Ready)
-            await tts_manager.broadcast_bundle(
-                room.id, lang_code, booth_id_str, audio_bytes, uuid_segment_id, seq, text, translated_text, error
+                target_booth_id,
+                synthesize_audio,
+                job.close,
             )
 
         except StaleTranslationJob as stale:
@@ -668,6 +628,292 @@ class TranslationWorker:
         finally:
             # A job that stopped before its result was delivered (dropped, failed or cancelled) leaves its
             # channel here; for the others this does nothing.
+            job.close()
+
+    async def _deliver_translation(
+        self,
+        translated_text: str | None,
+        room: Room,
+        lang_code: str,
+        segment_id: int,
+        text: str,
+        booth_id_str: str,
+        uuid_segment_id: str,
+        seq: int,
+        target_booth_id: str | None,
+        synthesize_audio: bool,
+        delivered: Callable[[], None],
+    ) -> None:
+        from portal.websockets.manager import tts_manager
+
+        if translated_text is None:
+            await tts_manager.broadcast_bundle(
+                room.id, lang_code, booth_id_str, b"", uuid_segment_id, seq, text, "", "pipeline_failed"
+            )
+            delivered()
+            return
+
+        if not translated_text.strip():
+            # The engine ran and had nothing to say for this segment, which is not a failure.
+            # Close the segment (no error, no audio to wait for) so listeners move on without
+            # a message; there is nothing to store or speak.
+            await tts_manager.broadcast_bundle(
+                room.id, lang_code, booth_id_str, b"", uuid_segment_id, seq, text, "", None, audio_pending=False
+            )
+            delivered()
+            return
+
+        # Save to DB using an independent session to avoid concurrent transaction crashes
+        async with get_session() as local_session:
+            translation = TranscriptTranslation(segment_id=segment_id, language_code=lang_code, text=translated_text)
+            local_session.add(translation)
+            await local_session.flush()
+
+        # Broadcast Stage 1 (Text Ready) immediately with empty audio
+        await tts_manager.broadcast_bundle(
+            room.id,
+            lang_code,
+            booth_id_str,
+            b"",
+            uuid_segment_id,
+            seq,
+            text,
+            translated_text,
+            None,
+            audio_pending=synthesize_audio,
+        )
+        if target_booth_id:
+            from portal.websockets.manager import listener_manager
+
+            await listener_manager.broadcast(
+                target_booth_id,
+                {
+                    "type": "translated_caption",
+                    "status": "final",
+                    "text": translated_text,
+                    "segment_id": uuid_segment_id,
+                    "seq": seq,
+                    **timing_metadata(),
+                },
+            )
+        if booth_id_str.endswith("-floor"):
+            # Non-blocking: queues the translation for the room's YouTube caption track, if it asks for this language.
+            timing = segment_timing.get()
+            youtube_captions.offer(
+                room.id, lang_code, translated_text, timing.source_received_at_ms if timing else None
+            )
+
+        # Saved and delivered: the segment leaves its language's queue, so slow speech
+        # synthesis below does not hold back new segments.
+        delivered()
+
+        if not synthesize_audio:
+            return
+
+        from portal.tts.worker import synthesize
+
+        timeout_s = max(2.0, 0.3 * len(translated_text))
+        error = None
+        audio_bytes = b""
+
+        try:
+            synth_bytes = await asyncio.wait_for(synthesize(room.id, translated_text, lang_code), timeout=timeout_s)
+            if synth_bytes:
+                audio_bytes = synth_bytes
+            else:
+                error = "tts_unavailable"
+        except asyncio.TimeoutError:
+            logger.warning(f"[{booth_id_str}] TTS timeout for {lang_code} after {timeout_s}s.")
+            error = "tts_timeout"
+        except Exception as e:
+            logger.error(f"[{booth_id_str}] TTS error for {lang_code}: {e}")
+            error = "tts_error"
+
+        # Broadcast Stage 2 (Audio Ready)
+        await tts_manager.broadcast_bundle(
+            room.id, lang_code, booth_id_str, audio_bytes, uuid_segment_id, seq, text, translated_text, error
+        )
+
+    async def _translate_batch_and_broadcast(
+        self,
+        resolved: _ResolvedTranslation,
+        targets: Sequence[_BatchTarget],
+        segment_id: int,
+        text: str,
+        booth_id_str: str,
+        uuid_segment_id: str,
+        seq: int,
+        *,
+        arrived_at: float | None = None,
+    ) -> None:
+        from portal.websockets.manager import tts_manager
+
+        async def notify_target(target: _BatchTarget, *, downloading: bool = False) -> None:
+            try:
+                async with asyncio.timeout(BATCH_DELIVERY_TIMEOUT):
+                    if downloading:
+                        await self._drop_while_downloading(
+                            resolved.room.id, target.code, booth_id_str, resolved.model, uuid_segment_id, seq, text
+                        )
+                    else:
+                        await tts_manager.broadcast_bundle(
+                            resolved.room.id,
+                            target.code,
+                            booth_id_str,
+                            b"",
+                            uuid_segment_id,
+                            seq,
+                            text,
+                            "",
+                            "pipeline_failed",
+                        )
+            except Exception as exc:
+                logger.warning("Batch status notification failed for %s (%s)", target.code, type(exc).__name__)
+
+        # Every local segment (even with one listener) uses this source-stream queue. A batch
+        # takes one engine slot, and all its languages share the same bounded segment budget.
+        job = scheduler_for(resolved.provider, resolved.model, resolved.event.id).admit(
+            resolved.room.id, f"{booth_id_str}:batch", arrived_at=arrived_at
+        )
+        if job is None:
+            await asyncio.gather(*(notify_target(target) for target in targets))
+            return
+        try:
+            vocabulary = {}
+            if resolved.room.floor_ai_vocabulary_enabled:
+                try:
+                    async with asyncio.timeout(VOCABULARY_LOOKUP_TIMEOUT):
+                        async with get_session() as session:
+                            for target in targets:
+                                entries = await resolve_vocabulary_entries(
+                                    session,
+                                    event_id=resolved.event.id,
+                                    room_id=resolved.room.id,
+                                    booth_id=resolved.source_booth_id,
+                                    target_language=target.code,
+                                    transcript_text=text,
+                                )
+                                vocabulary[target.code] = [
+                                    VocabularyEntryInput(
+                                        entry.source_term,
+                                        entry.target_language,
+                                        entry.target_term,
+                                        entry.description,
+                                        entry.case_sensitive,
+                                        entry.match_type,
+                                        entry.priority,
+                                    )
+                                    for entry in entries
+                                ]
+                except Exception as exc:
+                    logger.warning("Batch glossary lookup failed (%s)", type(exc).__name__)
+
+            rows = None
+            async with job:
+                # A listener may have left while this batch waited for the engine.
+                targets = [
+                    _BatchTarget(t.code, t.name, t.booth_id, audience == LISTENERS)
+                    for t in targets
+                    if (audience := _audience(resolved.room.id, t.code, booth_id_str, t.booth_id)) is not None
+                ]
+                if not targets:
+                    return
+                timeout = _inference_timeout(resolved.provider, resolved.model)
+                if timeout is not None:
+                    call = asyncio.ensure_future(
+                        ENGINES[resolved.provider].translate_batch(
+                            Language(resolved.source_lang_code or "", resolved.source_lang_name),
+                            [Language(target.code, target.name) for target in targets],
+                            [text],
+                            TranslationContext(
+                                persona=resolved.room.floor_ai_interpreter_persona,
+                                style=resolved.room.floor_ai_interpretation_style,
+                                vocabulary=vocabulary,
+                            ),
+                            model=resolved.model,
+                            api_key=resolved.api_key,
+                        )
+                    )
+                    try:
+                        rows = await asyncio.wait_for(asyncio.shield(call), timeout)
+                    except asyncio.TimeoutError:
+                        logger.warning("Batch translation timed out for room %s", resolved.room.id)
+                    finally:
+                        if not call.done():
+                            call.cancel()
+                            job.keep_slot_until(call)
+            if timeout is None:
+                await asyncio.gather(*(notify_target(target, downloading=True) for target in targets))
+                return
+            if rows is not None and (len(rows) != 1 or len(rows[0]) != len(targets)):
+                raise ValueError("Translation engine returned an invalid batch shape")
+            pending = {target.code for target in targets}
+
+            def delivered(code: str) -> None:
+                pending.discard(code)
+                if not pending:
+                    job.close()
+
+            async def deliver_target(index: int, target: _BatchTarget) -> None:
+                ready = asyncio.get_running_loop().create_future()
+
+                def delivered_target() -> None:
+                    delivered(target.code)
+                    if not ready.done():
+                        ready.set_result(None)
+
+                delivery = asyncio.create_task(
+                    self._deliver_translation(
+                        rows[0][index] if rows is not None else None,
+                        resolved.room,
+                        target.code,
+                        segment_id,
+                        text,
+                        booth_id_str,
+                        uuid_segment_id,
+                        seq,
+                        target.booth_id,
+                        target.synthesize_audio,
+                        delivered_target,
+                    )
+                )
+                try:
+                    done, _ = await asyncio.wait(
+                        {delivery, ready}, timeout=BATCH_DELIVERY_TIMEOUT, return_when=asyncio.FIRST_COMPLETED
+                    )
+                    if not done:
+                        delivery.cancel()
+                        await asyncio.gather(delivery, return_exceptions=True)
+                        raise TimeoutError("caption delivery timed out")
+                    await delivery
+                except Exception as exc:
+                    logger.warning("Batch delivery failed for %s (%s)", target.code, type(exc).__name__)
+                    delivered(target.code)
+                    # Once the caption was delivered, an audio failure must not relabel it.
+                    if not ready.done():
+                        await notify_target(target)
+                finally:
+                    if not delivery.done():
+                        delivery.cancel()
+                        await asyncio.gather(delivery, return_exceptions=True)
+                    if not ready.done():
+                        ready.cancel()
+                    delivered(target.code)
+
+            await asyncio.gather(*(deliver_target(i, target) for i, target in enumerate(targets)))
+
+        except StaleTranslationJob as stale:
+            await asyncio.gather(
+                *(
+                    self._drop_stale(resolved.room.id, t.code, booth_id_str, uuid_segment_id, seq, text, stale.waited)
+                    for t in targets
+                ),
+                return_exceptions=True,
+            )
+        except Exception as exc:
+            logger.warning("Batch translation failed for room %s (%s)", resolved.room.id, type(exc).__name__)
+            await asyncio.gather(*(notify_target(target) for target in targets))
+        finally:
             job.close()
 
     async def _infer_holding_slot(
@@ -720,9 +966,7 @@ class TranslationWorker:
         """Drop a segment because its local model is still downloading, and tell listeners why."""
         from portal.websockets.manager import tts_manager
 
-        logger.info(
-            "[%s] Local model %s is downloading. Dropping segment for %s.", booth_id_str, model, lang_code
-        )
+        logger.info("[%s] Local model %s is downloading. Dropping segment for %s.", booth_id_str, model, lang_code)
         await tts_manager.broadcast_bundle(
             room_id, lang_code, booth_id_str, b"", uuid_segment_id, seq, text, "", "model_downloading"
         )

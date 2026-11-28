@@ -320,12 +320,69 @@ class LocalProvider(TranslationProvider, TranslationEngine):
         model: str,
         api_key: str | None = None,
     ) -> TranslationRows:
-        """One model call per text and target; a language NLLB lacks is ``None`` in its column.
+        """Translate the text/target grid in one CT2 batch, preserving row and column order.
 
-        A call is one forward pass, or two when the model drops a glossary placeholder and
-        the text is translated again without it.
+        Glossary placeholders are target-specific. Only cells that lose a placeholder are
+        retried, together in a second batch, before anything reaches a listener.
         """
+        entry = get_translation_model(model)
+        if entry is None or not entry.supports_multi_target_batch or len(texts) * len(targets) <= 1:
+            return await self._translate_each(source, targets, texts, context, model=model, api_key=api_key)
+        rows: TranslationRows = [[None for _ in targets] for _ in texts]
+        if not texts or not targets:
+            return rows
+        if not settings.local_translation_allows(model) and model != settings.live_demo_translation_model:
+            logger.error("[CT2] Model %r is not offered on this server", model)
+            return rows
+        self._warn_prompt_settings(context.persona, context.style)
+        source_token = _engine_code(model, source.code, source.name)
+        if not source_token and entry.language_tagging is not LanguageTagging.TARGET_TAG:
+            return rows
+        cells = []
+        for row, text in enumerate(texts):
+            for col, target in enumerate(targets):
+                target_token = _engine_code(model, target.code, target.name)
+                if target_token:
+                    protected = protect_terms(text, context.vocabulary_for(target))
+                    cells.append((row, col, target_token, protected))
+        if not cells:
+            return rows
+        values = await _in_thread(
+            self._run_batch_inference,
+            [(segment.text, token) for _, _, token, segment in cells],
+            source_token or "",
+            model,
+        )
+        retry = []
+        for (row, col, token, protected), translated in zip(cells, values, strict=True):
+            if translated is not None and protected.target_terms:
+                restored = restore_terms(translated, protected)
+                if restored is None:
+                    retry.append((row, col, token))
+                    continue
+                translated = restored
+            rows[row][col] = translated
+        if retry:
+            values = await _in_thread(
+                self._run_batch_inference,
+                [(texts[row], token) for row, _, token in retry],
+                source_token or "",
+                model,
+            )
+            for (row, col, _), translated in zip(retry, values, strict=True):
+                rows[row][col] = translated
+        return rows
 
+    async def _translate_each(
+        self,
+        source: Language,
+        targets: Sequence[Language],
+        texts: Sequence[str],
+        context: TranslationContext,
+        *,
+        model: str,
+        api_key: str | None,
+    ) -> TranslationRows:
         def translate_one(text: str, target: Language) -> Awaitable[str | None]:
             """Translate one text into one target language using the local engine."""
             return self.translate(
@@ -343,6 +400,72 @@ class LocalProvider(TranslationProvider, TranslationEngine):
             )
 
         return await translate_each(translate_one, targets, texts)
+
+    def _run_batch_inference(
+        self, cells: Sequence[tuple[str, str]], source_token: str, model_size: str
+    ) -> list[str | None]:
+        values: list[str | None] = ["" for _ in cells]
+        active = [(i, text.strip(), token) for i, (text, token) in enumerate(cells) if text.strip()]
+        if not active:
+            return values
+        increment_model_ref(model_size)
+        try:
+            model, tokenizer = get_model_and_tokenizer(model_size)
+            entry = get_translation_model(model_size)
+            target_tags = entry is not None and entry.language_tagging is LanguageTagging.TARGET_TAG
+            sources = []
+            indices = []
+            prefixes = []
+            for index, text, token in active:
+                encoded = tokenizer.convert_ids_to_tokens(tokenizer.encode(f"{token} {text}" if target_tags else text))
+                if not encoded:
+                    continue
+                if not target_tags:
+                    encoded[0] = source_token
+                    prefixes.append([token])
+                sources.append(encoded)
+                indices.append((index, token))
+            if not sources:
+                return values
+            options = {} if target_tags else {"target_prefix": prefixes}
+            results = model.translate_batch(sources, beam_size=1, max_decoding_length=256, **options)
+            for (index, token), result in zip(indices, results, strict=True):
+                if not result.hypotheses:
+                    continue
+                tokens = result.hypotheses[0]
+                if not target_tags and tokens and tokens[0] == token:
+                    tokens = tokens[1:]
+                ids = tokenizer.convert_tokens_to_ids(tokens)
+                # Match each model's existing single-target decoder (MADLAD strips
+                # special tokens; NLLB retains them after removing its language prefix).
+                values[index] = tokenizer.decode(ids, skip_special_tokens=target_tags).strip()
+            return values
+        except LocalEntryNotFoundError:
+            logger.error(
+                "[CT2] Model %r is not downloaded. An Admin must download it on the Translation models page.",
+                model_size,
+            )
+            for index, _, _ in active:
+                values[index] = None
+            return values
+        except (RuntimeError, ValueError, OSError) as exc:
+            # Model/native failures fail the call without disclosing transcript or glossary text.
+            logger.warning("[CT2] Batch inference failed for model %s (%s)", model_size, type(exc).__name__)
+            for index, _, _ in active:
+                values[index] = None
+            return values
+        finally:
+            decrement_model_ref(model_size)
+
+    def _warn_prompt_settings(self, persona: str | None, style: str | None) -> None:
+        ignored = [name for name, value in (("persona", persona), ("style", style)) if value]
+        if ignored and not LocalProvider._warned_unsupported_settings:
+            LocalProvider._warned_unsupported_settings = True
+            logger.warning(
+                "[NLLB] The local provider ignores %s: NLLB takes no system prompt. "
+                "Select a cloud translation provider for these settings to take effect.",
+                ", ".join(ignored),
+            )
 
     async def translate(
         self,
@@ -371,14 +494,7 @@ class LocalProvider(TranslationProvider, TranslationEngine):
         # NLLB is sequence-to-sequence and has no system-prompt channel, so persona and style
         # cannot be applied here (glossary terms are, through placeholders). Say so once per
         # process rather than letting configured settings look active.
-        ignored = [name for name, value in (("persona", persona), ("style", style)) if value]
-        if ignored and not LocalProvider._warned_unsupported_settings:
-            LocalProvider._warned_unsupported_settings = True
-            logger.warning(
-                "[NLLB] The local provider ignores %s: NLLB takes no system prompt. "
-                "Select a cloud translation provider for these settings to take effect.",
-                ", ".join(ignored),
-            )
+        self._warn_prompt_settings(persona, style)
 
         target_lang_token = _engine_code(model, target_lang_code, target_lang_name)
         source_lang_token = _engine_code(model, source_lang_code, source_lang_name)
@@ -399,7 +515,9 @@ class LocalProvider(TranslationProvider, TranslationEngine):
         )
         segment = protect_terms(text, vocabulary_entries)
         if segment.target_terms:
-            translated = await _in_thread(self._run_inference, segment.text, source_lang_token, target_lang_token, model)
+            translated = await _in_thread(
+                self._run_inference, segment.text, source_lang_token, target_lang_token, model
+            )
             if translated is None:
                 return None
             restored = restore_terms(translated, segment)

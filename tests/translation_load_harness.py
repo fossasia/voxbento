@@ -56,6 +56,7 @@ from portal.database import get_session, save_transcript_segment  # noqa: E402
 from portal.models import Event, Room, RoomTranslationLanguage  # noqa: E402
 from portal.translations import worker as worker_module  # noqa: E402
 from portal.translations.engine import EngineKind, TranslationEngine  # noqa: E402
+from portal.translations.registry import get_translation_model  # noqa: E402
 
 #: Target languages in the order rooms get them; English is the source language.
 TARGET_LANGUAGES: tuple[tuple[str, str], ...] = (
@@ -103,6 +104,7 @@ class LoadConfig:
     #: Calls the fake engine serves at once; 0 means no limit.
     capacity: int = 4
     seed: int = 1
+    multi_target_batch: bool = False
 
     def __post_init__(self) -> None:
         """Reject values a run cannot use, so a bad command line fails before anything starts."""
@@ -158,6 +160,8 @@ class LoadReport:
     reasons: Counter[str]
     #: Exceptions that escaped ``handle_translation``; the worker should catch them all.
     errors: int
+    engine_calls: int = 0
+    total_inference: float = 0.0
 
     def total(self, outcome: str) -> int:
         """How many translations ended with ``outcome``, over every channel."""
@@ -191,6 +195,8 @@ class FakeEngine(TranslationEngine):
         self._hardware = asyncio.Semaphore(config.capacity) if config.capacity else None
         # The worker's scheduler sends at most this many calls at once (0 = no limit).
         self.max_concurrency = config.capacity or 10_000
+        self.call_count = 0
+        self.total_inference = 0.0
         self.in_flight = 0
         self.peak_in_flight = 0
         #: (text, target code) -> (start, end), in ``time.perf_counter`` seconds.
@@ -199,6 +205,7 @@ class FakeEngine(TranslationEngine):
     async def translate_batch(self, source, targets, texts, context, *, model, api_key=None):
         """Wait out the latency (behind ``capacity`` if set) and return a tagged copy of each text."""
         start = time.perf_counter()
+        self.call_count += 1
         self.in_flight += 1
         self.peak_in_flight = max(self.peak_in_flight, self.in_flight)
         delay = self._latency * (1 + self._rng.uniform(-self._jitter, self._jitter))
@@ -212,6 +219,7 @@ class FakeEngine(TranslationEngine):
             # Also reached when the worker's timeout cancels the call.
             self.in_flight -= 1
             end = time.perf_counter()
+            self.total_inference += end - start
             for text in texts:
                 for target in targets:
                     self.calls[(text, target.code)] = (start, end)
@@ -379,6 +387,15 @@ async def run_load_test(config: LoadConfig) -> LoadReport:
         patch.object(youtube_captions, "offer"),
         patch("portal.tts.worker.synthesize", new=AsyncMock(return_value=b"\0\0")),
         patch.dict(worker_module.ENGINES, {PROVIDER: engine}),
+        patch.object(
+            worker_module,
+            "get_translation_model",
+            side_effect=lambda model: (
+                get_translation_model("nllb-200-distilled-600M")
+                if model == "fake" and config.multi_target_batch
+                else get_translation_model(model)
+            ),
+        ),
         patch.object(worker_module, "KEYLESS_PROVIDERS", worker_module.KEYLESS_PROVIDERS | {PROVIDER}),
     ):
         # A file, not ``:memory:``: concurrent sessions need their own connections.
@@ -406,6 +423,8 @@ async def run_load_test(config: LoadConfig) -> LoadReport:
         peak_in_flight=engine.peak_in_flight,
         reasons=reasons,
         errors=errors,
+        engine_calls=engine.call_count,
+        total_inference=engine.total_inference,
     )
 
 
@@ -466,6 +485,8 @@ def render(report: LoadReport, *, markdown: bool = False) -> str:
         f"Translation load test: {config.rooms} rooms, {pattern} target languages per room "
         f"({len(report.channels)} channels), {config.segments} segments per room every {config.interval:g} s.",
         f"Fake engine: {config.latency:g} s per call (+/- {config.jitter:.0%}), capacity {capacity}.",
+        f"Multi-target batching: {config.multi_target_batch}. Engine calls: {report.engine_calls}; "
+        f"total simulated inference: {report.total_inference:.2f} s.",
         f"Wall time {report.wall_time:.1f} s. Peak engine calls in flight: {report.peak_in_flight}.",
         "Dropped translations never reached the engine, failed ones reached it but did not come back, "
         "missing ones got no answer at all. Lag is seconds from the segment being finalised to its "
@@ -542,6 +563,9 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument(
         "--capacity", type=int, default=defaults.capacity, help="engine calls served at once (0 = no limit)"
     )
+    parser.add_argument(
+        "--multi-target-batch", action="store_true", help="exercise the registered multi-target batch path"
+    )
     parser.add_argument("--seed", type=int, default=defaults.seed, help="seed for the latency jitter")
     parser.add_argument("--markdown", action="store_true", help="print a Markdown table (for CI step summaries)")
     parser.add_argument("--verbose", action="store_true", help="show the worker's own log lines")
@@ -557,6 +581,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             jitter=args.jitter,
             capacity=args.capacity,
             seed=args.seed,
+            multi_target_batch=args.multi_target_batch,
         )
     except ValueError as exc:
         parser.error(str(exc))

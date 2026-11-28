@@ -24,6 +24,22 @@ Voxbento merges these instructions with a system-level safety prompt requiring c
 The translated text is broadcast concurrently to listeners via the target booth's captions feed (`/ws/captions/{booth_id}`) and delivered via framed binary bundles (`/ws/tts/{room_id}/{language_code}/{booth_id}`) to the room's configured TTS engine (Deepgram Aura, ElevenLabs v4 or Supertonic ONNX), ensuring that captions and speech share the exact same translation.
 :::
 
+## Built-in multi-language translation
+
+For registered models with multi-target batch support (currently NLLB and MADLAD), the
+worker sends all active target languages for a finalized segment in one engine call.
+Glossary entries remain target-specific, and a language with no listeners or requested
+YouTube caption track is skipped. The spoken language still bypasses translation.
+
+A batch takes one model slot. Its source stream shares a bounded queue of 15 segments
+with at most two running, so adding languages cannot multiply that stream's engine
+calls. Rooms continue taking turns through the model's scheduler. Captions are saved
+and delivered before speech synthesis, outside the inference slot.
+
+For a controlled scheduling comparison, run the load harness with and without
+`--multi-target-batch`. It uses a fake engine and reports simulated inference time;
+its numbers are not measurements of a real model's translation speed.
+
 ## AI Vocabulary & Glossary CSV
 
 Event owners manage custom glossaries to enforce accurate translation of brand names, product terms, and technical acronyms. (The AI interpretation vocabulary card is displayed to event owners; room coordinators without event ownership do not have card access).
