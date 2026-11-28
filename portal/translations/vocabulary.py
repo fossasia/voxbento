@@ -6,7 +6,7 @@ import io
 import itertools
 import re
 import unicodedata
-from collections.abc import Iterable
+from collections.abc import Callable, Iterable
 from dataclasses import dataclass
 
 import pycountry
@@ -553,13 +553,51 @@ def _estimated_keyterm_tokens(term: str) -> int:
     return max(1, -(-len(term) // 3))
 
 
-async def speech_keyterms(session: AsyncSession, room_id: int) -> list[str]:
+def fit_speech_terms(
+    source_terms: Iterable[str],
+    *,
+    max_terms: int = MAX_KEYTERMS,
+    budget: int = MAX_KEYTERM_TOKENS,
+    cost: Callable[[str], int] = _estimated_keyterm_tokens,
+) -> list[str]:
+    """Each term once, cleaned, in the given order, while ``cost`` stays within ``budget``.
+
+    A term that does not fit is skipped, so a shorter one after it can still take the room
+    left. The defaults are Deepgram's limits.
+    """
+    keyterms: list[str] = []
+    seen: set[str] = set()
+    for source_term in source_terms:
+        term = clean_speech_term(source_term)
+        folded = term.casefold()
+        if not term or folded in seen:
+            continue
+        term_cost = cost(term)
+        if term_cost > budget:
+            continue
+        seen.add(folded)
+        keyterms.append(term)
+        budget -= term_cost
+        if len(keyterms) >= max_terms:
+            break
+    return keyterms
+
+
+async def speech_keyterms(
+    session: AsyncSession,
+    room_id: int,
+    *,
+    max_terms: int = MAX_KEYTERMS,
+    budget: int = MAX_KEYTERM_TOKENS,
+    cost: Callable[[str], int] = _estimated_keyterm_tokens,
+) -> list[str]:
     """The glossary's source terms for a room, to help speech recognition hear them.
 
     The source terms are what the floor speaker says, whatever language they are translated
     into, so every event-wide entry and every entry of this room or one of its booths counts.
-    Each term is listed once, the most important first, until Deepgram's budget is used up.
-    Empty when the room has switched its glossary off.
+    Each term is listed once, the most important first, until the provider's budget is used up
+    (Deepgram's by default; see ``fit_speech_terms``). Empty when the room has switched its
+    glossary off.
     """
     room = (
         await session.execute(select(Room.event_id, Room.floor_ai_vocabulary_enabled).where(Room.id == room_id))
@@ -586,20 +624,4 @@ async def speech_keyterms(session: AsyncSession, room_id: int) -> list[str]:
             AIVocabularyEntry.id,
         )
     )
-    keyterms: list[str] = []
-    seen: set[str] = set()
-    budget = MAX_KEYTERM_TOKENS
-    for source_term in source_terms:
-        term = clean_speech_term(source_term)
-        folded = term.casefold()
-        if not term or folded in seen:
-            continue
-        cost = _estimated_keyterm_tokens(term)
-        if cost > budget:
-            continue
-        seen.add(folded)
-        keyterms.append(term)
-        budget -= cost
-        if len(keyterms) >= MAX_KEYTERMS:
-            break
-    return keyterms
+    return fit_speech_terms(source_terms, max_terms=max_terms, budget=budget, cost=cost)

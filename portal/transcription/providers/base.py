@@ -9,9 +9,12 @@ from dataclasses import dataclass
 from typing import AsyncGenerator, AsyncIterator, Awaitable, Callable
 
 import httpx
+from sqlalchemy.exc import SQLAlchemyError
 
+from portal.database import get_session
 from portal.models import Event
 from portal.transcription.constants import ProviderEnum
+from portal.translations.vocabulary import speech_keyterms
 
 logger = logging.getLogger(__name__)
 
@@ -57,7 +60,7 @@ class ProviderConfig:
     api_key: str | None
     #: Text local Whisper reads as preceding speech, e.g. glossary terms to spell as written.
     prompt: str | None = None
-    #: Terms Deepgram listens for. Empty: the room's glossary is looked up as before.
+    #: Glossary terms for the recogniser to listen for. Empty: the room's glossary is looked up as before.
     keyterms: tuple[str, ...] = ()
 
     def get_key(self) -> str | None:
@@ -259,3 +262,34 @@ class StreamingProvider:
         booth_id: str,
     ) -> None:
         raise NotImplementedError
+
+
+#: Glossary terms are optional: a slow lookup must not hold up captions.
+GLOSSARY_LOOKUP_TIMEOUT = 2.0
+
+
+async def _read_glossary_terms(room_id: int, max_terms: int, budget: int, cost: Callable[[str], int]) -> list[str]:
+    async with get_session() as session:
+        return await speech_keyterms(session, room_id, max_terms=max_terms, budget=budget, cost=cost)
+
+
+async def load_glossary_terms(
+    room_id: int | None, *, max_terms: int, budget: int, cost: Callable[[str], int]
+) -> list[str]:
+    """The room's glossary source terms within a provider's limits (see ``speech_keyterms``).
+
+    Empty when there is no room or the terms cannot be read in time: captions without them beat none.
+    """
+    if room_id is None:
+        return []
+    try:
+        return await asyncio.wait_for(
+            _read_glossary_terms(room_id, max_terms, budget, cost), timeout=GLOSSARY_LOOKUP_TIMEOUT
+        )
+    except SQLAlchemyError:
+        logger.exception("Could not load glossary terms for room %s", room_id)
+    except TimeoutError:
+        logger.warning(
+            "Glossary lookup for room %s took over %ss; captions start without it", room_id, GLOSSARY_LOOKUP_TIMEOUT
+        )
+    return []
