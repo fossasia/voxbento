@@ -154,6 +154,15 @@ class AttendanceTracker:
     def open_visits(self, event_slug: str) -> list[Visit]:
         return [visit for visit in self._open.values() if visit.event_slug == event_slug]
 
+    def pending_closed_visits(self, event_slug: str) -> list[Visit]:
+        return [visit for visit in self._closed if visit.event_slug == event_slug]
+
+    def live_visits(self, event_slug: str) -> list[Visit]:
+        """Open visits and visits closed since the last flush, for *event_slug*."""
+        return [visit for visit in self._closed if visit.event_slug == event_slug] + [
+            visit for visit in self._open.values() if visit.event_slug == event_slug
+        ]
+
     def _set_interpreting(self, visit: Visit, interpreting: bool, now: datetime) -> None:
         if interpreting and visit.interpreting_since is None:
             visit.interpreting_since = now
@@ -360,6 +369,7 @@ def rows_for_event(db_rows: Iterable, open_visits: Iterable[Visit], now: datetim
             interpreting_seconds=row.interpreting_seconds,
         )
     for visit in open_visits:
+        end = visit.left_at or now
         rows[visit.id] = AttendanceRow(
             id=visit.id,
             room_id=visit.room_id,
@@ -369,10 +379,10 @@ def rows_for_event(db_rows: Iterable, open_visits: Iterable[Visit], now: datetim
             display_name=visit.display_name,
             role=visit.role,
             joined_at=visit.joined_at,
-            left_at=None,
-            interpreting_seconds=visit.interpreting_total(now),
+            left_at=visit.left_at,
+            interpreting_seconds=visit.interpreting_total(end),
         )
-    return sorted(rows.values(), key=lambda r: r.joined_at)
+    return sorted(rows.values(), key=lambda r: (r.joined_at, r.id))
 
 
 def booth_key(room_id: int | None, language_code: str) -> str:

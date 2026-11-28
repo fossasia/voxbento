@@ -1,17 +1,21 @@
 from __future__ import annotations
 
+import csv
+import io
 import logging
 import re
-from datetime import datetime, timezone
+from datetime import date, datetime, timedelta, timezone, tzinfo
 from types import SimpleNamespace
 from typing import Annotated, Any
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
-from fastapi import APIRouter, Depends, Header, HTTPException, Query, Request, status
+from fastapi import APIRouter, Depends, Header, HTTPException, Query, Request, Response, status
 from fastapi.responses import PlainTextResponse
 from pydantic import BaseModel, Field, field_validator
 from sqlalchemy import and_, or_, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from portal.attendance import local_day, rows_for_event, summarize
 from portal.auth import coordinates_room, load_membership_scope, require_oauth_scope
 from portal.booth_identity import make_booth_id, make_mediamtx_path, validate_language_code
 from portal.booth_publish import stop_booth_publish, take_booth_publishers
@@ -23,6 +27,8 @@ from portal.models import (
     DBBooth,
     Event,
     EventMembership,
+    InterpreterAttendance,
+    InviteToken,
     OAuthAuditLog,
     OAuthClient,
     OAuthToken,
@@ -33,7 +39,7 @@ from portal.models import (
     User,
 )
 from portal.rate_limit import auth_rate_limiter
-from portal.roles import EVENT_OWNER
+from portal.roles import EVENT_OWNER, INTERPRETER
 from portal.transcription.constants import ProviderEnum
 from portal.transcription.worker import active_workers, start_transcription_worker, stop_transcription_worker
 from portal.translations.constants import TranslationProviderEnum
@@ -1505,7 +1511,7 @@ async def export_transcript(
             if media_type == "text/vtt":
                 resolved_format = "vtt"
                 break
-            if media_type in ("application/x-subrip", "text/srt"):
+            if media_type in ("application/x-subrip", "text/srt", "text/plain"):
                 resolved_format = "srt"
                 break
             if media_type == "application/json":
@@ -1599,3 +1605,253 @@ async def update_event_api_keys(
 
     await db.commit()
     return {"status": "ok"}
+
+
+_CSV_FORMULA_PREFIXES = ("=", "+", "-", "@", "\t", "\r")
+
+
+def _csv_text(value: str) -> str:
+    """Prefix a leading formula character so spreadsheets treat the cell as text."""
+    return "'" + value if value.lstrip().startswith(_CSV_FORMULA_PREFIXES) else value
+
+
+class AttendanceVisitItem(BaseModel):
+    id: str = Field(description="Unique visit UUID")
+    room_id: int | None = Field(default=None, description="Room ID if assigned to a room")
+    language_code: str = Field(description="Booth language code")
+    display_name: str = Field(description="Interpreter display name")
+    role: str = Field(description="Booth role")
+    user_id: int | None = Field(default=None, description="Associated user ID if authenticated")
+    invite_public_id: str | None = Field(default=None, description="Invite token public ID if joined via link")
+    joined_at: str = Field(description="ISO 8601 UTC timestamp when interpreter joined")
+    left_at: str | None = Field(default=None, description="ISO 8601 UTC timestamp when interpreter left, or None if live")
+    is_active: bool = Field(description="True if interpreter is currently present in the booth")
+    present_seconds: int = Field(description="Total seconds present in the booth")
+    interpreting_seconds: int = Field(description="Total on-air interpreting seconds")
+
+
+class AttendanceSummary(BaseModel):
+    total_visits: int = Field(description="Total visits matching filters")
+    unique_interpreters: int = Field(description="Count of distinct interpreters")
+    total_present_seconds: int = Field(
+        description="Total presence time in seconds across interpreters (overlapping visits per interpreter are counted once)"
+    )
+    total_interpreting_seconds: int = Field(
+        description="Total on-air interpreting seconds across interpreters"
+    )
+
+
+class AttendancePagination(BaseModel):
+    total: int = Field(description="Total visits matching filters")
+    limit: int = Field(description="Applied pagination limit")
+    offset: int = Field(description="Applied pagination offset")
+
+
+class AttendanceFilters(BaseModel):
+    day: str | None = Field(default=None, description="Applied day filter (YYYY-MM-DD)")
+    tz: str = Field(description="Applied IANA timezone name")
+    room_id: int | None = Field(default=None, description="Applied room filter")
+    language_code: str | None = Field(default=None, description="Applied language code filter")
+
+
+class EventAttendanceResponse(BaseModel):
+    event_slug: str = Field(description="Event identifier")
+    generated_at: str = Field(description="ISO 8601 UTC timestamp of report generation")
+    filters: AttendanceFilters = Field(description="Applied query filters")
+    summary: AttendanceSummary = Field(description="Aggregated attendance statistics")
+    pagination: AttendancePagination = Field(description="Pagination details")
+    visits: list[AttendanceVisitItem] = Field(description="List of visit records")
+
+
+@router.get(
+    "/events/{event_slug}/attendance",
+    response_model=EventAttendanceResponse,
+    responses={
+        200: {
+            "content": {
+                "application/json": {},
+                "text/csv": {
+                    "schema": {"type": "string"},
+                },
+            },
+            "description": "Attendance report in JSON or CSV format.",
+        }
+    },
+)
+async def get_event_attendance(
+    event_slug: str,
+    response: Response,
+    day: Annotated[date | None, Query(description="Filter visits starting on this date (YYYY-MM-DD)")] = None,
+    tz: Annotated[str | None, Query(max_length=64, description="IANA timezone name for day filtering (defaults to UTC)")] = None,
+    room_id: Annotated[int | None, Query(description="Filter visits for this room")] = None,
+    language_code: Annotated[str | None, Query(description="Filter visits for this language booth")] = None,
+    format: Annotated[str, Query(pattern="^(json|csv)$", description="Response format: 'json' (default) or 'csv'")] = "json",
+    limit: Annotated[int, Query(ge=1, le=500, description="Maximum number of visits to return in JSON format")] = 100,
+    offset: Annotated[int, Query(ge=0, description="Pagination offset in JSON format")] = 0,
+    db: AsyncSession = Depends(get_db_session),
+    token: OAuthToken = Depends(require_oauth_scope("events:read")),
+) -> EventAttendanceResponse | Response:
+    """Retrieve interpreter attendance and working duration metrics for an event.
+
+    Combines persisted attendance records from the database with live active visits
+    from the in-memory attendance tracker. Supports filtering by date, room, and language,
+    pagination, and CSV export.
+    """
+    if language_code:
+        language_code = _validate_lang(language_code)
+
+    event = await _get_event_for_request(db, event_slug, write_lock=False)
+    if not event:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Event not found")
+
+    await _verify_token_rbac(db, token, event, lock_event=True)
+
+    target_tz: tzinfo = timezone.utc
+    if tz:
+        try:
+            target_tz = ZoneInfo(tz)
+        except (ZoneInfoNotFoundError, ValueError):
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+                detail=f"Invalid IANA timezone: '{tz}'",
+            )
+
+    now = booths.attendance.clock()
+    live_visits = booths.attendance.live_visits(event.slug)
+
+    query = select(InterpreterAttendance).where(InterpreterAttendance.event_id == event.id)
+    if room_id is not None:
+        query = query.where(InterpreterAttendance.room_id == room_id)
+    if language_code:
+        query = query.where(InterpreterAttendance.language_code == language_code)
+    if day is not None:
+        start_local = datetime(day.year, day.month, day.day, 0, 0, 0, tzinfo=target_tz)
+        end_local = start_local + timedelta(days=1)
+        query = query.where(
+            InterpreterAttendance.joined_at >= start_local.astimezone(timezone.utc),
+            InterpreterAttendance.joined_at < end_local.astimezone(timezone.utc),
+        )
+    query = query.order_by(InterpreterAttendance.joined_at.asc(), InterpreterAttendance.id.asc())
+
+    result = await db.execute(query)
+    db_rows = list(result.scalars())
+    rows = rows_for_event(db_rows, live_visits, now)
+
+    filtered_rows = [
+        row
+        for row in rows
+        if (day is None or local_day(row.joined_at, target_tz) == day)
+        and (room_id is None or row.room_id == room_id)
+        and (language_code is None or row.language_code == language_code)
+    ]
+
+    user_ids = frozenset(r.user_id for r in filtered_rows if r.user_id is not None)
+    users: dict[int, tuple[str, str]] = {}
+    if user_ids:
+        found = await db.execute(select(User.id, User.display_name, User.email).where(User.id.in_(user_ids)))
+        users = {uid: (name or email, email) for uid, name, email in found.all()}
+        for r in filtered_rows:
+            if r.user_id is not None and r.user_id not in users:
+                r.user_id = None
+
+    public_ids = frozenset(r.invite_public_id for r in filtered_rows if r.invite_public_id)
+    invite_labels: dict[str, str] = {}
+    if public_ids:
+        found = await db.execute(
+            select(InviteToken.public_id, InviteToken.label).where(InviteToken.public_id.in_(public_ids))
+        )
+        invite_labels = {pid: label for pid, label in found.all() if label}
+
+    # Only interpreters contribute to unique_interpreters and interpreter work duration metrics.
+    interpreter_rows = [r for r in filtered_rows if r.role == INTERPRETER]
+    people = summarize(interpreter_rows, now, users=users, invite_labels=invite_labels)
+
+    if format == "csv":
+        output = io.StringIO()
+        writer = csv.writer(output, lineterminator="\n")
+        writer.writerow(
+            (
+                "Interpreter",
+                "Account or invite link",
+                "Room ID",
+                "Language",
+                "Joined (UTC)",
+                "Left (UTC)",
+                "Minutes in booth",
+                "Minutes interpreting",
+            )
+        )
+        for person in people:
+            for visit in sorted(person.visits, key=lambda v: (v.joined_at, v.room_id or 0, v.language_code)):
+                writer.writerow(
+                    (
+                        _csv_text(person.name),
+                        _csv_text(person.detail),
+                        str(visit.room_id) if visit.room_id is not None else "",
+                        visit.language_code,
+                        f"{visit.joined_at.astimezone(timezone.utc):%Y-%m-%d %H:%M:%S}",
+                        f"{visit.left_at.astimezone(timezone.utc):%Y-%m-%d %H:%M:%S}" if visit.left_at else "",
+                        f"{visit.present_seconds / 60:.1f}",
+                        f"{visit.interpreting_seconds / 60:.1f}",
+                    )
+                )
+        suffix = f"-{day.isoformat()}" if day else ""
+        filename = f"{event.slug}-attendance{suffix}.csv"
+        return Response(
+            content="\ufeff" + output.getvalue(),
+            media_type="text/csv; charset=utf-8",
+            headers={
+                "Content-Disposition": f'attachment; filename="{filename}"',
+                "Cache-Control": "no-store",
+            },
+        )
+
+    response.headers["Cache-Control"] = "no-store"
+
+    summary = AttendanceSummary(
+        total_visits=len(filtered_rows),
+        unique_interpreters=len(people),
+        total_present_seconds=sum(p.present_seconds for p in people),
+        total_interpreting_seconds=sum(p.interpreting_seconds for p in people),
+    )
+
+    paginated_rows = filtered_rows[offset : offset + limit]
+    visits: list[AttendanceVisitItem] = []
+    for r in paginated_rows:
+        end = r.left_at or now
+        present = max(round((end - r.joined_at).total_seconds()), 0)
+        interpreting = min(round(r.interpreting_seconds), present)
+        visits.append(
+            AttendanceVisitItem(
+                id=r.id,
+                room_id=r.room_id,
+                language_code=r.language_code,
+                display_name=r.display_name,
+                role=r.role,
+                user_id=r.user_id,
+                invite_public_id=r.invite_public_id,
+                joined_at=_format_timestamp(r.joined_at),
+                left_at=_format_timestamp(r.left_at) if r.left_at else None,
+                is_active=r.left_at is None,
+                present_seconds=present,
+                interpreting_seconds=interpreting,
+            )
+        )
+
+    return EventAttendanceResponse(
+        event_slug=event.slug,
+        generated_at=_format_timestamp(now),
+        filters=AttendanceFilters(
+            day=day.isoformat() if day else None,
+            tz=tz if tz else "UTC",
+            room_id=room_id,
+            language_code=language_code,
+        ),
+        summary=summary,
+        pagination=AttendancePagination(
+            total=len(filtered_rows),
+            limit=limit,
+            offset=offset,
+        ),
+        visits=visits,
+    )
