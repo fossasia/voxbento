@@ -10,10 +10,10 @@ from collections.abc import Iterable
 from dataclasses import dataclass
 
 import pycountry
-from sqlalchemy import or_, select
+from sqlalchemy import case, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from portal.models import AIVocabularyEntry
+from portal.models import AIVocabularyEntry, DBBooth, Room
 from portal.translations.prompts import MAX_DESCRIPTION_CHARS, MAX_TERM_CHARS
 
 REQUIRED_COLUMNS = {"source_term", "target_language", "target_term"}
@@ -197,16 +197,24 @@ def parse_vocabulary_csv(file_content: str) -> tuple[list[VocabularyEntryInput],
 def _term_matches(entry: AIVocabularyEntry, transcript_text: str) -> bool:
     if entry.priority >= HIGH_PRIORITY_THRESHOLD:
         return True
+    return _mentions(entry, transcript_text)
+
+
+def _mentions(entry: AIVocabularyEntry, transcript_text: str, folded_text: str | None = None) -> bool:
+    """Whether the entry's source term occurs in the text, whatever its priority.
+
+    ``folded_text`` is ``transcript_text.casefold()``, for callers that match many entries against a long text.
+    """
+    haystack = transcript_text
+    if not entry.case_sensitive:
+        haystack = folded_text if folded_text is not None else transcript_text.casefold()
+    term = entry.source_term if entry.case_sensitive else entry.source_term.casefold()
     if entry.match_type == "exact":
         # Word boundaries, so "US" does not match inside "USB" or "status".
         # Case folding rather than re.IGNORECASE, to stay consistent with the
         # phrase branch and the overlap rules (so "Straße" matches "STRASSE").
-        term = entry.source_term if entry.case_sensitive else entry.source_term.casefold()
-        haystack = transcript_text if entry.case_sensitive else transcript_text.casefold()
         return re.search(rf"(?<!\w){re.escape(term)}(?!\w)", haystack) is not None
-    haystack = transcript_text if entry.case_sensitive else transcript_text.casefold()
-    needle = entry.source_term if entry.case_sensitive else entry.source_term.casefold()
-    return needle in haystack
+    return term in haystack
 
 
 # NLLB keeps "[1]" to "[15]" as single tokens and copies them through unchanged in about
@@ -443,6 +451,61 @@ async def resolve_vocabulary_entries(
     return deduplicated[:max_entries]
 
 
+async def mentioned_glossary_terms(
+    session: AsyncSession,
+    event_id: int,
+    room_id: int,
+    booth_id: int | None,
+    transcript_text: str,
+    target_language: str | None = None,
+) -> list[str]:
+    """Glossary terms for notes written from a transcript (meeting reports, #1080), the most important first.
+
+    Only entries whose source term occurs in ``transcript_text`` (the spoken transcript) count.
+    Without ``target_language`` the notes are written from that transcript, so its source terms
+    are returned, from entries for any target language. With one, the notes are written from the
+    translation into it, so the target terms of the entries for that language (or ``all``) are.
+    Scopes as in ``resolve_vocabulary_entries``: event-wide, this room, and this booth only.
+    """
+    scope_filters = [
+        AIVocabularyEntry.room_id.is_(None) & AIVocabularyEntry.booth_id.is_(None),
+        (AIVocabularyEntry.room_id == room_id) & AIVocabularyEntry.booth_id.is_(None),
+    ]
+    if booth_id is not None:
+        scope_filters.append(
+            (AIVocabularyEntry.booth_id == booth_id)
+            & (AIVocabularyEntry.room_id.is_(None) | (AIVocabularyEntry.room_id == room_id))
+        )
+    query = select(AIVocabularyEntry).where(AIVocabularyEntry.event_id == event_id, or_(*scope_filters))
+    if target_language is not None:
+        query = query.where(AIVocabularyEntry.target_language.in_(("all", target_language)))
+    stream = await session.stream_scalars(
+        query.order_by(
+            case(
+                (AIVocabularyEntry.booth_id.is_not(None), 2),
+                (AIVocabularyEntry.room_id.is_not(None), 1),
+                else_=0,
+            ).desc(),
+            AIVocabularyEntry.priority.desc(),
+            AIVocabularyEntry.id,
+        )
+    )
+    folded_text = transcript_text.casefold()
+    terms: list[str] = []
+    seen: set[str] = set()
+    processed = 0
+    async for entry in stream:
+        processed += 1
+        if processed % _RESOLVER_YIELD_EVERY == 0:
+            await asyncio.sleep(0)
+        source = entry.source_term.casefold()
+        if source in seen or not _mentions(entry, transcript_text, folded_text):
+            continue
+        seen.add(source)
+        terms.append(entry.source_term if target_language is None else entry.target_term)
+    return terms
+
+
 def _neutralize_csv_text(value: str) -> str:
     """Prefix a leading formula character so spreadsheets treat the cell as text."""
     if value.lstrip().startswith(_CSV_FORMULA_PREFIXES):
@@ -469,3 +532,74 @@ def serialize_vocabulary_csv(entries: list[AIVocabularyEntry]) -> str:
             )
         )
     return output.getvalue()
+
+
+# Deepgram allows 500 keyterm tokens per request; the estimate below is deliberately pessimistic,
+# so a glossary near the limit still connects instead of being rejected.
+MAX_KEYTERM_TOKENS = 450
+MAX_KEYTERMS = 100
+
+
+_CONTROL_CHARS = re.compile(r"[\x00-\x1f\x7f]+")
+
+
+def clean_speech_term(term: str) -> str:
+    """One line of plain text with single spaces, as a recogniser expects a term."""
+    return " ".join(_CONTROL_CHARS.sub(" ", term).split())
+
+
+def _estimated_keyterm_tokens(term: str) -> int:
+    # Roughly three characters a token, rounded up; no tokenizer is shared with Deepgram.
+    return max(1, -(-len(term) // 3))
+
+
+async def speech_keyterms(session: AsyncSession, room_id: int) -> list[str]:
+    """The glossary's source terms for a room, to help speech recognition hear them.
+
+    The source terms are what the floor speaker says, whatever language they are translated
+    into, so every event-wide entry and every entry of this room or one of its booths counts.
+    Each term is listed once, the most important first, until Deepgram's budget is used up.
+    Empty when the room has switched its glossary off.
+    """
+    room = (
+        await session.execute(select(Room.event_id, Room.floor_ai_vocabulary_enabled).where(Room.id == room_id))
+    ).first()
+    if room is None or not room.floor_ai_vocabulary_enabled:
+        return []
+    event_id = room.event_id
+    source_terms = await session.scalars(
+        select(AIVocabularyEntry.source_term)
+        .where(
+            AIVocabularyEntry.event_id == event_id,
+            or_(
+                AIVocabularyEntry.room_id == room_id,
+                AIVocabularyEntry.room_id.is_(None) & AIVocabularyEntry.booth_id.is_(None),
+                # A booth entry saved without its room still belongs to the room its booth is in.
+                AIVocabularyEntry.room_id.is_(None)
+                & AIVocabularyEntry.booth_id.in_(select(DBBooth.id).where(DBBooth.room_id == room_id)),
+            ),
+        )
+        # Room entries before event-wide ones of the same priority; oldest first after that.
+        .order_by(
+            AIVocabularyEntry.priority.desc(),
+            AIVocabularyEntry.room_id.is_(None),
+            AIVocabularyEntry.id,
+        )
+    )
+    keyterms: list[str] = []
+    seen: set[str] = set()
+    budget = MAX_KEYTERM_TOKENS
+    for source_term in source_terms:
+        term = clean_speech_term(source_term)
+        folded = term.casefold()
+        if not term or folded in seen:
+            continue
+        cost = _estimated_keyterm_tokens(term)
+        if cost > budget:
+            continue
+        seen.add(folded)
+        keyterms.append(term)
+        budget -= cost
+        if len(keyterms) >= MAX_KEYTERMS:
+            break
+    return keyterms

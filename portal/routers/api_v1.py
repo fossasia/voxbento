@@ -1,16 +1,20 @@
 from __future__ import annotations
 
 import logging
+import re
 from datetime import datetime, timezone
+from types import SimpleNamespace
 from typing import Annotated, Any
 
-from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
+from fastapi import APIRouter, Depends, Header, HTTPException, Query, Request, status
+from fastapi.responses import PlainTextResponse
 from pydantic import BaseModel, Field, field_validator
-from sqlalchemy import select, update
+from sqlalchemy import and_, or_, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from portal.auth import coordinates_room, load_membership_scope, require_oauth_scope
 from portal.booth_identity import make_booth_id, make_mediamtx_path, validate_language_code
+from portal.booth_publish import stop_booth_publish, take_booth_publishers
 from portal.config import settings
 from portal.database import delete_room as delete_db_room
 from portal.database import get_db_session
@@ -44,15 +48,16 @@ router = APIRouter(prefix="/api/v1")
 # attribute on the Event model.  Adding a new provider only requires one
 # new entry here.
 _API_KEY_FIELDS: list[tuple[str, str]] = [
-    ("openai_api_key",             "encrypted_openai_api_key"),
-    ("deepgram_api_key",           "encrypted_deepgram_api_key"),
-    ("nvidia_api_key",             "encrypted_nvidia_api_key"),
-    ("elevenlabs_api_key",         "encrypted_elevenlabs_api_key"),
+    ("openai_api_key", "encrypted_openai_api_key"),
+    ("deepgram_api_key", "encrypted_deepgram_api_key"),
+    ("nvidia_api_key", "encrypted_nvidia_api_key"),
+    ("elevenlabs_api_key", "encrypted_elevenlabs_api_key"),
     ("translation_openai_api_key", "encrypted_translation_openai_api_key"),
-    ("openrouter_api_key",         "encrypted_openrouter_api_key"),
-    ("gemini_api_key",             "encrypted_gemini_api_key"),
-    ("anthropic_api_key",          "encrypted_anthropic_api_key"),
-    ("groq_api_key",               "encrypted_groq_api_key"),
+    ("openrouter_api_key", "encrypted_openrouter_api_key"),
+    ("gemini_api_key", "encrypted_gemini_api_key"),
+    ("anthropic_api_key", "encrypted_anthropic_api_key"),
+    ("groq_api_key", "encrypted_groq_api_key"),
+    ("atlascloud_api_key", "encrypted_atlascloud_api_key"),
 ]
 
 
@@ -546,9 +551,8 @@ class RoomUpsert(BaseModel):
         return validated
 
 
-def _apply_floor_settings(room, payload_dict: dict):
-    if "name" in payload_dict and payload_dict["name"] is not None:
-        room.display_name = payload_dict["name"]
+def _sync_floor_transcription_settings(room: Room, payload_dict: dict) -> None:
+    """Apply floor transcription configuration and source language to the room instance."""
     if "enable_transcription" in payload_dict and payload_dict["enable_transcription"] is not None:
         room.floor_transcription_enabled = payload_dict["enable_transcription"]
     if "transcription_provider" in payload_dict:
@@ -558,6 +562,10 @@ def _apply_floor_settings(room, payload_dict: dict):
         room.floor_transcription_model = payload_dict["transcription_model"] or "tiny"
     if "source_language" in payload_dict:
         room.floor_language_code = payload_dict["source_language"]
+
+
+def _sync_floor_translation_settings(room: Room, payload_dict: dict) -> None:
+    """Apply floor translation configuration to the room instance."""
     if "enable_translation" in payload_dict and payload_dict["enable_translation"] is not None:
         room.floor_translation_enabled = payload_dict["enable_translation"]
     if "translation_provider" in payload_dict:
@@ -566,11 +574,11 @@ def _apply_floor_settings(room, payload_dict: dict):
         room.floor_translation_model = payload_dict["translation_model"]
 
 
-def _check_self_hosted_translation(payload_dict: dict, room: Room | None) -> None:
-    """Reject self-hosted translation this server can't run, before anything is written.
+def _check_server_translation(payload_dict: dict, room: Room | None) -> None:
+    """Reject self-hosted or built-in translation this server can't run, before anything is written.
 
-    An explicit model must be on the allow list; when the model is left out, the room keeps an
-    allowed model it already has or gets the default one. An update that turns translation off is
+    An explicit model must be on the server's allow list; when the model is left out, the room keeps
+    an allowed model it already has or gets the default one. An update that turns translation off is
     never rejected, so it still works after the server or a model is removed.
     """
     if not {"translation_provider", "translation_model", "enable_translation"} & payload_dict.keys():
@@ -578,18 +586,31 @@ def _check_self_hosted_translation(payload_dict: dict, room: Room | None) -> Non
     if payload_dict.get("enable_translation") is False:
         return
     current_provider = room.floor_translation_provider if room else None
-    if payload_dict.get("translation_provider", current_provider) != TranslationProviderEnum.SELF_HOSTED.value:
+    provider = payload_dict.get("translation_provider", current_provider)
+    if provider == TranslationProviderEnum.SELF_HOSTED.value:
+        if not settings.self_hosted_llm_enabled:
+            raise HTTPException(status_code=422, detail="Self-hosted translation is not configured on this server")
+        allows, model_or_default, name = (
+            settings.self_hosted_llm_allows,
+            settings.self_hosted_llm_model_or_default,
+            "self-hosted",
+        )
+    elif provider == TranslationProviderEnum.LOCAL.value:
+        if not settings.local_translation_model_list:
+            raise HTTPException(status_code=422, detail="Built-in translation is not offered on this server")
+        allows, model_or_default, name = (
+            settings.local_translation_allows,
+            settings.local_translation_model_or_default,
+            "built-in",
+        )
+    else:
         return
-    if not settings.self_hosted_llm_enabled:
-        raise HTTPException(status_code=422, detail="Self-hosted translation is not configured on this server")
     model = payload_dict.get("translation_model")
     if model is not None:
-        if not settings.self_hosted_llm_allows(model):
-            raise HTTPException(status_code=422, detail="translation_model is not allowed for self-hosted translation")
+        if not allows(model):
+            raise HTTPException(status_code=422, detail=f"translation_model is not allowed for {name} translation")
         return
-    payload_dict["translation_model"] = settings.self_hosted_llm_model_or_default(
-        room.floor_translation_model if room else None
-    )
+    payload_dict["translation_model"] = model_or_default(room.floor_translation_model if room else None)
 
 
 _TRANSLATION_SETUP_FIELDS = {
@@ -647,6 +668,190 @@ async def _check_translation_languages(db: AsyncSession, payload_dict: dict, roo
         raise HTTPException(status_code=422, detail=error)
 
 
+def _apply_room_settings(room: Room, payload_dict: dict) -> None:
+    """Apply display name, floor transcription, and floor translation settings to the room."""
+    if "name" in payload_dict and payload_dict["name"] is not None:
+        room.display_name = payload_dict["name"]
+    _sync_floor_transcription_settings(room, payload_dict)
+    _sync_floor_translation_settings(room, payload_dict)
+
+
+async def _create_or_update_base_room(
+    db: AsyncSession,
+    event: Event,
+    eventyay_room_id: str,
+    payload_dict: dict,
+) -> tuple[Room, str, int]:
+    """Create or update the base room while preserving upsert and concurrency transaction semantics."""
+    room_res = await db.execute(
+        select(Room).where(Room.event_id == event.id, Room.eventyay_room_id == eventyay_room_id)
+    )
+    room = room_res.scalars().first()
+
+    _check_server_translation(payload_dict, room)
+    await _check_translation_languages(db, payload_dict, room)
+
+    if room:
+        _apply_room_settings(room, payload_dict)
+        return room, "room.updated", status.HTTP_200_OK
+
+    # Require name for creation
+    if "name" not in payload_dict or not payload_dict["name"]:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="name is required to create a new room")
+
+    from sqlalchemy.exc import IntegrityError
+
+    try:
+        async with db.begin_nested():
+            room = Room(
+                event_id=event.id,
+                eventyay_room_id=eventyay_room_id,
+                display_name=payload_dict["name"],
+            )
+            _apply_room_settings(room, payload_dict)
+            db.add(room)
+            await db.flush()
+    except IntegrityError:
+        room_res = await db.execute(
+            select(Room).where(Room.event_id == event.id, Room.eventyay_room_id == eventyay_room_id)
+        )
+        room = room_res.scalars().first()
+        if not room:
+            raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Failed to upsert room")
+        _apply_room_settings(room, payload_dict)
+        return room, "room.updated", status.HTTP_200_OK
+
+    return room, "room.created", status.HTTP_201_CREATED
+
+
+async def _delete_removed_languages_and_booths(
+    db: AsyncSession,
+    event: Event,
+    room: Room,
+    eventyay_room_id: str,
+    requested_langs: set[str],
+    existing_booths: dict[str, DBBooth],
+    existing_langs: dict[str, RoomTranslationLanguage],
+    token: OAuthToken,
+) -> None:
+    """Delete unrequested booths and languages, enforcing active-session safety checks."""
+    from portal.booth_identity import make_booth_id
+    from portal.globals import booths
+
+    # Safe Delete Removed Booths & Languages
+    removed_booths = [(code, b) for code, b in existing_booths.items() if code not in requested_langs]
+    # Active Session Guard — checked and removed in one locked step, before any cleanup
+    live_code = await booths.remove_idle_booths(event.slug, room.id, [code for code, _ in removed_booths])
+    if live_code is not None:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=f"Cannot remove language '{live_code}' while it has an active session running.",
+        )
+    for code, b in removed_booths:
+        booth_id = make_booth_id(event.slug, room.id, code)
+        await stop_booth_publish(booth_id, take_booth_publishers(booth_id))
+        await db.delete(b)
+        db.add(
+            OAuthAuditLog(
+                token_id=token.id,
+                client_id=token.client_id,
+                action="booth.deleted",
+                request_path=f"/api/v1/events/{event.slug}/rooms/{eventyay_room_id}/booths/{code}",
+                status_code=status.HTTP_200_OK,
+            )
+        )
+
+    for code, rl in existing_langs.items():
+        if code not in requested_langs:
+            await db.delete(rl)
+
+
+async def _create_missing_languages_and_booths(
+    db: AsyncSession,
+    event: Event,
+    room: Room,
+    eventyay_room_id: str,
+    requested_langs: set[str],
+    existing_booths: dict[str, DBBooth],
+    existing_langs: dict[str, RoomTranslationLanguage],
+    token: OAuthToken,
+) -> None:
+    """Create missing translation languages and booths inside savepoints."""
+    from sqlalchemy.exc import IntegrityError
+
+    # Create Missing Booths & Languages
+    for code in requested_langs:
+        if code not in existing_langs:
+            try:
+                async with db.begin_nested():
+                    db.add(RoomTranslationLanguage(room_id=room.id, language_code=code, language_name=code))
+                    await db.flush()
+            except IntegrityError:
+                pass
+
+        if code not in existing_booths:
+            try:
+                async with db.begin_nested():
+                    new_booth = DBBooth(room_id=room.id, language_code=code, event_id=event.id, language_name=code)
+                    db.add(new_booth)
+                    db.add(
+                        OAuthAuditLog(
+                            token_id=token.id,
+                            client_id=token.client_id,
+                            action="booth.created",
+                            request_path=f"/api/v1/events/{event.slug}/rooms/{eventyay_room_id}/booths/{code}",
+                            status_code=status.HTTP_201_CREATED,
+                        )
+                    )
+                    await db.flush()
+            except IntegrityError:
+                pass
+
+
+async def _sync_target_languages_and_booths(
+    db: AsyncSession,
+    event: Event,
+    room: Room,
+    eventyay_room_id: str,
+    requested_langs: set[str],
+    token: OAuthToken,
+) -> None:
+    """Reconcile requested target languages with the room's persisted booths and translation languages."""
+    lang_res = await db.execute(select(RoomTranslationLanguage).where(RoomTranslationLanguage.room_id == room.id))
+    existing_langs = {rl.language_code: rl for rl in lang_res.scalars().all()}
+
+    booth_res = await db.execute(select(DBBooth).where(DBBooth.room_id == room.id))
+    existing_booths = {b.language_code: b for b in booth_res.scalars().all()}
+
+    await _delete_removed_languages_and_booths(
+        db, event, room, eventyay_room_id, requested_langs, existing_booths, existing_langs, token
+    )
+    await _create_missing_languages_and_booths(
+        db, event, room, eventyay_room_id, requested_langs, existing_booths, existing_langs, token
+    )
+
+
+async def _build_booths_response(db: AsyncSession, event_slug: str, room_id: int) -> list[dict[str, str]]:
+    """Build the canonical booth response list with WHEP and WHIP URLs."""
+    from portal.booth_identity import make_mediamtx_path
+    from portal.config import settings
+
+    final_booth_res = await db.execute(select(DBBooth).where(DBBooth.room_id == room_id))
+    final_booths = final_booth_res.scalars().all()
+
+    returned_booths = []
+    try:
+        for b in final_booths:
+            whip_path = make_mediamtx_path(event_slug, room_id, b.language_code)
+            whep_url = f"{settings.mediamtx_whip_base}/{whip_path}/whep"
+            returned_booths.append({"language": b.language_code, "whip_path": whip_path, "whep_url": whep_url})
+    except Exception:
+        logger.exception("Error generating canonical WHEP URLs")
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Internal server error")
+
+    return returned_booths
+
+
 @router.put("/events/{event_slug}/rooms/{eventyay_room_id}")
 async def upsert_room(
     event_slug: str,
@@ -656,124 +861,18 @@ async def upsert_room(
     token: OAuthToken = Depends(require_oauth_scope("rooms:write")),
 ):
     """Create or update a room after validating its resulting translation configuration."""
-    from portal.booth_identity import make_mediamtx_path
-    from portal.globals import booths
-
     event = await _get_event_for_request(db, event_slug, write_lock=True)
     if not event:
-        raise HTTPException(status_code=404, detail="Event not found")
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Event not found")
 
     await _verify_token_rbac(db, token, event, manage=True, lock_event=True, write_lock=True)
 
-    room_res = await db.execute(
-        select(Room).where(Room.event_id == event.id, Room.eventyay_room_id == eventyay_room_id)
-    )
-    room = room_res.scalars().first()
-
     payload_dict = payload.model_dump(exclude_unset=True)
-    _check_self_hosted_translation(payload_dict, room)
-    await _check_translation_languages(db, payload_dict, room)
-
-    if room:
-        _apply_floor_settings(room, payload_dict)
-        action = "room.updated"
-        status_code_ret = status.HTTP_200_OK
-    else:
-        # Require name for creation
-        if "name" not in payload_dict or not payload_dict["name"]:
-            raise HTTPException(status_code=400, detail="name is required to create a new room")
-
-        from sqlalchemy.exc import IntegrityError
-
-        try:
-            async with db.begin_nested():
-                room = Room(event_id=event.id, eventyay_room_id=eventyay_room_id, display_name=payload_dict["name"])
-                _apply_floor_settings(room, payload_dict)
-                db.add(room)
-                await db.flush()
-        except IntegrityError:
-            room_res = await db.execute(
-                select(Room).where(Room.event_id == event.id, Room.eventyay_room_id == eventyay_room_id)
-            )
-            room = room_res.scalars().first()
-            if not room:
-                raise HTTPException(status_code=500, detail="Failed to upsert room")
-            _apply_floor_settings(room, payload_dict)
-            action = "room.updated"
-            status_code_ret = status.HTTP_200_OK
-        else:
-            action = "room.created"
-            status_code_ret = status.HTTP_201_CREATED
-
-    lang_res = await db.execute(select(RoomTranslationLanguage).where(RoomTranslationLanguage.room_id == room.id))
-    existing_langs = {rl.language_code: rl for rl in lang_res.scalars().all()}
-
-    booth_res = await db.execute(select(DBBooth).where(DBBooth.room_id == room.id))
-    existing_booths = {b.language_code: b for b in booth_res.scalars().all()}
+    room, action, status_code_ret = await _create_or_update_base_room(db, event, eventyay_room_id, payload_dict)
 
     if "target_languages" in payload_dict and payload_dict["target_languages"] is not None:
         requested_langs = set(payload_dict["target_languages"])
-
-        # Safe Delete Removed Booths & Languages
-        for code, b in existing_booths.items():
-            if code not in requested_langs:
-                # Active Session Guard — use BoothRegistry.get_booth_sync() (not .items())
-                from portal.booth_identity import make_booth_id
-
-                booth_id = make_booth_id(event_slug, room.id, code)
-                active_booth = booths.get_booth_sync(booth_id)
-                if active_booth is not None:
-                    has_connected = active_booth.ingest_status == "connected"
-                    if has_connected:
-                        raise HTTPException(
-                            status_code=status.HTTP_409_CONFLICT,
-                            detail=f"Cannot remove language '{code}' while it has an active session running.",
-                        )
-                await booths.remove_booth(event_slug, room.id, code)
-                await db.delete(b)
-                db.add(
-                    OAuthAuditLog(
-                        token_id=token.id,
-                        client_id=token.client_id,
-                        action="booth.deleted",
-                        request_path=f"/api/v1/events/{event_slug}/rooms/{eventyay_room_id}/booths/{code}",
-                        status_code=status.HTTP_200_OK,
-                    )
-                )
-
-        for code, rl in existing_langs.items():
-            if code not in requested_langs:
-                await db.delete(rl)
-
-        # Create Missing Booths & Languages
-        from sqlalchemy.exc import IntegrityError
-
-        for code in requested_langs:
-            if code not in existing_langs:
-                try:
-                    async with db.begin_nested():
-                        db.add(RoomTranslationLanguage(room_id=room.id, language_code=code, language_name=code))
-                        await db.flush()
-                except IntegrityError:
-                    pass
-
-            if code not in existing_booths:
-                try:
-                    async with db.begin_nested():
-                        new_booth = DBBooth(room_id=room.id, language_code=code, event_id=event.id, language_name=code)
-                        db.add(new_booth)
-                        db.add(
-                            OAuthAuditLog(
-                                token_id=token.id,
-                                client_id=token.client_id,
-                                action="booth.created",
-                                request_path=f"/api/v1/events/{event_slug}/rooms/{eventyay_room_id}/booths/{code}",
-                                status_code=status.HTTP_201_CREATED,
-                            )
-                        )
-                        await db.flush()
-                except IntegrityError:
-                    pass
+        await _sync_target_languages_and_booths(db, event, room, eventyay_room_id, requested_langs, token)
 
     # Audit Logging
     audit = OAuthAuditLog(
@@ -787,21 +886,7 @@ async def upsert_room(
 
     await db.flush()
 
-    # Construct Response with Canonical WHEP URLs
-    final_booth_res = await db.execute(select(DBBooth).where(DBBooth.room_id == room.id))
-    final_booths = final_booth_res.scalars().all()
-
-    returned_booths = []
-    from portal.config import settings
-
-    try:
-        for b in final_booths:
-            whip_path = make_mediamtx_path(event.slug, room.id, b.language_code)
-            whep_url = f"{settings.mediamtx_whip_base}/{whip_path}/whep"
-            returned_booths.append({"language": b.language_code, "whip_path": whip_path, "whep_url": whep_url})
-    except Exception:
-        logger.exception("Error generating canonical WHEP URLs")
-        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Internal server error")
+    returned_booths = await _build_booths_response(db, event.slug, room.id)
 
     return {"status": "success", "room_id": room.id, "booths": returned_booths}
 
@@ -859,13 +944,12 @@ async def patch_room_settings(
     db: AsyncSession = Depends(get_db_session),
     token: OAuthToken = Depends(require_oauth_scope("rooms:write")),
 ):
+    """Update room settings for an event."""
     event = await _get_event_for_request(db, event_slug, write_lock=True)
     if not event:
         raise HTTPException(status_code=404, detail="Event not found")
 
-    await _verify_token_rbac(
-        db, token, event, room_id, manage=True, lock_event=True, write_lock=True
-    )
+    await _verify_token_rbac(db, token, event, room_id, manage=True, lock_event=True, write_lock=True)
     return {"status": "success"}
 
 
@@ -876,6 +960,7 @@ async def list_booths(
     db: AsyncSession = Depends(get_db_session),
     token: OAuthToken = Depends(require_oauth_scope("booths:read")),
 ):
+    """List all booths associated with a room in an event."""
     result = await db.execute(select(Event).where(Event.slug == event_slug, Event.deleted_at.is_(None)))
     event = result.scalars().first()
     if not event:
@@ -906,6 +991,7 @@ async def get_booth(
     db: AsyncSession = Depends(get_db_session),
     token: OAuthToken = Depends(require_oauth_scope("booths:read")),
 ):
+    """Retrieve details and WHIP endpoint for a specific booth in a room."""
     result = await db.execute(select(Event).where(Event.slug == event_slug))
     event = result.scalars().first()
     if not event:
@@ -915,7 +1001,11 @@ async def get_booth(
     target_room_id = _extract_room_id(room, room_id)
     language_code = _validate_lang(language_code)
 
-    result = await db.execute(select(DBBooth).where(DBBooth.room_id == target_room_id, DBBooth.language_code == language_code, DBBooth.event_id == event.id))
+    result = await db.execute(
+        select(DBBooth).where(
+            DBBooth.room_id == target_room_id, DBBooth.language_code == language_code, DBBooth.event_id == event.id
+        )
+    )
     booth = result.scalars().first()
     if not booth:
         raise HTTPException(status_code=404, detail="Booth not found")
@@ -936,13 +1026,12 @@ async def create_booth(
     db: AsyncSession = Depends(get_db_session),
     token: OAuthToken = Depends(require_oauth_scope("booths:write")),
 ):
+    """Create a new language booth for a room within an event."""
     event = await _get_event_for_request(db, event_slug, write_lock=True)
     if not event:
         raise HTTPException(status_code=404, detail="Event not found")
 
-    room = await _verify_token_rbac(
-        db, token, event, room_id, manage=True, lock_event=True, write_lock=True
-    )
+    room = await _verify_token_rbac(db, token, event, room_id, manage=True, lock_event=True, write_lock=True)
     target_room_id = _extract_room_id(room, room_id)
     language_code = _validate_lang(language_code)
     if language_code == "floor":
@@ -951,7 +1040,9 @@ async def create_booth(
             detail="'floor' is not a valid booth language for a room.",
         )
 
-    result = await db.execute(select(DBBooth).where(DBBooth.room_id == target_room_id, DBBooth.language_code == language_code))
+    result = await db.execute(
+        select(DBBooth).where(DBBooth.room_id == target_room_id, DBBooth.language_code == language_code)
+    )
     if result.scalars().first():
         raise HTTPException(status_code=409, detail="Booth already exists")
 
@@ -973,17 +1064,20 @@ async def delete_booth_endpoint(
     db: AsyncSession = Depends(get_db_session),
     token: OAuthToken = Depends(require_oauth_scope("booths:write")),
 ):
+    """Delete a language booth from a room and revoke active connections."""
     event = await _get_event_for_request(db, event_slug, write_lock=True)
     if not event:
         raise HTTPException(status_code=404, detail="Event not found")
 
-    room = await _verify_token_rbac(
-        db, token, event, room_id, manage=True, lock_event=True, write_lock=True
-    )
+    room = await _verify_token_rbac(db, token, event, room_id, manage=True, lock_event=True, write_lock=True)
     target_room_id = _extract_room_id(room, room_id)
     language_code = _validate_lang(language_code)
 
-    result = await db.execute(select(DBBooth).where(DBBooth.room_id == target_room_id, DBBooth.language_code == language_code, DBBooth.event_id == event.id))
+    result = await db.execute(
+        select(DBBooth).where(
+            DBBooth.room_id == target_room_id, DBBooth.language_code == language_code, DBBooth.event_id == event.id
+        )
+    )
     booth = result.scalars().first()
     if not booth:
         raise HTTPException(status_code=404, detail="Booth not found")
@@ -1003,6 +1097,7 @@ async def start_transcription(
     db: AsyncSession = Depends(get_db_session),
     token: OAuthToken = Depends(require_oauth_scope("sessions:manage")),
 ):
+    """Start transcription worker for a specific booth in a room."""
     event = await _get_event_for_request(db, event_slug, write_lock=True)
     if not event:
         raise HTTPException(status_code=404, detail="Event not found")
@@ -1031,6 +1126,7 @@ async def stop_transcription(
     db: AsyncSession = Depends(get_db_session),
     token: OAuthToken = Depends(require_oauth_scope("sessions:manage")),
 ):
+    """Stop active transcription worker for a specific booth in a room."""
     event = await _get_event_for_request(db, event_slug, write_lock=True)
     if not event:
         raise HTTPException(status_code=404, detail="Event not found")
@@ -1051,6 +1147,7 @@ async def get_transcription_status(
     db: AsyncSession = Depends(get_db_session),
     token: OAuthToken = Depends(require_oauth_scope("sessions:read")),
 ):
+    """Retrieve current transcription and activity status for all booths in a room."""
     result = await db.execute(select(Event).where(Event.slug == event_slug))
     event = result.scalars().first()
     if not event:
@@ -1083,7 +1180,165 @@ def _format_timestamp(dt: datetime) -> str:
     return dt.isoformat()
 
 
-@router.get("/events/{event_slug}/rooms/{room_id}/booths/{language_code}/transcripts/export")
+class TranscriptExportItem(BaseModel):
+    """Schema for an individual transcript segment or translation item."""
+
+    id: int = Field(description="Segment or translation unique identifier")
+    text: str = Field(description="Transcribed or translated text content")
+    created_at: str = Field(description="ISO-8601 timestamp when speech occurred")
+
+
+class TranscriptExportResponse(BaseModel):
+    """Schema for exported transcript response envelope."""
+
+    event_slug: str = Field(description="Slug of the event")
+    room_id: int | str = Field(description="Room identifier")
+    language_code: str = Field(description="Language code of source transcript")
+    target_lang: str | None = Field(default=None, description="Target translation language code if requested")
+    segments: list[TranscriptExportItem] = Field(description="Chronological transcript segments")
+    has_more: bool = Field(default=False, description="True if more segments exist beyond the requested limit")
+    next_cursor: str | None = Field(default=None, description="Continuation cursor for fetching subsequent segments")
+
+
+def _to_utc(dt: datetime | None) -> datetime | None:
+    """Normalize a datetime to timezone-aware UTC.
+
+    If naive, assume UTC. If aware with a non-UTC offset, convert to UTC.
+    """
+    if dt is None:
+        return None
+    if dt.tzinfo is None:
+        return dt.replace(tzinfo=timezone.utc)
+    return dt.astimezone(timezone.utc)
+
+
+def _format_playback_time(seconds: float, sep: str = ".") -> str:
+    """Format elapsed seconds as HH:MM:SS.mmm (or HH:MM:SS,mmm)."""
+    total_ms = int(round(seconds * 1000))
+    hours = total_ms // 3_600_000
+    minutes = (total_ms % 3_600_000) // 60_000
+    secs = (total_ms % 60_000) // 1000
+    ms = total_ms % 1000
+    return f"{hours:02d}:{minutes:02d}:{secs:02d}{sep}{ms:03d}"
+
+
+def _sanitize_vtt_text(text: str) -> str:
+    """Sanitize cue text for WebVTT format by collapsing blank lines and escaping syntax markers."""
+    if not text:
+        return ""
+    cleaned = re.sub(r"(\r?\n\s*){2,}", "\n", text.strip())
+    # Escape ampersands and angle brackets for WebVTT
+    cleaned = cleaned.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+    # Neutralize any remaining arrow markers
+    cleaned = cleaned.replace("-->", "--&gt;")
+    return cleaned
+
+
+def _sanitize_srt_text(text: str) -> str:
+    """Sanitize cue text for SubRip (SRT) format by collapsing blank lines."""
+    if not text:
+        return ""
+    return re.sub(r"(\r?\n\s*){2,}", "\n", text.strip())
+
+
+def _to_vtt(items: list[Any], origin: datetime | None = None) -> str:
+    """Serialize transcript items to WebVTT format using playback elapsed offsets."""
+    if not items:
+        return "WEBVTT\n\n"
+    if origin is None:
+        origin = items[0].created_at
+    origin_utc = _to_utc(origin)
+    lines = ["WEBVTT", ""]
+    for i, item in enumerate(items, 1):
+        item_dt = _to_utc(item.created_at)
+        start_sec = max(0.0, (item_dt - origin_utc).total_seconds())
+        if i < len(items):
+            next_dt = _to_utc(items[i].created_at)
+            next_start_sec = max(start_sec, (next_dt - origin_utc).total_seconds())
+            end_sec = min(start_sec + 5.0, next_start_sec) if next_start_sec > start_sec else start_sec + 5.0
+        else:
+            end_sec = start_sec + 5.0
+        start = _format_playback_time(start_sec, sep=".")
+        end = _format_playback_time(end_sec, sep=".")
+        cue_text = _sanitize_vtt_text(item.text)
+        lines.extend([str(i), f"{start} --> {end}", cue_text, ""])
+    return "\n".join(lines)
+
+
+def _to_srt(items: list[Any], origin: datetime | None = None) -> str:
+    """Serialize transcript items to SubRip (SRT) format using playback elapsed offsets."""
+    if not items:
+        return ""
+    if origin is None:
+        origin = items[0].created_at
+    origin_utc = _to_utc(origin)
+    lines: list[str] = []
+    for i, item in enumerate(items, 1):
+        item_dt = _to_utc(item.created_at)
+        start_sec = max(0.0, (item_dt - origin_utc).total_seconds())
+        if i < len(items):
+            next_dt = _to_utc(items[i].created_at)
+            next_start_sec = max(start_sec, (next_dt - origin_utc).total_seconds())
+            end_sec = min(start_sec + 5.0, next_start_sec) if next_start_sec > start_sec else start_sec + 5.0
+        else:
+            end_sec = start_sec + 5.0
+        start = _format_playback_time(start_sec, sep=",")
+        end = _format_playback_time(end_sec, sep=",")
+        cue_text = _sanitize_srt_text(item.text)
+        lines.extend([str(i), f"{start} --> {end}", cue_text, ""])
+    return "\n".join(lines)
+
+
+def _parse_accept_header(accept: str | None) -> list[str]:
+    """Parse media ranges from an Accept header ordered by descending quality value (q).
+
+    Media ranges with q=0 (or invalid non-positive quality values) are treated
+    as unacceptable and excluded.
+    """
+    if not accept or not isinstance(accept, str):
+        return []
+
+    parsed: list[tuple[float, int, str]] = []
+    for idx, part in enumerate(accept.split(",")):
+        part = part.strip()
+        if not part:
+            continue
+        segments = [s.strip() for s in part.split(";")]
+        media_type = segments[0].lower()
+        if not media_type:
+            continue
+        q_val = 1.0
+        for param in segments[1:]:
+            param_key, sep, param_val = param.partition("=")
+            if sep and param_key.strip().lower() == "q":
+                try:
+                    q_val = float(param_val.strip())
+                except ValueError:
+                    q_val = 1.0
+        if q_val > 0.0:
+            parsed.append((q_val, -idx, media_type))
+
+    parsed.sort(reverse=True)
+    return [media_type for _, _, media_type in parsed]
+
+
+@router.get(
+    "/events/{event_slug}/rooms/{room_id}/booths/{language_code}/transcripts/export",
+    response_model=TranscriptExportResponse,
+    responses={
+        200: {
+            "description": "Exported transcript records in JSON, WebVTT, or SubRip format.",
+            "content": {
+                "application/json": {},
+                "text/vtt": {"schema": {"type": "string"}},
+                "text/plain": {"schema": {"type": "string"}},
+                "text/srt": {"schema": {"type": "string"}},
+                "application/x-subrip": {"schema": {"type": "string"}},
+            },
+        }
+    },
+    summary="Export transcripts",
+)
 async def export_transcript(
     event_slug: str,
     room_id: int | str,
@@ -1095,10 +1350,34 @@ async def export_transcript(
             description="Return translations in this language instead of source segments",
         ),
     ] = None,
+    format: str | None = Query(
+        None, pattern="^(json|vtt|srt)$", description="Export format: json (default), vtt, or srt"
+    ),
+    after: datetime | None = Query(None, description="Filter segments created after this UTC datetime"),
+    before: datetime | None = Query(None, description="Filter segments created before this UTC datetime"),
+    start_time: datetime | None = Query(None, description="Alias for after"),
+    end_time: datetime | None = Query(None, description="Alias for before"),
+    after_id: int | None = Query(
+        None,
+        ge=1,
+        description="Optional segment ID tie-breaker for continuation when created_at matches after/start_time",
+    ),
+    cursor: str | None = Query(
+        None, description="Continuation cursor ('<iso_timestamp>_<id>' or '<id>') from previous response"
+    ),
+    limit: int | None = Query(None, ge=1, description="Optional maximum number of segments to export (default: all)"),
+    accept: str | None = Header(
+        None, description="Content negotiation header (e.g. text/vtt, text/srt, application/x-subrip)"
+    ),
     db: AsyncSession = Depends(get_db_session),
     token: OAuthToken = Depends(require_oauth_scope("transcripts:read")),
 ):
-    """Export source transcript segments or translations for a room booth in chronological order."""
+    """Export source transcript segments or translations for a room booth in chronological order.
+
+    Supports JSON (default), WebVTT (text/vtt), and SubRip (text/plain, text/srt, application/x-subrip).
+    By default, exports the complete transcript without truncation. Results can be filtered by time range
+    (after/start_time, before/end_time) and optionally bounded by limit with cursor/after_id continuation.
+    """
     target_lang = target_lang if isinstance(target_lang, str) else None
 
     result = await db.execute(select(Event).where(Event.slug == event_slug, Event.deleted_at.is_(None)))
@@ -1122,40 +1401,143 @@ async def export_transcript(
     if not booth:
         raise HTTPException(status_code=404, detail="Booth not found")
 
+    raw_after = after if isinstance(after, datetime) else (start_time if isinstance(start_time, datetime) else None)
+    raw_before = before if isinstance(before, datetime) else (end_time if isinstance(end_time, datetime) else None)
+    parsed_after_id = after_id if isinstance(after_id, int) and after_id >= 1 else None
+    parsed_limit = limit if isinstance(limit, int) and limit >= 1 else None
+
+    if cursor and isinstance(cursor, str):
+        cursor_clean = cursor.strip()
+        if "_" in cursor_clean:
+            ts_part, _, id_part = cursor_clean.rpartition("_")
+            try:
+                if not raw_after:
+                    raw_after = datetime.fromisoformat(ts_part)
+                if parsed_after_id is None and id_part.isdigit():
+                    parsed_after_id = int(id_part)
+            except (ValueError, TypeError):
+                pass
+        elif cursor_clean.isdigit() and parsed_after_id is None:
+            parsed_after_id = int(cursor_clean)
+
+    after_dt = _to_utc(raw_after)
+    before_dt = _to_utc(raw_before)
+
+    conditions = [
+        TranscriptSegment.room_id == target_room_id,
+        TranscriptSegment.language_code == language_code,
+    ]
+    if after_dt and parsed_after_id is not None:
+        conditions.append(
+            or_(
+                TranscriptSegment.created_at > after_dt,
+                and_(
+                    TranscriptSegment.created_at == after_dt,
+                    TranscriptSegment.id > parsed_after_id,
+                ),
+            )
+        )
+    elif after_dt:
+        conditions.append(TranscriptSegment.created_at > after_dt)
+    elif parsed_after_id is not None:
+        conditions.append(TranscriptSegment.id > parsed_after_id)
+
+    if before_dt:
+        conditions.append(TranscriptSegment.created_at < before_dt)
+
     if target_lang:
         stmt = (
             select(TranscriptSegment, TranscriptTranslation)
             .join(TranscriptSegment, TranscriptTranslation.segment_id == TranscriptSegment.id)
             .where(
-                TranscriptSegment.room_id == target_room_id,
-                TranscriptSegment.language_code == language_code,
+                *conditions,
                 TranscriptTranslation.language_code == target_lang,
             )
             .order_by(TranscriptSegment.created_at, TranscriptSegment.id)
         )
+        if parsed_limit is not None:
+            stmt = stmt.limit(parsed_limit + 1)
+
         result = await db.execute(stmt)
-        segments = [
-            {"id": seg.id, "text": tr.text, "created_at": _format_timestamp(seg.created_at)} for seg, tr in result.all()
-        ]
+        all_rows = result.all()
+        if parsed_limit is not None and len(all_rows) > parsed_limit:
+            has_more = True
+            rows = all_rows[:parsed_limit]
+        else:
+            has_more = False
+            rows = all_rows
+
+        items = [SimpleNamespace(id=seg.id, text=tr.text, created_at=seg.created_at) for seg, tr in rows]
     else:
-        stmt = (
-            select(TranscriptSegment)
-            .where(
-                TranscriptSegment.room_id == target_room_id,
-                TranscriptSegment.language_code == language_code,
-            )
-            .order_by(TranscriptSegment.created_at, TranscriptSegment.id)
-        )
+        stmt = select(TranscriptSegment).where(*conditions).order_by(TranscriptSegment.created_at, TranscriptSegment.id)
+        if parsed_limit is not None:
+            stmt = stmt.limit(parsed_limit + 1)
+
         result = await db.execute(stmt)
-        rows = result.scalars().all()
-        segments = [{"id": r.id, "text": r.text, "created_at": _format_timestamp(r.created_at)} for r in rows]
+        all_rows = result.scalars().all()
+        if parsed_limit is not None and len(all_rows) > parsed_limit:
+            has_more = True
+            items = all_rows[:parsed_limit]
+        else:
+            has_more = False
+            items = all_rows
+
+    if has_more and items:
+        last_item = items[-1]
+        next_cursor = f"{_to_utc(last_item.created_at).isoformat()}_{last_item.id}"
+    else:
+        next_cursor = None
+
+    format_str = format if isinstance(format, str) else None
+    accepted_types = _parse_accept_header(accept)
+
+    srt_media_type = "text/plain"
+    for media_type in accepted_types:
+        if media_type in ("application/x-subrip", "text/srt", "text/plain"):
+            srt_media_type = media_type
+            break
+
+    if format_str:
+        resolved_format = format_str.lower()
+    else:
+        resolved_format = "json"
+        for media_type in accepted_types:
+            if media_type == "text/vtt":
+                resolved_format = "vtt"
+                break
+            if media_type in ("application/x-subrip", "text/srt"):
+                resolved_format = "srt"
+                break
+            if media_type == "application/json":
+                resolved_format = "json"
+                break
+
+    headers: dict[str, str] = {}
+    if has_more:
+        headers["X-Has-More"] = "true"
+    if next_cursor:
+        headers["X-Next-Cursor"] = next_cursor
+
+    if resolved_format == "vtt":
+        return PlainTextResponse(_to_vtt(items), media_type="text/vtt", headers=headers)
+    if resolved_format == "srt":
+        return PlainTextResponse(_to_srt(items), media_type=srt_media_type, headers=headers)
 
     return {
         "event_slug": event_slug,
         "room_id": target_room_id,
         "language_code": language_code,
         "target_lang": target_lang,
-        "segments": segments,
+        "segments": [
+            {
+                "id": item.id,
+                "text": item.text,
+                "created_at": _format_timestamp(item.created_at),
+            }
+            for item in items
+        ],
+        "has_more": has_more,
+        "next_cursor": next_cursor,
     }
 
 
@@ -1189,6 +1571,7 @@ class EventAPIKeysUpdate(BaseModel):
     gemini_api_key: str | None = None
     anthropic_api_key: str | None = None
     groq_api_key: str | None = None
+    atlascloud_api_key: str | None = None
 
 
 @router.patch("/events/{event_slug}/api_keys", response_model=dict)

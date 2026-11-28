@@ -1,0 +1,311 @@
+from __future__ import annotations
+
+import asyncio
+import logging
+from dataclasses import dataclass
+from datetime import datetime
+
+from sqlalchemy import func, select, update
+from sqlalchemy.exc import IntegrityError
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from portal.database import get_session
+from portal.meeting_analysis.constants import (
+    IN_PROGRESS,
+    JOB_TIMEOUT,
+    STALE_AFTER,
+    STATUS_DONE,
+    STATUS_FAILED,
+    STATUS_PENDING,
+    STATUS_QUEUED,
+    STATUS_RUNNING,
+    AnalysisProviderEnum,
+)
+from portal.meeting_analysis.prompts import (
+    build_analysis_messages,
+    build_merge_messages,
+    build_transcript,
+    fit_glossary,
+    merge_batches,
+    split_transcript,
+    transcript_lines,
+)
+from portal.meeting_analysis.providers import get_provider
+from portal.meeting_analysis.schema import AnalysisError, AnalysisResult, UnreadableAnswer, parse_analysis
+from portal.models import DBBooth, Event, MeetingReport, Room, TranscriptSegment, TranscriptTranslation, utc_now
+from portal.room_setup import language_name
+from portal.tasks import track_task
+from portal.translations.keys import get_translation_api_key
+from portal.translations.vocabulary import mentioned_glossary_terms
+
+logger = logging.getLogger(__name__)
+
+PARSE_ATTEMPTS = 2
+FAILED_UNEXPECTEDLY = "Something went wrong while writing the report. Try again."
+INTERRUPTED = "The server restarted before the report was ready. Generate it again."
+UNREADABLE_KEY = "The saved API key for this AI service can't be read. Save it again on the API keys page."
+TOOK_TOO_LONG = "The AI service took too long to write the report. Try again, or choose a faster model."
+
+
+class _Retired(Exception):
+    pass
+
+
+@dataclass(frozen=True)
+class _Job:
+    provider: str
+    model: str
+    api_key: str | None
+    context: dict
+    parts: list[tuple[str, str]]
+    truncated: bool
+
+
+async def _fail(report_id: int, message: str) -> None:
+    async with get_session() as session:
+        await session.execute(
+            update(MeetingReport)
+            .where(MeetingReport.id == report_id, MeetingReport.status.in_(IN_PROGRESS))
+            .values(status=STATUS_FAILED, error=message[:500])
+        )
+
+
+async def _still_running(report_id: int) -> bool:
+    async with get_session() as session:
+        status = await session.scalar(select(MeetingReport.status).where(MeetingReport.id == report_id))
+    return status == STATUS_RUNNING
+
+
+def session_filter(report: MeetingReport, *, covered_only: bool = False) -> list:
+    conditions = [TranscriptSegment.room_id == report.room_id, TranscriptSegment.language_code == report.channel_id]
+    if report.session_started_at is not None:
+        conditions.append(TranscriptSegment.created_at >= report.session_started_at)
+    end = report.covered_until if covered_only and report.covered_until is not None else report.session_ended_at
+    if end is not None:
+        conditions.append(TranscriptSegment.created_at <= end)
+    elif covered_only and report.last_segment_id is not None:
+        conditions.append(TranscriptSegment.id <= report.last_segment_id)
+    return conditions
+
+
+@dataclass(frozen=True)
+class ReportLine:
+    """One transcript line a report reads: the spoken text, or its translation for a report from one."""
+
+    id: int
+    text: str
+    created_at: datetime
+    spoken: str
+
+
+async def report_lines(session: AsyncSession, report: MeetingReport, *, covered_only: bool = False) -> list[ReportLine]:
+    order = (TranscriptSegment.created_at, TranscriptSegment.id)
+    conditions = session_filter(report, covered_only=covered_only)
+    if report.transcript_language:
+        # A line that was never translated (no listeners for that language then) is left out.
+        rows = await session.execute(
+            select(
+                TranscriptSegment.id, TranscriptTranslation.text, TranscriptSegment.created_at, TranscriptSegment.text
+            )
+            .join(TranscriptTranslation, TranscriptTranslation.segment_id == TranscriptSegment.id)
+            .where(*conditions, TranscriptTranslation.language_code == report.transcript_language)
+            .order_by(*order)
+        )
+    else:
+        rows = await session.execute(
+            select(TranscriptSegment.id, TranscriptSegment.text, TranscriptSegment.created_at, TranscriptSegment.text)
+            .where(*conditions)
+            .order_by(*order)
+        )
+    return [ReportLine(*row) for row in rows]
+
+
+async def _glossary(session: AsyncSession, report: MeetingReport, room: Room, spoken: str) -> tuple[str, ...]:
+    """The glossary terms the report names, when the room uses its glossary."""
+    if not room.floor_ai_vocabulary_enabled:
+        return ()
+    booth_id = None
+    if report.channel_id != "floor":
+        booth_id = await session.scalar(
+            select(DBBooth.id).where(DBBooth.room_id == room.id, DBBooth.language_code == report.channel_id)
+        )
+    terms = await mentioned_glossary_terms(
+        session, report.event_id, room.id, booth_id, spoken, target_language=report.transcript_language
+    )
+    return fit_glossary(terms)
+
+
+async def _prepare(report_id: int) -> _Job | None:
+    async with get_session() as session:
+        report = await session.get(MeetingReport, report_id)
+        if report is None or report.status != STATUS_PENDING:
+            return None
+        event = await session.get(Event, report.event_id)
+        room = await session.get(Room, report.room_id)
+        if event is None or room is None:
+            report.status = STATUS_FAILED
+            report.error = "The event or room no longer exists."
+            return None
+        segments = await report_lines(session, report)
+        lines = transcript_lines(segments, report.session_started_at)
+        if not lines:
+            report.status = STATUS_FAILED
+            report.error = (
+                "No lines of this session were translated into that language."
+                if report.transcript_language
+                else "There is no transcript for this channel yet."
+            )
+            return None
+        api_key = None
+        if report.provider != AnalysisProviderEnum.LOCAL.value:
+            try:
+                api_key = get_translation_api_key(event, report.provider)
+            except ValueError as exc:
+                raise AnalysisError(UNREADABLE_KEY) from exc
+            if not api_key:
+                report.status = STATUS_FAILED
+                report.error = "The event has no API key for the chosen AI service. Add it on the API keys page."
+                return None
+        transcript, truncated = build_transcript(lines)
+        covered = lines[: len(transcript.splitlines())] or lines[:1]
+        context = {
+            "event_name": event.display_name,
+            "room_name": room.display_name,
+            "channel_label": report.channel_label,
+            "language_name": language_name(report.language_code) if report.language_code != "floor" else "",
+            "glossary": await _glossary(session, report, room, "\n".join(line.spoken for line in segments)),
+            "translated": bool(report.transcript_language),
+        }
+        chunks = split_transcript(transcript)
+        if len(chunks) == 1:
+            parts = [build_analysis_messages(**context, transcript=transcript, truncated=truncated)]
+        else:
+            parts = [
+                build_analysis_messages(**context, transcript=chunk, part=(number, len(chunks)))
+                for number, chunk in enumerate(chunks, start=1)
+            ]
+        report.status = STATUS_RUNNING
+        report.segment_count = len(lines)
+        report.last_segment_id = segments[-1].id
+        report.covered_until = covered[-1].created_at
+        report.truncated = truncated
+        return _Job(report.provider, report.model, api_key, context, parts, truncated)
+
+
+async def run_analysis(report_id: int) -> None:
+    try:
+        async with asyncio.timeout(JOB_TIMEOUT.total_seconds()):
+            await _run(report_id)
+    except _Retired:
+        logger.info("Meeting report %s was retired, so its job stopped", report_id)
+    except TimeoutError:
+        logger.warning("Meeting report %s took longer than %s", report_id, JOB_TIMEOUT)
+        await _fail(report_id, TOOK_TOO_LONG)
+    except AnalysisError as exc:
+        logger.warning("Meeting report %s failed: %s", report_id, exc)
+        await _fail(report_id, str(exc))
+    except Exception:
+        await _fail(report_id, FAILED_UNEXPECTEDLY)
+        raise
+
+
+async def _run(report_id: int) -> None:
+    job = await _prepare(report_id)
+    if job is None:
+        return
+    provider = get_provider(job.provider)
+    used: list[int] = []
+
+    async def ask(system: str, user: str) -> AnalysisResult:
+        for attempt in range(PARSE_ATTEMPTS):
+            if not await _still_running(report_id):
+                raise _Retired
+            try:
+                completion = await provider.complete(system=system, user=user, model=job.model, api_key=job.api_key)
+                used.append(completion.tokens_used or 0)
+                return parse_analysis(completion.text)
+            except UnreadableAnswer:
+                if attempt == PARSE_ATTEMPTS - 1:
+                    raise
+        raise AnalysisError("The AI service didn't return a report.")
+
+    results = [await ask(system, user) for system, user in job.parts]
+    while len(results) > 1:
+        results = [
+            batch[0]
+            if len(batch) == 1
+            else await ask(*build_merge_messages(**job.context, parts=batch, truncated=job.truncated))
+            for batch in merge_batches(results)
+        ]
+    result = results[0]
+    async with get_session() as session:
+        await session.execute(
+            update(MeetingReport)
+            .where(MeetingReport.id == report_id, MeetingReport.status == STATUS_RUNNING)
+            .values(
+                title=result.title,
+                summary=result.overview,
+                sections_json=result.sections_json(),
+                tokens_used=sum(used) or None,
+                status=STATUS_DONE,
+                error=None,
+                generated_at=utc_now(),
+            )
+        )
+
+
+def start_analysis(report_id: int) -> None:
+    track_task(asyncio.create_task(run_analysis(report_id), name=f"meeting-report-{report_id}"))
+
+
+# The portal runs one process. A live batch can take longer than the stale-report timeout.
+_batch_ids: set[int] = set()
+
+
+def start_batch(ids: list[int]) -> None:
+    _batch_ids.update(ids)
+    track_task(asyncio.create_task(_run_batch(ids), name=f"meeting-report-batch-{ids[0]}"))
+
+
+async def _run_batch(ids: list[int]) -> None:
+    try:
+        for report_id in ids:
+            try:
+                async with get_session() as session:
+                    await session.execute(
+                        update(MeetingReport)
+                        .where(MeetingReport.id == report_id, MeetingReport.status == STATUS_QUEUED)
+                        .values(status=STATUS_PENDING)
+                    )
+            except IntegrityError:
+                await _fail(report_id, "Another report is being written for this room. Generate this report again.")
+                continue
+            try:
+                await run_analysis(report_id)
+            except Exception:
+                logger.exception("Meeting report %s failed during batch generation", report_id)
+    finally:
+        _batch_ids.difference_update(ids)
+
+
+async def room_busy(session: AsyncSession, room_id: int) -> bool:
+    """Whether a report of the room is being written; only one is, at a time."""
+    count = await session.scalar(
+        select(func.count())
+        .select_from(MeetingReport)
+        .where(MeetingReport.room_id == room_id, MeetingReport.status.in_(IN_PROGRESS))
+    )
+    return bool(count)
+
+
+async def mark_interrupted_reports(session: AsyncSession, room_id: int) -> None:
+    await session.execute(
+        update(MeetingReport)
+        .where(
+            MeetingReport.room_id == room_id,
+            MeetingReport.status.in_(IN_PROGRESS),
+            MeetingReport.created_at < utc_now() - STALE_AFTER,
+            MeetingReport.id.not_in(_batch_ids),
+        )
+        .values(status=STATUS_FAILED, error=INTERRUPTED)
+    )
