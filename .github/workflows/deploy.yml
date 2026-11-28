@@ -55,6 +55,7 @@ jobs:
 
             # If activating the Caddy configuration fails part-way, put the previous files
             # back and reload, so a later reload or reboot does not load a broken config.
+            recover_port=
             caddy_changed=
             caddy_migrated=
             # Runs inside a condition, where set -e does not apply: return on each failure.
@@ -76,6 +77,16 @@ jobs:
                   echo "Previous Caddy configuration restored"
                 else
                   echo "WARNING: could not restore Caddy; check /etc/caddy"
+                fi
+              fi
+              if [ "$status" -ne 0 ] && [ -n "$recover_port" ]; then
+                echo "Restoring the previous portal on port $recover_port"
+                if compose -f "$candidate_dir/.rollback.json" up -d --no-deps --no-build --pull never portal &&
+                  curl -fsS --retry 20 --retry-all-errors --retry-delay 1 --max-time 3 \
+                    "http://127.0.0.1:$recover_port/healthz" >/dev/null; then
+                  echo "Previous portal is healthy on port $recover_port"
+                else
+                  echo "ERROR: portal recovery failed; inspect the voxbento portal container"
                 fi
               fi
               git -C "$deployment_dir" worktree remove --force "$candidate_dir"
@@ -222,6 +233,45 @@ jobs:
               exit 1
             fi
 
+            # Capture the running binding and image from the container itself.
+            # Render from the old checkout: .env may already request the new port.
+            previous_port=
+            running_portal=$(compose ps -q portal)
+            if [ -n "$running_portal" ]; then
+              binding=$(docker port "$running_portal" 8000/tcp)
+              previous_port=${binding##*:}
+              case "$binding" in
+                "127.0.0.1:$previous_port") ;;
+                *) echo "ERROR: unexpected portal port binding: $binding"; exit 1 ;;
+              esac
+              if [ "$previous_port" != "$portal_port" ]; then
+                previous_image=$(docker inspect --format '{{.Image}}' "$running_portal")
+                docker inspect --format '{{json .Config.Env}}' "$running_portal" > "$candidate_dir/.previous-env.json"
+                docker image tag "$previous_image" voxbento-portal:port-rollback
+                (cd "$deployment_dir" && PORTAL_HOST_PORT="$previous_port" compose config --format json) \
+                  > "$candidate_dir/.previous.json"
+                python3 - "$candidate_dir" "$previous_port" <<'PYTHON' > "$candidate_dir/.rollback.json"
+            import json
+            import sys
+            from pathlib import Path
+
+            snapshot = Path(sys.argv[1])
+            with (snapshot / ".previous.json").open() as source:
+                config = json.load(source)
+            portal = config["services"]["portal"]
+            with (snapshot / ".previous-env.json").open() as source:
+                portal["environment"] = dict(entry.split("=", 1) for entry in json.load(source) if "=" in entry)
+            bindings = [port for port in portal["ports"] if port["target"] == 8000]
+            if len(bindings) != 1 or bindings[0].get("host_ip") != "127.0.0.1":
+                sys.exit("Cannot restore the previous portal binding safely")
+            bindings[0]["published"] = sys.argv[2]
+            portal["image"] = "voxbento-portal:port-rollback"
+            # Compose interpolates the resolved document again when it reads it.
+            print(json.dumps(config).replace("$", "$$"))
+            PYTHON
+              fi
+            fi
+
             # Only advance the live checkout after all preflight checks pass.
             cd "$deployment_dir"
             git checkout main
@@ -230,6 +280,7 @@ jobs:
             # Images were built and validated above. 'up' recreates changed services,
             # including the portal, so a second explicit restart is unnecessary.
             echo "--- docker compose up -d ---"
+            if [ -f "$candidate_dir/.rollback.json" ]; then recover_port=$previous_port; fi
             compose up -d --no-build --remove-orphans
 
             # ── Wait for portal health ──────────────────────────────────────
@@ -250,9 +301,7 @@ jobs:
             done
 
             # ── Activate the Caddy configuration ────────────────────────────
-            # Only after the replacement portal is healthy, so Caddy always routes to
-            # the portal that is running, even when PORTAL_HOST_PORT changed. The
-            # candidate Caddyfile was already validated during preflight.
+            # Switch traffic after the replacement passes its direct health check.
             if [ -f "$caddy_site" ]; then
               sudo install -d -m 755 /etc/caddy/sites
               # Renames on the same filesystem: Caddy must never read a partial copy.
@@ -280,6 +329,7 @@ jobs:
               caddy_changed=
               echo "Caddy config updated and reloaded"
             fi
+            recover_port=
 
 
             # Keep the previous images available until the replacement stack is

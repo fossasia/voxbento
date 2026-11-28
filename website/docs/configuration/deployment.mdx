@@ -177,8 +177,10 @@ global options block, or a main file VoxBento did not write) the deploy stops du
 preflight, before anything changes, and lists the entries to move. Entries are found the way Caddy
 reads them: only a standalone `{` or `}` opens or closes a block, and quoted text is
 ignored. Syntax the check cannot follow safely, such as heredocs, also stops the deploy. The new site is activated only after the replacement
-portal passes `/healthz`, so Caddy always routes to the portal that is running, even
-when `PORTAL_HOST_PORT` changes. The whole host configuration is validated before Caddy
+portal passes `/healthz`. A port change can briefly interrupt requests while Compose
+replaces the portal. If replacement, health verification, or Caddy activation fails,
+the workflow attempts to restart the previous portal image on its original port
+and checks its health. Database migrations are not reversed. The whole host configuration is validated before Caddy
 reloads; if activation fails part-way, the previous files are restored and Caddy is
 reloaded. The portal host port is read with
 `docker compose config --environment`, so `.env` quoting, spacing and comments are

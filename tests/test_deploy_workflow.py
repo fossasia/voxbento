@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import os
 import subprocess
 from pathlib import Path
@@ -49,7 +50,16 @@ printf '%s|%s|%s|%s\\n' "$name" "$*" "$PWD" "$(cat "$LIVE/release.txt")" >> "$CA
 case "$name:$*" in
   docker:*"config --environment"*) stage=other
     printf '%b' "$COMPOSE_ENV" ;;
-  docker:*" up "*) stage=up ;;
+  docker:*"ps -q portal") printf '%s' "$RUNNING_PORTAL"; exit 0 ;;
+  docker:"port old-container 8000/tcp") echo '127.0.0.1:8000'; exit 0 ;;
+  docker:*".Config.Env"*) echo '["RESTORE_TEST=previous"]'; exit 0 ;;
+  docker:"inspect --format"*) echo sha256:old-image; exit 0 ;;
+  docker:*"config --format json") test "$PORTAL_HOST_PORT" = 8000 || exit 94
+    echo '{"services":{"portal":{"ports":[{"target":8000,"published":"8001","host_ip":"127.0.0.1"}]}}}'; exit 0 ;;
+  docker:*".rollback.json up "*) cp "$5" "$TMPDIR/recovered.json"
+    echo 8000 > "$TMPDIR/active-port"; exit 0 ;;
+  docker:*" up "*) stage=up
+    echo 8001 > "$TMPDIR/active-port" ;;
   docker:*"image prune"*) stage=prune ;;
   docker:*build*) stage=build
     test -z "$EXPECT_FILE" || test -f "$EXPECT_FILE" || exit 93 ;;
@@ -69,6 +79,7 @@ case "$name:$*" in
   sudo:mv*) stage=rename ;;
   sudo:*reload*) stage=reload ;;
   docker:*"volume inspect"*) exit 1 ;;
+  curl:*"127.0.0.1:8000/healthz") test "$(cat "$TMPDIR/active-port")" = 8000; exit $? ;;
   curl:*)
     if [ "$FAIL_STAGE" = health ]; then printf 503; else printf 200; fi
     exit 0 ;;
@@ -408,3 +419,21 @@ def test_mediamtx_public_hosts_come_from_environment() -> None:
     service = yaml.safe_load((ROOT / "docker-compose.yml").read_text())["services"]["mediamtx"]
     hosts = service["environment"]["MTX_WEBRTCADDITIONALHOSTS"]
     assert hosts == "127.0.0.1,${MEDIAMTX_PUBLIC_HOSTS:-${JVB_ADVERTISE_IPS:-127.0.0.1}}"
+
+
+@pytest.mark.parametrize("stage", ["up", "health", "hostcaddy", "reload", "prune", ""])
+def test_port_change_restores_original_binding_until_activation_commits(
+    deployment: tuple[Path, Path, str, dict[str, str]], stage: str
+) -> None:
+    _, temporary, _, env = deployment
+    result = run_deployment(env, stage, COMPOSE_ENV="PORTAL_HOST_PORT=8001", RUNNING_PORTAL="old-container")
+    assert (result.returncode == 0) == (stage == ""), result.stdout + result.stderr
+    if stage in ("", "prune"):
+        assert (temporary / "active-port").read_text().strip() == "8001"
+        assert not (temporary / "recovered.json").exists()
+    else:
+        portal = json.loads((temporary / "recovered.json").read_text())["services"]["portal"]
+        assert portal["environment"] == {"RESTORE_TEST": "previous"}
+        assert portal["image"] == "voxbento-portal:port-rollback"
+        assert portal["ports"][0]["published"] == "8000"
+        assert "Previous portal is healthy on port 8000" in result.stdout
