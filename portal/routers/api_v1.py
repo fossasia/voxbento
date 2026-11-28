@@ -9,8 +9,9 @@ from typing import Annotated, Any
 from fastapi import APIRouter, Depends, Header, HTTPException, Query, Request, status
 from fastapi.responses import PlainTextResponse
 from pydantic import BaseModel, Field, field_validator
-from sqlalchemy import and_, or_, select, update
+from sqlalchemy import and_, case, func, or_, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import aliased
 
 from portal.auth import coordinates_room, load_membership_scope, require_oauth_scope
 from portal.booth_identity import make_booth_id, make_mediamtx_path, validate_language_code
@@ -20,6 +21,7 @@ from portal.database import delete_room as delete_db_room
 from portal.database import get_db_session
 from portal.globals import booths
 from portal.models import (
+    BoothTranslationLanguage,
     DBBooth,
     Event,
     EventMembership,
@@ -37,7 +39,7 @@ from portal.roles import EVENT_OWNER
 from portal.transcription.constants import ProviderEnum
 from portal.transcription.worker import active_workers, start_transcription_worker, stop_transcription_worker
 from portal.translations.constants import TranslationProviderEnum
-from portal.translations.model_languages import language_support_error
+from portal.translations.model_languages import language_support_error, resolve_translation_language
 from portal.websockets.revocation import revoke_booths_for_deleted_entity
 
 logger = logging.getLogger(__name__)
@@ -1446,12 +1448,34 @@ async def export_transcript(
         conditions.append(TranscriptSegment.created_at < before_dt)
 
     if target_lang:
+        saved_codes = await db.execute(
+            select(BoothTranslationLanguage.language_code).where(BoothTranslationLanguage.booth_id == booth.id)
+        )
+        try:
+            target_lang = resolve_translation_language(target_lang, saved_codes.scalars().all())
+        except ValueError as exc:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
+        # Rows saved before codes were normalized can be in any case, and a segment can have the same
+        # language saved twice ("es" and "ES"): pick one translation per segment, preferring the lowercase one,
+        # so duplicates never use up the page limit.
+        other_translation = aliased(TranscriptTranslation)
+        preferred_translation_id = (
+            select(other_translation.id)
+            .where(
+                other_translation.segment_id == TranscriptSegment.id,
+                func.lower(other_translation.language_code) == target_lang,
+            )
+            .order_by(case((other_translation.language_code == target_lang, 0), else_=1), other_translation.id)
+            .limit(1)
+            .correlate(TranscriptSegment)
+            .scalar_subquery()
+        )
         stmt = (
             select(TranscriptSegment, TranscriptTranslation)
             .join(TranscriptSegment, TranscriptTranslation.segment_id == TranscriptSegment.id)
             .where(
                 *conditions,
-                TranscriptTranslation.language_code == target_lang,
+                TranscriptTranslation.id == preferred_translation_id,
             )
             .order_by(TranscriptSegment.created_at, TranscriptSegment.id)
         )
