@@ -73,6 +73,23 @@ KEYLESS_PROVIDERS = {TranslationProviderEnum.LOCAL.value, TranslationProviderEnu
 SCHEDULERS: dict[tuple[str, str], TranslationScheduler] = {}
 
 
+def reset_worker_state(prefix: str | None = None) -> None:
+    """Clear cached translation schedulers.
+
+    If ``prefix`` is given, only schedulers whose provider (or key string) starts with ``prefix`` are removed.
+    Otherwise, all schedulers are cleared.
+    """
+    if prefix is None:
+        SCHEDULERS.clear()
+    else:
+        for key in [
+            k
+            for k in SCHEDULERS
+            if (k[0].startswith(prefix) if isinstance(k, tuple) else str(k).startswith(prefix))
+        ]:
+            del SCHEDULERS[key]
+
+
 def _scheduler_key(provider: str, model: str, event_id: int | None) -> tuple[str, str]:
     """What one scheduler covers: whatever runs out first when it is overloaded.
 
@@ -281,7 +298,7 @@ class TranslationWorker:
         async with get_session() as session:
             segment = await session.scalar(select(TranscriptSegment).where(TranscriptSegment.id == segment_id))
             if not segment:
-                logger.error(f"[{booth_id_str}] handle_translation abort: segment {segment_id} not found")
+                logger.error("[%s] handle_translation abort: segment %s not found", booth_id_str, segment_id)
                 return
 
             logger.debug(
