@@ -3,22 +3,64 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+from collections.abc import Sequence
+from urllib.parse import urlencode
 
 from tenacity import AsyncRetrying, retry_if_exception, stop_after_attempt, wait_exponential
+from websockets.exceptions import InvalidStatus
 
 from portal.transcription.providers.base import (
     BoothTranscriptionState,
     ProviderConfig,
     TranscriptionProvider,
     is_retryable_transcription_error,
+    load_glossary_terms,
     pcm_to_wav,
 )
 from portal.transcription.providers.openai import get_http_client
+from portal.translations.vocabulary import fit_speech_terms
 
 logger = logging.getLogger(__name__)
 
 # Allow delayed finals after audio EOF without retaining a session indefinitely.
 FINAL_TRANSCRIPT_TIMEOUT_SECONDS = 3.0
+
+REALTIME_URL = "wss://api.elevenlabs.io/v1/speech-to-text/realtime"
+# The realtime API answers invalid_request instead of session_started past 100 keyterms or
+# 1,000 characters in total (counted per code point).
+MAX_KEYTERMS = 100
+MAX_KEYTERM_CHARS = 1000
+# Keyterms travel in the URL, and a request line over about 8 KB is refused with HTTP 400.
+# Non-Latin terms grow up to 12 times once percent-encoded, so their encoded size is capped too.
+MAX_KEYTERM_URL_CHARS = 6000
+
+
+def keyterm_cost(term: str) -> int:
+    """A term's share of the 1,000 characters, raised when its encoded size would fill the URL first.
+
+    Keeping the total within 1,000 then also keeps the encoded keyterms within the URL budget.
+    """
+    encoded = len(urlencode([("keyterms", term)])) + 1  # with its "&"
+    return max(len(term), -(-encoded * MAX_KEYTERM_CHARS // MAX_KEYTERM_URL_CHARS))
+
+
+def fit_keyterms(terms: Sequence[str]) -> list[str]:
+    return fit_speech_terms(terms, max_terms=MAX_KEYTERMS, budget=MAX_KEYTERM_CHARS, cost=keyterm_cost)
+
+
+def build_realtime_url(model: str, language_code: str, keyterms: Sequence[str] = ()) -> str:
+    params = [
+        ("model_id", model),
+        ("language_code", language_code),
+        ("audio_format", "pcm_16000"),
+        ("commit_strategy", "vad"),
+    ]
+    params.extend(("keyterms", term) for term in keyterms)
+    return f"{REALTIME_URL}?{urlencode(params)}"
+
+
+async def load_keyterms(room_id: int | None) -> list[str]:
+    return await load_glossary_terms(room_id, max_terms=MAX_KEYTERMS, budget=MAX_KEYTERM_CHARS, cost=keyterm_cost)
 
 
 class ElevenLabsProvider(TranscriptionProvider):
@@ -30,6 +72,7 @@ class ElevenLabsProvider(TranscriptionProvider):
         config: ProviderConfig,
         booth_state: BoothTranscriptionState | None = None,
     ) -> str:
+        # Sent without keyterms: run_stream replaces the chunked path, so captions never come through here.
         api_key = config.get_key()
         if not api_key:
             logger.error("ElevenLabs API key missing")
@@ -85,7 +128,10 @@ class ElevenLabsProvider(TranscriptionProvider):
         # Normalise any legacy "scribe_v2" value stored in the DB.
         model_variant = "scribe_v2_realtime"
 
-        url = f"wss://api.elevenlabs.io/v1/speech-to-text/realtime?model_id={model_variant}&language_code={language_code}&audio_format=pcm_16000&commit_strategy=vad"
+        keyterms = fit_keyterms(config.keyterms) if config.keyterms else await load_keyterms(room_id)
+        if keyterms:
+            logger.info("[%s] ElevenLabs listening for %d glossary terms", booth_id, len(keyterms))
+        url = build_realtime_url(model_variant, language_code, keyterms)
         headers = {"xi-api-key": api_key}
 
         consecutive_errors = 0
@@ -102,6 +148,17 @@ class ElevenLabsProvider(TranscriptionProvider):
                     init_msg = await ws.recv()
                     init_data = json.loads(init_msg)
                     if init_data.get("message_type") != "session_started":
+                        if keyterms and init_data.get("message_type") == "invalid_request":
+                            # The terms are the likeliest cause (e.g. over a limit that changed), so try
+                            # once without them: captions without the glossary beat none.
+                            logger.warning(
+                                "[%s] ElevenLabs refused the session (%s); retrying without the glossary terms",
+                                booth_id,
+                                init_data.get("error"),
+                            )
+                            keyterms = []
+                            url = build_realtime_url(model_variant, language_code)
+                            continue
                         logger.error(f"[{booth_id}] Expected ElevenLabs session_started, got: {init_data}")
                         return
 
@@ -184,6 +241,14 @@ class ElevenLabsProvider(TranscriptionProvider):
                         await asyncio.gather(sender_task, receiver_task, return_exceptions=True)
 
             except Exception as e:
+                if keyterms and isinstance(e, InvalidStatus) and e.response.status_code == 400:
+                    # A request line too long for the server is refused before the session starts.
+                    logger.warning(
+                        "[%s] ElevenLabs refused the glossary terms (HTTP 400); continuing without them", booth_id
+                    )
+                    keyterms = []
+                    url = build_realtime_url(model_variant, language_code)
+                    continue
                 consecutive_errors += 1
                 logger.error(f"[{booth_id}] ElevenLabs connection failed ({consecutive_errors}): {e}")
                 if consecutive_errors >= 5:

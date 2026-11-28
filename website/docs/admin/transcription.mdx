@@ -68,6 +68,8 @@ Uses ElevenLabs' **Speech-to-Text** (Scribe) service. Requires an ElevenLabs API
 
 ElevenLabs Scribe provides high-accuracy transcription for various languages and supports low-latency streaming.
 
+It also listens for the event's glossary: the source terms of every glossary entry for the event or room are sent as [keyterms](https://elevenlabs.io/docs/eleven-api/guides/how-to/speech-to-text/batch/keyterm-prompting), highest priority first, up to the [realtime API's](https://elevenlabs.io/docs/api-reference/speech-to-text/v-1-speech-to-text-realtime) limit of 100 terms and 1,000 characters in total (fewer for non-Latin terms, which take more room in the connection URL). ElevenLabs bills keyterm prompting as an add-on for every hour of captions that uses it. Turning off the room's glossary switch turns this off too, and glossary changes apply the next time captions start. If ElevenLabs refuses the terms, captions start without them.
+
 :::info
 Voxbento uses their **Scribe** service for **Speech-to-Text** (transcription). The same key also unlocks the **ElevenLabs v4** AI voice, which speaks 90+ languages including Thai (Deepgram Aura has no Thai voice).
 :::
@@ -91,7 +93,7 @@ Best suited for deployments that already operate NVIDIA GPU infrastructure.
 | Local (Whisper) | `tiny`, `base`, `small`, `medium`, `large-v2`, `large-v3` | Runs on-server, no API key needed |
 | OpenAI | `whisper-1`, `gpt-4o-realtime-preview`, `gpt-4o-mini-realtime-preview` | Requires OpenAI API key |
 | Deepgram | `nova-3`, `nova-2` | Requires Deepgram API key, WebSocket streaming; both use the glossary |
-| ElevenLabs | `scribe_v2` | Requires ElevenLabs API key |
+| ElevenLabs | `scribe_v2` | Requires ElevenLabs API key; uses the glossary |
 | NVIDIA Riva | `parakeet-rnnt`, `parakeet-ctc` | Requires NVIDIA API key and optional dependency |
 
 ## Storing API Keys per Event

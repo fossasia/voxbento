@@ -10,6 +10,7 @@ import pytest
 from portal.database import get_session
 from portal.models import AIVocabularyEntry, DBBooth, Event, Room
 from portal.transcription.aggregator import CaptionAggregator
+from portal.transcription.providers import base
 from portal.transcription.providers import deepgram as stt
 from portal.translations.vocabulary import MAX_KEYTERM_TOKENS, speech_keyterms
 from portal.tts.providers import deepgram as tts
@@ -272,20 +273,34 @@ async def test_messages_without_a_transcript_are_ignored(recorder):
 async def test_a_failed_or_slow_glossary_lookup_gives_no_terms(monkeypatch):
     from sqlalchemy.exc import OperationalError
 
-    async def broken(room_id):
+    async def broken(*_):
         raise OperationalError("select", {}, Exception("database is locked"))
 
-    monkeypatch.setattr(stt, "_read_keyterms", broken)
+    monkeypatch.setattr(base, "_read_glossary_terms", broken)
     assert await stt.load_keyterms(1) == []
 
-    async def slow(room_id):
+    async def slow(*_):
         await asyncio.sleep(1)
         return ["late"]
 
-    monkeypatch.setattr(stt, "_read_keyterms", slow)
-    monkeypatch.setattr(stt, "GLOSSARY_LOOKUP_TIMEOUT", 0.05)
+    monkeypatch.setattr(base, "_read_glossary_terms", slow)
+    monkeypatch.setattr(base, "GLOSSARY_LOOKUP_TIMEOUT", 0.05)
     assert await stt.load_keyterms(1) == []
     assert await stt.load_keyterms(None) == []
+
+
+@pytest.mark.anyio
+async def test_the_glossary_lookup_uses_deepgram_limits(monkeypatch):
+    limits = []
+
+    async def read(room_id, max_terms, budget, cost):
+        limits.append((room_id, max_terms, budget, cost("VoxBento")))
+        return ["VoxBento"]
+
+    monkeypatch.setattr(base, "_read_glossary_terms", read)
+    assert await stt.load_keyterms(3) == ["VoxBento"]
+    # 100 terms, 450 tokens, about three characters a token.
+    assert limits == [(3, 100, MAX_KEYTERM_TOKENS, 3)]
 
 
 @pytest.mark.anyio

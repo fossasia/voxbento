@@ -6,13 +6,16 @@ import logging
 from urllib.parse import urlencode
 
 import websockets
-from sqlalchemy.exc import SQLAlchemyError
 from websockets.exceptions import InvalidStatus
 
-from portal.database import get_session
 from portal.transcription.aggregator import CaptionAggregator
-from portal.transcription.providers.base import BoothTranscriptionState, ProviderConfig, TranscriptionProvider
-from portal.translations.vocabulary import speech_keyterms
+from portal.transcription.providers.base import (
+    BoothTranscriptionState,
+    ProviderConfig,
+    TranscriptionProvider,
+    load_glossary_terms,
+)
+from portal.translations.vocabulary import MAX_KEYTERM_TOKENS, MAX_KEYTERMS, estimated_keyterm_tokens
 
 logger = logging.getLogger(__name__)
 
@@ -27,8 +30,6 @@ KEYTERM_MODEL_PREFIXES = ("nova-3",)
 # Deepgram's keyword boost is exponential and large values make the model hear the term in noise.
 # 2 is a modest nudge: names it already half-hears get spelled right, without false insertions.
 KEYWORD_BOOST = 2
-# Terms are optional: a slow glossary lookup must not hold up captions.
-GLOSSARY_LOOKUP_TIMEOUT = 2.0
 RECONNECT_DELAY_SECONDS = 2.0
 MAX_CONSECUTIVE_ERRORS = 5
 
@@ -60,24 +61,10 @@ def build_listen_url(model: str, language_code: str, keyterms: list[str] | tuple
     return f"{LISTEN_URL}?{urlencode(params)}"
 
 
-async def _read_keyterms(room_id: int) -> list[str]:
-    async with get_session() as session:
-        return await speech_keyterms(session, room_id)
-
-
 async def load_keyterms(room_id: int | None) -> list[str]:
-    """The room's glossary terms, or none when they cannot be read in time: captions without them beat none."""
-    if room_id is None:
-        return []
-    try:
-        return await asyncio.wait_for(_read_keyterms(room_id), timeout=GLOSSARY_LOOKUP_TIMEOUT)
-    except SQLAlchemyError:
-        logger.exception("Could not load glossary terms for room %s", room_id)
-    except TimeoutError:
-        logger.warning(
-            "Glossary lookup for room %s took over %ss; captions start without it", room_id, GLOSSARY_LOOKUP_TIMEOUT
-        )
-    return []
+    return await load_glossary_terms(
+        room_id, max_terms=MAX_KEYTERMS, budget=MAX_KEYTERM_TOKENS, cost=estimated_keyterm_tokens
+    )
 
 
 async def handle_message(aggregator: CaptionAggregator, booth_id: str, data: dict) -> None:
