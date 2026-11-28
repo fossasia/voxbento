@@ -23,9 +23,10 @@ from contextlib import asynccontextmanager
 from datetime import date, datetime, timedelta, timezone
 
 import sqlalchemy as sa
+from sqlalchemy import event as sa_event
 from sqlalchemy import func, or_, select, update
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
-from sqlalchemy.orm import joinedload, selectinload
+from sqlalchemy.orm import Session, joinedload, selectinload
 
 from portal.config import settings
 from portal.models import (
@@ -247,6 +248,7 @@ async def delete_event(session: AsyncSession, event_id: int) -> bool:
     ev = await get_event_by_id(session, event_id)
     if ev is None:
         return False
+    slug = ev.slug
     # Break the rooms.relay_booth_id -> booths.id <-> booths.room_id -> rooms.id cycle.
     # Scope by booth, not by the room's event: admin_edit_room assigns relay_booth_id
     # straight from the form, so a room in another event can point at one of these booths.
@@ -261,7 +263,47 @@ async def delete_event(session: AsyncSession, event_id: int) -> bool:
 
     await session.delete(ev)
     await session.flush()
+
+    register_attendance_discard(session.sync_session, slug)
     return True
+
+
+def register_attendance_discard(sync_session: Session, slug: str) -> None:
+    chain: set[object] = set()
+    tx = sync_session.get_nested_transaction() or sync_session.get_transaction()
+    if tx is None:
+        return
+    root_tx = tx
+    curr = tx
+    while curr is not None:
+        chain.add(curr)
+        if curr.parent is None:
+            root_tx = curr
+        curr = curr.parent
+
+    cancelled = False
+
+    def _on_commit(_s: object) -> None:
+        if cancelled:
+            return
+        if sync_session.in_nested_transaction():
+            return
+        if sync_session.get_transaction() is not root_tx:
+            return
+        try:
+            from portal.globals import booths
+
+            booths.attendance.discard_event(slug)
+        except Exception:
+            logger.exception("Failed to discard attendance for event %s", slug)
+
+    def _on_soft_rollback(_s: object, previous_transaction: object) -> None:
+        nonlocal cancelled
+        if previous_transaction in chain:
+            cancelled = True
+
+    sa_event.listen(sync_session, "after_commit", _on_commit)
+    sa_event.listen(sync_session, "after_soft_rollback", _on_soft_rollback)
 
 
 # ---------------------------------------------------------------------------

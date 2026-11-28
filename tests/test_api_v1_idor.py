@@ -6,10 +6,14 @@ import asyncio
 import hashlib
 import os
 from datetime import datetime, timedelta, timezone
+from uuid import uuid4
 
 os.environ["BOOTH_ACCESS_TOKEN"] = ""
 
 import pytest
+
+from portal import globals as portal_globals
+from portal.attendance import AttendanceTracker, Visit
 
 
 @pytest.fixture(autouse=True)
@@ -147,6 +151,38 @@ class TestApiV1IDOR:
             assert deleted_event is not None
             assert deleted_event.deleted_at is not None
             assert deleted_event.display_name == "Event A"
+
+    @pytest.mark.anyio
+    async def test_delete_event_discards_pending_attendance(self, seed_data, monkeypatch):
+        """Deleting an event via API v1 discards its pending attendance visits."""
+        event_a, room_a, *_rest, token_a = seed_data
+        tracker = AttendanceTracker()
+        monkeypatch.setattr(portal_globals.booths, "attendance", tracker)
+
+        visit = Visit(
+            id=uuid4().hex,
+            booth_id=f"{event_a.slug}-{room_a.id}-en",
+            event_slug=event_a.slug,
+            room_id=room_a.id,
+            language_code="en",
+            participant_id="part-1",
+            user_id=None,
+            invite_public_id=None,
+            display_name="Interpreter",
+            role="interpreter",
+            joined_at=tracker.clock(),
+            left_at=tracker.clock(),
+        )
+        tracker._closed.append(visit)
+
+        async with _client() as c:
+            response = await c.delete(
+                f"/api/v1/events/{event_a.slug}",
+                headers={"Authorization": f"Bearer {token_a}"},
+            )
+            assert response.status_code == 204
+
+        assert tracker.pending_visits(event_a.slug) == []
 
     @pytest.mark.anyio
     async def test_mutating_rbac_rechecks_deleted_event_state(self, seed_data):
