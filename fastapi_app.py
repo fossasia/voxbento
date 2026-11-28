@@ -118,7 +118,7 @@ async def lifespan(app: FastAPI):
     recovery_task = None
     if settings.booth_state_recovery_enabled:
         from portal import booth_recovery
-        from portal.websockets.manager import schedule_participant_expiry
+        from portal.websockets.booth_protocol import schedule_participant_expiry
 
         restored = await booth_recovery.restore(booths, max_age_seconds=settings.booth_state_max_age_seconds)
         for booth_id, participant_id in restored:

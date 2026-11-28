@@ -17,17 +17,17 @@ from portal import booth_publish
 from portal import program_ingest as ingest
 from portal.config import settings
 from portal.globals import booths
+from portal.websockets import booth_protocol
 from portal.websockets import manager as manager_module
-from portal.websockets.manager import (
-    Session,
-    _handle_join,
-    _handle_leave,
-    _handle_request_publish_ticket,
-    _handle_set_broadcast_unlocked,
-    manager,
+from portal.websockets.booth_protocol import (
+    handle_join,
+    handle_leave,
+    handle_request_publish_ticket,
+    handle_set_broadcast_unlocked,
     release_participant,
     schedule_participant_expiry,
 )
+from portal.websockets.manager import Session, manager
 
 EVENT = "ticket-test"
 ROOM = 7
@@ -85,7 +85,7 @@ async def request_ticket(participant_id: str | None, **session_overrides) -> dic
     session = session_for(participant_id)
     for key, value in session_overrides.items():
         setattr(session, key, value)
-    await _handle_request_publish_ticket(ws, session, {})
+    await handle_request_publish_ticket(ws, session, {})
     [reply] = ws.sent
     assert reply["type"] == "booth:publish-ticket"
     return reply
@@ -220,7 +220,8 @@ async def test_join_cannot_take_over_another_participants_id(booth):
     intruder = Session(
         booth_id=BOOTH_ID, participant_id=None, language="English", channel_id=PATH, granted_role="interpreter"
     )
-    await _handle_join(ws, intruder, {"role": "interpreter", "display_name": "Intruder", "participant_id": active})
+    await handle_join(ws, intruder, {"role": "interpreter", "display_name": "Intruder", "participant_id": active})
+    await booths.drain()  # booth:joined is sent from the booth's delivery queue
     joined = next(m for m in ws.sent if m["type"] == "booth:joined")
     assert joined["participant_id"] != active
     assert intruder.participant_id == joined["participant_id"]
@@ -236,7 +237,8 @@ async def test_socket_can_rejoin_with_its_own_id(booth):
     own = Session(
         booth_id=BOOTH_ID, participant_id=active, language="English", channel_id=PATH, granted_role="interpreter"
     )
-    await _handle_join(ws, own, {"role": "interpreter", "display_name": "Active", "participant_id": active})
+    await handle_join(ws, own, {"role": "interpreter", "display_name": "Active", "participant_id": active})
+    await booths.drain()  # booth:joined is sent from the booth's delivery queue
     assert next(m for m in ws.sent if m["type"] == "booth:joined")["participant_id"] == active
 
 
@@ -251,7 +253,8 @@ async def test_reconnected_socket_rejoins_with_its_previous_id(booth):
     reconnected = Session(
         booth_id=BOOTH_ID, participant_id=None, language="English", channel_id=PATH, granted_role="interpreter"
     )
-    await _handle_join(ws, reconnected, {"role": "interpreter", "display_name": "Active", "participant_id": active})
+    await handle_join(ws, reconnected, {"role": "interpreter", "display_name": "Active", "participant_id": active})
+    await booths.drain()  # booth:joined is sent from the booth's delivery queue
     joined = next(m for m in ws.sent if m["type"] == "booth:joined")
     assert joined["participant_id"] == active
     # The backup took over while the socket was down; rejoining does not take the booth back.
@@ -386,7 +389,7 @@ async def test_dropped_socket_keeps_its_audio_until_the_grace_runs_out(media, mo
     client, (active, _), paths, kicks, _ = media
     monkeypatch.setattr(settings, "booth_reconnect_grace_seconds", 30.0)
     scheduled = []
-    monkeypatch.setattr(manager_module, "schedule_participant_expiry", lambda *args: scheduled.append(args))
+    monkeypatch.setattr(booth_protocol, "schedule_participant_expiry", lambda *args: scheduled.append(args))
     session_id = await go_live(client, active, paths)
 
     await release_participant(socket_session(active), immediate=False)
@@ -396,7 +399,7 @@ async def test_dropped_socket_keeps_its_audio_until_the_grace_runs_out(media, mo
     assert scheduled == [(BOOTH_ID, active, "Active-socket", 30.0)]
 
     expiries = []
-    monkeypatch.setattr(manager_module, "track_task", expiries.append)
+    monkeypatch.setattr(booth_protocol, "track_task", expiries.append)
     schedule_participant_expiry(BOOTH_ID, active, "Active-socket", 0)
     await asyncio.wait_for(expiries[0], timeout=10)
     assert active not in participant_ids()
@@ -408,7 +411,7 @@ async def test_leaving_the_booth_ends_the_session(media):
     """An interpreter who leaves is no longer in the booth, so their audio stops with them."""
     client, (active, _), paths, kicks, _ = media
     session_id = await go_live(client, active, paths)
-    await _handle_leave(socket_session(active))
+    await handle_leave(MockWebSocket(), socket_session(active), {})
     assert kicks == [session_id]
 
 
@@ -422,7 +425,7 @@ async def test_stop_kicks_the_booth_path_source(media, recorded):
         booth_publish._publishers.clear()
 
     ws = MockWebSocket()
-    await _handle_set_broadcast_unlocked(ws, session_for(None, granted_role="room_coordinator"), {"unlocked": False})
+    await handle_set_broadcast_unlocked(ws, session_for(None, granted_role="room_coordinator"), {"unlocked": False})
 
     assert ws.sent == []
     assert booths.get_booth_sync(BOOTH_ID).broadcast_unlocked is False
@@ -463,7 +466,7 @@ async def test_unreachable_mediamtx_does_not_block_revocation_or_stop(media, cap
     with caplog.at_level("WARNING", logger="portal.booth_publish"):
         await release_participant(socket_session(active), immediate=True)
         ws = MockWebSocket()
-        await _handle_set_broadcast_unlocked(
+        await handle_set_broadcast_unlocked(
             ws, session_for(None, granted_role="room_coordinator"), {"unlocked": False}
         )
 
@@ -495,7 +498,7 @@ async def test_failed_kick_is_retried_by_stop(media):
     failure.clear()
 
     ws = MockWebSocket()
-    await _handle_set_broadcast_unlocked(ws, session_for(None, granted_role="room_coordinator"), {"unlocked": False})
+    await handle_set_broadcast_unlocked(ws, session_for(None, granted_role="room_coordinator"), {"unlocked": False})
 
     assert kicks == [session_id]
     assert PATH not in paths
@@ -515,7 +518,7 @@ async def test_stop_does_not_kick_a_publisher_that_started_after_unlock(media, m
 
     monkeypatch.setattr(booth_publish, "end_publishers", unlock_meanwhile)
     ws = MockWebSocket()
-    await _handle_set_broadcast_unlocked(ws, session_for(None, granted_role="room_coordinator"), {"unlocked": False})
+    await handle_set_broadcast_unlocked(ws, session_for(None, granted_role="room_coordinator"), {"unlocked": False})
 
     assert kicks == []
     assert paths[PATH]["source"]["id"] == newer
@@ -523,7 +526,7 @@ async def test_stop_does_not_kick_a_publisher_that_started_after_unlock(media, m
 
 @pytest.mark.anyio
 async def test_stalled_broadcast_does_not_hold_up_the_kick(media, monkeypatch):
-    """The session is ended before the booth state is broadcast, so a stuck recipient cannot delay it."""
+    """A stuck recipient of the booth state delays neither the kick nor the release itself."""
     client, (active, _), paths, kicks, _ = media
     session_id = await go_live(client, active, paths)
     stuck = asyncio.Event()
@@ -532,15 +535,10 @@ async def test_stalled_broadcast_does_not_hold_up_the_kick(media, monkeypatch):
         await stuck.wait()
 
     monkeypatch.setattr(manager_module, "broadcast_booth_state", stalled)
-    release = asyncio.create_task(release_participant(socket_session(active), immediate=True))
-    for _ in range(500):
-        if kicks:
-            break
-        await asyncio.sleep(0.01)
+    await asyncio.wait_for(release_participant(socket_session(active), immediate=True), timeout=10)
     assert kicks == [session_id]
-    assert not release.done()
     stuck.set()
-    await release
+    await booths.drain()
 
 
 @pytest.mark.anyio
@@ -577,7 +575,7 @@ async def test_stop_spares_an_evicted_session_that_started_after_unlock(media, m
 
     monkeypatch.setattr(booth_publish, "_kick_session", unlock_meanwhile)
     ws = MockWebSocket()
-    await _handle_set_broadcast_unlocked(ws, session_for(None, granted_role="room_coordinator"), {"unlocked": False})
+    await handle_set_broadcast_unlocked(ws, session_for(None, granted_role="room_coordinator"), {"unlocked": False})
 
     assert kicks == [old]
     assert paths[PATH]["source"]["id"] == newer

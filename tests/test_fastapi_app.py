@@ -827,6 +827,17 @@ def test_ws_unknown_message_type_returns_error():
     assert msg["type"] == "booth:error"
 
 
+def test_ws_non_string_message_type_returns_error_and_keeps_socket_open():
+    with client.websocket_connect("/ws/booth/bad-type-booth", cookies=_ws_auth()) as ws:
+        ws.send_text(json.dumps({"type": ["booth:join"]}))
+        first = json.loads(ws.receive_text())
+        ws.send_text(json.dumps({"type": "something:weird"}))
+        second = json.loads(ws.receive_text())
+
+    assert first["type"] == "booth:error"
+    assert second["type"] == "booth:error"
+
+
 def test_ws_chat_before_join_returns_error():
     with client.websocket_connect("/ws/booth/no-join-chat-booth", cookies=_ws_auth()) as ws:
         ws.send_text(json.dumps({"type": "booth:chat", "body": "too early"}))
@@ -862,8 +873,11 @@ def test_ws_set_active_missing_target_returns_error():
 
         ws.send_text(json.dumps({"type": "booth:set-active"}))  # no target_id
         msg = json.loads(ws.receive_text())
+        ws.send_text(json.dumps({"type": "booth:set-active", "target_id": ["x"]}))  # not a string
+        malformed = json.loads(ws.receive_text())
 
     assert msg["type"] == "booth:error"
+    assert malformed["type"] == "booth:error"
 
 
 def test_ws_update_state_active_interpreter():
@@ -1636,6 +1650,7 @@ async def test_listener_state_lock_serializes_then_cleans_up():
     _participant, state = await booths.join_participant(
         booth_id=booth, display_name="Eve", role="interpreter", language="Dutch", channel_id=f"{booth}-audio"
     )
+    await booths.drain()  # the join's own state delivery is not part of this test
     first = _BlockingWebSocket()
     other = _RecordingWebSocket()
     listener_manager.add(other, booth)

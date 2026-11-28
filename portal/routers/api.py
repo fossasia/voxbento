@@ -535,6 +535,8 @@ async def create_event_booth(
 
         state["interpreter_invite_url"] = f"{settings.public_base_url}/join/{invite.token}"
 
+    # Published only now that the booth and its invite are committed: a rollback above raises first.
+    booths.publish_state(state["booth_id"])
     state["caption_url"] = (
         f"wss://{settings.public_base_url.replace('https://', '').replace('http://', '')}/ws/captions/{state['booth_id']}"
     )

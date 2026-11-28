@@ -1220,7 +1220,7 @@ def test_event_registry_single_source_of_truth():
                 "BOOTH_TRANSCRIPTION_STOPPED": BOOTH_TRANSCRIPTION_STOPPED,
             },
         ),
-        ("portal.websockets.manager", {"BOOTH_INTERPRETER_JOINED": BOOTH_INTERPRETER_JOINED}),
+        ("portal.websockets.booth_protocol", {"BOOTH_INTERPRETER_JOINED": BOOTH_INTERPRETER_JOINED}),
     ]
     for module_name, bindings in producer_bindings:
         mod = importlib.import_module(module_name)
