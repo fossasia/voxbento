@@ -16,6 +16,7 @@ function harness({ getUserMedia = async () => ({ getAudioTracks: () => [] }) } =
   const sockets = []
   const events = []
   let timerId = 0
+  let fetchImpl = () => Promise.reject(new Error('fetch not stubbed in this test'))
   // Stands in for booth-publisher.js; tests set whether a publish runs and reaches MediaMTX.
   const publisher = {
     running: false,
@@ -47,6 +48,8 @@ function harness({ getUserMedia = async () => ({ getAudioTracks: () => [] }) } =
     setTimeout: (fn, delay) => { timers.set(++timerId, { fn, delay }); return timerId },
     clearTimeout: (id) => timers.delete(id),
     navigator: { mediaDevices: { getUserMedia } },
+    AbortController,
+    fetch: (...args) => fetchImpl(...args),
     events,
   })
   vm.runInContext(source + `
@@ -64,10 +67,13 @@ function harness({ getUserMedia = async () => ({ getAudioTracks: () => [] }) } =
     startMicMeter = () => {};
     globalThis.api = {
       state, connectWebSocket, reconnectBackoff, watchMicDevice, currentMicActive, ensureMicStream,
-      requestPublishTicket, handleServerMessage, startPublishingIfAllowed,
+      requestPublishTicket, handleServerMessage, startPublishingIfAllowed, deleteWhipResource,
     };
   `, context)
-  return { ...context.api, timers, sockets, events, publisher }
+  return {
+    ...context.api, timers, sockets, events, publisher,
+    setFetch(fn) { fetchImpl = fn },
+  }
 }
 
 const h = harness()
@@ -251,6 +257,12 @@ for (let attempt = 0; attempt < 3; attempt++) {
   const opening = t.connectWebSocket()
   t.sockets[0].open()
   await opening
+  // Open but not yet joined (booth:joined not received): asking now would be
+  // refused by the server, so it fails as retryable without sending anything.
+  const sentBeforeJoin = t.sockets[0].sent.length
+  await assert.rejects(t.requestPublishTicket(), /Not rejoined/, 'no ticket request before booth:joined')
+  assert.equal(t.sockets[0].sent.length, sentBeforeJoin, 'nothing is sent before booth:joined')
+  Object.assign(t.state, { joined: true, participantId: 'p1' })
   const first = t.requestPublishTicket()
   const firstId = t.sockets[0].sent.at(-1).request_id
   assert.equal(t.sockets[0].sent.at(-1).type, 'booth:request-publish-ticket')
@@ -263,16 +275,63 @@ for (let attempt = 0; attempt < 3; attempt++) {
   t.handleServerMessage({ type: 'booth:publish-ticket', request_id: secondId, ticket: 'fresh-ticket' })
   assert.equal(await second, 'fresh-ticket', 'the matching reply settles the request')
 
-  // A server that does not echo request_id still works.
-  const legacy = t.requestPublishTicket()
-  t.handleServerMessage({ type: 'booth:publish-ticket', ticket: 'legacy-ticket' })
-  assert.equal(await legacy, 'legacy-ticket', 'a reply without request_id settles the pending request')
+  // A reply without request_id answers no request of this page and is ignored.
+  const current = t.requestPublishTicket()
+  const currentId = t.sockets[0].sent.at(-1).request_id
+  t.handleServerMessage({ type: 'booth:publish-ticket', error: 'Join the booth before going live.' })
+  t.handleServerMessage({ type: 'booth:publish-ticket', request_id: currentId, ticket: 'current-ticket' })
+  assert.equal(await current, 'current-ticket', 'a reply without request_id cannot settle the request')
 
   // Closing the socket fails the pending request at once instead of after the timeout.
   const orphaned = t.requestPublishTicket()
   t.sockets[0].close()
   await assert.rejects(orphaned, /closed before a publish ticket arrived/, 'a socket close fails the pending request')
   await assert.rejects(t.requestPublishTicket(), /Not connected/, 'no request is sent without a socket')
+}
+
+// A stalled WHIP DELETE is given up on, so it cannot hold up the next publish attempt.
+{
+  const t = harness()
+  t.setFetch((url, { signal }) => new Promise((_, reject) => {
+    signal.addEventListener('abort', () => reject(Object.assign(new Error('aborted'), { name: 'AbortError' })))
+  }))
+  const deleting = t.deleteWhipResource('https://media.example/demo/1/fr/whip/abc')
+  const [deadline] = [...t.timers.values()].slice(-1)
+  assert.equal(deadline.delay, 5000, 'the DELETE has a 5 s deadline')
+  deadline.fn()
+  await assert.rejects(deleting, /timed out/, 'a stalled DELETE fails after its deadline')
+
+  t.setFetch(async () => ({ ok: false, status: 404 }))
+  await t.deleteWhipResource('https://media.example/gone')
+  t.setFetch(async () => ({ ok: false, status: 500 }))
+  await assert.rejects(t.deleteWhipResource('https://media.example/broken'), /answered 500/, 'a failed DELETE is reported')
+}
+
+// A rejoin after a refused publish still clears the on-air report the server kept.
+{
+  const t = harness()
+  t.state.joinRequested = true
+  const opening = t.connectWebSocket()
+  t.sockets[0].open()
+  await opening
+  t.sockets[0].message({ type: 'booth:joined', participant_id: 'p1', state: {
+    active_interpreter_id: 'p1', broadcast_unlocked: true,
+  } })
+  t.sockets[0].close()
+  const [reconnect] = [...t.timers.values()]
+  t.timers.clear()
+  await reconnect.fn()
+  t.sockets[1].open()
+  // Refused while the socket was down: not running, not publishing.
+  t.publisher.running = false
+  t.publisher.publishing = false
+  t.sockets[1].message({ type: 'booth:joined', participant_id: 'p1', state: {
+    active_interpreter_id: 'p1', broadcast_unlocked: true,
+  } })
+  const last = t.sockets[1].sent.at(-1)
+  assert.equal(last.type, 'booth:update-state')
+  assert.equal(last.ingest_connected, false, 'the rejoin reports off air after a refusal')
+  assert.ok(!t.events.includes('publish-retry'), 'a refused publish is not retried by the rejoin')
 }
 
 // A publish the server refused is not restarted by the next booth state, until the grant changes.

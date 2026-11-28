@@ -267,16 +267,24 @@ function scheduleReconnect(delayMs) {
  * if the booth moved on to another interpreter while they were away.
  */
 function reconcileIngestAfterRejoin() {
-  if (!publisher.running || state.relayingOut) return
-  if (state.activeInterpreterId === state.participantId && state.broadcastUnlocked) {
-    if (publisher.publishing) {
+  if (state.relayingOut) return
+  const mayPublish = state.activeInterpreterId === state.participantId && state.broadcastUnlocked
+  if (publisher.publishing) {
+    if (mayPublish) {
       wsSend({ type: 'booth:update-state', mic_active: currentMicActive(), ingest_connected: true })
     } else {
-      // The publish dropped too. The server may still hold the on-air report from
-      // before the socket dropped, so correct it, then ask for a ticket over this socket.
-      wsSend({ type: 'booth:update-state', mic_active: false, ingest_connected: false })
-      publisher.retryNow()
+      stopLiveIngest().catch((error) => console.warn('Could not finish stopping previous booth audio:', error))
     }
+    return
+  }
+  // No audio is reaching MediaMTX (reconnecting, refused or never started). A
+  // same-session rejoin keeps the on-air report the server had before the socket
+  // dropped, so clear it whatever the publisher's state.
+  wsSend({ type: 'booth:update-state', mic_active: false, ingest_connected: false })
+  if (!publisher.running) return
+  if (mayPublish) {
+    // Ask for a ticket over this socket at once instead of waiting out the back-off.
+    publisher.retryNow()
   } else {
     stopLiveIngest().catch((error) => console.warn('Could not finish stopping previous booth audio:', error))
   }
@@ -646,8 +654,10 @@ function applyBoothState(payload, { skipAutoStart = false } = {}) {
 
   // A refusal stands for this grant to publish. Losing the active slot or a
   // Mission Control lock ends the grant, and the next one may publish again.
-  if (state.activeInterpreterId !== state.participantId || !state.broadcastUnlocked) {
+  if (state.publishRefused && (state.activeInterpreterId !== state.participantId || !state.broadcastUnlocked)) {
     state.publishRefused = false
+    // The refusal message belonged to the grant that just ended.
+    showError('')
   }
 
   if (!skipAutoStart) startPublishingIfAllowed()
@@ -1259,6 +1269,12 @@ function requestPublishTicket() {
       reject(new Error('Not connected to server'))
       return
     }
+    // Between a socket opening and booth:joined the server has no participant for
+    // it and would refuse; that is not a refusal of this publish, so wait and retry.
+    if (!state.joined || !state.participantId) {
+      reject(new Error('Not rejoined to the booth yet'))
+      return
+    }
     // The server echoes the id, so a late reply to an abandoned request cannot settle this one.
     publishTicketRequestId += 1
     const id = publishTicketRequestId
@@ -1271,10 +1287,14 @@ function requestPublishTicket() {
   })
 }
 
-/** Resolve or reject the pending ticket request from the `booth:publish-ticket` reply that answers it. */
+/**
+ * Resolve or reject the pending ticket request from the `booth:publish-ticket`
+ * reply that answers it. The server always echoes `request_id`; a reply without
+ * it, or with another id, answers a request this page already gave up on.
+ */
 function settlePublishTicket(data) {
   if (!pendingPublishTicket) return
-  if ('request_id' in data && data.request_id !== pendingPublishTicket.id) return
+  if (data.request_id !== pendingPublishTicket.id) return
   const { resolve, reject, timer } = pendingPublishTicket
   pendingPublishTicket = null
   clearTimeout(timer)
@@ -1282,12 +1302,24 @@ function settlePublishTicket(data) {
   else reject(new PublishRefusedError(data.error || 'Publish ticket refused'))
 }
 
-/** Delete a WHIP resource on MediaMTX. Throws when MediaMTX could not be told. */
+// How long a WHIP DELETE may take; a stalled one must not hold up the next attempt.
+const WHIP_DELETE_TIMEOUT_MS = 5000
+
+/** Delete a WHIP resource on MediaMTX. Throws when MediaMTX could not be told in time. */
 async function deleteWhipResource(url) {
-  const response = await fetch(url, { method: 'DELETE' })
-  // 404: MediaMTX already dropped it (kicked, restarted or expired).
-  if (!response.ok && response.status !== 404) {
-    throw new Error(`WHIP DELETE ${url} answered ${response.status}`)
+  const controller = new AbortController()
+  const deadline = window.setTimeout(() => controller.abort(), WHIP_DELETE_TIMEOUT_MS)
+  try {
+    const response = await fetch(url, { method: 'DELETE', signal: controller.signal })
+    // 404: MediaMTX already dropped it (kicked, restarted or expired).
+    if (!response.ok && response.status !== 404) {
+      throw new Error(`WHIP DELETE ${url} answered ${response.status}`)
+    }
+  } catch (error) {
+    if (error?.name === 'AbortError') throw new Error(`WHIP DELETE ${url} timed out`)
+    throw error
+  } finally {
+    clearTimeout(deadline)
   }
 }
 
