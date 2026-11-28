@@ -87,6 +87,10 @@ uv run pytest tests/ -v
 
 CI runs the checks above (except `uv run ruff format .`), and also runs a separate Docker build and full-stack smoke test. Your PR will be blocked if any of these CI checks fail.
 
+CI runs pytest in six groups balanced by the measured times in `tests/.test_durations`. To reproduce a group locally, run `uv run pytest tests/ --splits 6 --group 1 --durations-path tests/.test_durations` with the group number from CI.
+
+Every Monday at 03:17 UTC, **Refresh stable test durations** times the full suite on Linux. It opens or updates one PR against `dev` when the new timings are predicted to shorten the slowest group by at least ten seconds. Maintainers can also run the workflow manually with `force`. The workflow uses `DURATIONS_PR_TOKEN` when configured, otherwise the repository workflow token. For the fallback, enable **Allow GitHub Actions to create and approve pull requests** in the repository’s Actions settings.
+
 ---
 
 ## 3. How the Platform Works
@@ -127,12 +131,10 @@ Always commit the generated migration files in `alembic/versions/`. Do **not** c
 5. Do not use jQuery or external UI frameworks.
 6. Push your branch and open a PR against `dev`.
 7. **Keep no more than 3 PRs open at a time when possible.** Limiting the number of concurrent PRs helps maintainers and reviewers focus on each change and provide thorough, timely reviews. Before opening another PR, try to get one of your existing PRs merged or otherwise closed.
-8. **AI attribution** — if you used an AI coding assistant (e.g. Claude, Gemini, Copilot) to write or substantially shape the code or PR description, add an **AI Attribution** section to the PR body:
+8. **AI attribution** — if you used an AI coding assistant (e.g. Claude, Gemini, Copilot) to write or substantially shape any part of the PR (code, tests, documentation or the PR description), put one line naming the model and the tool at the end of the part of the PR description you wrote, above any bot-generated summary (Sourcery, CodeRabbit):
    ```
-   ## AI Attribution
-
-   This PR was created with the assistance of **<Model Name>** (e.g. Claude Sonnet 4.6).
+   Created with <Model> in <Harness/IDE>, run from <Environment>.
    ```
-   Name the specific model. This helps maintainers calibrate review depth and keeps the project's history transparent.
+   For example, `Created with Claude Sonnet 4.6 in Claude Code.` Without an agent, name just the model (`Created with ChatGPT.`). Leave out a part you don't know rather than guessing, and don't add a second copy if the Agent Attribution workflow has already placed one. See the AI Attribution Rules in [`agents.md`](agents.md). This helps maintainers calibrate review depth and keeps the project's history transparent.
 
 Thank you for contributing!

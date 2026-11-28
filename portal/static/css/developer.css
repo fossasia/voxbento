@@ -199,6 +199,8 @@
   border-radius: 8px;
   font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
   font-size: 0.85rem;
+  line-height: inherit;
+  text-align: inherit;
   color: var(--color-text, #1e293b);
   cursor: pointer;
   transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1);
@@ -289,6 +291,17 @@
   border-color: #10b981 transparent transparent transparent;
 }
 
+.copy-wrapper.copy-failed .copy-tooltip {
+  opacity: 1;
+  visibility: visible;
+  transform: translateX(-50%) translateY(0) scale(1);
+  background: #b91c1c;
+}
+
+.copy-wrapper.copy-failed .copy-tooltip::after {
+  border-color: #b91c1c transparent transparent transparent;
+}
+
 /* Specific styling for the modal secrets */
 .secret-box.copy-wrapper {
   width: 100%;
@@ -313,7 +326,7 @@
   border-color: #10b981;
 }
 
-/* Copy / check icon swap — driven by the .copied class set in the template script */
+/* Copy / check icon swap — driven by the .copied class set in developer.js */
 .copy-wrapper .icon-check { display: none; }
 .copy-wrapper.copied .icon-copy { display: none; }
 .copy-wrapper.copied .icon-check { display: block; }

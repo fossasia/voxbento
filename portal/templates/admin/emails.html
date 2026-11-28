@@ -36,6 +36,7 @@
     <p>Every email uses the same layout: the logo, your message in a white card, and a short footer.</p>
   </div>
   <form method="post" action="/admin/emails/branding" class="email-branding">
+    <input type="hidden" name="csrf_token" value="{{ request.state.admin_csrf_token }}" />
     <label class="email-check">
       <input type="checkbox" name="show_logo"{% if branding.show_logo %} checked{% endif %} />
       Show a logo at the top of emails
