@@ -185,12 +185,58 @@ def _enabled_translation_langs(owner) -> list:
     return [lang for lang in owner.translation_languages if lang.enabled]
 
 
+PLACEHOLDER_LANGUAGE_CODES = frozenset({"auto", "floor", "unknown", "und"})
+
+
+def normalize_source_language_code(language_code: str | None) -> str | None:
+    """Normalize a language code, returning None for empty strings or placeholder values.
+
+    Preserves legitimate language codes (e.g. 'en', 'hi', 'de') while treating automatic,
+    placeholder, or unassigned codes ('auto', 'floor', 'unknown', 'und', empty/whitespace)
+    as unconfigured so fallback to detected language can occur.
+    """
+    if not language_code:
+        return None
+    cleaned = language_code.strip()
+    if not cleaned:
+        return None
+    if cleaned.lower() in PLACEHOLDER_LANGUAGE_CODES:
+        return None
+    return cleaned
+
+
+def resolve_effective_source_language(
+    configured_language: str | None,
+    detected_language: str | None = None,
+) -> str | None:
+    """Resolve effective source language code, falling back to detected language for placeholders.
+
+    If the configured language is absent or represents an automatic/unknown placeholder
+    ('auto', 'floor', 'unknown', 'und'), falls back to ``detected_language`` (if valid
+    and not a placeholder).
+    """
+    normalized_configured = normalize_source_language_code(configured_language)
+    if normalized_configured is not None:
+        return normalized_configured
+    return normalize_source_language_code(detected_language)
+
+
 def _resolve_source_lang_name(source_lang_code: str | None) -> str:
     """Human-readable source language name, falling back to the code (or English)."""
     import pycountry
 
-    source_lang_obj = pycountry.languages.get(alpha_2=source_lang_code) if source_lang_code else None
-    return source_lang_obj.name if source_lang_obj else (source_lang_code or "English")
+    clean_code = normalize_source_language_code(source_lang_code)
+    if not clean_code:
+        return "English"
+
+    base_code = clean_code.split("-")[0].split("_")[0]
+    source_lang_obj = (
+        pycountry.languages.get(alpha_2=clean_code)
+        or pycountry.languages.get(alpha_3=clean_code)
+        or pycountry.languages.get(alpha_2=base_code)
+        or pycountry.languages.get(alpha_3=base_code)
+    )
+    return source_lang_obj.name if source_lang_obj else clean_code
 
 
 async def _broadcast_source_language(
@@ -269,7 +315,14 @@ class TranslationWorker:
         return tasks
 
     async def handle_translation(
-        self, room_id: int, segment_id: int, text: str, booth_id_str: str, uuid_segment_id: str = "", seq: int = 0
+        self,
+        room_id: int,
+        segment_id: int,
+        text: str,
+        booth_id_str: str,
+        uuid_segment_id: str = "",
+        seq: int = 0,
+        detected_language: str | None = None,
     ):
         """Called when a finalized STT segment is saved. Fires off LLM requests for enabled target languages."""
         from sqlalchemy import select
@@ -288,7 +341,9 @@ class TranslationWorker:
                 "[%s] handle_translation triggered for segment %s (len=%s)", booth_id_str, segment_id, len(text)
             )
 
-            job = await self._resolve_translation_job(session, room_id, segment, booth_id_str)
+            job = await self._resolve_translation_job(
+                session, room_id, segment, booth_id_str, detected_language=detected_language
+            )
 
         # The connection goes back to the pool before translating: a segment can wait a while for
         # the engine, and each translation needs a connection of its own to save its result.
@@ -302,7 +357,7 @@ class TranslationWorker:
         )
 
     async def _resolve_translation_job(
-        self, session, room_id: int, segment, booth_id_str: str
+        self, session, room_id: int, segment, booth_id_str: str, detected_language: str | None = None
     ) -> _ResolvedTranslation | None:
         """Resolve the room, provider, model, enabled languages and source language for a segment.
 
@@ -310,7 +365,9 @@ class TranslationWorker:
         """
         from sqlalchemy import select
 
-        context = await self._resolve_job_context(session, room_id, segment, booth_id_str)
+        context = await self._resolve_job_context(
+            session, room_id, segment, booth_id_str, detected_language=detected_language
+        )
         if not context:
             return None
 
@@ -335,12 +392,18 @@ class TranslationWorker:
             source_booth_id=segment.booth_id,
         )
 
-    async def _resolve_job_context(self, session, room_id: int, segment, booth_id_str: str) -> _JobContext | None:
+    async def _resolve_job_context(
+        self, session, room_id: int, segment, booth_id_str: str, detected_language: str | None = None
+    ) -> _JobContext | None:
         """Fetch the room/booth config and validate that all required settings exist."""
         if segment.booth_id is None:
-            context = await self._resolve_floor_context(session, room_id, booth_id_str)
+            context = await self._resolve_floor_context(
+                session, room_id, booth_id_str, detected_language=detected_language
+            )
         else:
-            context = await self._resolve_booth_context(session, room_id, segment)
+            context = await self._resolve_booth_context(
+                session, room_id, segment, detected_language=detected_language
+            )
 
         if not context:
             return None
@@ -354,7 +417,9 @@ class TranslationWorker:
 
         return context
 
-    async def _resolve_floor_context(self, session, room_id: int, booth_id_str: str) -> _JobContext | None:
+    async def _resolve_floor_context(
+        self, session, room_id: int, booth_id_str: str, detected_language: str | None = None
+    ) -> _JobContext | None:
         """Floor translation configuration from the room."""
         from sqlalchemy import select
         from sqlalchemy.orm import selectinload
@@ -373,10 +438,13 @@ class TranslationWorker:
             provider=room.floor_translation_provider,
             model=room.floor_translation_model,
             enabled_langs=_enabled_translation_langs(room),
-            source_lang_code=room.floor_language_code,
+            # A language the room names wins; auto-detecting rooms use what the provider heard.
+            source_lang_code=resolve_effective_source_language(room.floor_language_code, detected_language),
         )
 
-    async def _resolve_booth_context(self, session, room_id: int, segment) -> _JobContext | None:
+    async def _resolve_booth_context(
+        self, session, room_id: int, segment, detected_language: str | None = None
+    ) -> _JobContext | None:
         """Booth translation configuration from the booth."""
         from sqlalchemy import select
         from sqlalchemy.orm import selectinload
@@ -396,7 +464,7 @@ class TranslationWorker:
             provider=booth.translation_provider,
             model=booth.translation_model,
             enabled_langs=_enabled_translation_langs(booth),
-            source_lang_code=booth.language_code,
+            source_lang_code=resolve_effective_source_language(booth.language_code, detected_language),
         )
 
     def _build_language_tasks(

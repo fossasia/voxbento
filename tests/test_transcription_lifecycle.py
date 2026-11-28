@@ -649,3 +649,111 @@ async def test_perform_cleanup_swallows_process_lookup_error(monkeypatch):
     with patch.object(FfmpegProcess, "_kill_windows_tree", new=AsyncMock(side_effect=ProcessLookupError())):
         # Must not raise.
         await fp._perform_cleanup()
+
+
+@pytest.mark.anyio
+async def test_worker_stops_on_fatal_transcription_error_without_restarting():
+    """FatalTranscriptionError must stop the outer worker loop cleanly without restarting FFmpeg."""
+    from portal.transcription.providers.base import FatalTranscriptionError, ProviderConfig
+    from portal.transcription.providers.sarvam import SarvamProvider
+
+    sarvam_provider = SarvamProvider()
+    calls = 0
+
+    async def _fatal_run_stream(*args, **kwargs):
+        nonlocal calls
+        calls += 1
+        raise FatalTranscriptionError("Invalid Sarvam key")
+
+    with (
+        patch.object(sarvam_provider, "run_stream", side_effect=_fatal_run_stream),
+        patch.dict("portal.transcription.worker.PROVIDERS", {"sarvam": sarvam_provider}),
+    ):
+        await start_transcription_worker(
+            "evt",
+            "hi",
+            "evt-1-hi",
+            AsyncMock(),
+            "sarvam",
+            "saaras:v3",
+            ProviderConfig(api_key="bad"),
+        )
+        session = active_workers["evt-1-hi"]
+        await asyncio.wait_for(session.wait_until_stopped(), timeout=2.0)
+
+    assert calls == 1
+    assert session.state == State.STOPPED
+
+
+@pytest.mark.anyio
+async def test_worker_stops_when_sarvam_exhausts_reconnect_attempts():
+    """Exhausting Sarvam reconnects must terminate the outer worker rather than looping forever."""
+    from portal.transcription.providers import sarvam as sarvam_mod
+    from portal.transcription.providers.base import ProviderConfig
+    from portal.transcription.providers.sarvam import SarvamProvider
+
+    sarvam_provider = SarvamProvider()
+    connect_mock = MagicMock(side_effect=OSError("network unreachable"))
+
+    with (
+        patch.dict("portal.transcription.worker.PROVIDERS", {"sarvam": sarvam_provider}),
+        patch("websockets.connect", connect_mock),
+        patch.object(sarvam_mod, "MAX_RECONNECT_ATTEMPTS", 2),
+        patch.object(sarvam_mod, "BACKOFF_BASE_SECONDS", 0.001),
+    ):
+        await start_transcription_worker(
+            "evt",
+            "hi",
+            "evt-1-hi-exhaust",
+            AsyncMock(),
+            "sarvam",
+            "saaras:v3",
+            ProviderConfig(api_key="sarvam-secret"),
+        )
+        session = active_workers["evt-1-hi-exhaust"]
+        await asyncio.wait_for(session.wait_until_stopped(), timeout=2.0)
+
+    assert connect_mock.call_count == 2
+    assert session.state == State.STOPPED
+
+
+@pytest.mark.anyio
+async def test_worker_retries_on_normal_eof_return(mock_providers):
+    """Returning normally from run_stream (stream EOF) must preserve outer worker retry behavior."""
+    first_eof = asyncio.Event()
+    second_run = asyncio.Event()
+    calls = 0
+
+    async def _eof_then_wait(*args, **kwargs):
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            first_eof.set()
+            return
+        second_run.set()
+        await asyncio.sleep(10)
+
+    mock_providers["local"].run_stream = _eof_then_wait
+
+    await start_transcription_worker("evt", "en", "evt-1-en-eof", AsyncMock(), "local", "tiny", None)
+    await asyncio.wait_for(first_eof.wait(), timeout=2.0)
+    await asyncio.wait_for(second_run.wait(), timeout=2.5)
+
+    assert calls == 2
+    await stop_transcription_worker("evt-1-en-eof")
+    assert active_workers.get("evt-1-en-eof") is None
+
+
+@pytest.mark.anyio
+async def test_is_worker_running_distinguishes_states():
+    """Verify is_worker_running accurately reflects session states."""
+    from types import SimpleNamespace
+
+    from portal.transcription.worker import State, is_worker_running
+
+    assert is_worker_running(None) is False
+    assert is_worker_running(SimpleNamespace(state=State.STOPPED)) is False
+    assert is_worker_running(SimpleNamespace(state=State.STOPPING)) is False
+    assert is_worker_running(SimpleNamespace(state=State.RUNNING)) is True
+    assert is_worker_running(SimpleNamespace(state=State.STARTING)) is True
+    assert is_worker_running(object()) is True
