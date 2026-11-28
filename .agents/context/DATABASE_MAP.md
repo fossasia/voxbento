@@ -91,6 +91,8 @@ Cascade: deletes rooms + booths when event is deleted.
 | `transcription_provider` | String(20) | Default `'local'`; validated against `ProviderEnum` |
 | `transcription_model` | String(20) | Default `'tiny'`; validated against `ALLOWED_MODELS` |
 | `broadcast_unlocked` | Boolean | Default False; allows unauthenticated ingest |
+| `active_interpreter_session_key` | String(80) nullable | `booth_session_key` (`user:<id>` or `invite:<sub>`) of the active interpreter, written by `portal/booth_store.py`; reserved for that session for 2 minutes after a restart (#1165). Never a socket `participant_id` |
+| `active_interpreter_since` | DateTime(tz) nullable | When it was stored; entries older than 24 h are ignored and cleared at startup |
 | `translation_enabled` | Boolean | Default False |
 | `translation_provider` | String(50) nullable | — |
 | `translation_model` | String(100) nullable | — |
@@ -311,6 +313,7 @@ Tracks which languages the translation worker should generate for a given room o
 | 046 | `046_live_demo_room_ai.py` | Transitional room-linked demo settings and daily limit |
 | 047 | `047_live_demo_independent_ai.py` | Independent demo providers, models, encrypted keys, persona/style; removes room link |
 | 044 | `044_youtube_connections.py` | `youtube_connections` table (one per event), `rooms.youtube_broadcast_id`, `rooms.youtube_stream_id` (#1087) |
+| 049 | `049_add_active_interpreter_to_booths.py` | `booths.active_interpreter_session_key`, `booths.active_interpreter_since` (#1165) |
 
 Run migrations: `uv run alembic upgrade head`
 

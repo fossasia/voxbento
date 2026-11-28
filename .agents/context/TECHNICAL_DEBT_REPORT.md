@@ -22,6 +22,7 @@
 ### TD-03: [RESOLVED] In-memory booth state is not persistent
 **File:** `portal/booth_state.py` — `BoothRegistry`, `portal/booth_recovery.py`
 **Resolution:** Each booth's Go Live switch and active interpreter are saved to `booth_live_state` (migration 042) and restored at startup. The active interpreter comes back as a placeholder only the same session can reclaim within `BOOTH_RESTART_GRACE_SECONDS`. Participants, chat and transcription workers are still in memory only: interpreters rejoin on reconnect, chat history starts empty, and floor/booth transcription must be restarted by its owner.
+**Status (#1165):** the active-interpreter choice is now stored in `booths.active_interpreter_session_key` (`portal/booth_store.py`) and reserved for that session for 2 minutes after a restart. Participants and booth chat are still in memory only.
 
 ---
 
