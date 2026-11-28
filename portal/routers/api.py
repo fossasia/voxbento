@@ -5,7 +5,7 @@ import logging
 import jwt as pyjwt
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 from sqlalchemy.orm.exc import ObjectDeletedError, StaleDataError
@@ -24,7 +24,13 @@ from portal.auth import (
     security,
     user_session_is_valid,
 )
-from portal.booth_identity import make_booth_id, make_mediamtx_path, validate_event_slug, validate_language_code
+from portal.booth_identity import (
+    make_booth_id,
+    make_mediamtx_path,
+    validate_event_slug,
+    validate_language_code,
+    validate_room_id,
+)
 from portal.booth_publish import stop_booth_publish, take_booth_publishers
 from portal.config import settings
 from portal.database import (
@@ -367,6 +373,42 @@ async def provision_listener_token(
         return {"token": token}
 
 
+def _validate_booth_path(event_slug: str, language_code: str, room_id: int | None = None) -> tuple[str, str]:
+    """Return the normalized event slug and language code, or answer 400, as the booth state route does.
+
+    Otherwise ``make_booth_id`` raises ``ValueError`` further down, which ends as a 500. The normalized
+    values are the ones stored, so lookups must use them rather than the raw path parameters. A room id
+    from the path is checked here too, for the same reason.
+    """
+    try:
+        if room_id is not None:
+            validate_room_id(room_id)
+        return validate_event_slug(event_slug), validate_language_code(language_code)
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
+
+
+async def _get_live_event_for_path(session: AsyncSession, requested_slug: str, slug: str) -> Event | None:
+    """Find the live event for a booth path.
+
+    Rows written before slugs were lowercased on assignment can keep a mixed-case slug, so an exact match
+    (as requested, then normalized) wins, and only then is the slug matched case-insensitively. Two events
+    that differ only by case cannot be told apart that way, so that case is rejected instead of guessed.
+    """
+    live = Event.deleted_at.is_(None)
+    for exact in dict.fromkeys((requested_slug.strip(), slug)):
+        event = await session.scalar(select(Event).where(Event.slug == exact, live))
+        if event is not None:
+            return event
+    matches = (await session.scalars(select(Event).where(func.lower(Event.slug) == slug, live).limit(2))).all()
+    if len(matches) > 1:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="More than one event matches this slug when case is ignored; use the exact slug.",
+        )
+    return matches[0] if matches else None
+
+
 @router.delete("/events/{event_slug}/rooms/{room_id}/booths/{language_code}", status_code=status.HTTP_204_NO_CONTENT)
 async def delete_booth_by_language(
     request: Request,
@@ -377,10 +419,12 @@ async def delete_booth_by_language(
     credentials: HTTPAuthorizationCredentials | None = Depends(security),
 ):
     """Delete a booth from an event."""
+    requested_slug = event_slug
+    event_slug, language_code = _validate_booth_path(event_slug, language_code, room_id)
     booth_id = make_booth_id(event_slug, room_id, language_code)
     room_db_id = room_id
     async with get_session() as session:
-        event = await session.scalar(select(Event).where(Event.slug == event_slug, Event.deleted_at.is_(None)))
+        event = await _get_live_event_for_path(session, requested_slug, event_slug)
         if not event:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Event not found")
         await _verify_event_access(
@@ -395,7 +439,7 @@ async def delete_booth_by_language(
         stmt = (
             select(DBBooth)
             .join(Event)
-            .where(Event.slug == event_slug, DBBooth.room_id == room_id, DBBooth.language_code == language_code)
+            .where(DBBooth.event_id == event.id, DBBooth.room_id == room_id, DBBooth.language_code == language_code)
         )
         db_booth = await session.scalar(stmt)
         if db_booth:
@@ -554,12 +598,13 @@ async def delete_event_booth(
     credentials: HTTPAuthorizationCredentials | None = Depends(security),
 ):
     """Delete a booth provisioned via API."""
+    requested_slug = event_slug
+    event_slug, language_code = _validate_booth_path(event_slug, language_code)
     booth_id = ""
     room_id = 0
     async with get_session() as session:
         # Find the event
-        event_query = await session.execute(select(Event).where(Event.slug == event_slug, Event.deleted_at.is_(None)))
-        event = event_query.scalar_one_or_none()
+        event = await _get_live_event_for_path(session, requested_slug, event_slug)
         if not event:
             raise HTTPException(status_code=404, detail="Event not found")
 
@@ -751,9 +796,11 @@ async def event_booth_whip_url(
     credentials: HTTPAuthorizationCredentials | None = Depends(security),
 ) -> dict:
     """Event-scoped WHIP URL — validates event ownership before returning."""
+    requested_slug = event_slug
+    event_slug, language_code = _validate_booth_path(event_slug, language_code, room_id)
     if room_id is None:
         async with get_session() as session:
-            ev = await get_event_by_slug(session, event_slug)
+            ev = await _get_live_event_for_path(session, requested_slug, event_slug)
             if ev:
                 rooms = await list_rooms_for_event(session, ev.id)
                 if len(rooms) > 1:
@@ -766,7 +813,7 @@ async def event_booth_whip_url(
             room_id = 1
 
     async with get_session() as session:
-        event = await get_event_by_slug(session, event_slug)
+        event = await _get_live_event_for_path(session, requested_slug, event_slug)
         if event is None:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Event not found")
         auth_payload = await _verify_resource_access(
@@ -813,9 +860,11 @@ async def api_transcription_start(
     Validates operator/booth access and verifies that transcription is enabled
     and configured for the booth before starting the background worker session.
     """
+    requested_slug = event_slug
+    event_slug, language_code = _validate_booth_path(event_slug, language_code, room_id)
     booth_id = make_booth_id(event_slug, room_id, language_code)
     async with get_session() as session:
-        event = await get_event_by_slug(session, event_slug)
+        event = await _get_live_event_for_path(session, requested_slug, event_slug)
         if event is None:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Event not found")
         await _verify_resource_access(
@@ -834,8 +883,7 @@ async def api_transcription_start(
             .join(Event)
             .options(selectinload(DBBooth.event))
             .where(
-                Event.slug == event_slug,
-                Event.deleted_at.is_(None),
+                DBBooth.event_id == event.id,
                 DBBooth.room_id == room_id,
                 DBBooth.language_code == language_code,
             )
@@ -886,9 +934,11 @@ async def api_transcription_stop(
     token: str = Query(""),
     credentials: HTTPAuthorizationCredentials | None = Depends(security),
 ):
+    requested_slug = event_slug
+    event_slug, language_code = _validate_booth_path(event_slug, language_code, room_id)
     booth_id = make_booth_id(event_slug, room_id, language_code)
     async with get_session() as session:
-        event = await get_event_by_slug(session, event_slug)
+        event = await _get_live_event_for_path(session, requested_slug, event_slug)
         if event is None:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Event not found")
         await _verify_resource_access(
