@@ -36,6 +36,9 @@
 {% if saved_notice %}
 <div class="alert alert-success" role="status">{{ saved_notice }}</div>
 {% endif %}
+{% if retired_translation_model %}
+<div class="alert alert-warning" role="status">The saved translation model <code>{{ retired_translation_model }}</code> has been retired, so translations won't work. Choose another model on the Translations tab and save.</div>
+{% endif %}
 
 <div id="booth-detail" data-booth-id="{{ booth.id }}">
 
@@ -344,7 +347,7 @@
           class="inline-delete"
           data-confirm="Delete the {{ booth.language_name }} booth? All invite tokens will be removed.">
       <input type="hidden" name="csrf_token" value="{{ request.state.admin_csrf_token }}" />
-      <button type="submit" class="btn btn-danger">Delete Booth</button>
+      <button type="submit" class="btn btn-danger" title="Permanently delete this booth">Delete Booth</button>
       <span class="danger-text">This removes all invite tokens for this booth.</span>
     </form>
   </div>
