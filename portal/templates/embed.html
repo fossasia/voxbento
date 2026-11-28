@@ -61,7 +61,7 @@
       <span id="status-text">Connecting&hellip;</span>
     </div>
 
-    <button class="play-btn" id="play-btn" disabled>
+    <button class="play-btn" id="play-btn" {% if audio_mode == 'none' %}hidden{% endif %} disabled>
       &#9654;&nbsp; Play Audio
     </button>
 
@@ -80,11 +80,15 @@
   </div>
 
   <script src="/static/js/whep-listener.js?v={{ js_version }}"></script>
+  <script src="/static/js/tts-parser.js?v={{ js_version }}"></script>
+  <script src="/static/js/audio-scheduler.js?v={{ js_version }}"></script>
 
   <script type="application/json" id="embed-config">
     {
       "whep_url": {{ whep_url | tojson }},
       "caption_url": {{ caption_url | tojson }},
+      "tts_url": {{ tts_url | tojson }},
+      "audio_mode": {{ audio_mode | tojson }},
       "captions_enabled": {{ captions_enabled | tojson }},
       "token": {{ token | tojson }},
       "audio_delay_ms": {{ audio_delay_ms | tojson }},
@@ -95,7 +99,7 @@
       "allowed_origins": {{ allowed_origins_list | tojson }}
     }
   </script>
-  <script src="/static/js/embed-player.js?v={{ js_version }}"></script>
+  <script type="module" src="/static/js/embed-player.js?v={{ js_version }}"></script>
   {% include "_auth_sync.html" %}
 
 </body>

@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import json
 import re
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, TypedDict
 
@@ -274,8 +275,17 @@ def _verify_embed_token(token: str, event_slug: str) -> None:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Token is not valid for this event.")
 
 
-async def _resolve_embed_room(session: Any, ev: Any, room_id: int | None) -> tuple[int, int]:
-    """Resolve the target room id and its audio delay for an embed request."""
+@dataclass(frozen=True)
+class EmbedChannel:
+    booth_id: str
+    channel_id: str
+    audio_mode: str = "whep"
+    tts_booth_id: str = ""
+    tts_language_code: str = ""
+
+
+async def _resolve_embed_room(session: Any, ev: Any, room_id: int | None) -> tuple[Any, int]:
+    """Resolve the target room and its audio delay for an embed request."""
     rooms = await list_rooms_for_event(session, ev.id, limit=None)
     if room_id is None:
         if not rooms:
@@ -285,39 +295,56 @@ async def _resolve_embed_room(session: Any, ev: Any, room_id: int | None) -> tup
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail="This event has multiple rooms. Please use the /embed/{event_slug}/{room_id}/{language_code} URL instead.",
             )
-        return rooms[0].id, rooms[0].audio_delay_ms
+        return rooms[0], rooms[0].audio_delay_ms
 
     room = next((r for r in rooms if r.id == room_id), None)
     if not room:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Room not found.")
-    return room.id, room.audio_delay_ms
+    return room, room.audio_delay_ms
 
 
 async def _resolve_embed_channel(
-    session: Any, ev: Any, event_slug: str, room_id: int, language_code: str
-) -> tuple[str, str]:
-    """Resolve the booth id and mediamtx channel id for the requested language."""
+    session: Any, ev: Any, event_slug: str, room: Any, language_code: str
+) -> EmbedChannel:
+    """Resolve the booth id, mediamtx channel id, and audio mode for the requested language."""
     from portal.booth_identity import make_booth_id, make_mediamtx_path
 
+    norm_lang = language_code.lower()
     try:
-        booth_id = make_booth_id(ev.slug, room_id, language_code.lower())
-        channel_id = make_mediamtx_path(ev.slug, room_id, language_code.lower())
+        booth_id = make_booth_id(ev.slug, room.id, norm_lang)
+        channel_id = make_mediamtx_path(ev.slug, room.id, norm_lang)
     except ValueError:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Invalid language code.")
 
-    if language_code.lower() != "floor":
-        db_booths = await list_booths_for_event(session, ev.id, limit=None)
-        booth = next(
-            (b for b in db_booths if b.language_code.lower() == language_code.lower() and b.room_id == room_id),
+    if norm_lang == "floor":
+        return EmbedChannel(booth_id=booth_id, channel_id=channel_id, audio_mode="whep")
+
+    db_booths = await list_booths_for_room(session, room.id)
+    booth = next((b for b in db_booths if b.language_code.lower() == norm_lang), None)
+    if booth is not None:
+        return EmbedChannel(booth_id=booth_id, channel_id=channel_id, audio_mode="whep")
+
+    if room.floor_translation_enabled:
+        lang = next(
+            (item for item in room.translation_languages if item.enabled and item.language_code.lower() == norm_lang),
             None,
         )
-        if booth is None:
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail=f"No booth for language '{language_code}' in event '{event_slug}'.",
-            )
+        if lang is not None:
+            if room.floor_tts_enabled and lang.tts_enabled:
+                floor_booth_id = make_booth_id(ev.slug, room.id, "floor")
+                return EmbedChannel(
+                    booth_id=booth_id,
+                    channel_id="",
+                    audio_mode="tts",
+                    tts_booth_id=floor_booth_id,
+                    tts_language_code=norm_lang,
+                )
+            return EmbedChannel(booth_id=booth_id, channel_id="", audio_mode="none")
 
-    return booth_id, channel_id
+    raise HTTPException(
+        status_code=status.HTTP_404_NOT_FOUND,
+        detail=f"No booth for language '{language_code}' in event '{event_slug}'.",
+    )
 
 
 def _sanitize_embed_theme(
@@ -369,6 +396,8 @@ def _build_embed_context(
     postmessage_target_origin: str,
     allowed_origins_list: list[str],
     audio_delay_ms: int,
+    audio_mode: str = "whep",
+    tts_url: str = "",
 ) -> dict[str, Any]:
     """Assemble the Jinja2 context for the embed template."""
     return {
@@ -376,6 +405,8 @@ def _build_embed_context(
         "language_code": language_code,
         "whep_url": whep_url,
         "caption_url": caption_url,
+        "tts_url": tts_url,
+        "audio_mode": audio_mode,
         "token": token,
         "theme": safe_theme,
         "primary_color": safe_primary,
@@ -414,12 +445,18 @@ async def _embed_listener_impl(
         if not ev:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Event not found.")
 
-        resolved_room_id, audio_delay_ms = await _resolve_embed_room(session, ev, room_id)
-        booth_id, channel_id = await _resolve_embed_channel(session, ev, event_slug, resolved_room_id, language_code)
+        room, audio_delay_ms = await _resolve_embed_room(session, ev, room_id)
+        channel = await _resolve_embed_channel(session, ev, event_slug, room, language_code)
 
-    whep_url = f"{settings.mediamtx_whip_base}/{channel_id}/whep"
+    whep_url = f"{settings.mediamtx_whip_base}/{channel.channel_id}/whep" if channel.audio_mode == "whep" else ""
     host = settings.public_base_url.replace("https://", "").replace("http://", "")
-    caption_url = f"wss://{host}/ws/captions/{booth_id}"
+    caption_url = f"wss://{host}/ws/captions/{channel.booth_id}"
+    tts_url = (
+        f"wss://{host}/ws/tts/{room.id}/{channel.tts_language_code}/{channel.tts_booth_id}"
+        if channel.audio_mode == "tts"
+        else ""
+    )
+    captions_effective = captions or (channel.audio_mode == "none" and not headless)
 
     # Sanitize theming params
     safe_theme, safe_font, safe_primary, safe_custom_css = _sanitize_embed_theme(
@@ -443,13 +480,15 @@ async def _embed_listener_impl(
         safe_theme=safe_theme,
         safe_primary=safe_primary,
         safe_font=safe_font,
-        captions=captions,
+        captions=captions_effective,
         safe_custom_css=safe_custom_css,
         target_lang=target_lang,
         headless=headless,
         postmessage_target_origin=postmessage_target_origin,
         allowed_origins_list=allowed_origins_list,
         audio_delay_ms=audio_delay_ms,
+        audio_mode=channel.audio_mode,
+        tts_url=tts_url,
     )
 
     return templates.TemplateResponse(request=request, name="embed.html", context=context, headers=response_headers)

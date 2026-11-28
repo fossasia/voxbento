@@ -3571,6 +3571,8 @@ def test_build_embed_context_keys_and_fallbacks():
         "language_code",
         "whep_url",
         "caption_url",
+        "tts_url",
+        "audio_mode",
         "token",
         "theme",
         "primary_color",
@@ -3584,6 +3586,8 @@ def test_build_embed_context_keys_and_fallbacks():
         "allowed_origins_list",
         "audio_delay_ms",
     }
+    assert ctx["audio_mode"] == "whep"
+    assert ctx["tts_url"] == ""
     # font is capitalised for display
     assert ctx["font_family"] == "Inter"
     # target_lang=None must fall back to the lower-cased language code
@@ -3677,6 +3681,130 @@ def test_embed_rendered_html_uses_sanitized_theme_values():
     assert '"audio_delay_ms"' in res.text
     # CSP header is still emitted with the sanitized policy.
     assert "frame-ancestors" in res.headers.get("content-security-policy", "")
+
+
+def _seed_ai_embed_room(
+    event_slug: str = "ai-event",
+    *,
+    lang_code: str = "es",
+    lang_name: str = "Spanish",
+    floor_translation_enabled: bool = True,
+    floor_tts_enabled: bool = True,
+    lang_enabled: bool = True,
+    lang_tts_enabled: bool = True,
+    with_booth: bool = False,
+) -> int:
+    import anyio
+
+    from portal.database import create_booth, create_event, create_room, get_session
+    from portal.models import RoomTranslationLanguage
+
+    async def setup() -> int:
+        async with get_session() as session:
+            ev = await create_event(session, slug=event_slug, display_name="AI Event")
+            room = await create_room(session, event_id=ev.id, display_name="Main Hall")
+            room.floor_translation_enabled = floor_translation_enabled
+            room.floor_tts_enabled = floor_tts_enabled
+            session.add(
+                RoomTranslationLanguage(
+                    room_id=room.id,
+                    language_code=lang_code,
+                    language_name=lang_name,
+                    enabled=lang_enabled,
+                    tts_enabled=lang_tts_enabled,
+                )
+            )
+            if with_booth:
+                await create_booth(
+                    session,
+                    event_id=ev.id,
+                    room_id=room.id,
+                    language_code=lang_code,
+                    language_name=lang_name,
+                )
+            await session.flush()
+            return room.id
+
+    return anyio.run(setup)
+
+
+def _extract_embed_config(html: str) -> dict:
+    import json
+    import re
+
+    match = re.search(r'<script type="application/json" id="embed-config">(.*?)</script>', html, re.S)
+    assert match, "embed-config JSON block not found"
+    return json.loads(match.group(1))
+
+
+def test_embed_ai_voice_channel_resolves_tts_config():
+    room_id = _seed_ai_embed_room("ai-voice-ev", lang_code="es", floor_tts_enabled=True, lang_tts_enabled=True)
+    token = _embed_listener_token("ai-voice-ev")
+    res = client.get(f"/embed/ai-voice-ev/{room_id}/es?token={token}&captions=true", headers={"accept": "text/html"})
+    assert res.status_code == 200, res.text
+    cfg = _extract_embed_config(res.text)
+    assert cfg["audio_mode"] == "tts"
+    assert cfg["whep_url"] == ""
+    assert cfg["tts_url"].endswith(f"/ws/tts/{room_id}/es/ai-voice-ev-{room_id}-floor")
+    assert cfg["caption_url"].endswith(f"/ws/captions/ai-voice-ev-{room_id}-es")
+    assert cfg["target_lang_code"] == "es"
+    assert cfg["captions_enabled"] is True
+
+
+def test_embed_ai_text_channel_resolves_captions_only():
+    room_id = _seed_ai_embed_room("ai-text-ev", lang_code="de", floor_tts_enabled=True, lang_tts_enabled=False)
+    token = _embed_listener_token("ai-text-ev")
+    res = client.get(f"/embed/ai-text-ev/{room_id}/de?token={token}", headers={"accept": "text/html"})
+    assert res.status_code == 200, res.text
+    cfg = _extract_embed_config(res.text)
+    assert cfg["audio_mode"] == "none"
+    assert cfg["whep_url"] == ""
+    assert cfg["tts_url"] == ""
+    assert cfg["caption_url"].endswith(f"/ws/captions/ai-text-ev-{room_id}-de")
+    assert cfg["captions_enabled"] is True
+
+
+def test_embed_disabled_ai_language_returns_404():
+    room_id = _seed_ai_embed_room("ai-off-ev", lang_code="fr", lang_enabled=False)
+    token = _embed_listener_token("ai-off-ev")
+    res = client.get(f"/embed/ai-off-ev/{room_id}/fr?token={token}")
+    assert res.status_code == 404
+
+
+def test_embed_booth_takes_precedence_over_ai_language():
+    room_id = _seed_ai_embed_room("both-ev", lang_code="es", with_booth=True)
+    token = _embed_listener_token("both-ev")
+    res = client.get(f"/embed/both-ev/{room_id}/es?token={token}", headers={"accept": "text/html"})
+    assert res.status_code == 200, res.text
+    cfg = _extract_embed_config(res.text)
+    assert cfg["audio_mode"] == "whep"
+    assert cfg["whep_url"].endswith(f"/both-ev/{room_id}/es/whep")
+    assert cfg["tts_url"] == ""
+
+
+def test_embed_legacy_single_room_route_supports_ai_voice():
+    room_id = _seed_ai_embed_room("single-ai-ev", lang_code="es")
+    token = _embed_listener_token("single-ai-ev")
+    res = client.get(f"/embed/single-ai-ev/es?token={token}", headers={"accept": "text/html"})
+    assert res.status_code == 200, res.text
+    cfg = _extract_embed_config(res.text)
+    assert cfg["audio_mode"] == "tts"
+    assert cfg["tts_url"].endswith(f"/ws/tts/{room_id}/es/single-ai-ev-{room_id}-floor")
+
+
+def test_ws_tts_accepts_embed_token_and_rejects_cross_event_embed_token():
+    from fastapi.websockets import WebSocketDisconnect
+
+    room_id = _seed_ai_embed_room("embed-tts-ws", lang_code="es")
+    valid_tok = _embed_listener_token("embed-tts-ws")
+    with client.websocket_connect(f"/ws/tts/{room_id}/es/embed-tts-ws-{room_id}-floor?token={valid_tok}"):
+        pass
+
+    other_tok = _embed_listener_token("other-event")
+    with pytest.raises(WebSocketDisconnect) as exc_info:
+        with client.websocket_connect(f"/ws/tts/{room_id}/es/embed-tts-ws-{room_id}-floor?token={other_tok}") as ws:
+            _expect_refusal(ws)
+    assert exc_info.value.code == 4003
 
 
 def test_unhandled_exception_response_has_security_headers():

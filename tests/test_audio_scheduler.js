@@ -299,6 +299,37 @@ console.log('\n=== AudioScheduler Tests ===\n');
   assertApprox(timings[4].endTime, 2.6, 0.01, 'Total scheduled end time is correct');
 })();
 
+// Test 8: Custom destination node receives scheduled sources
+(function () {
+  console.log('\nTest 8: Custom destination node receives scheduled sources');
+  const ctx = new MockAudioContext();
+  ctx._currentTime = 0.0;
+  const customDest = { label: 'masterGain' };
+  const connectedTo = [];
+  ctx.createBufferSource = function () {
+    return {
+      buffer: null,
+      loop: false,
+      connect: function (dest) { connectedTo.push(dest); },
+      start: function () {},
+      stop: function () {},
+      onended: null,
+    };
+  };
+
+  const scheduler = createAudioScheduler(ctx, {
+    jitterBufferSec: 0.1,
+    comfortNoiseEnabled: false,
+    destination: customDest,
+  });
+
+  const buf = ctx.createBuffer(1, 12000, 24000);
+  buf.duration = 0.5;
+  scheduler.scheduleBuffer(buf);
+
+  assert(connectedTo.length === 1 && connectedTo[0] === customDest, 'BufferSource connects to custom destination');
+})();
+
 // ── Summary ──────────────────────────────────────────────────────────────
 
 console.log('\n=== Results: ' + passed + ' passed, ' + failed + ' failed ===\n');

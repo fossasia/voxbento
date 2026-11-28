@@ -285,6 +285,8 @@ jobs:
           node --check portal/static/js/booth-reconnect.js
           node --check portal/static/js/mic-activity.js
           node --check portal/static/js/whep-listener.js
+          node --check portal/static/js/embed-player.js
+          node --check portal/static/js/audio-scheduler.js
           node --check portal/static/js/admin.js
           node --check portal/static/js/attendance.js
           node --check portal/static/js/booth-detail.js
@@ -307,6 +309,7 @@ jobs:
         run: |
           node tests/test_audio_scheduler.js
           node tests/test_tts_parser.js
+          node tests/test_embed_player.js
           node --test tests/test_demo_modal.js
           node tests/test_listener_event.js
           node tests/test_whep_listener.js
