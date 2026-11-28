@@ -68,6 +68,7 @@ Cascade: deletes rooms + booths when event is deleted.
 | `floor_translation_enabled` | Boolean | Default False |
 | `floor_translation_provider` | String(50) nullable | — |
 | `floor_translation_model` | String(100) nullable | — |
+| `monitor_floor_enabled`, `monitor_meeting_enabled` | Boolean | Room Settings controls for interpreter monitor choices. Both default on (migration 049). |
 | `floor_source_language_code` | String(20) | Default `'en'` |
 | `floor_tts_enabled` | Boolean | Default False; controls whether TTS is generated for floor audio translations |
 | `floor_tts_provider` | String(20) | Default `'deepgram'`; TTS engine — `'deepgram'` (cloud) or `'supertonic'` (self-hosted ONNX) |
@@ -307,6 +308,8 @@ Tracks which languages the translation worker should generate for a given room o
 | 041 | `041_add_interpreter_attendance.py` | `interpreter_attendance` table (#1215) |
 | 042 | `042_add_booth_live_state.py` | `booth_live_state` table (TD-03) |
 | 043 | `043_add_live_demo_settings.py` | `live_demo_settings` singleton for the home-page live demo |
+| 046 | `046_live_demo_room_ai.py` | Transitional room-linked demo settings and daily limit |
+| 047 | `047_live_demo_independent_ai.py` | Independent demo providers, models, encrypted keys, persona/style; removes room link |
 | 044 | `044_youtube_connections.py` | `youtube_connections` table (one per event), `rooms.youtube_broadcast_id`, `rooms.youtube_stream_id` (#1087) |
 
 Run migrations: `uv run alembic upgrade head`
@@ -372,6 +375,17 @@ URL), `program_relay_key_enc` (Fernet ciphertext of the YouTube stream key; writ
 never serialize or log) and `program_relay_updated_at`. Helpers live in
 `portal/program_relay.py` (`store_destination`, `clear_destination`, `destination`).
 
+## Migration 044 — Sign in with YouTube (#1087)
+
+Table `youtube_connections` (model `YouTubeConnection`), one row per event (unique
+`event_id`, cascade on event delete): `channel_id` (String(64)), `channel_title`
+(String(200)), `refresh_token_enc` (Text, Fernet ciphertext of the Google refresh token;
+write-only, never serialize or log), `scope` (String(500)), nullable
+`connected_by_user_id` (→ `users.id`, SET NULL), nullable `last_error` (String(300), the
+"sign in again" message), `connected_at` (sign-in time), `created_at`, `updated_at`. Room fields: nullable
+`youtube_broadcast_id` (String(32)) and `youtube_stream_id` (String(64)). Helpers live in
+`portal/youtube_account.py` (`get_connection`, `link_broadcast`, `unlink_event_rooms`).
+
 ## Migration 035 — per-language AI voice (#1005)
 
 `room_translation_languages.tts_enabled` (Boolean, default true, server default true)
@@ -399,6 +413,13 @@ No links or email content are shown in the administration history.
 `email_settings` holds one row (id 1) of branding shared by every email:
 `show_logo` (default true) and an optional https `logo_url` (empty means the
 VoxBento logo served by the site). No row means the defaults.
+
+## Migration 048 — meeting reports phase 2 (#1080)
+
+Adds `events.meeting_analysis_auto` (default false: write a report when a channel's
+captions stop), `meeting_reports.transcript_language` (nullable: the translation a
+report read from `transcript_translations`; NULL for the spoken transcript) and
+`meeting_reports.automatic` (default false). See `docs/meeting-analysis.md`.
 
 ## Migration 045 — meeting reports (#1080)
 
@@ -428,6 +449,12 @@ session end when the session was too long), `segment_count`,
 validated with the AI glossary rules). No row means the `LIVE_DEMO_*` environment
 defaults with the demo off (an Admin switches it on), and `LIVE_DEMO_ENABLED=false` keeps the demo off whatever the row says.
 `portal/live_demo.py` reads it through a ~10 s cache that saving replaces.
+
+Migration 046 adds `ai_source` and `daily_minutes` (default 120). Migration 047 removes
+its transitional `room_id`, disabling previously room-linked demos without copying customer
+keys. `ai_source` is now `built_in` or `custom`. Independent `speech_choice`,
+`translation_choice`, `voice_provider`, `voice`, `persona`, `style` and three encrypted
+service key fields belong to this singleton. `portal/live_demo_ai.py` resolves these settings.
 
 ## Migrations 036–038 — live booth session revocation
 
@@ -465,3 +492,8 @@ transaction; the MediaMTX auth callback reserves a session before negotiation.
 Final floor sequence increments atomically and survives worker/portal restarts.
 Raw credentials are only returned at create/rotate. YouTube keys exist only in
 relay mode, encrypted (migration 028).
+
+## OAuth Tables & Expiration Handling (#980)
+
+- `oauth_authorization_codes`: stores authorization codes with `expires_at: DateTime(tz)`. Exposes `is_expired` property that normalizes SQLite-stripped naive datetimes to UTC-aware before comparison against `utc_now()`.
+- `oauth_tokens`: stores access and refresh token hashes with `expires_at: DateTime(tz)`. Exposes `is_expired` property used across token exchange and `require_oauth_scope` API dependencies to enforce consistent expiry boundaries across SQLite and PostgreSQL backends.
