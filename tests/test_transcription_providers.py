@@ -2648,6 +2648,7 @@ class TestSarvamProvider:
     async def test_sarvam_ws_close_4001_invalid_api_key_fails_fast_without_reconnect(self, caplog):
         """Close code 4001 (invalid API key) fails immediately without reconnecting and without leaking secrets."""
         import logging
+
         from websockets.exceptions import ConnectionClosedError
         from websockets.frames import Close
 
