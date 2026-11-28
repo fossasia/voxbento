@@ -1,3 +1,4 @@
+
 # .github/workflows/screencast-required.yml
 #
 # Enforces the "screencast required" rule on pull requests for all contributors.
@@ -39,6 +40,7 @@ permissions:
 
 env:
   LABEL: needs-screencast
+  EXEMPTION_REQUEST_LABEL: screencast-exemption-requested
   REMIND_AFTER_HOURS: "48"
   CLOSE_AFTER_HOURS: "72"
 
@@ -47,12 +49,17 @@ jobs:
   sync:
     if: (github.event_name == 'pull_request_target' && github.event.pull_request.user.type != 'Bot') || (github.event_name == 'issue_comment' && github.event.issue.pull_request != null && github.event.comment.user.type != 'Bot')
     runs-on: ubuntu-latest
+    # One sync at a time per PR so an older run cannot overwrite newer label state.
+    concurrency:
+      group: screencast-sync-${{ github.event.pull_request.number || github.event.issue.number }}
+      cancel-in-progress: false
     steps:
       - uses: actions/github-script@v9
         with:
           script: |
             const { owner, repo } = context.repo;
             const LABEL = process.env.LABEL;
+            const EXEMPTION_REQUEST_LABEL = process.env.EXEMPTION_REQUEST_LABEL;
             const hours = process.env.CLOSE_AFTER_HOURS;
             const APPROVED_MARKER = '<!-- screencast-approved -->';
 
@@ -99,6 +106,43 @@ jobs:
               !c.user?.type?.includes('Bot') && !c.user?.login?.endsWith('[bot]') && hasVideoText(c.body)
             );
             const videoPresent = hasVideoInDescription || hasVideoInComments;
+
+            // 0. check for contributor screencast exemption checkolist
+            const selfScreenCastchecklist = body =>
+              /^- \[[xX]\] Screencast is not required for this PR\.$/m.test(
+                  (body ?? '').replace(/\r/g, '')
+              );
+
+            const isExemptionRequested = selfScreenCastchecklist(currentPr.body);
+
+            if(isExemptionRequested) {
+              if(!labelsOnPr.includes(EXEMPTION_REQUEST_LABEL)) {
+                await github.rest.issues.addLabels({
+                  owner,
+                  repo,
+                  issue_number: issueNumber,
+                  labels: [EXEMPTION_REQUEST_LABEL],
+                });
+              }
+              if(hasScreencastLabel) {
+                await github.rest.issues.removeLabel({
+                  owner,
+                  repo,
+                  issue_number: issueNumber,
+                  name: LABEL,
+                });
+              }
+              core.info(`#${issueNumber}: screencast exemption requested via checklist, skipping`);
+              return;
+            }
+
+            const exemptionLabelExist = labelsOnPr.includes(EXEMPTION_REQUEST_LABEL);
+            if (exemptionLabelExist) {
+              await github.rest.issues.removeLabel({
+                owner, repo, issue_number: issueNumber, name: EXEMPTION_REQUEST_LABEL,
+              });
+              core.info(`#${issueNumber}: exemption withdrawn`);
+            }
 
             // 1. If PR currently has the needs-screencast label AND a video is now present:
             // Remove the label immediately and confirm!
@@ -154,7 +198,7 @@ jobs:
               }
 
               // Case B: PR opened, reopened, or marked ready for review
-              if (['opened', 'reopened', 'ready_for_review'].includes(action)) {
+              if (['opened', 'reopened', 'ready_for_review'].includes(action) || (action === 'edited' && exemptionLabelExist)) {
                 if (currentPr.draft) {
                   core.info(`#${issueNumber}: draft PR, screencast will be requested when marked ready for review`);
                   return;
@@ -171,7 +215,7 @@ jobs:
                   owner, repo, issue_number: issueNumber, per_page: 100,
                 });
                 const hadScreencastLabel = events.some(e => e.event === 'labeled' && e.label?.name === LABEL);
-                if (hadScreencastLabel) {
+                if (hadScreencastLabel && !exemptionLabelExist) {
                   core.info(`#${issueNumber}: screencast was already requested on this PR before, leaving it to reviewers`);
                   return;
                 }
@@ -203,6 +247,7 @@ jobs:
         with:
           script: |
             const LABEL = process.env.LABEL;
+            const EXEMPTION_REQUEST_LABEL = process.env.EXEMPTION_REQUEST_LABEL;
             const REMIND_HOURS = Number(process.env.REMIND_AFTER_HOURS);
             const CLOSE_HOURS = Number(process.env.CLOSE_AFTER_HOURS);
             const DRY_RUN = String(context.payload.inputs?.dry_run ?? 'false') === 'true';
@@ -250,6 +295,12 @@ jobs:
                   owner, repo, pull_number: n,
                 });
                 const author = pr.user.login;
+
+                // Live labels: never remind or close a PR that has an exemption requested.
+                if ((pr.labels ?? []).some(l => l.name === EXEMPTION_REQUEST_LABEL)) {
+                  core.info(`#${n}: exemption requested, skipping`);
+                  continue;
+                }
 
                 const events = await github.paginate(github.rest.issues.listEventsForTimeline, {
                   owner, repo, issue_number: n, per_page: 100,
