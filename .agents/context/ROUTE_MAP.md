@@ -56,7 +56,7 @@ credential remains usable alongside a revoked account cookie.
 |---|---|---|---|---|
 | GET | `/interpreter/{event_slug}/{language_code}` | session or user | `interpreter_booth.html` | **Preferred URL**; resolves Jitsi URL, relay WHEP, mediamtx path |
 | GET | `/interpreter/{booth_id}` | session or user | `interpreter_booth.html` | Legacy free-form booth ID; no event scope |
-| GET | `/listener/{event_slug}` | current user session or valid listener join code | `listener-event.html` | Lists rooms/booths for event with WHEP URLs; optional `room` and `lang` query params preselect a room and language (kept through the join form); revoked user cookies fall back to the join form |
+| GET | `/listener/{event_slug}` | current user session or valid listener join code | `listener-event.html` | Lists rooms/booths for event with WHEP URLs; optional `room` and `lang` query params preselect a room and language (kept through the join form; `lang=<spoken code>` opens the floor when no booth has that code); the floor is listed when the room has floor audio or floor captions, and each booth carries `floor_fallback` (`{whep_url, booth_id, channel_id}` or null, #1397) and the floor entry `return_whep_url` (the spoken-language return channel when a booth is two-way into it, else null); revoked user cookies fall back to the join form |
 | GET | `/overlay/{event_slug}/{room_id}/{language_code}` | join code or current user session | `overlay.html` | Transparent OBS/vMix subtitle layer; booths, floor, and translation-only channels |
 | GET | `/overlay/{event_slug}/{room_id}/{language_code}/session` | join code or current user session | JSON | Revalidates access/channel and issues a fresh caption token; no-store |
 
@@ -96,12 +96,23 @@ room-deletion helper to clear self-relay and incoming relay references and delet
 dependent data. Publishing booths return 409; missing or foreign events/rooms
 return 404; successful deletion returns 204.
 
+`POST /api/v1/events/{event_slug}/rooms/{room_id}/booths/{language_code}` takes an
+optional JSON body `{"return_language_code": "en"}` to make the booth two-way (#1397);
+other keys are ignored. The return language must be the room's spoken language, not the
+booth's own and not another booth's language (422), and no booth may be created for a
+language another booth returns into (409). Booth list/get responses include
+`return_language_code`. `PUT /api/v1/events/{event_slug}/rooms/{eventyay_room_id}` takes
+two-way off booths whose return language no longer matches a changed spoken language
+(409 while one of them outputs into it), and refuses `target_languages` that include a
+language a kept booth returns into (409). Admin booth create, setup wizard add-booth and
+the legacy `POST /api/events/{event_slug}/booths` refuse that language too.
+
 ## WebSocket Endpoints
 
 | Path | Auth | Protocol |
 |---|---|---|
 | `/ws/booth/{booth_id}` | optional JWT via `?token=` + cookies (`session_token` or `user_token`) | See WebSocket Protocol in `REPOSITORY_CONTEXT.md` |
-| `/ws/captions/{booth_id}` | optional JWT via `?token=` (always validated; user tokens must belong to an active account issued after its session cutoff); listener token, join code (cookie or `?code=`), or current user session required when event has `listener_join_code`; events without a join code retain public caption access with an anonymous connection cap | Receives `booth:state` (listener-safe live/lock status, sent on connect and on change), `caption`, and `translated_caption` messages; listener captions feed. Supports `{event_slug}-{room_id}-{language_code}` (`floor-{room_id}` allowed only in unauthenticated dev). Closes 1011 when the session lookup fails so clients can retry |
+| `/ws/captions/{booth_id}` | optional JWT via `?token=` (always validated; user tokens must belong to an active account issued after its session cutoff); listener token, join code (cookie or `?code=`), or current user session required when event has `listener_join_code`; events without a join code retain public caption access with an anonymous connection cap | Receives `booth:state` (listener-safe live/lock status with `on_air`, sent on connect and on change), `caption`, and `translated_caption` messages; listener captions feed. Supports `{event_slug}-{room_id}-{language_code}` (`floor-{room_id}` allowed only in unauthenticated dev). Closes 1011 when the session lookup fails so clients can retry |
 | `/ws/tts/{room_id}/{language_code}/{booth_id}` | JWT query param, session/user token, or listener join code cookie (a cookie code spends the shared join-code budget when connecting); current account state and session cutoff checked for user tokens, credentials rechecked at most every 5 s while bundles are sent (a listener-code recheck only compares the code and spends no budget); a failed DB check withholds the bundle | Receives framed binary bundle messages (1-byte version `0x01`, 4-byte big-endian header length `L`, `L`-byte UTF-8 JSON header, optional 24 kHz 16-bit mono PCM payload) |
 | `/ws/demo/live` | none; same-origin `Origin` required (else 403/4003); refused (close 1008) when the Admin or `LIVE_DEMO_ENABLED=false` switched it off; per-server session cap (close 1013), per-IP hourly budget by ASGI client address (close 1008), daily minutes cap (`daily_limit`, close 1008; a running try ends with `done` reason `daily_limit`) and time limit, all from `/admin/live-demo/` (env defaults until saved) | Home-page live demo on local models (faster-whisper → NLLB → Supertonic), or in room mode on a room's own speech, translation and voice services with its event's keys (the speech service's `run_stream` reads the audio through `AudioPipe`; nothing is saved to the room). Client sends JSON `start` `{source, targets (≤ admin limit), listen, names, glossary:[{term, lang (all or a target), translation}] (≤10)}`, then binary 16 kHz s16le mono frames (≤1 s each), optional `listen`, and `stop`. Server sends `status`, `ready`, `notice` (a speech service's status line), `partial`/`final` captions, `translation`, `audio` header followed by one binary 24 kHz PCM frame, `error`, and `done` before closing |
 

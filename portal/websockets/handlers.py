@@ -23,7 +23,9 @@ from portal.auth import (
     user_session_is_valid,
 )
 from portal.database import get_booth_language_name, get_session, get_user_by_id
+from portal.globals import booths
 from portal.join_code_limit import JoinCodeThrottled
+from portal.room_setup import load_booth_return_language
 from portal.websockets.manager import (
     REASON_ACCOUNT_DEACTIVATED,
     REASON_AUTH_REVOKED,
@@ -40,10 +42,12 @@ from portal.websockets.manager import (
     _handle_request_publish_ticket,
     _handle_set_active,
     _handle_set_broadcast_unlocked,
+    _handle_set_output,
     _handle_update_state,
     listener_manager,
     manager,
     release_participant,
+    send_channel_state,
     tts_manager,
     utc_now,
 )
@@ -52,6 +56,22 @@ _log = logging.getLogger(__name__)
 ROLE_RECHECK_INTERVAL = 5.0
 _monotonic = time.monotonic
 router = APIRouter()
+
+
+async def _booth_return_language(booth_id: str) -> tuple[str, str] | None:
+    """The booth's return language when it is two-way (#1397), or None if not.
+
+    If the read fails, the booth keeps what it has in memory: a database blip while someone
+    joins must not switch a live two-way booth back to its own channel.
+    """
+    try:
+        return await load_booth_return_language(booth_id)
+    except SQLAlchemyError:
+        _log.warning("Could not read the return language of booth %s", booth_id, exc_info=True)
+        booth = booths.get_booth_sync(booth_id)
+        if booth is None or not booth.return_language_code:
+            return None
+        return booth.return_language_code, booth.return_language
 
 
 @router.websocket("/ws/booth/{booth_id}")
@@ -106,6 +126,7 @@ async def ws_booth(websocket: WebSocket, booth_id: str) -> None:
     await websocket.accept()
 
     language_name = await get_booth_language_name(booth_id)
+    return_language = await _booth_return_language(booth_id)
 
     issued_at = token_issued_at(payload)
     if user_id is not None and not user_session_is_valid(user, payload):
@@ -122,6 +143,7 @@ async def ws_booth(websocket: WebSocket, booth_id: str) -> None:
         user_id=user_id,
         invite_token_id=token_id,
         session_key=booth_session_key(payload),
+        return_language=return_language,
         issued_at=issued_at or (datetime.min.replace(tzinfo=timezone.utc) if user_id is not None else utc_now()),
     )
     if user_id is not None and manager.revocation_epoch(user_id, booth_id) != revocation_epoch:
@@ -209,6 +231,8 @@ async def ws_booth(websocket: WebSocket, booth_id: str) -> None:
                 await _handle_accept_handoff(websocket, session, data)
             elif msg_type == "booth:cancel-handoff":
                 await _handle_cancel_handoff(websocket, session, data)
+            elif msg_type == "booth:set-output":
+                await _handle_set_output(websocket, session, data)
             else:
                 await websocket.send_text(
                     json.dumps({"type": "booth:error", "message": f"Unknown message type: {msg_type}"})
@@ -320,6 +344,7 @@ async def ws_captions(websocket: WebSocket, booth_id: str) -> None:
         # Tell a newly connected listener whether the booth is already live, so
         # it doesn't have to wait for the next state change to start playback.
         await listener_manager.send_booth_state(websocket, booth_id)
+        await send_channel_state(websocket, booth_id)
         while True:
             await websocket.receive_text()
     except WebSocketDisconnect:

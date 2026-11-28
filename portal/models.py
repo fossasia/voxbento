@@ -179,6 +179,8 @@ class Room(Base):
     )
     floor_tts_voice: Mapped[str] = mapped_column(String(50), default="M1", server_default=sa.text("'M1'"))
     audio_delay_ms: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
+    # Listeners on an interpreter channel hear the floor while that booth is off air (#1397).
+    auto_floor_enabled: Mapped[bool] = mapped_column(Boolean, default=True, server_default=sa.true())
 
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
 
@@ -226,6 +228,8 @@ class DBBooth(Base):
     room_id: Mapped[int] = mapped_column(ForeignKey("rooms.id", ondelete="CASCADE"), nullable=False)
     language_code: Mapped[str] = mapped_column(String(2))
     language_name: Mapped[str] = mapped_column(String(100))
+    # Two-way booth (#1397): the room's spoken language, which this booth can also interpret into.
+    return_language_code: Mapped[str | None] = mapped_column(String(2), nullable=True, default=None)
     transcription_enabled: Mapped[bool] = mapped_column(Boolean, default=False, server_default="0")
     transcription_provider: Mapped[str] = mapped_column(String(20), default="local", server_default=sa.text("'local'"))
     transcription_model: Mapped[str] = mapped_column(String(40), default="tiny", server_default=sa.text("'tiny'"))
@@ -826,6 +830,8 @@ class BoothLiveState(Base):
     active_invite_public_id: Mapped[str | None] = mapped_column(String(32), nullable=True)
     active_mic_active: Mapped[bool] = mapped_column(Boolean, default=False, server_default="0")
     active_ingest_connected: Mapped[bool] = mapped_column(Boolean, default=False, server_default="0")
+    # The return language a two-way booth is interpreting into; None while it outputs into its own (#1397).
+    output_language_code: Mapped[str | None] = mapped_column(String(2), nullable=True)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
 
     def __repr__(self) -> str:

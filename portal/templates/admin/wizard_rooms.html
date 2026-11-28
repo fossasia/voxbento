@@ -11,6 +11,9 @@
     {% if request.query_params.get('error') == 'duplicate_language' %}
     <div class="alert alert-danger">That room already has a booth for that language.</div>
     {% endif %}
+    {% if request.query_params.get('error') == 'return_language' %}
+    <div class="alert alert-danger">A two-way booth in that room already interprets into that language, so it can't have its own booth.</div>
+    {% endif %}
     {% if request.query_params.get('error') == 'room_required' %}
     <div class="alert alert-danger">Select a room before adding a booth.</div>
     {% endif %}

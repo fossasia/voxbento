@@ -142,6 +142,7 @@ Client → Server messages:
 | `booth:set-active` | `_handle_set_active` | Changes active interpreter (room_coordinator/current-active only) |
 | `booth:update-state` | `_handle_update_state` | Updates mic_active / ingest_connected flags |
 | `booth:request-publish-ticket` | `_handle_request_publish_ticket` | Replies `booth:publish-ticket` with a single-use WHIP ticket (active interpreter, broadcast unlocked) |
+| `booth:set-output` | `_handle_set_output` | Two-way booth (#1397): `{output: "primary" \| "return"}` moves the booth's output to its own or the room's spoken-language channel (active interpreter or `can_set_active`); kicks the session on the channel it left |
 | `booth:initiate-handoff` | `_handle_initiate_handoff` | Initiates interpreter handoff |
 | `booth:accept-handoff` | `_handle_accept_handoff` | Accepts interpreter handoff |
 | `booth:cancel-handoff` | `_handle_cancel_handoff` | Cancels interpreter handoff |
@@ -151,7 +152,7 @@ Server → Client broadcasts: `booth:joined`, `booth:state`, `booth:chat`, `boot
 Role is NEVER trusted from client data — always read from the server-side `Session.granted_role` derived from cookies at connect time.
 
 ### Additional Real-Time Feeds
-- Live captions feed: `/ws/captions/{booth_id}` — receives `caption` (`partial`, `final`, `clear`), `translated_caption`, and `booth:state` messages for listeners (authenticated via `resolve_ws_auth` when `BOOTH_ACCESS_TOKEN` is set). Supports canonical `{event_slug}-{room_id}-{language_code}`.
+- Live captions feed: `/ws/captions/{booth_id}` — receives `caption` (`partial`, `final`, `clear`), `translated_caption`, and `booth:state` messages for listeners (authenticated via `resolve_ws_auth` when `BOOTH_ACCESS_TOKEN` is set). The floor feed also gets listener-safe `channel:state` `{return_on_air, whep_url, language_code}` for a two-way booth interpreting into the spoken language (#1397). Supports canonical `{event_slug}-{room_id}-{language_code}`.
 - Direct-push TTS feed: `/ws/tts/{room_id}/{language_code}/{booth_id}` — authorized before acceptance; receives structured binary bundle messages (1-byte version, 4-byte header length, JSON metadata header, optional 24 kHz 16-bit mono PCM payload) synthesized via Deepgram Aura, ElevenLabs v4 or Supertonic ONNX. Translations are delivered concurrently via the caption feed and the TTS bundle header.
 
 ---

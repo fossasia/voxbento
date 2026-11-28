@@ -221,6 +221,43 @@ var currentSourceType = null;
 var whepAudioLive = false;
 /** @type {ReturnType<typeof window.AudioScheduler.create>|null} */
 var audioScheduler = null;
+// Plays an interpreter channel or, while its booth is off air, the room floor. On the
+// original channel of a room with a two-way booth it plays the floor, or that booth while it
+// interprets back into the spoken language (channelSourceFollowsReturn).
+var channelSource = null;
+var channelSourceFollowsReturn = false;
+// That original channel in a room whose floor has no audio: only the two-way booth is heard on it.
+var returnWithoutFloor = false;
+// The booth's on_air from booth:state, and the last state of the stream in the player.
+var channelOnAir = false;
+var channelPlayerState = null;
+var FLOOR_FALLBACK_STATUS = "Original audio (interpreter off air)";
+var OFF_AIR_STATUS = "Interpreter off air — switching to the original audio...";
+var WAITING_STATUS = "Broadcast not live yet — waiting...";
+
+function onFloorFallback() {
+  return channelSource !== null && !channelSourceFollowsReturn && channelSource.source() === "floor";
+}
+
+// For a stream with audio. Right after its booth goes off air the interpreter's stream can
+// still look connected while nothing comes, until the floor takes over.
+function setLiveStatus(text) {
+  if (onFloorFallback()) {
+    setStatus(FLOOR_FALLBACK_STATUS, "live");
+  } else if (channelSourceFollowsReturn && returnWithoutFloor && !channelOnAir) {
+    setStatus(WAITING_STATUS, "waiting");
+  } else if (channelSource !== null && !channelOnAir && (!channelSourceFollowsReturn || channelSource.source() !== "floor")) {
+    setStatus(OFF_AIR_STATUS, "recovering");
+  } else {
+    setStatus(text, "live");
+  }
+}
+
+function resetChannelSource() {
+  channelSource = null;
+  channelOnAir = false;
+  channelPlayerState = null;
+}
 
 function setStatus(text, cls) {
   // #status is a live region, and rewriting it with the same badge makes some
@@ -259,14 +296,16 @@ function updateTapToListen() {
 
 if (tapToListenBtn) {
   tapToListenBtn.addEventListener("click", function () {
-    WhepListener.resume();
+    if (channelSource) channelSource.resume();
+    else WhepListener.resume();
     if (audioCtx && audioCtx.state === "suspended") {
       audioCtx.resume().then(updateTapToListen);
     }
   });
 }
 
-function onState(s) {
+// floorFallback: the floor is playing in place of an off-air interpreter.
+function onState(s, floorFallback) {
   whepPlaybackBlocked = Boolean(s.playbackBlocked) && s.peerConnection === "connected";
   updateTapToListen();
   whepAudioLive = s.peerConnection === "connected" && s.audioActive && !whepPlaybackBlocked;
@@ -276,8 +315,11 @@ function onState(s) {
   if (whepPlaybackBlocked) {
     setStatus("Ready — tap to listen", "waiting");
   } else if (whepAudioLive) {
-    setStatus("Live (WebRTC)", "live");
+    setLiveStatus("Live (WebRTC)");
     showAudioPlayer(true);
+  } else if (floorFallback) {
+    // The floor retries on its own back-off; until it plays, the interpreter is still awaited.
+    setStatus(WAITING_STATUS, "waiting");
   } else if (s.peerConnection === "connecting" || s.ice === "checking") {
     setStatus("Connecting...", "recovering");
   } else if (
@@ -315,6 +357,11 @@ function stopCurrentStream() {
   captionDelivery.reset();
   speechDelivery.reset();
   WhepListener.stop();
+  if (channelSource) {
+    channelSource.stop();
+    resetChannelSource();
+  }
+  channelSourceFollowsReturn = false;
   stopTtsWs();
   pendingBoothId = null;
   pendingWhepUrl = null;
@@ -581,7 +628,9 @@ function applyCurrentRoomAudioDelay() {
     .then(function (delayMs) {
       if (delayMs === currentAudioDelayMs) return;
       currentAudioDelayMs = delayMs;
-      if (currentSourceType === "whep" && WhepListener.setAudioDelayMs) {
+      if (channelSource) {
+        channelSource.setAudioDelayMs(delayMs);
+      } else if (currentSourceType === "whep" && WhepListener.setAudioDelayMs) {
         WhepListener.setAudioDelayMs(delayMs);
       }
     })
@@ -612,6 +661,14 @@ function openCaptionsWs(boothId) {
     // reconnects sockets that dropped on their own. The server resends the
     // booth status on connect, so a pending stream still starts. 4001/4003
     // are auth rejections, which retrying won't fix.
+    if (captionsWs === ws && channelSource && (event.code === 4001 || event.code === 4003)) {
+      // Without the socket the booth's status can't arrive, so nothing may keep playing on its own.
+      channelSource.stop();
+      resetChannelSource();
+      channelSourceFollowsReturn = false;
+      showAudioPlayer(false);
+      setStatus("Access ended. Reload the page to join again.", "error");
+    }
     if (captionsWs !== ws || event.code === 4001 || event.code === 4003) return;
     captionsWs = null;
     captionsRetryTimer = setTimeout(function () {
@@ -878,8 +935,27 @@ function handleCaptionsMessage(event) {
     }
     var waitingText = document.getElementById("waiting-text");
 
+    if (data.type === "channel:state") {
+      if (channelSource && channelSourceFollowsReturn) {
+        channelOnAir = Boolean(data.state && data.state.return_on_air === true);
+        channelSource.setOnAir(channelOnAir);
+        // Relabel now: the two-way booth's stream can still look connected until the floor takes over.
+        if (channelPlayerState) onState(channelPlayerState, false);
+      }
+      return;
+    }
+
     if (data.type === "booth:state") {
       var bstate = data.state || {};
+      if (channelSource && channelSourceFollowsReturn) return;
+      if (channelSource) {
+        // Off air (organizer lock included) plays the floor and keeps every selection.
+        channelOnAir = bstate.on_air === true;
+        channelSource.setOnAir(channelOnAir);
+        // Relabel the stream in the player now: its own state may not change until the floor takes over.
+        if (channelPlayerState) onState(channelPlayerState, onFloorFallback());
+        return;
+      }
       // If we were waiting for the broadcast to go live, start WHEP or TTS now.
       // A locked booth stays silent for listeners even if ingest reports connected.
       if (
@@ -1068,6 +1144,7 @@ roomSelect.addEventListener("change", function () {
     if (b.language_code === "floor") {
       opt.dataset.boothId = eventSlug + "-" + roomId + "-floor";
       opt.dataset.languageCode = "floor";
+      if (b.spoken_language_code) opt.dataset.spokenLanguageCode = b.spoken_language_code;
     } else {
       opt.dataset.boothId = eventSlug + "-" + roomId + "-" + b.language_code;
       opt.dataset.languageCode = b.language_code;
@@ -1228,9 +1305,50 @@ languageSelect.addEventListener("change", function () {
   if (whepUrl) {
     if (boothId && languageCode) {
       openCaptionsWs(boothId);
-      if (languageCode === "floor") {
+      if (languageCode === "floor" && sourceData && sourceData.return_whep_url) {
+        // The floor plays at once; channel:state on this socket says when a two-way booth
+        // interprets into the spoken language, and that booth plays instead.
+        channelSourceFollowsReturn = true;
+        // Without floor audio the channel is silent until that booth is on air.
+        returnWithoutFloor = sourceData.floor_audio === false;
+        channelSource = ChannelSource.create({
+          interpretationUrl: sourceData.return_whep_url,
+          floorUrl: returnWithoutFloor ? null : whepUrl,
+          audioEl: audioEl,
+          standbyEl: document.createElement("audio"),
+          audioDelayMs: selectedAudioDelayMs,
+          createClient: createWhepClient,
+          startOnFallback: true,
+          onState: function (s) {
+            channelPlayerState = s;
+            onState(s, false);
+          },
+          onSilent: function () {
+            channelPlayerState = null;
+            setStatus(WAITING_STATUS, "waiting");
+            showAudioPlayer(false);
+          },
+        });
+        if (!returnWithoutFloor) setStatus("Connecting...", "recovering");
+      } else if (languageCode === "floor") {
         // Floor audio has no WHIP ingest — start WHEP immediately.
         startWhepAndCaptions(whepUrl, null, selectedAudioDelayMs);
+      } else if (sourceData && sourceData.floor_fallback) {
+        var standbyEl = document.createElement("audio");
+        channelSource = ChannelSource.create({
+          interpretationUrl: whepUrl,
+          floorUrl: sourceData.floor_fallback.whep_url,
+          audioEl: audioEl,
+          standbyEl: standbyEl,
+          audioDelayMs: selectedAudioDelayMs,
+          createClient: createWhepClient,
+          onState: function (s, kind) {
+            channelPlayerState = s;
+            onState(s, kind === "floor");
+          },
+        });
+        setStatus(WAITING_STATUS, "waiting");
+        showAudioPlayer(false);
       } else {
         // Wait for the booth to be live before starting WHEP. The captions
         // socket sends the booth's current status when it connects and again
@@ -1292,14 +1410,14 @@ function applyTtsOverlay() {
     } else {
       audioEl.muted = false;
       if (whepAudioLive) {
-        setStatus("Live (WebRTC + Translation)", "live");
+        setLiveStatus("Live (WebRTC + Translation)");
       }
     }
   } else {
     audioEl.muted = false;
     // If WHEP audio is already playing, refresh the badge to WebRTC
     if (whepAudioLive) {
-      setStatus("Live (WebRTC)", "live");
+      setLiveStatus("Live (WebRTC)");
     }
   }
 }
@@ -1307,6 +1425,7 @@ function applyTtsOverlay() {
 // Clean up on page unload.
 window.addEventListener("beforeunload", function () {
   WhepListener.stop();
+  if (channelSource) channelSource.stop();
   stopTtsWs();
 });
 
@@ -1354,9 +1473,13 @@ function applyListenerLink() {
     });
   }
   if (roomSelected && requestedLang) {
+    // A link naming the spoken language (lang=en) opens the floor unless a booth has that code.
     selectOption(languageSelect, function (opt) {
       return opt.dataset.languageCode === requestedLang;
-    });
+    }) ||
+      selectOption(languageSelect, function (opt) {
+        return opt.dataset.spokenLanguageCode === requestedLang;
+      });
   }
 }
 

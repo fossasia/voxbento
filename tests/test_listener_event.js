@@ -9,7 +9,9 @@
  */
 'use strict';
 
+const fs = require('fs');
 const path = require('path');
+const vm = require('vm');
 const { pathToFileURL } = require('url');
 
 let passed = 0;
@@ -236,7 +238,9 @@ function make(tagName, id) {
 
 const roomSelect = document.getElementById('room-select');
 roomSelect.innerHTML =
-  '<option value="">-- Select Room --</option><option value="1">Main Hall</option><option value="2">Recovery Hall</option>';
+  '<option value="">-- Select Room --</option><option value="1">Main Hall</option><option value="2">Recovery Hall</option>' +
+  '<option value="3">Thai Hall</option><option value="4">Two-way Hall</option>' +
+  '<option value="5">Quiet Hall</option>';
 const captionModeSelect = document.getElementById('caption-mode-select');
 captionModeSelect.innerHTML =
   '<option value="original">Original</option><option value="translated">Translated</option>';
@@ -266,7 +270,7 @@ const listenerData = make('script', 'listener-data');
 listenerData.textContent = JSON.stringify({
   eventSlug: 'demo',
   shareUrl: 'https://example.test/listener/demo',
-  rooms: [{ id: 1, floor_tts_enabled: true }, { id: 2, floor_tts_enabled: true }],
+  rooms: [{ id: 1, floor_tts_enabled: true }, { id: 2, floor_tts_enabled: true }, { id: 3, floor_tts_enabled: false }, { id: 4, floor_tts_enabled: false }, { id: 5, floor_tts_enabled: false }],
   booths: [
     { id: 'floor_1', room_id: 1, language_code: 'floor', language_name: 'Floor Audio', whep_url: 'http://mtx/floor/whep', audio_delay_ms: 0 },
     { id: 2, room_id: 1, language_code: 'es', language_name: 'Spanish', whep_url: 'http://mtx/es/whep', audio_delay_ms: 0 },
@@ -280,6 +284,50 @@ listenerData.textContent = JSON.stringify({
       translation_enabled: true,
       translation_languages: [{ code: 'fr', name: 'French', tts_enabled: true }],
     },
+    // Room 3 has a floor source and automatic floor audio on (#1397).
+    {
+      id: 'floor_3',
+      room_id: 3,
+      language_code: 'floor',
+      spoken_language_code: 'en',
+      language_name: 'English (original)',
+      whep_url: 'http://mtx/floor3/whep',
+      audio_delay_ms: 0,
+    },
+    {
+      id: 30,
+      room_id: 3,
+      language_code: 'th',
+      language_name: 'Thai',
+      whep_url: 'http://mtx/th/whep',
+      audio_delay_ms: 0,
+      translation_enabled: true,
+      translation_languages: [{ code: 'en', name: 'English', tts_enabled: false }],
+      floor_fallback: { whep_url: 'http://mtx/floor3/whep', booth_id: 'demo-3-floor', channel_id: 'demo/3/floor' },
+    },
+    // Room 4 has a Thai booth that is two-way into English (#1397, part 2).
+    {
+      id: 'floor_4',
+      room_id: 4,
+      language_code: 'floor',
+      spoken_language_code: 'en',
+      language_name: 'English (original)',
+      whep_url: 'http://mtx/floor4/whep',
+      audio_delay_ms: 0,
+      return_whep_url: 'http://mtx/r4/en/whep',
+    },
+    // Room 5 has a two-way booth but no floor audio (#1397, part 2).
+    {
+      id: 'floor_5',
+      room_id: 5,
+      language_code: 'floor',
+      spoken_language_code: 'en',
+      language_name: 'English (original)',
+      whep_url: 'http://mtx/floor5/whep',
+      audio_delay_ms: 0,
+      return_whep_url: 'http://mtx/r5/en/whep',
+      floor_audio: false,
+    },
   ],
 });
 
@@ -287,9 +335,13 @@ listenerData.textContent = JSON.stringify({
 
 let whepOpts = null;
 let resumeCalls = 0;
+const whepDelays = [];
 const WhepListener = {
   start(opts) {
     whepOpts = opts;
+  },
+  setAudioDelayMs(ms) {
+    whepDelays.push(ms);
   },
   resume() {
     resumeCalls++;
@@ -298,6 +350,40 @@ const WhepListener = {
     if (whepOpts) whepOpts.onState({ peerConnection: 'closed', ice: 'closed', audioActive: false });
   },
 };
+
+// WHEP clients the floor fallback creates, one per stream (#1397).
+const channelClients = [];
+function createWhepClient() {
+  const client = {
+    opts: null,
+    stopped: false,
+    resumed: 0,
+    delays: [],
+    start(opts) {
+      this.opts = opts;
+      this.audioEl = opts.audioEl;
+    },
+    stop() {
+      this.stopped = true;
+      this.opts.onState({ peerConnection: 'closed', ice: 'closed', audioActive: false });
+    },
+    setAudioElement(el) {
+      this.audioEl = el;
+      this.opts.onState({ peerConnection: 'connected', ice: 'connected', audioActive: true });
+    },
+    setAudioDelayMs(ms) {
+      this.delays.push(ms);
+    },
+    resume() {
+      this.resumed++;
+    },
+    live() {
+      this.opts.onState({ peerConnection: 'connected', ice: 'connected', audioActive: true });
+    },
+  };
+  channelClients.push(client);
+  return client;
+}
 
 const sockets = [];
 class FakeWebSocket {
@@ -318,10 +404,13 @@ function captionsSocket() {
 }
 
 let boothState = { ingest_status: 'disconnected' };
+let roomDelayMs = 0;
+let pollRoomDelay = null;
+const windowListeners = {};
 const realSetTimeout = setTimeout;
 const realClearTimeout = clearTimeout;
 function fetch(url) {
-  const body = url.includes('/audio-delay') ? { audio_delay_ms: 0 } : boothState;
+  const body = url.includes('/audio-delay') ? { audio_delay_ms: roomDelayMs } : boothState;
   return Promise.resolve({ ok: true, json: () => Promise.resolve(body) });
 }
 
@@ -348,6 +437,7 @@ const AudioScheduler = {
 Object.assign(globalThis, {
   document,
   WhepListener,
+  createWhepClient,
   WebSocket: FakeWebSocket,
   fetch,
   window: {
@@ -358,13 +448,21 @@ Object.assign(globalThis, {
       },
     },
     setTimeout,
-    setInterval: () => 0,
-    addEventListener: () => {},
+    setInterval: (fn) => {
+      pollRoomDelay = fn;
+      return 0;
+    },
+    addEventListener: (type, handler) => {
+      windowListeners[type] = handler;
+    },
     AudioContext: FakeAudioContext,
     AudioScheduler,
   },
 });
 require(path.join(__dirname, '..', 'portal', 'static', 'js', 'tts-parser.js'));
+// channel-source.js is a classic script the page loads before listener-event.js.
+const CHANNEL_SOURCE = path.join(__dirname, '..', 'portal', 'static', 'js', 'channel-source.js');
+vm.runInThisContext(fs.readFileSync(CHANNEL_SOURCE, 'utf8'), { filename: CHANNEL_SOURCE });
 
 // A translation bundle as the server frames it: version byte, header length, JSON header, no audio.
 function bundleFrame(header) {
@@ -911,8 +1009,267 @@ async function run() {
   assert(pendingTimers(1000) === 1, 'the translation-only feed still reconnects');
   assert(statusText() === 'Live (WebRTC + Translation)', 'a translation-only feed drop leaves the WebRTC badge alone, got "' + statusText() + '"');
 
+  await floorFallbackTests();
+  await returnChannelTests();
+  await deepLinkTests();
+
   console.log('\n' + passed + ' passed, ' + failed + ' failed');
   process.exit(failed > 0 ? 1 : 0);
+}
+
+function boothStateMessage(state) {
+  return { data: JSON.stringify({ type: 'booth:state', state }) };
+}
+
+const ON_AIR = { broadcast_unlocked: true, ingest_status: 'connected', on_air: true };
+const FLOOR_STATUS = 'Original audio (interpreter off air)';
+const OFF_AIR = 'Interpreter off air — switching to the original audio...';
+const WAITING = 'Broadcast not live yet — waiting...';
+
+async function floorFallbackTests() {
+  console.log('\n── Floor audio while the interpreter is off air (#1397) ──');
+  const realNow = Date.now;
+  let now = 1000000;
+  Date.now = () => now;
+  const player = document.getElementById('audio-player');
+  const thai = 'http://mtx/th/whep';
+  const running = () => channelClients.filter((c) => !c.stopped);
+
+  choose(roomSelect, '3');
+  const floorOption = languageSelect.options.find((o) => o.dataset.languageCode === 'floor');
+  assert(floorOption.text === 'English (original)', 'the floor is labelled with the spoken language');
+  assert(floorOption.dataset.spokenLanguageCode === 'en', 'the floor option knows the spoken language');
+
+  choose(languageSelect, thai);
+  assert(statusText() === WAITING, 'an off-air booth first shows the waiting message, got "' + statusText() + '"');
+  assert(channelClients.length === 0, 'nothing plays during the handover guard');
+  assert(captionsSocket().url.endsWith('/ws/captions/demo-3-th'), 'captions stay on the Thai channel');
+  assert(pendingTimers(3000) === 1, 'the 3 s guard is running');
+
+  now += 3000;
+  runTimers(3000);
+  const floor = channelClients[0];
+  assert(floor && floor.opts.whepUrl === 'http://mtx/floor3/whep', 'the floor starts after 3 s off air');
+  assert(floor.audioEl === player && floor.opts.audioDelayMs === 0, 'it plays on the player with the room delay');
+  floor.opts.onState({ peerConnection: 'new', ice: 'new', audioActive: false, retrying: true });
+  assert(statusText() === WAITING, 'a floor still retrying keeps the waiting message, got "' + statusText() + '"');
+  floor.live();
+  assert(statusText() === FLOOR_STATUS, 'the floor shows as the original audio, got "' + statusText() + '"');
+
+  choose(translationSelect(), 'en');
+  assert(statusText() === FLOOR_STATUS, 'translation text keeps the original audio badge, got "' + statusText() + '"');
+  choose(translationSelect(), '');
+  assert(statusText() === FLOOR_STATUS, 'turning translation off keeps the original audio badge');
+  assert(captionsSocket().url.endsWith('/ws/captions/demo-3-th'), 'the caption socket never moved to the floor');
+
+  roomDelayMs = 400;
+  pollRoomDelay();
+  await flush();
+  await flush();
+  assert(floor.delays.at(-1) === 400, 'a room delay change reaches the floor stream');
+
+  document.getElementById('tap-to-listen-btn').dispatchEvent(new Event('click'));
+  assert(floor.resumed === 1, 'tap to listen resumes the stream that is playing');
+
+  captionsSocket().onmessage(boothStateMessage(ON_AIR));
+  const booth = channelClients[1];
+  assert(booth.opts.whepUrl === thai && booth.audioEl !== player, 'the booth stream warms up off the player');
+  assert(booth.audioEl.muted === true && booth.opts.audioDelayMs === 400, 'muted, with the current room delay');
+  assert(!floor.stopped && statusText() === FLOOR_STATUS, 'the floor keeps playing meanwhile');
+  booth.live();
+  assert(!floor.stopped, 'with a 400 ms room delay the floor plays on while the booth fills its delay');
+  runTimers(400);
+  assert(floor.stopped && booth.audioEl === player, 'the booth takes over the player once it has audio');
+  assert(statusText() === 'Live (WebRTC)', 'the badge goes back to Live (WebRTC), got "' + statusText() + '"');
+
+  captionsSocket().onmessage(boothStateMessage({ ...ON_AIR, on_air: false }));
+  assert(statusText() === OFF_AIR, 'a booth that just went off air is not shown as Live, got "' + statusText() + '"');
+  captionsSocket().onmessage(boothStateMessage(ON_AIR));
+  assert(statusText() === 'Live (WebRTC)', 'back on air within the guard shows Live again, got "' + statusText() + '"');
+  assert(channelClients.length === 2 && pendingTimers(3000) === 0, 'and starts nothing new');
+
+  captionsSocket().onmessage(boothStateMessage({ broadcast_unlocked: false, ingest_status: 'connected', on_air: false }));
+  assert(roomSelect.value === '3' && languageSelect.value === thai, 'Mission Control Stop keeps the room and channel');
+  assert(!languageSelect.disabled, 'the channel select stays usable');
+  assert(statusText() === OFF_AIR, 'during the guard the badge says the interpreter is off air, got "' + statusText() + '"');
+  booth.live();
+  assert(statusText() === OFF_AIR, 'a stale connected state from the old stream keeps it, got "' + statusText() + '"');
+  choose(translationSelect(), 'en');
+  assert(statusText() === OFF_AIR, 'so does turning translation on, got "' + statusText() + '"');
+  choose(translationSelect(), '');
+  now += 3000;
+  runTimers(3000);
+  const floorAgain = channelClients[2];
+  assert(floorAgain.opts.whepUrl === 'http://mtx/floor3/whep', 'a locked booth falls back to the floor');
+  floorAgain.live();
+  runTimers(400);
+  assert(booth.stopped && running().length === 1, 'one stream plays after the switch');
+  assert(statusText() === FLOOR_STATUS, 'the floor then shows as the original audio, got "' + statusText() + '"');
+
+  captionsSocket().onclose({ code: 4001 });
+  assert(running().length === 0, 'a 4001 close stops every stream');
+  assert(statusText() === 'Access ended. Reload the page to join again.', 'and says access ended');
+  assert(pendingTimers(3000) === 0 && pendingTimers(5000) === 0, 'and leaves no timer');
+
+  choose(languageSelect, '');
+  choose(languageSelect, thai);
+  assert(pendingTimers(3000) === 1, 'choosing the channel again starts a fresh guard');
+  choose(roomSelect, '1');
+  assert(pendingTimers(3000) === 0 && running().length === 0, 'changing room during the guard tears it down');
+
+  choose(roomSelect, '3');
+  choose(languageSelect, thai);
+  now += 3000;
+  runTimers(3000);
+  captionsSocket().onmessage(boothStateMessage(ON_AIR));
+  assert(running().length === 2 && pendingTimers(5000) === 1, 'a switch is pending');
+  choose(languageSelect, 'http://mtx/floor3/whep');
+  assert(running().length === 0 && pendingTimers(5000) === 0, 'changing channel during a switch stops both streams');
+  assert(whepOpts.whepUrl === 'http://mtx/floor3/whep', 'the floor channel itself still plays as before');
+
+  choose(languageSelect, thai);
+  now += 3000;
+  runTimers(3000);
+  windowListeners.beforeunload();
+  assert(running().length === 0, 'leaving the page stops the floor stream');
+  choose(languageSelect, '');
+  choose(languageSelect, thai);
+  captionsSocket().onclose({ code: 4003 });
+  assert(pendingTimers(3000) === 0 && running().length === 0, 'a 4003 close during the guard tears it down');
+  choose(roomSelect, '');
+
+  console.log('\n── Booths without a floor fallback behave as before ──');
+  choose(roomSelect, '1');
+  const spanish = 'http://mtx/es/whep';
+  const clientsBefore = channelClients.length;
+  choose(languageSelect, spanish);
+  now += 10000;
+  runTimers(3000);
+  assert(channelClients.length === clientsBefore, 'no floor stream is started for a booth without a fallback');
+  assert(statusText() === WAITING, 'it waits for the booth');
+  captionsSocket().onmessage(boothStateMessage({ broadcast_unlocked: true, ingest_status: 'connected', on_air: false }));
+  assert(whepOpts.whepUrl === spanish, 'ingest connected and unlocked still starts the booth, whatever on_air says');
+  whepOpts.onState({ peerConnection: 'connected', ice: 'connected', audioActive: true });
+  translationSelect().dispatchEvent(new Event('change'));
+  assert(statusText() === 'Live (WebRTC)', 'a booth without a fallback keeps the Live (WebRTC) badge');
+  roomDelayMs = 900;
+  pollRoomDelay();
+  await flush();
+  await flush();
+  assert(whepDelays.at(-1) === 900, 'a room delay change still reaches the single WHEP client');
+  captionsSocket().onmessage(boothStateMessage({ broadcast_unlocked: false, ingest_status: 'connected', on_air: false }));
+  assert(roomSelect.value === '' && languageSelect.disabled, 'locking still resets the selections');
+  assert(statusText() === 'Broadcast is currently locked by the organizers.', 'and shows the lock message');
+  Date.now = realNow;
+}
+
+function channelStateMessage(state) {
+  return { data: JSON.stringify({ type: 'channel:state', state }) };
+}
+
+async function returnChannelTests() {
+  console.log('\n── Original channel follows a two-way booth (#1397, part 2) ──');
+  const realNow = Date.now;
+  let now = 2000000;
+  Date.now = () => now;
+  const player = document.getElementById('audio-player');
+  const floorUrl = 'http://mtx/floor4/whep';
+  const running = () => channelClients.filter((c) => !c.stopped);
+  const before = channelClients.length;
+
+  choose(roomSelect, '4');
+  choose(languageSelect, floorUrl);
+  const floor = channelClients[before];
+  assert(floor && floor.opts.whepUrl === floorUrl && floor.audioEl === player, 'the floor plays at once, on the player');
+  assert(pendingTimers(3000) === 0, 'no guard before the floor');
+  assert(captionsSocket().url.endsWith('/ws/captions/demo-4-floor'), 'captions are the floor feed');
+  floor.live();
+  assert(statusText() === 'Live (WebRTC)', 'the floor is this channel, not a fallback, got "' + statusText() + '"');
+
+  captionsSocket().onmessage(boothStateMessage({ broadcast_unlocked: false, ingest_status: 'disconnected', on_air: false }));
+  assert(running().length === 1 && roomSelect.value === '4', 'a booth:state on the floor feed changes nothing');
+
+  captionsSocket().onmessage(channelStateMessage({ return_on_air: true, whep_url: 'http://mtx/r4/en/whep', language_code: 'en' }));
+  assert(statusText() === 'Live (WebRTC)', 'the floor stays Live while the return stream warms up, got "' + statusText() + '"');
+  const ret = channelClients[before + 1];
+  assert(ret && ret.opts.whepUrl === 'http://mtx/r4/en/whep' && ret.audioEl !== player, 'the return stream warms up off the player');
+  assert(!floor.stopped, 'the floor plays until the return stream has audio');
+  ret.live();
+  assert(floor.stopped && ret.audioEl === player && running().length === 1, 'then the return stream takes over');
+  assert(statusText() === 'Live (WebRTC)', 'still Live (WebRTC)');
+
+  captionsSocket().onmessage(channelStateMessage({ return_on_air: false, whep_url: null, language_code: 'en' }));
+  assert(pendingTimers(3000) === 1 && running().length === 1 && running()[0] === ret, 'a drop keeps the return stream during the 3 s guard');
+  assert(statusText() === OFF_AIR, 'and says the interpreter is off air, not Live, got "' + statusText() + '"');
+  now += 3000;
+  runTimers(3000);
+  const floorAgain = channelClients[before + 2];
+  assert(floorAgain && floorAgain.opts.whepUrl === floorUrl, 'the floor comes back 3 s after the booth leaves');
+  floorAgain.live();
+  assert(ret.stopped && running().length === 1, 'one stream plays');
+  assert(statusText() === 'Live (WebRTC)', 'the floor is Live again, got "' + statusText() + '"');
+
+  captionsSocket().onmessage(channelStateMessage(null));
+  captionsSocket().onmessage(channelStateMessage({ return_on_air: 'yes' }));
+  assert(running().length === 1 && running()[0] === floorAgain, 'malformed channel:state never switches');
+
+  captionsSocket().onclose({ code: 4003 });
+  assert(running().length === 0 && pendingTimers(5000) === 0, 'a 4003 close stops every stream');
+
+  choose(languageSelect, '');
+  choose(languageSelect, floorUrl);
+  choose(roomSelect, '3');
+  assert(running().length === 0, 'changing room stops the original channel');
+  choose(languageSelect, 'http://mtx/floor3/whep');
+  captionsSocket().onmessage(channelStateMessage({ return_on_air: true, whep_url: 'http://mtx/x/whep', language_code: 'en' }));
+  assert(whepOpts.whepUrl === 'http://mtx/floor3/whep' && running().length === 0, 'a floor without a two-way booth plays as before and ignores channel:state');
+  choose(roomSelect, '');
+
+  console.log('\n── Original channel of a room without floor audio (#1397, part 2) ──');
+  const before5 = channelClients.length;
+  choose(roomSelect, '5');
+  choose(languageSelect, 'http://mtx/floor5/whep');
+  assert(channelClients.length === before5 && statusText() === WAITING, 'nothing plays and it waits, got "' + statusText() + '"');
+  captionsSocket().onmessage(channelStateMessage({ return_on_air: true, whep_url: 'http://mtx/r5/en/whep', language_code: 'en' }));
+  const ret5 = channelClients[before5];
+  assert(ret5 && ret5.opts.whepUrl === 'http://mtx/r5/en/whep' && ret5.audioEl === player, 'the two-way booth plays on the player at once');
+  ret5.live();
+  assert(statusText() === 'Live (WebRTC)', 'and is Live, got "' + statusText() + '"');
+  captionsSocket().onmessage(channelStateMessage({ return_on_air: false, whep_url: null, language_code: null }));
+  assert(statusText() === WAITING, 'off air it waits, with no original audio promised, got "' + statusText() + '"');
+  now += 3000;
+  runTimers(3000);
+  assert(ret5.stopped && running().length === 0 && statusText() === WAITING, '3 s later the player stops and keeps waiting');
+  choose(roomSelect, '');
+  Date.now = realNow;
+}
+
+function translationSelect() {
+  return document.getElementById('translation-lang-select');
+}
+
+// The page reads ?room= and ?lang= once, when it loads, so each case loads a fresh copy.
+async function deepLinkTests() {
+  console.log('\n── Deep links to the floor (#1397) ──');
+  const cases = [
+    ['?room=3&lang=en', 'floor', 'lang=en opens the floor when no booth has English'],
+    ['?room=3&lang=floor', 'floor', 'lang=floor still opens the floor'],
+    ['?room=3&lang=th', 'th', 'lang=th opens the Thai booth'],
+    ['?room=3&lang=xx', undefined, 'an unknown language selects nothing'],
+    ['?room=1&lang=es', 'es', 'a booth code wins over the spoken language'],
+  ];
+  for (const [search, expected, message] of cases) {
+    roomSelect.listeners = {};
+    languageSelect.listeners = {};
+    roomSelect.value = '';
+    languageSelect.innerHTML = '';
+    languageSelect.selectedIndex = -1;
+    window.location.search = search;
+    const url = pathToFileURL(path.join(__dirname, '..', 'portal', 'static', 'js', 'listener-event.js'));
+    await import(url.href + search.replace('?', '?case&'));
+    const selected = languageSelect.options[languageSelect.selectedIndex];
+    assert((selected ? selected.dataset.languageCode : undefined) === expected, message);
+  }
 }
 
 run().catch((err) => {

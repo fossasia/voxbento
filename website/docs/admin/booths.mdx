@@ -45,7 +45,7 @@ The booth detail page is your primary control panel for a single language channe
 | **Overview** | Stream links, live status and who is connected. Until you turn on captions or translations, it also shows a short "what's next" list: invite an interpreter, turn on captions, turn on translations. |
 | **Captions** | Turn live captions on or off and choose the service and model. See [Transcription](./transcription.mdx). |
 | **Translations** | Turn translated captions on or off, choose the service and model, and pick the target languages listeners can choose from. |
-| **Settings** | Change the booth's language name and code, or delete the booth. |
+| **Settings** | Change the booth's language name and code, make it two-way, or delete the booth. |
 
 OpenAI models that have been retired (`gpt-4-turbo`, `gpt-4-turbo-2024-04-09` and `gpt-4o-mini-realtime-preview`) are no longer offered for translation and can't be saved. A booth that still has one saved shows it as "retired" with a warning, so choose another model on the Translations tab.
 
@@ -103,6 +103,26 @@ https://voxbento.com/pycon2026/14/en/whep
 :::note
 Booth WHEP URLs can be embedded in third-party player pages. The stream stays available even when no interpreter is active — listeners simply hear silence until an interpreter goes live.
 :::
+
+## Two-way booths
+
+A two-way booth can also interpret back into the room's spoken language, for example a
+Thai booth in an English room that answers a question asked in Thai. Turn it on with
+**Two-way with English** in the room's Languages step or on the booth's Settings tab.
+
+- It is offered once the room's spoken language is set, and never for the booth in the
+  spoken language itself.
+- The room can't also have a booth for the spoken language, since that channel is shared.
+- Several booths can be two-way. Only one at a time interprets into the spoken language.
+- Changing the room's spoken language takes two-way off booths that no longer match, and
+  the room page lists them. A booth interpreting into the spoken language right now keeps
+  it: ask its interpreter to switch back first.
+- Mission Control shows each two-way booth's direction ("Into English").
+- Listeners on the spoken-language channel hear the two-way booth while it is on air there,
+  and the room otherwise. In a room without floor audio that channel is still listed, and it
+  is silent while the booth interprets into its own language. Listeners on the booth's own language hear the original audio
+  meanwhile when the room's **Play the original audio while an interpreter is off air** setting
+  is on.
 
 ## Deleting a Booth
 
