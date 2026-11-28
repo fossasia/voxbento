@@ -7,6 +7,7 @@ import { micIsActive, watchMicTracks } from '../portal/static/js/mic-activity.js
 
 const source = readFileSync(new URL('../portal/static/js/interpreter-booth.js', import.meta.url), 'utf8')
   .replace(/^import .* from '\.\/booth-reconnect.js'\r?\n/, '')
+  .replace(/^import .* from '\.\/booth-publisher.js'\r?\n/m, '')
   .replace(/^import .* from '\.\/mic-activity.js'\r?\n/, '')
   .replace('boot().catch((error) => {', 'Promise.resolve().catch((error) => {')
 
@@ -15,6 +16,16 @@ function harness({ getUserMedia = async () => ({ getAudioTracks: () => [] }) } =
   const sockets = []
   const events = []
   let timerId = 0
+  let fetchImpl = () => Promise.reject(new Error('fetch not stubbed in this test'))
+  // Stands in for booth-publisher.js; tests set whether a publish runs and reaches MediaMTX.
+  const publisher = {
+    running: false,
+    publishing: false,
+    status: 'idle',
+    start() { events.push('publish-started') },
+    async stop() {},
+    retryNow() { events.push('publish-retry') },
+  }
   class Socket {
     static OPEN = 1
     constructor() { this.handlers = {}; this.sent = []; sockets.push(this) }
@@ -26,13 +37,19 @@ function harness({ getUserMedia = async () => ({ getAudioTracks: () => [] }) } =
   }
   const context = vm.createContext({
     console, URL, Promise, WebSocket: Socket, createBackoff, finalCloseMessage, micIsActive, watchMicTracks,
+    createBoothPublisher: () => publisher, PublishRefusedError: Error, WhipError: Error,
     document: { getElementById: (id) => id === 'interpreter-portal'
       ? { dataset: { boothId: 'test-1-en', eventSlug: 'test', roomId: '1' } } : null },
     localStorage: { getItem: () => null },
-    window: { location: { protocol: 'https:', host: 'example.test' } },
+    window: {
+      location: { protocol: 'https:', host: 'example.test' },
+      setTimeout: (fn, delay) => { timers.set(++timerId, { fn, delay }); return timerId },
+    },
     setTimeout: (fn, delay) => { timers.set(++timerId, { fn, delay }); return timerId },
     clearTimeout: (id) => timers.delete(id),
     navigator: { mediaDevices: { getUserMedia } },
+    AbortController,
+    fetch: (...args) => fetchImpl(...args),
     events,
   })
   vm.runInContext(source + `
@@ -48,9 +65,15 @@ function harness({ getUserMedia = async () => ({ getAudioTracks: () => [] }) } =
     stopLiveIngest = async () => { events.push('publish-stopped'); state.ingestConnected = false; };
     renderMicControls = () => {};
     startMicMeter = () => {};
-    globalThis.api = { state, connectWebSocket, reconnectBackoff, watchMicDevice, currentMicActive, ensureMicStream };
+    globalThis.api = {
+      state, connectWebSocket, reconnectBackoff, watchMicDevice, currentMicActive, ensureMicStream,
+      requestPublishTicket, handleServerMessage, startPublishingIfAllowed, deleteWhipResource,
+    };
   `, context)
-  return { ...context.api, timers, sockets, events }
+  return {
+    ...context.api, timers, sockets, events, publisher,
+    setFetch(fn) { fetchImpl = fn },
+  }
 }
 
 const h = harness()
@@ -64,6 +87,8 @@ h.sockets[0].message({ type: 'booth:joined', participant_id: 'original', state: 
 } })
 assert.equal(h.state.participantId, 'original')
 h.state.ingestConnected = true
+h.publisher.running = true
+h.publisher.publishing = true
 h.sockets[0].close()
 assert.equal(h.state.joined, false)
 assert.equal(h.timers.size, 1, 'one retry after a disconnect')
@@ -77,6 +102,22 @@ h.sockets[1].message({ type: 'booth:joined', participant_id: 'original', state: 
 } })
 assert.equal(h.sockets[1].sent.at(-1).ingest_connected, true, 'surviving ingest is reported again')
 assert.equal(h.events.filter((e) => e === 'monitor-started').length, 1, 'monitor is not reloaded')
+const retries = () => h.events.filter((e) => e === 'publish-retry').length
+assert.equal(retries(), 0, 'a publish that survived the reconnect is not retried')
+
+// The publish dropped while the socket was down: the rejoin clears the on-air
+// report the server kept, and lets the publisher ask for a ticket at once.
+h.publisher.publishing = false
+h.sockets[1].message({ type: 'booth:joined', participant_id: 'original', state: {
+  active_interpreter_id: 'original', broadcast_unlocked: true,
+} })
+assert.equal(retries(), 1, 'a dropped publish retries once as soon as the booth is rejoined')
+assert.deepEqual(
+  { mic_active: h.sockets[1].sent.at(-1).mic_active, ingest_connected: h.sockets[1].sent.at(-1).ingest_connected },
+  { mic_active: false, ingest_connected: false },
+  'the rejoin reports the dropped publish as off air',
+)
+h.publisher.publishing = true
 
 h.sockets[0].message({ type: 'booth:joined', participant_id: 'stale', state: {} })
 assert.equal(h.state.participantId, 'original', 'messages from an old socket are ignored')
@@ -210,6 +251,105 @@ for (let attempt = 0; attempt < 3; attempt++) {
   assert.equal(await retry, stream)
 }
 
+// A publish ticket reply settles only the request it answers (#1357).
+{
+  const t = harness()
+  const opening = t.connectWebSocket()
+  t.sockets[0].open()
+  await opening
+  // Open but not yet joined (booth:joined not received): asking now would be
+  // refused by the server, so it fails as retryable without sending anything.
+  const sentBeforeJoin = t.sockets[0].sent.length
+  await assert.rejects(t.requestPublishTicket(), /Not rejoined/, 'no ticket request before booth:joined')
+  assert.equal(t.sockets[0].sent.length, sentBeforeJoin, 'nothing is sent before booth:joined')
+  Object.assign(t.state, { joined: true, participantId: 'p1' })
+  const first = t.requestPublishTicket()
+  const firstId = t.sockets[0].sent.at(-1).request_id
+  assert.equal(t.sockets[0].sent.at(-1).type, 'booth:request-publish-ticket')
+  const second = t.requestPublishTicket()
+  await assert.rejects(first, /superseded/, 'a newer request supersedes the pending one')
+  const secondId = t.sockets[0].sent.at(-1).request_id
+  assert.notEqual(firstId, secondId, 'each request carries its own id')
+  // The late refusal of the superseded request must not settle the current one.
+  t.handleServerMessage({ type: 'booth:publish-ticket', request_id: firstId, error: 'Broadcast is stopped by Mission Control.' })
+  t.handleServerMessage({ type: 'booth:publish-ticket', request_id: secondId, ticket: 'fresh-ticket' })
+  assert.equal(await second, 'fresh-ticket', 'the matching reply settles the request')
+
+  // A reply without request_id answers no request of this page and is ignored.
+  const current = t.requestPublishTicket()
+  const currentId = t.sockets[0].sent.at(-1).request_id
+  t.handleServerMessage({ type: 'booth:publish-ticket', error: 'Join the booth before going live.' })
+  t.handleServerMessage({ type: 'booth:publish-ticket', request_id: currentId, ticket: 'current-ticket' })
+  assert.equal(await current, 'current-ticket', 'a reply without request_id cannot settle the request')
+
+  // Closing the socket fails the pending request at once instead of after the timeout.
+  const orphaned = t.requestPublishTicket()
+  t.sockets[0].close()
+  await assert.rejects(orphaned, /closed before a publish ticket arrived/, 'a socket close fails the pending request')
+  await assert.rejects(t.requestPublishTicket(), /Not connected/, 'no request is sent without a socket')
+}
+
+// A stalled WHIP DELETE is given up on, so it cannot hold up the next publish attempt.
+{
+  const t = harness()
+  t.setFetch((url, { signal }) => new Promise((_, reject) => {
+    signal.addEventListener('abort', () => reject(Object.assign(new Error('aborted'), { name: 'AbortError' })))
+  }))
+  const deleting = t.deleteWhipResource('https://media.example/demo/1/fr/whip/abc')
+  const [deadline] = [...t.timers.values()].slice(-1)
+  assert.equal(deadline.delay, 5000, 'the DELETE has a 5 s deadline')
+  deadline.fn()
+  await assert.rejects(deleting, /timed out/, 'a stalled DELETE fails after its deadline')
+
+  t.setFetch(async () => ({ ok: false, status: 404 }))
+  await t.deleteWhipResource('https://media.example/gone')
+  t.setFetch(async () => ({ ok: false, status: 500 }))
+  await assert.rejects(t.deleteWhipResource('https://media.example/broken'), /answered 500/, 'a failed DELETE is reported')
+}
+
+// A rejoin after a refused publish still clears the on-air report the server kept.
+{
+  const t = harness()
+  t.state.joinRequested = true
+  const opening = t.connectWebSocket()
+  t.sockets[0].open()
+  await opening
+  t.sockets[0].message({ type: 'booth:joined', participant_id: 'p1', state: {
+    active_interpreter_id: 'p1', broadcast_unlocked: true,
+  } })
+  t.sockets[0].close()
+  const [reconnect] = [...t.timers.values()]
+  t.timers.clear()
+  await reconnect.fn()
+  t.sockets[1].open()
+  // Refused while the socket was down: not running, not publishing.
+  t.publisher.running = false
+  t.publisher.publishing = false
+  t.sockets[1].message({ type: 'booth:joined', participant_id: 'p1', state: {
+    active_interpreter_id: 'p1', broadcast_unlocked: true,
+  } })
+  const last = t.sockets[1].sent.at(-1)
+  assert.equal(last.type, 'booth:update-state')
+  assert.equal(last.ingest_connected, false, 'the rejoin reports off air after a refusal')
+  assert.ok(!t.events.includes('publish-retry'), 'a refused publish is not retried by the rejoin')
+}
+
+// A publish the server refused is not restarted by the next booth state, until the grant changes.
+{
+  const t = harness()
+  Object.assign(t.state, { joined: true, participantId: 'p1', activeInterpreterId: 'p1', broadcastUnlocked: true })
+  t.state.publishRefused = true
+  t.startPublishingIfAllowed()
+  assert.ok(!t.events.includes('publish-started'), 'a refused grant is not retried')
+  t.state.publishRefused = false
+  t.state.relayingOut = true
+  t.startPublishingIfAllowed()
+  assert.ok(!t.events.includes('publish-started'), 'no start while the previous publish is still being released')
+  t.state.relayingOut = false
+  t.startPublishingIfAllowed()
+  assert.equal(t.events.filter((e) => e === 'publish-started').length, 1, 'starts once allowed again')
+}
+
 console.log('Booth socket lifecycle checks passed')
 
 // Switching floor sources must release the old player so both feeds never play together.
@@ -228,6 +368,9 @@ console.log('Booth socket lifecycle checks passed')
   }
   const context = vm.createContext({
     URL, URLSearchParams, createBackoff, localStorage: { getItem: () => null },
+    createBoothPublisher: () => ({ running: false, publishing: false, start() {}, async stop() {}, retryNow() {} }),
+    PublishRefusedError: Error,
+    WhipError: Error,
     document: { getElementById: (id) => elements[id] },
     createWhepClient: () => ({
       start: ({ whepUrl }) => switches.push(whepUrl),

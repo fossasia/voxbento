@@ -1,4 +1,5 @@
 import { createBackoff, finalCloseMessage } from './booth-reconnect.js'
+import { createBoothPublisher, PublishRefusedError, WhipError } from './booth-publisher.js'
 import { micIsActive, watchMicTracks } from './mic-activity.js'
 
 const portal = document.getElementById('interpreter-portal')
@@ -22,13 +23,16 @@ const state = {
   chatMessages: [],
   relayingOut: false,   // true while outgoing interp is in silence-mode handoff
   micStream: null,
-  peerConnection: null,
-  whipResourceUrl: null,
   micMuted: true,
   /** The device itself is muted (keyboard key, OS input mute, headset button), as the browser reports it. */
   micDeviceMuted: false,
+  /** Audio is reaching MediaMTX: the publisher is `live`, or `unstable` and not yet given up on. */
   ingestConnected: false,
-  ingestStarting: false,
+  /** Status of the WHIP publish, from booth-publisher.js. */
+  publishStatus: 'idle',
+  publishAttempt: 0,
+  /** The server refused this grant to publish; set until the active slot or the lock changes. */
+  publishRefused: false,
   ingestReachable: Boolean(portal.dataset.whipBase),
   defaultJitsiRoom: portal.dataset.defaultJitsi || '',
   jitsiDomain: portal.dataset.jitsiDomain || '',
@@ -58,6 +62,20 @@ const state = {
 }
 
 const reconnectBackoff = createBackoff()
+
+// Publishes again on its own when the WHIP connection drops (#1357).
+const publisher = createBoothPublisher({
+  openSession: openPublishSession,
+  closeSession: closePublishSession,
+  // Not tied to the booth socket: while it reconnects the publisher keeps retrying
+  // (tickets wait for the socket), and the rejoin's booth state stops it if the
+  // booth moved on. Stopping here would restart it unmuted on rejoin.
+  shouldPublish: () =>
+    Boolean(state.participantId) &&
+    state.activeInterpreterId === state.participantId &&
+    state.broadcastUnlocked,
+  onChange: handlePublishChange,
+})
 
 const elements = {
   connectionStatus: document.getElementById('connection-status'),
@@ -194,6 +212,9 @@ function connectWebSocket() {
       state.wsConnected = false
       state.ws = null
       state.joined = false
+      // A ticket request sent on this socket can no longer be answered; fail it now
+      // so the publisher can ask again as soon as the booth is rejoined.
+      abandonPublishTicket(new Error('Booth connection closed before a publish ticket arrived'))
       render()
       if (state.stopReconnecting) return
       const finalMessage = finalCloseMessage(event.code)
@@ -246,9 +267,24 @@ function scheduleReconnect(delayMs) {
  * if the booth moved on to another interpreter while they were away.
  */
 function reconcileIngestAfterRejoin() {
-  if (!state.ingestConnected || state.relayingOut) return
-  if (state.activeInterpreterId === state.participantId && state.broadcastUnlocked) {
-    wsSend({ type: 'booth:update-state', mic_active: currentMicActive(), ingest_connected: true })
+  if (state.relayingOut) return
+  const mayPublish = state.activeInterpreterId === state.participantId && state.broadcastUnlocked
+  if (publisher.publishing) {
+    if (mayPublish) {
+      wsSend({ type: 'booth:update-state', mic_active: currentMicActive(), ingest_connected: true })
+    } else {
+      stopLiveIngest().catch((error) => console.warn('Could not finish stopping previous booth audio:', error))
+    }
+    return
+  }
+  // No audio is reaching MediaMTX (reconnecting, refused or never started). A
+  // same-session rejoin keeps the on-air report the server had before the socket
+  // dropped, so clear it whatever the publisher's state.
+  wsSend({ type: 'booth:update-state', mic_active: false, ingest_connected: false })
+  if (!publisher.running) return
+  if (mayPublish) {
+    // Ask for a ticket over this socket at once instead of waiting out the back-off.
+    publisher.retryNow()
   } else {
     stopLiveIngest().catch((error) => console.warn('Could not finish stopping previous booth audio:', error))
   }
@@ -447,6 +483,7 @@ function bindEventHandlers() {
 
   // Retry at once when the network comes back instead of waiting out the back-off.
   window.addEventListener('online', () => {
+    publisher.retryNow()
     if (state.ws || state.stopReconnecting) return
     clearTimeout(state.reconnectTimer)
     state.reconnectTimer = null
@@ -571,7 +608,7 @@ function applyBoothState(payload, { skipAutoStart = false } = {}) {
   }
 
   const lostActivePublisher =
-    state.ingestConnected &&
+    publisher.running &&
     state.participantId &&
     previousActiveInterpreterId === state.participantId &&
     state.activeInterpreterId !== state.participantId
@@ -594,7 +631,7 @@ function applyBoothState(payload, { skipAutoStart = false } = {}) {
   // lock-transition state message was missed or arrived out of order.
   const lockedWhilePublishing =
     !state.broadcastUnlocked &&
-    state.ingestConnected &&
+    publisher.running &&
     state.activeInterpreterId === state.participantId
 
   const lostPublishingRights = lostActivePublisher || lockedWhilePublishing
@@ -609,34 +646,21 @@ function applyBoothState(payload, { skipAutoStart = false } = {}) {
       if (state.micStream) {
         state.micStream.getAudioTracks().forEach((t) => { t.enabled = !state.micMuted })
       }
+      // The booth may have been handed back or unlocked again while the old
+      // publish was being released; that state message could not start it.
+      startPublishingIfAllowed()
     })
   }
 
-  // Level-triggered: the active interpreter publishes whenever Mission Control
-  // has broadcast unlocked (On). This keeps the booth in lock-step with the
-  // Go Live / Stop toggle without a page reload, and covers every ordering —
-  // already present when unlocked, joining after unlock, or becoming active
-  // while unlocked. The ingestStarting guard prevents overlapping starts when
-  // several state messages arrive during the WHIP handshake.
-  const shouldStartIngest =
-    state.joined &&
-    state.participantId &&
-    state.activeInterpreterId === state.participantId &&
-    state.broadcastUnlocked &&
-    !state.ingestConnected &&
-    !state.ingestStarting
-
-  if (!skipAutoStart && shouldStartIngest) {
-    state.ingestStarting = true
-    if (state.micMuted) {
-      state.micMuted = false
-      if (state.micStream) {
-        state.micStream.getAudioTracks().forEach((t) => { t.enabled = true })
-      }
-      renderMicControls()
-    }
-    attemptRelayStart(0)
+  // A refusal stands for this grant to publish. Losing the active slot or a
+  // Mission Control lock ends the grant, and the next one may publish again.
+  if (state.publishRefused && (state.activeInterpreterId !== state.participantId || !state.broadcastUnlocked)) {
+    state.publishRefused = false
+    // The refusal message belonged to the grant that just ended.
+    showError('')
   }
+
+  if (!skipAutoStart) startPublishingIfAllowed()
 
   // Booth Audio volume defaults: Active=0%, Passive=80%
   if (becameActive) {
@@ -662,6 +686,35 @@ function applyBoothState(payload, { skipAutoStart = false } = {}) {
   if (state.joined && state.participantId && state.activeInterpreterId === state.participantId && previousActiveInterpreterId === null) {
     setBoothVolume(0)
   }
+}
+
+/**
+ * Level-triggered: the active interpreter publishes whenever Mission Control
+ * has broadcast unlocked (On). This keeps the booth in lock-step with the
+ * Go Live / Stop toggle without a page reload, and covers every ordering —
+ * already present when unlocked, joining after unlock, or becoming active
+ * while unlocked. A running publisher (connecting, live or reconnecting) is
+ * left alone, so several state messages during the WHIP handshake start it once,
+ * and a publish the server refused is not retried until the grant changes.
+ */
+function startPublishingIfAllowed() {
+  const allowed =
+    state.joined &&
+    state.participantId &&
+    state.activeInterpreterId === state.participantId &&
+    state.broadcastUnlocked &&
+    !publisher.running &&
+    !state.relayingOut &&
+    !state.publishRefused
+  if (!allowed) return
+  if (state.micMuted) {
+    state.micMuted = false
+    if (state.micStream) {
+      state.micStream.getAudioTracks().forEach((t) => { t.enabled = true })
+    }
+    renderMicControls()
+  }
+  publisher.start()
 }
 
 /** Set booth audio volume slider + audio element */
@@ -1192,120 +1245,188 @@ async function toggleMicMute() {
 // MediaMTX only accepts a booth publish carrying a single-use ticket that the
 // server issues to the active interpreter over the booth WebSocket (#783).
 const PUBLISH_TICKET_TIMEOUT_MS = 5000
+// How long the WHIP POST and its answer may take before the attempt is retried.
+const WHIP_EXCHANGE_TIMEOUT_MS = 10000
 let pendingPublishTicket = null
+let publishTicketRequestId = 0
+
+/** Fail the pending ticket request, if any, with *error*. */
+function abandonPublishTicket(error) {
+  if (!pendingPublishTicket) return
+  const { reject, timer } = pendingPublishTicket
+  pendingPublishTicket = null
+  clearTimeout(timer)
+  reject(error)
+}
 
 /** Ask the server for a single-use WHIP ticket; resolves with the ticket string. */
 function requestPublishTicket() {
   return new Promise((resolve, reject) => {
-    if (pendingPublishTicket) {
-      clearTimeout(pendingPublishTicket.timer)
-      pendingPublishTicket.reject(new Error('Publish ticket request superseded'))
+    abandonPublishTicket(new Error('Publish ticket request superseded'))
+    // Checked here rather than through wsSend(), which would replace the
+    // "Reconnecting…" message with "Not connected to server." on every retry.
+    if (!state.ws || state.ws.readyState !== WebSocket.OPEN) {
+      reject(new Error('Not connected to server'))
+      return
     }
+    // Between a socket opening and booth:joined the server has no participant for
+    // it and would refuse; that is not a refusal of this publish, so wait and retry.
+    if (!state.joined || !state.participantId) {
+      reject(new Error('Not rejoined to the booth yet'))
+      return
+    }
+    // The server echoes the id, so a late reply to an abandoned request cannot settle this one.
+    publishTicketRequestId += 1
+    const id = publishTicketRequestId
     const timer = window.setTimeout(() => {
-      pendingPublishTicket = null
+      if (pendingPublishTicket?.id === id) pendingPublishTicket = null
       reject(new Error('Timed out waiting for a publish ticket'))
     }, PUBLISH_TICKET_TIMEOUT_MS)
-    pendingPublishTicket = { resolve, reject, timer }
-    if (!wsSend({ type: 'booth:request-publish-ticket' })) {
-      clearTimeout(timer)
-      pendingPublishTicket = null
-      reject(new Error('Not connected to server'))
-    }
+    pendingPublishTicket = { id, resolve, reject, timer }
+    state.ws.send(JSON.stringify({ type: 'booth:request-publish-ticket', request_id: id }))
   })
 }
 
-/** Resolve or reject the pending ticket request from a `booth:publish-ticket` reply. */
+/**
+ * Resolve or reject the pending ticket request from the `booth:publish-ticket`
+ * reply that answers it. The server always echoes `request_id`; a reply without
+ * it, or with another id, answers a request this page already gave up on.
+ */
 function settlePublishTicket(data) {
   if (!pendingPublishTicket) return
+  if (data.request_id !== pendingPublishTicket.id) return
   const { resolve, reject, timer } = pendingPublishTicket
   pendingPublishTicket = null
   clearTimeout(timer)
   if (data.ticket) resolve(data.ticket)
-  else reject(new Error(data.error || 'Publish ticket refused'))
+  else reject(new PublishRefusedError(data.error || 'Publish ticket refused'))
 }
 
-/** POST the local SDP offer to MediaMTX with a fresh publish ticket and apply the answer. */
+// How long a WHIP DELETE may take; a stalled one must not hold up the next attempt.
+const WHIP_DELETE_TIMEOUT_MS = 5000
+
+/** Delete a WHIP resource on MediaMTX. Throws when MediaMTX could not be told in time. */
+async function deleteWhipResource(url) {
+  const controller = new AbortController()
+  const deadline = window.setTimeout(() => controller.abort(), WHIP_DELETE_TIMEOUT_MS)
+  try {
+    const response = await fetch(url, { method: 'DELETE', signal: controller.signal })
+    // 404: MediaMTX already dropped it (kicked, restarted or expired).
+    if (!response.ok && response.status !== 404) {
+      throw new Error(`WHIP DELETE ${url} answered ${response.status}`)
+    }
+  } catch (error) {
+    if (error?.name === 'AbortError') throw new Error(`WHIP DELETE ${url} timed out`)
+    throw error
+  } finally {
+    clearTimeout(deadline)
+  }
+}
+
+/** POST the local SDP offer to MediaMTX with a fresh publish ticket; returns the WHIP resource URL. */
 async function doWhipIngest(peerConnection) {
   const whipUrl = `${state.whipBase}/${encodeURIComponent(state.channelId)}/whip`
   const ticket = await requestPublishTicket()
-  const response = await fetch(whipUrl, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/sdp', Authorization: `Bearer ${ticket}` },
-    body: peerConnection.localDescription.sdp,
-  })
-  if (!response.ok) {
-    const detail = await response.text().catch(() => response.statusText)
-    throw new Error(`WHIP error ${response.status}: ${detail}`)
+  const controller = new AbortController()
+  const deadline = window.setTimeout(() => controller.abort(), WHIP_EXCHANGE_TIMEOUT_MS)
+  let resourceUrl = null
+  try {
+    const response = await fetch(whipUrl, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/sdp', Authorization: `Bearer ${ticket}` },
+      body: peerConnection.localDescription.sdp,
+      signal: controller.signal,
+    })
+    if (!response.ok) {
+      const detail = await response.text().catch(() => response.statusText)
+      throw new WhipError(response.status, detail)
+    }
+    const location = response.headers.get('Location')
+    resourceUrl = location ? new URL(location, whipUrl).href : null
+    const answerSdp = await response.text()
+    await peerConnection.setRemoteDescription({ type: 'answer', sdp: answerSdp })
+    return resourceUrl
+  } catch (error) {
+    // MediaMTX may already hold a session for this offer; give it back before retrying.
+    if (resourceUrl) {
+      await deleteWhipResource(resourceUrl).catch((cleanupError) => {
+        console.warn('Could not delete the WHIP session of a failed publish attempt:', cleanupError)
+      })
+    }
+    // An abort is a timeout: a plain Error, so the publisher retries it.
+    if (error?.name === 'AbortError') throw new Error('Timed out waiting for MediaMTX to answer the publish')
+    throw error
+  } finally {
+    clearTimeout(deadline)
   }
-  const location = response.headers.get('Location')
-  if (location) {
-    state.whipResourceUrl = new URL(location, whipUrl).href
-  }
-  const answerSdp = await response.text()
-  await peerConnection.setRemoteDescription({ type: 'answer', sdp: answerSdp })
 }
 
-async function startLiveIngest() {
-  if (!state.joined || !state.participantId) {
-    showError('Join the booth before going live.')
-    return
+/** Open one WHIP publish of the microphone. Used by the publisher for every attempt. */
+async function openPublishSession() {
+  if (!state.whipBase) {
+    throw new PublishRefusedError('MEDIAMTX_WHIP_BASE is not configured. Set it in your .env and restart the server.')
   }
-  if (!state.ingestReachable) {
-    showError('Ingest backend is unavailable. Check server configuration.')
-    return
-  }
-  const isActive = state.activeInterpreterId === state.participantId
-  if (!isActive) {
-    showError('Only the active interpreter can go live.')
-    return
-  }
+  await ensureMicStream()
+  state.micStream.getAudioTracks().forEach((t) => { t.enabled = !state.micMuted })
+  const pc = new RTCPeerConnection({ iceServers: [] })
   try {
-    await ensureMicStream()
-    if (state.micStream) {
-      state.micStream.getAudioTracks().forEach((t) => { t.enabled = !state.micMuted })
-    }
-    if (state.peerConnection) {
-      state.peerConnection.close()
-      state.peerConnection = null
-    }
-    const peerConnection = new RTCPeerConnection({ iceServers: [] })
-    state.peerConnection = peerConnection
-    state.micStream.getAudioTracks().forEach((track) => {
-      peerConnection.addTrack(track, state.micStream)
-    })
-    peerConnection.addEventListener('connectionstatechange', () => {
-      if (peerConnection.connectionState === 'failed' || peerConnection.connectionState === 'disconnected') {
-        setBadge(elements.ingestStatus, 'Ingest reconnecting', 'warning')
-      }
-      if (peerConnection.connectionState === 'connected') {
-        setBadge(elements.ingestStatus, 'Ingest connected', 'success')
-      }
-    })
-
-    const offer = await peerConnection.createOffer({ offerToReceiveAudio: false, offerToReceiveVideo: false })
-    await peerConnection.setLocalDescription(offer)
-    await waitForIceGathering(peerConnection)
-
-    if (state.whipBase) {
-      await doWhipIngest(peerConnection)
-    } else {
-      throw new Error('MEDIAMTX_WHIP_BASE is not configured. Set it in your .env and restart the server.')
-    }
-
-    state.ingestConnected = true
-    
-    await startTranscription()
-    wsSend({
-      type: 'booth:update-state',
-      mic_active: currentMicActive(),
-      ingest_connected: true,
-    })
-    showError('')
+    state.micStream.getAudioTracks().forEach((t) => pc.addTrack(t, state.micStream))
+    const offer = await pc.createOffer({ offerToReceiveAudio: false, offerToReceiveVideo: false })
+    await pc.setLocalDescription(offer)
+    await waitForIceGathering(pc)
+    const resourceUrl = await doWhipIngest(pc)
+    return { pc, resourceUrl }
   } catch (error) {
-    showError(`Unable to start ingest: ${error.message}`)
-    await stopLiveIngest()
+    pc.close()
+    throw error
+  }
+}
+
+/**
+ * Close a publish and tell MediaMTX to drop it, so a retry or a handoff takes the
+ * path cleanly. A failed DELETE is thrown to the publisher, which logs it.
+ */
+async function closePublishSession({ pc, resourceUrl }) {
+  pc.close()
+  const deleteUrl = resourceUrl
+    || (state.whipBase && state.channelId
+        ? `${state.whipBase}/${encodeURIComponent(state.channelId)}/whip`
+        : null)
+  if (deleteUrl) await deleteWhipResource(deleteUrl)
+}
+
+/** Send a booth state update only when the socket is open; a dropped socket reports again on rejoin. */
+function reportIngest(fields) {
+  if (!state.joined || !state.participantId) return
+  if (!state.ws || state.ws.readyState !== WebSocket.OPEN) return
+  state.ws.send(JSON.stringify({ type: 'booth:update-state', ...fields }))
+}
+
+/**
+ * Follow the publisher. Mission Control and listeners only know what this page
+ * reports, so a dropped publish is reported as not connected until it is back.
+ */
+function handlePublishChange({ status, attempt, error }) {
+  const wasPublishing = state.ingestConnected
+  state.publishStatus = status
+  state.publishAttempt = attempt
+  state.ingestConnected = status === 'live' || status === 'unstable'
+
+  if (state.ingestConnected && !wasPublishing) {
+    // Idempotent on the server, so this also restarts a worker that stopped while the audio was gone.
+    if (portal.dataset.eventSlug && portal.dataset.languageCode) startTranscription()
+    reportIngest({ mic_active: currentMicActive(), ingest_connected: true })
+    showError('')
+  } else if (status === 'reconnecting' && wasPublishing) {
+    reportIngest({ mic_active: false, ingest_connected: false })
+    showError('Your audio stopped reaching listeners. Reconnecting…')
+  } else if (status === 'refused') {
+    state.publishRefused = true
+    if (wasPublishing) reportIngest({ mic_active: false, ingest_connected: false })
+    showError(`Could not start broadcasting: ${error?.message || 'refused by the server'}`)
   }
   renderMicControls()
+  renderLiveBadge()
 }
 
 async function startTranscription() {
@@ -1320,18 +1441,7 @@ async function startTranscription() {
 }
 
 async function stopLiveIngest() {
-  if (state.ingestConnected || state.whipResourceUrl) {
-    const deleteUrl = state.whipResourceUrl
-      || (state.whipBase && state.channelId
-          ? `${state.whipBase}/${encodeURIComponent(state.channelId)}/whip`
-          : null)
-    state.whipResourceUrl = null
-    if (deleteUrl) fetch(deleteUrl, { method: 'DELETE' }).catch(() => {})
-  }
-  if (state.peerConnection) {
-    state.peerConnection.close()
-    state.peerConnection = null
-  }
+  await publisher.stop()
   if (!micTestStream && !state.micStream) {
     stopMicMeter()
   }
@@ -1341,7 +1451,7 @@ async function stopLiveIngest() {
       mic_active: false,
       ingest_connected: false,
     })
-    
+
     // Stop backend transcription ONLY IF we are still the active interpreter (meaning we clicked OFF LIVE)
     // or if the booth has no active interpreter.
     // If someone else is active, it means they took over, so let THEM manage the transcription!
@@ -1353,75 +1463,8 @@ async function stopLiveIngest() {
       }
     }
   }
-  state.ingestConnected = false
-  state.ingestStarting = false
   renderMicControls()
 }
-
-// Retry intervals for WHIP on relay handoff (ms from previous attempt).
-const _RELAY_RETRY_INTERVAL_MS = 200
-const _RELAY_MAX_ATTEMPTS = 8
-
-function attemptRelayStart(attempt) {
-  if (attempt >= _RELAY_MAX_ATTEMPTS) { state.ingestStarting = false; return }
-  window.setTimeout(async () => {
-    if (!state.joined || !state.participantId) { state.ingestStarting = false; return }
-    if (state.activeInterpreterId !== state.participantId) { state.ingestStarting = false; return }
-    // Broadcast must be unlocked by Mission Control before any ingest can start.
-    if (!state.broadcastUnlocked) { state.ingestStarting = false; return }
-    if (state.ingestConnected) { state.ingestStarting = false; return }
-    try {
-      await ensureMicStream()
-      if (state.micStream) {
-        state.micStream.getAudioTracks().forEach((t) => { t.enabled = !state.micMuted })
-      }
-      if (state.peerConnection) {
-        state.peerConnection.close()
-        state.peerConnection = null
-      }
-      const pc = new RTCPeerConnection({ iceServers: [] })
-      state.peerConnection = pc
-      state.micStream.getAudioTracks().forEach((t) => pc.addTrack(t, state.micStream))
-      pc.addEventListener('connectionstatechange', () => {
-        if (pc.connectionState === 'failed' || pc.connectionState === 'disconnected') {
-          setBadge(elements.ingestStatus, 'Ingest reconnecting', 'warning')
-        }
-        if (pc.connectionState === 'connected') {
-          setBadge(elements.ingestStatus, 'Ingest connected', 'success')
-        }
-      })
-      const offer = await pc.createOffer({ offerToReceiveAudio: false, offerToReceiveVideo: false })
-      await pc.setLocalDescription(offer)
-      await waitForIceGathering(pc)
-      if (!state.whipBase) throw new Error('MEDIAMTX_WHIP_BASE is not configured')
-      await doWhipIngest(pc)
-      state.ingestConnected = true
-      state.ingestStarting = false
-      // Start backend transcription worker now that WHIP ingest is live
-      if (portal.dataset.eventSlug && portal.dataset.languageCode) {
-        await startTranscription()
-      }
-
-      wsSend({ type: 'booth:update-state', mic_active: currentMicActive(), ingest_connected: true })
-      showError('')
-    } catch (error) {
-      if (state.peerConnection) {
-        state.peerConnection.close()
-        state.peerConnection = null
-      }
-      state.whipResourceUrl = null
-      if (error.message.includes('409') && attempt < _RELAY_MAX_ATTEMPTS - 1) {
-        attemptRelayStart(attempt + 1)
-        return
-      }
-      state.ingestStarting = false
-      showError(`Could not start relay: ${error.message}`)
-    }
-    renderMicControls()
-  }, attempt === 0 ? 0 : _RELAY_RETRY_INTERVAL_MS)
-}
-
-
 
 // Matches CHAT_MESSAGE_MAX_LENGTH in portal/booth_state.py. The server counts
 // code points (Python len), so count with Array.from rather than maxlength,
@@ -1575,11 +1618,7 @@ function renderChat() {
 
 function renderMicControls() {
   const isActive = state.joined && state.participantId === state.activeInterpreterId
-  setBadge(
-    elements.ingestStatus,
-    state.ingestConnected ? 'Ingest connected' : 'Ingest disconnected',
-    state.ingestConnected ? 'success' : 'warning',
-  )
+  setBadge(elements.ingestStatus, ...ingestBadge())
   elements.micState.textContent = state.micMuted
     ? 'Muted'
     : state.micDeviceMuted
@@ -1602,7 +1641,8 @@ function renderMicControls() {
   if (!state.broadcastUnlocked) {
     elements.toggleMic.setAttribute('title', 'Broadcast locked by Coordinator (Local test only)')
   }
-  elements.micDeviceSelect.disabled = state.ingestConnected
+  // The publisher reuses the open microphone stream on every attempt, so the device stays fixed while it runs.
+  elements.micDeviceSelect.disabled = publisher.running
 
   if (state.ingestConnected && portal.dataset.eventSlug) {
     const proto = window.location.protocol
@@ -1613,6 +1653,27 @@ function renderMicControls() {
     if (elements.listenerUrlRow) elements.listenerUrlRow.classList.remove('hidden')
   } else {
     if (elements.listenerUrlRow) elements.listenerUrlRow.classList.add('hidden')
+  }
+}
+
+/** Text and tone of the ingest badge for the publisher's status. */
+function ingestBadge() {
+  switch (state.publishStatus) {
+    case 'live':
+      return ['Ingest connected', 'success']
+    case 'unstable':
+      return ['Ingest unstable', 'warning']
+    case 'connecting':
+      return ['Ingest connecting…', 'warning']
+    case 'reconnecting':
+      return [
+        state.publishAttempt > 1 ? `Ingest reconnecting (attempt ${state.publishAttempt})…` : 'Ingest reconnecting…',
+        'warning',
+      ]
+    case 'refused':
+      return ['Ingest refused', 'danger']
+    default:
+      return ['Ingest disconnected', 'warning']
   }
 }
 
@@ -1702,6 +1763,11 @@ function renderLiveBadge() {
     elements.liveBadge.classList.remove('off', 'standby')
     elements.liveBadge.classList.add('on')
     setTextIfChanged(elements.liveBadgeText, 'LIVE')
+  } else if (state.publishStatus === 'reconnecting') {
+    // The booth is still meant to be live, but listeners hear nothing until the publish is back.
+    elements.liveBadge.classList.remove('off', 'on')
+    elements.liveBadge.classList.add('standby')
+    setTextIfChanged(elements.liveBadgeText, 'RECONNECTING')
   } else if (state.broadcastUnlocked && state.joined && state.activeInterpreterId === state.participantId) {
     // Coordinator has unlocked this booth and we are the active interpreter —
     // show STANDBY so the interpreter knows they are cleared to go live.
