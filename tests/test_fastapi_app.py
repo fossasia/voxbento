@@ -270,6 +270,7 @@ def test_interpreter_booth_jitsi_url_uses_base_url():
 
     expected = _make_jitsi_url(settings.effective_jitsi_base_url, settings.default_jitsi_room)
     assert expected.encode() in res.content
+    assert b"<option value='jitsi'>" in res.content
 
 
 def test_make_jitsi_url_bare_room():
@@ -316,6 +317,44 @@ def test_interpreter_booth_relay_attr_is_empty_when_unconfigured():
     assert res.status_code == 200, res.text
     assert b"data-relay-whep-url='None'" not in res.content
     assert b"data-relay-whep-url=''" in res.content
+
+
+@pytest.mark.parametrize(
+    ("source", "mode", "label"),
+    [
+        ("jitsi_bot", "whip", "meeting feed"),
+        ("program_ingest", "whip", "audio desk"),
+        ("program_ingest", "rtmps", "encoder"),
+        ("program_ingest", "rtmps_relay", "encoder"),
+    ],
+)
+def test_interpreter_monitors_room_floor(source, mode, label):
+    import anyio
+
+    from portal.database import create_booth, create_event, create_room, get_session
+
+    async def configure_room():
+        async with get_session() as session:
+            event = await create_event(session, slug="conference", display_name="Conference")
+            room = await create_room(session, event_id=event.id, display_name="Main")
+            room.floor_source = source
+            room.meeting_agent_enabled = source == "jitsi_bot"
+            if label == "audio desk":
+                room.program_session_secret_hash = "configured"
+            elif label == "encoder":
+                room.program_key_hash = "configured"
+            room.program_ingest_mode = mode
+            await create_booth(session, event_id=event.id, room_id=room.id, language_code="fr", language_name="French")
+            await session.commit()
+
+    anyio.run(configure_room)
+    res = client.get("/interpreter/conference/1/fr", cookies=_interpreter_cookie("conference", "fr"))
+    assert res.status_code == 200
+    assert f"<option value='floor' selected>Room floor audio ({label})</option>" in res.text
+    if mode == "whip":
+        assert "/conference/1/floor/whep'" in res.text
+    else:
+        assert "/conference/1/floor/?muted=false'" in res.text
 
 
 def test_interpreter_booth_status_changes_are_announced():
@@ -642,14 +681,12 @@ def test_ws_join_rejects_invalid_fields(field, value, error):
         "language": "French",
         "channel_id": "join-validation-audio",
     }
-    # A configured booth language, so a falsy language can't fail on the missing-language check instead.
     with patch("portal.websockets.handlers.get_booth_language_name", new=AsyncMock(return_value="French")):
         with client.websocket_connect(f"/ws/booth/{booth_id}", cookies=_ws_auth()) as ws:
             ws.send_text(json.dumps({**join, field: value}))
             msg = json.loads(ws.receive_text())
             assert msg == {"type": "booth:error", "message": error}
 
-            # The socket stays usable after the rejected join.
             ws.send_text(json.dumps(join))
             types = {json.loads(ws.receive_text())["type"], json.loads(ws.receive_text())["type"]}
             assert types == {"booth:joined", "booth:state"}
@@ -666,6 +703,61 @@ def test_ws_join_without_language_uses_booth_language():
     joined = msg1 if msg1["type"] == "booth:joined" else msg2
     assert joined["type"] == "booth:joined"
     assert joined["state"]["language"] == "French"
+
+
+def _try_receive(ws, timeout: float) -> list:
+    """Collect text messages for up to *timeout* seconds, so a socket that gets nothing cannot hang."""
+    got: list = []
+    stop = threading.Event()
+
+    def _recv() -> None:
+        try:
+            while not stop.is_set():
+                got.append(ws.receive_text())
+        except Exception:
+            pass
+
+    t = threading.Thread(target=_recv, daemon=True)
+    t.start()
+    t.join(timeout=timeout)
+    stop.set()
+    return got
+
+
+def test_ws_role_less_connection_receives_no_broadcasts():
+    """An unauthorized (role-less) socket is refused a role and never receives private booth broadcasts (#809)."""
+    booth_id = _ws_booth("roleless", "en", "English")
+    channel = f"{booth_id}-audio"
+
+    # A role-less socket: no session cookie, so the server grants it no booth role.
+    with client.websocket_connect(f"/ws/booth/{booth_id}") as anon:
+        anon.send_text(
+            json.dumps(
+                {"type": "booth:join", "display_name": "Hacker", "role": "interpreter",
+                 "language": "English", "channel_id": channel}
+            )
+        )
+        reply = json.loads(anon.receive_text())
+        assert reply["type"] == "booth:error"
+        assert "No role" in reply["message"]
+
+        # An authorized interpreter joins the same booth and sends a chat, which broadcasts to members.
+        # The authorized socket always gets messages, so its receives are read directly (no hang risk).
+        with client.websocket_connect(f"/ws/booth/{booth_id}", cookies=_ws_auth()) as auth:
+            auth.send_text(
+                json.dumps(
+                    {"type": "booth:join", "display_name": "Interpreter", "role": "interpreter",
+                     "language": "English", "channel_id": channel}
+                )
+            )
+            assert json.loads(auth.receive_text())["type"] == "booth:joined"
+            assert json.loads(auth.receive_text())["type"] == "booth:state"
+            auth.send_text(json.dumps({"type": "booth:chat", "body": "members only"}))
+            assert json.loads(auth.receive_text())["type"] == "booth:chat"
+
+        # The role-less socket received nothing beyond its own join error: no state, chat or handoff.
+        # Its receive is bounded, since a socket that is correctly getting nothing would block forever.
+        assert _try_receive(anon, 1.0) == []
 
 
 def test_ws_join_then_leave_broadcasts_state():
