@@ -247,7 +247,7 @@ async def test_browser_sender_cannot_take_rtmps_floor(rtmps_env):
     secret = await enable_rtmps(client, event, room)
     response = await client.post(f"/admin/events/{event.id}/rooms/{room.id}/program-sender", json={})
     assert response.status_code == 409
-    assert "RTMPS encoder owns the floor" in response.json()["detail"]
+    assert "Reload the sender" in response.json()["detail"]
     stored = await stored_room(room.id)
     assert stored.program_ingest_mode == relay.RTMPS_MODE
     assert ingest.publish_permitted(stored, "rtmp", ingest.digest_program_secret(secret)) is True
