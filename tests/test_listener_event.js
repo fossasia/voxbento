@@ -741,7 +741,10 @@ async function run() {
     };
     return scheduler;
   };
+  ttsToggle.checked = true;
+  ttsToggle.dispatchEvent({ type: 'change' });
   choose(translationSelect, 'fr');
+  schedulerResets = 0;
   pageContext.resume = () => Promise.resolve();
   const feed = feedSockets().pop();
   const feedUrl = feed.url;
@@ -910,6 +913,23 @@ async function run() {
   feedSockets().pop().onclose({ code: 1006 });
   assert(pendingTimers(1000) === 1, 'the translation-only feed still reconnects');
   assert(statusText() === 'Live (WebRTC + Translation)', 'a translation-only feed drop leaves the WebRTC badge alone, got "' + statusText() + '"');
+
+  console.log('\n── Text-only translation skips AudioContext and uses ?audio=0 ──');
+  ttsToggle.checked = false;
+  ttsToggle.dispatchEvent({ type: 'change' });
+  const contextsAtTextOnlyStart = audioContexts;
+  const schedulersAtTextOnlyStart = schedulerCreates;
+  choose(translationSelect, 'fr');
+  const textOnlyFeed = feedSockets().pop();
+  assert(textOnlyFeed.url.includes('?audio=0'), 'text-only translation connects with ?audio=0');
+  assert(
+    audioContexts === contextsAtTextOnlyStart && schedulersAtTextOnlyStart === schedulerCreates,
+    'text-only translation does not allocate AudioContext or AudioScheduler',
+  );
+  textOnlyFeed.onclose({ code: 1006 });
+  runTimers(1000);
+  const textOnlyReconnected = feedSockets().pop();
+  assert(textOnlyReconnected.url.includes('?audio=0'), 'text-only reconnect preserves ?audio=0');
 
   console.log('\n' + passed + ' passed, ' + failed + ' failed');
   process.exit(failed > 0 ? 1 : 0);

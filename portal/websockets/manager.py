@@ -605,6 +605,7 @@ logger = logging.getLogger(__name__)
 class TTSConnectionManager:
     def __init__(self, reauthorize_seconds: float = 5.0, max_concurrent_authorizations: int = 4) -> None:
         self._rooms: dict[str, set[WebSocket]] = {}
+        self._audio_rooms: dict[str, set[WebSocket]] = {}
         self._authorizers: dict[WebSocket, Callable[[], Awaitable[None]]] = {}
         # Rechecking on every bundle would cost one DB read per subscriber per segment, so a
         # subscriber is rechecked at most once per window, the same staleness the booth channel allows.
@@ -624,9 +625,12 @@ class TTSConnectionManager:
         booth_id: str,
         *,
         authorize: Callable[[], Awaitable[None]] | None = None,
+        wants_audio: bool = True,
     ) -> None:
         key = self._get_key(room_id, language_code, booth_id)
         self._rooms.setdefault(key, set()).add(ws)
+        if wants_audio:
+            self._audio_rooms.setdefault(key, set()).add(ws)
         if authorize is not None:
             self._authorizers[ws] = authorize
 
@@ -638,10 +642,18 @@ class TTSConnectionManager:
         room.discard(ws)
         if not room:
             self._rooms.pop(key, None)
+        audio_room = self._audio_rooms.get(key, set())
+        audio_room.discard(ws)
+        if not audio_room:
+            self._audio_rooms.pop(key, None)
 
     def has_listeners(self, room_id: int, language_code: str, booth_id: str) -> bool:
         key = self._get_key(room_id, language_code, booth_id)
         return bool(self._rooms.get(key, set()))
+
+    def has_audio_listeners(self, room_id: int, language_code: str, booth_id: str) -> bool:
+        key = self._get_key(room_id, language_code, booth_id)
+        return bool(self._audio_rooms.get(key, set()))
 
     async def broadcast_bundle(
         self,
@@ -655,8 +667,10 @@ class TTSConnectionManager:
         translation: str = "",
         error: str | None = None,
         audio_pending: bool | None = None,
+        audio_only: bool = False,
     ) -> None:
         key = self._get_key(room_id, language_code, booth_id)
+        target_rooms = self._audio_rooms if audio_only else self._rooms
         from portal.transcription.timing import timing_metadata
 
         header = {
@@ -672,7 +686,7 @@ class TTSConnectionManager:
         # Frame: [1-byte version][4-byte length L][L-bytes header][audio_bytes]
         frame = struct.pack(">BI", 1, len(header_bytes)) + header_bytes + audio_bytes
 
-        sockets = [(ws, self._authorizers.get(ws)) for ws in list(self._rooms.get(key, set()))]
+        sockets = [(ws, self._authorizers.get(ws)) for ws in list(target_rooms.get(key, set()))]
         check_failed = False
 
         async def deliver(ws: WebSocket, authorize: Callable[[], Awaitable[None]] | None) -> None:

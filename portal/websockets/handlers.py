@@ -495,8 +495,9 @@ async def ws_tts(websocket: WebSocket, room_id: int, language_code: str, booth_i
     async def authorize() -> None:
         await _authorize_tts(websocket, room_id, language_code, booth_id, recheck=True)
 
+    wants_audio = websocket.query_params.get("audio", "1") != "0"
     await websocket.accept()
-    tts_manager.add(websocket, room_id, language_code, booth_id, authorize=authorize)
+    tts_manager.add(websocket, room_id, language_code, booth_id, authorize=authorize, wants_audio=wants_audio)
     try:
         while True:
             await websocket.receive_text()

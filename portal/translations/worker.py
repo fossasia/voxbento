@@ -411,6 +411,8 @@ class TranslationWorker:
         arrived_at: float | None = None,
     ) -> list:
         """Construct the async translation and broadcast tasks for a resolved job."""
+        from portal.websockets.manager import tts_manager
+
         tasks = []
         for lang in job.enabled_langs:
             target_booth_id = f"{job.event.slug}-{job.room.id}-{lang.language_code}"
@@ -450,7 +452,7 @@ class TranslationWorker:
                         seq,
                         target_booth_id,
                         job.source_booth_id,
-                        synthesize_audio=audience == LISTENERS,
+                        synthesize_audio=tts_manager.has_audio_listeners(job.room.id, lang.language_code, booth_id_str),
                         recheck_audience=True,
                         arrived_at=arrived_at,
                     )
@@ -542,7 +544,7 @@ class TranslationWorker:
                     # left while it waited, and then nothing runs or is sent for it (#1189).
                     audience = _audience(room.id, lang_code, booth_id_str, target_booth_id)
                     nobody_listens = audience is None
-                    synthesize_audio = audience == LISTENERS
+                    synthesize_audio = tts_manager.has_audio_listeners(room.id, lang_code, booth_id_str)
                 if not downloading and not nobody_listens:
                     translated_text = await self._infer_holding_slot(
                         job,
@@ -629,6 +631,8 @@ class TranslationWorker:
             # synthesis below does not hold back new segments.
             job.close()
 
+            if recheck_audience:
+                synthesize_audio = tts_manager.has_audio_listeners(room.id, lang_code, booth_id_str)
             if not synthesize_audio:
                 return
 
@@ -653,7 +657,16 @@ class TranslationWorker:
 
             # Broadcast Stage 2 (Audio Ready)
             await tts_manager.broadcast_bundle(
-                room.id, lang_code, booth_id_str, audio_bytes, uuid_segment_id, seq, text, translated_text, error
+                room.id,
+                lang_code,
+                booth_id_str,
+                audio_bytes,
+                uuid_segment_id,
+                seq,
+                text,
+                translated_text,
+                error,
+                audio_only=True,
             )
 
         except StaleTranslationJob as stale:
