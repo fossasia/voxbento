@@ -28,12 +28,12 @@ webrtcLocalUDPAddress: :8189  # single UDP port for all ICE traffic (replaces de
 # cannot reach. Adding 127.0.0.1 ensures the SDP answer includes a
 # localhost ICE candidate so the browser can connect via the port-forwarded
 # UDP port 8189.
+#
+# Under Docker Compose this list is replaced by MTX_WEBRTCADDITIONALHOSTS, built
+# from MEDIAMTX_PUBLIC_HOSTS (or JVB_ADVERTISE_IPS) in .env, so the server's
+# public IP is never hardcoded here.
 webrtcAdditionalHosts:
   - 127.0.0.1
-  # Production: add your server's public IP and domain so browsers can reach
-  # the WebRTC UDP port (8189) from outside Docker. Update these for your deployment.
-  - 100.56.6.172   # production server IP; keep in sync with JVB_ADVERTISE_IPS
-  - voxbento.com   # public hostname
 # Allow the browser JS on :8000 (FastAPI portal) to POST WHEP/WHIP offers
 # (cross-origin).  Plural form required by MediaMTX ≥ 1.18.
 webrtcAllowOrigins: ['*']

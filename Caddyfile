@@ -1,15 +1,14 @@
 # Caddyfile — voxbento.com production
 #
-# Deploy:
-#   sudo caddy validate --config Caddyfile --adapter caddyfile
-#   sudo install -m 644 Caddyfile /etc/caddy/Caddyfile.next
-#   sudo mv -f /etc/caddy/Caddyfile.next /etc/caddy/Caddyfile
-#   sudo systemctl reload caddy
+# This file holds only VoxBento's sites. Deploys install it as
+# /etc/caddy/sites/voxbento.caddy; the host's main /etc/caddy/Caddyfile contains
+#   import /etc/caddy/sites/*.caddy
+# so other apps on the same server keep their own site files. Deploys replace
+# "localhost:8000" in the portal upstream with PORTAL_HOST_PORT from .env.
 #
-# DNS requirements:
-#   A  voxbento.com       → 100.56.6.172
-#   A  jitsi.voxbento.com → 100.56.6.172
-#   A  rtmps.voxbento.com → 100.56.6.172 (DNS only; no Cloudflare proxy)
+# DNS requirements (A records → the server's public IP):
+#   voxbento.com, jitsi.voxbento.com
+#   rtmps.voxbento.com (DNS only; no Cloudflare proxy)
 #
 # Caddy handles TLS automatically via Let's Encrypt.
 #
@@ -74,7 +73,7 @@ voxbento.com {
 # Jitsi web runs in Docker on host port 8080 (HTTP).
 # Caddy provides HTTPS termination so the iframe loads securely inside the portal.
 #
-# Required: DNS A record jitsi.voxbento.com → 100.56.6.172
+# Required: DNS A record jitsi.voxbento.com → the server's public IP
 # Note: JVB media (UDP 10000) connects DIRECTLY to the server, not via Caddy.
 jitsi.voxbento.com {
     # Forward all requests including WebSocket (BOSH, Colibri) to Jitsi web.
