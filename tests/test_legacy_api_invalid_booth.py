@@ -38,6 +38,22 @@ def test_invalid_booth_coordinates_are_a_bad_request(method, path, slug, lang, m
     assert message in response.json()["detail"]
 
 
+@pytest.mark.parametrize(
+    ("method", "path"),
+    [
+        ("delete", "/api/events/pycon/rooms/-1/booths/en"),
+        ("post", "/api/events/pycon/rooms/-1/booths/en/transcription/start"),
+        ("post", "/api/events/pycon/rooms/-1/booths/en/transcription/stop"),
+        ("get", "/api/events/pycon/booths/en/whip-url?participant_id=p1&room_id=-1"),
+    ],
+)
+def test_negative_room_id_is_a_bad_request(method, path):
+    response = getattr(client, method)(path)
+
+    assert response.status_code == 400
+    assert "Room ID" in response.json()["detail"]
+
+
 @pytest.fixture
 async def event_with_booth():
     configure("sqlite+aiosqlite://")
@@ -95,3 +111,40 @@ async def test_delete_booth_reaches_an_event_stored_with_a_mixed_case_slug(event
     assert response.status_code == 204
     async with get_session() as session:
         assert await session.scalar(select(DBBooth).where(DBBooth.room_id == event_with_booth)) is None
+
+
+async def _add_event(slug: str) -> int:
+    """Store an event with ``slug`` as given, bypassing the lowercase rule like a row written before it."""
+    async with get_session() as session:
+        event = await create_event(session, slug="placeholder", display_name=slug)
+        await session.flush()
+        await session.execute(update(Event).where(Event.id == event.id).values(slug=slug))
+        await session.commit()
+        return event.id
+
+
+@pytest.mark.anyio
+async def test_exact_slug_wins_over_a_case_insensitive_match(event_with_booth, authorized_client):
+    """With "pycon" and "PyCon" both stored, each path reaches its own event."""
+    await _add_event("PyCon")
+
+    response = await authorized_client.delete(f"/api/events/pycon/rooms/{event_with_booth}/booths/en")
+
+    assert response.status_code == 204
+    async with get_session() as session:
+        assert await session.scalar(select(DBBooth).where(DBBooth.room_id == event_with_booth)) is None
+
+
+@pytest.mark.anyio
+async def test_slug_matching_several_events_only_by_case_is_rejected(event_with_booth, authorized_client):
+    """A path matching "PyCon" and "PYCON" only by case is refused instead of guessed."""
+    async with get_session() as session:
+        await session.execute(update(Event).where(Event.slug == "pycon").values(slug="PyCon"))
+        await session.commit()
+    await _add_event("PYCON")
+
+    response = await authorized_client.delete(f"/api/events/pycOn/rooms/{event_with_booth}/booths/en")
+
+    assert response.status_code == 409
+    async with get_session() as session:
+        assert await session.scalar(select(DBBooth).where(DBBooth.room_id == event_with_booth)) is not None
