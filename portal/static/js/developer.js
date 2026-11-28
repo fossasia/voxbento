@@ -117,6 +117,42 @@ export function initDeveloperDashboard() {
   document.querySelectorAll('[data-copy-text]').forEach((button) => {
     button.addEventListener('click', () => copyToClipboard(button));
   });
+
+  // Handle forms requiring user confirmation and prevent double-submission (e.g. secret rotation, deletion)
+  document.querySelectorAll('form[data-confirm]').forEach((form) => {
+    let submitting = false;
+    form.addEventListener('submit', (event) => {
+      if (submitting) {
+        event.preventDefault();
+        return;
+      }
+      const message = form.dataset.confirm;
+      if (message && !window.confirm(message)) {
+        event.preventDefault();
+        return;
+      }
+      submitting = true;
+      const submitBtn = form.querySelector('button[type="submit"]');
+      if (submitBtn) {
+        submitBtn.disabled = true;
+        if (form.classList.contains('dev-rotate-form')) {
+          submitBtn.textContent = 'Rotating...';
+        }
+      }
+    });
+    window.addEventListener('pageshow', (event) => {
+      if (event.persisted) {
+        submitting = false;
+        const submitBtn = form.querySelector('button[type="submit"]');
+        if (submitBtn) {
+          submitBtn.disabled = false;
+          if (form.classList.contains('dev-rotate-form')) {
+            submitBtn.textContent = 'Rotate Secret';
+          }
+        }
+      }
+    });
+  });
 }
 
 if (typeof document !== 'undefined') initDeveloperDashboard();
