@@ -244,6 +244,40 @@ console.log('\n=== AudioScheduler Tests ===\n');
   assertApprox(t.startTime, 10.25, 0.01, 'After reset, re-anchors correctly');
 })();
 
+// Test 5b: reset() stops speech that is playing or still queued
+(function () {
+  console.log('\nTest 5b: reset() stops playing and queued speech');
+  const ctx = new MockAudioContext();
+  ctx._currentTime = 0.0;
+  const sources = [];
+  ctx.createBufferSource = function () {
+    const source = MockAudioContext.prototype.createBufferSource.call(this);
+    source.stopped = false;
+    source.stop = function () { source.stopped = true; };
+    sources.push(source);
+    return source;
+  };
+
+  const scheduler = createAudioScheduler(ctx, {
+    jitterBufferSec: 0.25,
+    comfortNoiseEnabled: false,
+  });
+  for (let i = 0; i < 3; i++) {
+    scheduler.scheduleBuffer(ctx.createBuffer(1, 24000, 24000));
+  }
+  // The first segment has finished playing on its own.
+  sources[0].onended();
+
+  scheduler.reset();
+  assert(!sources[0].stopped, 'Finished speech is not stopped again');
+  assert(sources[1].stopped && sources[2].stopped, 'Playing and queued speech is stopped');
+
+  const after = scheduler.scheduleBuffer(ctx.createBuffer(1, 24000, 24000));
+  scheduler.reset();
+  assert(sources[3].stopped, 'Speech scheduled after a reset is stopped by the next one');
+  assert(after.startTime > 0, 'Scheduling still works after a reset');
+})();
+
 // Test 6: Empty/null buffers are handled gracefully
 (function () {
   console.log('\nTest 6: Empty/null buffers are handled gracefully');

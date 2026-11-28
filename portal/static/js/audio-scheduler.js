@@ -47,6 +47,9 @@ function createAudioScheduler(audioCtx, opts) {
   /** @type {number} audioCtx.currentTime when the last scheduled buffer ends */
   var nextScheduledTime = 0;
 
+  /** @type {Set<AudioBufferSourceNode>} Speech scheduled and not yet finished */
+  var scheduledSources = new Set();
+
   /** @type {AudioBufferSourceNode|null} Currently playing comfort noise source */
   var comfortNoiseSource = null;
   /** @type {GainNode|null} Gain node for comfort noise fade-in/out */
@@ -194,7 +197,11 @@ function createAudioScheduler(audioCtx, opts) {
       var source = audioCtx.createBufferSource();
       source.buffer = audioBuffer;
       source.connect(audioCtx.destination);
+      source.onended = function () {
+        scheduledSources.delete(source);
+      };
       source.start(startTime);
+      scheduledSources.add(source);
 
       var endTime = startTime + audioBuffer.duration;
       nextScheduledTime = endTime;
@@ -221,11 +228,15 @@ function createAudioScheduler(audioCtx, opts) {
     },
 
     /**
-     * Reset all scheduler state.  Stops comfort noise and clears the
-     * scheduled time pointer.  Does NOT stop already-scheduled
-     * AudioBufferSourceNodes (they will play to completion).
+     * Reset all scheduler state.  Stops comfort noise, clears the scheduled
+     * time pointer and stops speech that is playing or still queued, so a
+     * listener who switches channel or language hears none of the old one.
      */
     reset: function () {
+      scheduledSources.forEach(function (source) {
+        try { source.stop(); } catch (_) { /* already stopped */ }
+      });
+      scheduledSources.clear();
       nextScheduledTime = 0;
       stopComfortNoise();
       if (idleTimer !== null) {
