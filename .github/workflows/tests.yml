@@ -301,6 +301,7 @@ jobs:
           node --check portal/static/js/live-demo.js
           node --check portal/static/js/live-demo-core.js
           node --check portal/static/js/live-demo-capture.js
+          node --check portal/static/js/booth-relay.js
           node --check .github/scripts/jules-review.mjs
           node --check .github/scripts/agent-attribution-lib.mjs
       - name: run node tests
@@ -317,6 +318,7 @@ jobs:
           node tests/test_booth_reconnect.mjs
           node tests/test_attendance.mjs
           node tests/test_mic_activity.mjs
+          node tests/test_booth_relay.mjs
           node tests/test_booth_socket.mjs
           node tests/test_room_ai.mjs
           node tests/test_lang_picker.mjs

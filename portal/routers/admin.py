@@ -203,7 +203,12 @@ from portal.user_admin import FIELDS as USER_ACCESS_FIELDS
 from portal.user_admin import AccessChange, UserAdminError, delete_user_account, is_last_active_admin, set_user_access
 from portal.user_menu import resolve_user_menu, user_menu_context
 from portal.utils import _check_mediamtx, _make_jitsi_url, get_client_ip, safe_redirect, verify_same_origin
-from portal.websockets.manager import broadcast_transcription, manager
+from portal.websockets.manager import (
+    broadcast_transcription,
+    manager,
+    refresh_relays_from_booth,
+    refresh_room_relay,
+)
 from portal.websockets.revocation import revoke_booths_for_deleted_entity, revoke_membership_push
 from portal.workspace_routing import management_template_context, management_url
 
@@ -689,6 +694,7 @@ async def mission_control_grid(request: Request, event_slug: str, user=Depends(r
             if not allowed_room_ids:
                 raise HTTPException(status_code=403, detail="Access denied. Event owner or Room coordinator required.")
         db_booths = await list_booths_for_event(session, event.id)
+        relay_booth_ids = {db_b.id: make_booth_id(event.slug, db_b.room_id, db_b.language_code) for db_b in db_booths}
         event_booths = []
         for db_b in db_booths:
             if allowed_room_ids is not None and db_b.room_id not in allowed_room_ids:
@@ -729,6 +735,7 @@ async def mission_control_grid(request: Request, event_slug: str, user=Depends(r
                 "floor_captions": room.has_floor_captions,
                 "floor_source": room.floor_source or "jitsi_bot",
                 "reports": _mission_control_reports(event, room.id, principal, is_admin),
+                "relay_booth_id": relay_booth_ids.get(room.relay_booth_id),
             }
             for room in await list_rooms_for_event(session, event.id)
             if allowed_room_ids is None or room.id in allowed_room_ids
@@ -2088,6 +2095,9 @@ async def admin_edit_room(request: Request, event_id: int, room_id: int):
             await session.flush()
     except TranslationLanguageError as error:
         return await _translation_form_response(request, error, event_id, room_id)
+    if not form_section or form_section == "relay":
+        # Open booths of the room pick up the new relay without a reload (#1382).
+        await refresh_room_relay(room_id)
     return safe_redirect(
         url=management_url(request, f"events/{event_id}/rooms/{room_id}/"),
         status_code=status.HTTP_303_SEE_OTHER,
@@ -2386,6 +2396,40 @@ async def api_floor_transcription_status(room_id: int):
     # the managed lifecycle is reported separately in "state".
     body["bot_reachable"], body["stage"], body["running"] = await meeting_source.bot_stage(event.slug, room.id)
     return body
+
+
+class RoomRelayChoice(BaseModel):
+    # Language code of one of the room's booths, or None for no relay.
+    language_code: str | None = None
+
+
+@router.post(
+    "/api/rooms/{room_id}/relay",
+    dependencies=[Depends(require_room_event_access), Depends(require_admin_csrf)],
+)
+async def api_set_room_relay(room_id: int, data: RoomRelayChoice):
+    """Choose the booth a room's interpreters relay from, live from Mission Control (#1382).
+
+    Open booths of the room switch at once through ``booth:relay``; nobody reloads.
+    """
+    async with get_session() as session:
+        room = await get_room_by_id(session, room_id)
+        event = await get_event_by_id(session, room.event_id) if room else None
+        if room is None or event is None or event.deleted_at is not None:
+            raise HTTPException(status_code=404, detail="Room not found.")
+        relay_booth_id = None
+        if data.language_code is not None:
+            relay_booth = (
+                await session.scalars(
+                    select(DBBooth).where(DBBooth.room_id == room_id, DBBooth.language_code == data.language_code)
+                )
+            ).first()
+            if relay_booth is None:
+                raise HTTPException(status_code=404, detail="That booth isn't in this room.")
+            relay_booth_id = relay_booth.id
+        room.relay_booth_id = relay_booth_id
+    source = await refresh_room_relay(room_id)
+    return {"relay_booth_id": source.booth_id if source else None}
 
 
 @router.post(
@@ -2863,6 +2907,8 @@ async def admin_delete_booth(request: Request, event_id: int, room_id: int, boot
         await booth_in_room(session, event_id, room_id, booth_id)
         await revoke_booths_for_deleted_entity(session, level="booth", target_id=booth_id)
         await delete_booth(session, booth_id)
+    # Rooms relaying from it now have no relay; their booths stop playing it.
+    await refresh_relays_from_booth(booth_id)
     return safe_redirect(
         url=management_url(request, f"events/{event_id}/rooms/{room_id}/booths/"),
         status_code=status.HTTP_303_SEE_OTHER,
@@ -2971,6 +3017,8 @@ async def admin_edit_booth(request: Request, event_id: int, room_id: int, booth_
             await session.flush()
     except TranslationLanguageError as error:
         return await _translation_form_response(request, error, event_id, room_id, booth_id)
+    # A relay booth's new name or channel reaches the booths relaying from it.
+    await refresh_relays_from_booth(booth_id)
     return safe_redirect(
         url=_booth_saved_url(request, event_id, room_id, booth_id, "settings"),
         status_code=status.HTTP_303_SEE_OTHER,

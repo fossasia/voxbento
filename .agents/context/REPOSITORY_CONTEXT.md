@@ -146,7 +146,7 @@ Client → Server messages:
 | `booth:accept-handoff` | `_handle_accept_handoff` | Accepts interpreter handoff |
 | `booth:cancel-handoff` | `_handle_cancel_handoff` | Cancels interpreter handoff |
 
-Server → Client broadcasts: `booth:joined`, `booth:state`, `booth:chat`, `booth:error`; direct reply: `booth:publish-ticket`
+Server → Client broadcasts: `booth:joined`, `booth:state`, `booth:chat`, `booth:error`, `booth:relay` (#1382); direct reply: `booth:publish-ticket`
 
 Role is NEVER trusted from client data — always read from the server-side `Session.granted_role` derived from cookies at connect time.
 

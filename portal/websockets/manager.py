@@ -16,6 +16,7 @@ from fastapi import WebSocket, WebSocketDisconnect
 from sqlalchemy.exc import SQLAlchemyError
 
 import portal.webhooks.worker as _wh_worker
+from portal import booth_relay
 from portal.auth import WSAuthError, can_perform_role
 from portal.booth_identity import booth_id_to_mediamtx_path, parse_booth_id
 from portal.booth_publish import (
@@ -201,6 +202,10 @@ class ConnectionManager:
                 if not room:
                     self._rooms.pop(session.booth_id, None)
         return session
+
+    def connected_booth_ids(self) -> list[str]:
+        """Booths with at least one open socket."""
+        return list(self._rooms)
 
     def get_session(self, ws: WebSocket) -> Session | None:
         return self._sessions.get(id(ws))
@@ -718,6 +723,33 @@ async def broadcast_booth_state(booth_id: str, state: dict) -> None:
     """Send the full state to the booth and the listener-safe status to its listeners."""
     await manager.broadcast(booth_id, {"type": "booth:state", "state": state})
     await listener_manager.broadcast_booth_state(booth_id, state)
+    # A relay booth going on or off air changes what the booths relaying from it show (#1382).
+    for key in booth_relay.note_ingest_status(booth_id, state.get("ingest_status")):
+        await push_room_relay(key)
+
+
+async def push_room_relay(key: booth_relay.RoomKey) -> None:
+    """Send ``booth:relay`` to every open booth of the room, each with what it may play."""
+    source = booth_relay.cached_room_relay(key)
+    for booth_id in manager.connected_booth_ids():
+        if booth_relay.room_key(booth_id) == key:
+            await manager.broadcast(booth_id, {"type": "booth:relay", **booth_relay.relay_fields(source, booth_id)})
+
+
+async def refresh_room_relay(room_id: int) -> booth_relay.RelaySource | None:
+    """Reload a room's relay after it changed and tell the room's open booths."""
+    loaded = await booth_relay.load_room_relay(room_id)
+    if loaded is None:
+        return None
+    key, source = loaded
+    await push_room_relay(key)
+    return source
+
+
+async def refresh_relays_from_booth(db_booth_id: int) -> None:
+    """Reload the rooms relaying from a booth that was deleted or changed language."""
+    for _, room_id in booth_relay.rooms_relaying_from_db_booth(db_booth_id):
+        await refresh_room_relay(room_id)
 
 
 async def broadcast_transcription(booth_id: str, payload: str | dict):
@@ -827,7 +859,14 @@ async def _handle_join(ws: WebSocket, session: Session, data: dict) -> None:
     # here — doing so would flip an interpreter live (or Mission Control to
     # "Stop") simply because they reconnected.
     await ws.send_text(
-        json.dumps({"type": "booth:joined", "participant_id": participant.participant_id, "state": state})
+        json.dumps(
+            {
+                "type": "booth:joined",
+                "participant_id": participant.participant_id,
+                "state": state,
+                **await _current_relay_fields(session.booth_id),
+            }
+        )
     )
     await broadcast_booth_state(session.booth_id, state)
 
@@ -841,6 +880,20 @@ async def _handle_join(ws: WebSocket, session: Session, data: dict) -> None:
                 "language": language,
             },
         )
+
+
+async def _current_relay_fields(booth_id: str) -> dict:
+    """The room's relay for a joining booth, read fresh so a reconnect is never out of date (#1382)."""
+    key = booth_relay.room_key(booth_id)
+    if key is None:
+        return booth_relay.relay_fields(None, booth_id)
+    try:
+        loaded = await booth_relay.load_room_relay(key[1], event_slug=key[0])
+    except SQLAlchemyError:
+        # Joining must not fail over the relay; the cached value is the best we have.
+        logger.warning("Could not read the relay of room %s; using the cached one", key[1], exc_info=True)
+        return booth_relay.relay_fields(booth_relay.cached_room_relay(key), booth_id)
+    return booth_relay.relay_fields(loaded[1] if loaded else None, booth_id)
 
 
 async def _handle_leave(session: Session) -> None:

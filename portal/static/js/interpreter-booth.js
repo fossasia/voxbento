@@ -1,5 +1,6 @@
 import { createBackoff, finalCloseMessage } from './booth-reconnect.js'
 import { micIsActive, watchMicTracks } from './mic-activity.js'
+import { readRelay, relayAnnouncement, relayBadge, relayDescription, relayPlaybackAction } from './booth-relay.js'
 
 const portal = document.getElementById('interpreter-portal')
 
@@ -34,7 +35,12 @@ const state = {
   jitsiDomain: portal.dataset.jitsiDomain || '',
   whipBase: portal.dataset.whipBase || '',
   whepUrl: portal.dataset.whepUrl || '',
-  relayWhepUrl: portal.dataset.relayWhepUrl || '',
+  /** The room's relay (#1382), updated by booth:joined and booth:relay. See booth-relay.js. */
+  relay: readRelay(parseRelayData(portal.dataset.relay), portal.dataset.boothId),
+  /** The relay player's last WHEP state while listening. */
+  relayPlayback: null,
+  /** Whether this interpreter has turned the relay on. */
+  relayListening: false,
   micDeviceId: localStorage.getItem('mic-device-id') || '',
   /** Role granted by the server (from JWT). Empty string = unknown / legacy. */
   grantedRole: portal.dataset.grantedRole || '',
@@ -82,6 +88,9 @@ const elements = {
   showVirtualRelayDevices: document.getElementById('show-virtual-relay-devices'),
   relayVolume: document.getElementById('relay-volume'),
   relayStatus: document.getElementById('relay-status'),
+  relaySource: document.getElementById('relay-source'),
+  relayControls: document.getElementById('relay-controls'),
+  relayAnnouncer: document.getElementById('relay-announcer'),
 
   boothAudio: document.getElementById('booth-audio'),
   boothVolume: document.getElementById('booth-volume'),
@@ -119,12 +128,11 @@ boot().catch((error) => {
 })
 
 async function boot() {
+  renderRelay()
   await fetchBoothState()
   await fetchIngestReachability()
   await populateMicDevices()
-  if (state.relayWhepUrl) {
-    await populateRelayDevices()
-  }
+  await populateRelayDevices()
 
   // Run preflights asynchronously before blocking on JWT/WS connection
   runPreflightChecks().catch((error) => {
@@ -267,6 +275,7 @@ function handleServerMessage(data) {
     // being unlocked from Mission Control — never by the act of joining itself,
     // because a booth defaults to locked (Off) until a coordinator turns it on.
     applyBoothState(data.state)
+    applyRelay(data)
     if (rejoined) {
       reconcileIngestAfterRejoin()
     } else {
@@ -280,6 +289,8 @@ function handleServerMessage(data) {
   } else if (type === 'booth:state') {
     applyBoothState(data.state)
     render()
+  } else if (type === 'booth:relay') {
+    applyRelay(data)
   } else if (type === 'booth:chat') {
     state.chatMessages.push(data.message)
     renderChat()
@@ -711,7 +722,7 @@ function joinMonitoringFeed() {
   const roomAudio = selector.value === 'floor'
   const useMeeting = selector.value === 'jitsi'
   const useRelay = selector.value === 'relay'
-  if (relayListening && !useRelay) setRelayListening(false)
+  if (state.relayListening && !useRelay) setRelayListening(false)
   document.getElementById('meeting-player').classList.toggle('hidden', !useMeeting)
   document.getElementById('floor-player').classList.toggle('hidden', !roomAudio)
   const hlsPlayer = document.getElementById('floor-hls')
@@ -741,7 +752,7 @@ function joinMonitoringFeed() {
   floorMonitor?.stop()
   if (!useMeeting) {
     elements.jitsiFrame.removeAttribute('src')
-    if (useRelay && !relayListening) setRelayListening(true)
+    if (useRelay && !state.relayListening) setRelayListening(true)
     return
   }
   try {
@@ -871,39 +882,81 @@ async function populateRelayDevices() {
 const relayWhep = typeof createWhepClient === 'function' ? createWhepClient() : (typeof WhepListener !== 'undefined' ? WhepListener : null)
 const boothWhep = typeof createWhepClient === 'function' ? createWhepClient() : (typeof WhepListener !== 'undefined' ? WhepListener : null)
 
-// ── Relay Listening ───────────────────────────────────────────────────────────
+// ── Relay Listening (#1382) ───────────────────────────────────────────────────
 
-let relayListening = false
+function parseRelayData(raw) {
+  try {
+    return raw ? JSON.parse(raw) : null
+  } catch {
+    return null
+  }
+}
 
+function startRelayPlayback() {
+  const relay = state.relay.relay
+  if (!relay || !relayWhep) return
+  state.relayPlayback = null
+  relayWhep.start({
+    whepUrl: relay.whep_url,
+    audioEl: elements.relayAudio,
+    onState: (st) => {
+      state.relayPlayback = st
+      renderRelay()
+    },
+  })
+}
+
+function stopRelayPlayback() {
+  state.relayPlayback = null
+  if (relayWhep) relayWhep.stop()
+}
+
+/** Turn relay listening on or off; the "Listen to" picker drives this (joinMonitoringFeed). */
 function setRelayListening(listening) {
-  if (!state.relayWhepUrl) return
+  if (listening && !state.relay.relay) return
+  state.relayListening = listening
+  if (listening) startRelayPlayback()
+  else stopRelayPlayback()
+  renderRelay()
+}
 
-  relayListening = listening
-  if (relayListening) {
-    if (elements.relayStatus) elements.relayStatus.textContent = 'Connecting...'
-    relayWhep.start({
-      whepUrl: state.relayWhepUrl,
-      audioEl: elements.relayAudio,
-      onState: (st) => {
-        if (!elements.relayStatus) return
-        if (st.audioActive) {
-          elements.relayStatus.textContent = 'Listening'
-          elements.relayStatus.className = 'status-badge status-live'
-        } else if (st.peerConnection === 'failed') {
-          elements.relayStatus.textContent = 'Error'
-          elements.relayStatus.className = 'status-badge status-disconnected'
-        } else {
-          elements.relayStatus.textContent = 'Connecting...'
-          elements.relayStatus.className = 'status-badge status-warning'
-        }
-      }
-    })
-  } else {
-    if (elements.relayStatus) {
-      elements.relayStatus.textContent = 'Not Listening'
-      elements.relayStatus.className = 'status-badge'
-    }
+/** Follow a relay change from the server: switch or stop the player, and say what changed. */
+function applyRelay(data) {
+  if (!data || !('relay_booth_id' in data)) return
+  const prev = state.relay
+  const next = readRelay(data, state.boothId)
+  const action = relayPlaybackAction({ listening: state.relayListening, prevRelay: prev.relay, nextRelay: next.relay })
+  state.relay = next
+  if (action === 'stop') {
+    setRelayListening(false)
+    // The relay is gone, so the picker can't stay on it.
+    const selector = document.getElementById('monitor-source')
+    if (selector && selector.value === 'relay') selector.value = 'off'
+  } else if (action === 'switch') {
+    // The output device and volume belong to the audio element, so they carry over.
     relayWhep.stop()
+    startRelayPlayback()
+  }
+  const message = relayAnnouncement(prev, next)
+  if (message && elements.relayAnnouncer) elements.relayAnnouncer.textContent = message
+  renderRelay()
+}
+
+function renderRelay() {
+  const { relay, isRelayBooth } = state.relay
+  if (elements.relayStatus) {
+    const badge = relayBadge({ relay, isRelayBooth, listening: state.relayListening, playback: state.relayPlayback })
+    setTextIfChanged(elements.relayStatus, badge.text)
+    elements.relayStatus.className = `status-badge${badge.tone ? ` ${badge.tone}` : ''}`
+  }
+  if (elements.relaySource) setTextIfChanged(elements.relaySource, relayDescription({ relay, isRelayBooth }))
+  if (elements.relayControls) elements.relayControls.hidden = !relay
+  // The picker's Relay option follows the room's relay too.
+  const option = document.getElementById('monitor-relay-option')
+  if (option) {
+    option.hidden = !relay
+    option.disabled = !relay
+    setTextIfChanged(option, relay ? `Relay (${relay.language_name})` : 'Relay')
   }
 }
 

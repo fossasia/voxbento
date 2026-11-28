@@ -8,6 +8,7 @@
  *   - Listen in through a per-booth volume slider (WHEP)
  *   - Turn a booth's broadcast on or off
  *   - Start and stop the floor captions of each room
+ *   - Choose the booth each room relays from, live (#1382)
  *   - Browse room reports and generate notes for a session
  *   - Open a booth themselves
  *
@@ -20,6 +21,9 @@ const roomsContainer = document.getElementById('rooms-container');
 
 /** @type {Map<string, {state:object, ws:WebSocket|null, whep:object|null, audioElement:HTMLAudioElement|null, currentVolume:number, pendingFocusId:string}>} */
 const boothMap = new Map();
+
+/** Per room: the relay selector and the room's relay booth ID (null for none). */
+const roomRelays = new Map();
 
 function el(tag, className, text) {
   const node = document.createElement(tag);
@@ -60,7 +64,10 @@ function init() {
     const title = el('h2', 'mc-room-title', room.name);
     title.id = `mc-room-title-${room.id}`;
     head.appendChild(title);
-    head.appendChild(renderFloorCaptions(room));
+    const controls = el('div', 'mc-room-controls');
+    controls.appendChild(renderRelayControl(room));
+    controls.appendChild(renderFloorCaptions(room));
+    head.appendChild(controls);
     section.appendChild(head);
     if (room.reports) section.appendChild(renderReports(room.reports));
 
@@ -85,6 +92,84 @@ function init() {
     renderCard(b.booth_id);
     connectWs(b.booth_id);
   });
+  roomRelays.forEach((_, roomId) => renderRelayOptions(roomId));
+}
+
+// ---------------------------------------------------------------------------
+// Relay booth (one per room) — interpreters who don't understand the speaker
+// listen to it instead of the floor. Open booths switch at once (#1382).
+// ---------------------------------------------------------------------------
+
+function renderRelayControl(room) {
+  const box = el('div', 'mc-relay');
+  const label = el('label', 'mc-relay-label', 'Relay from');
+  const select = document.createElement('select');
+  select.id = `mc-relay-${room.id}`;
+  label.htmlFor = select.id;
+  box.append(label, select);
+  roomRelays.set(room.id, { select, relayBoothId: room.relay_booth_id || null, saving: false });
+  select.addEventListener('change', () => chooseRelay(room.id, select.value || null));
+  return box;
+}
+
+/** The room's booths, with an on-air mark, and the current relay selected. */
+function renderRelayOptions(roomId) {
+  const relay = roomRelays.get(roomId);
+  if (!relay) return;
+  const { select } = relay;
+  const roomBooths = [...boothMap.values()].map((entry) => entry.state).filter((s) => s.room_id === roomId);
+  const options = [{ value: '', text: 'No relay' }].concat(
+    roomBooths.map((s) => ({
+      value: s.booth_id,
+      text: `${s.language}${s.ingest_status === 'connected' ? ' (on air)' : ' (off air)'}`,
+    })),
+  );
+  // The room page can pick a booth of another room; show it rather than pretending there is no relay.
+  if (relay.relayBoothId && !roomBooths.some((s) => s.booth_id === relay.relayBoothId)) {
+    const other = boothMap.get(relay.relayBoothId);
+    options.push({ value: relay.relayBoothId, text: `${other ? other.state.language : relay.relayBoothId} (another room)` });
+  }
+  // Rebuild only when something changed, so an open dropdown is not reset by every booth update.
+  const current = [...select.options].map((o) => `${o.value}|${o.textContent}`).join('\n');
+  const wanted = options.map((o) => `${o.value}|${o.text}`).join('\n');
+  if (current !== wanted) {
+    select.innerHTML = '';
+    options.forEach((o) => select.appendChild(new Option(o.text, o.value)));
+  }
+  select.value = relay.relayBoothId || '';
+  select.disabled = relay.saving || roomBooths.length < 2;
+  select.title = roomBooths.length < 2 ? 'A relay needs at least two booths in the room.' : '';
+}
+
+async function chooseRelay(roomId, boothId) {
+  const relay = roomRelays.get(roomId);
+  if (!relay) return;
+  const entry = boothId ? boothMap.get(boothId) : null;
+  relay.saving = true;
+  renderRelayOptions(roomId);
+  try {
+    const res = await fetch(`/api/rooms/${roomId}/relay`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'X-CSRF-Token': document.querySelector('meta[name="csrf-token"]')?.content || '',
+      },
+      body: JSON.stringify({ language_code: entry ? entry.state.language_code : null }),
+    });
+    const body = await res.json().catch(() => ({}));
+    if (!res.ok) {
+      showToast(body.detail || "Couldn't change the relay.", 'error');
+    } else {
+      relay.relayBoothId = body.relay_booth_id || null;
+      showToast(entry ? `Booths now relay from ${entry.state.language}.` : 'Relay turned off.');
+    }
+  } catch (err) {
+    showToast("Couldn't change the relay.", 'error');
+    console.debug('Relay request failed', err);
+  } finally {
+    relay.saving = false;
+    renderRelayOptions(roomId);
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -205,6 +290,14 @@ function connectWs(boothId) {
     if (data.type === 'booth:state') {
       entry.state = { ...data.state, room_name: data.state.room_name ?? entry.state.room_name };
       renderCard(boothId);
+      renderRelayOptions(entry.state.room_id);
+    } else if (data.type === 'booth:relay') {
+      // Someone (here or elsewhere) changed this booth's room relay.
+      const relay = roomRelays.get(entry.state.room_id);
+      if (relay && !relay.saving) {
+        relay.relayBoothId = data.relay_booth_id || null;
+        renderRelayOptions(entry.state.room_id);
+      }
     }
     // Silently ignore booth:joined — we do not join as a participant.
   };
