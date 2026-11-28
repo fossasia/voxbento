@@ -39,10 +39,12 @@ from portal.routers.demo import router as demo_router
 from portal.routers.developer import router as developer_router
 from portal.routers.interpreter import router as interpreter_router
 from portal.routers.listener import router as listener_router
+from portal.routers.meeting_analysis import router as meeting_analysis_router
 from portal.routers.meeting_source import router as meeting_source_router
 from portal.routers.oauth import router as oauth_router
 from portal.routers.program_ingest import router as program_ingest_router
 from portal.routers.public import router as public_router
+from portal.routers.translation_models import router as translation_models_router
 from portal.routers.webhooks import router as webhooks_router
 from portal.routers.youtube import router as youtube_router
 from portal.security_headers import SecurityHeadersMiddleware, apply_security_headers, forwarded_https
@@ -407,6 +409,8 @@ app.include_router(program_ingest_router)
 app.include_router(youtube_router)
 app.include_router(meeting_source_router)
 app.include_router(attendance_router)
+app.include_router(translation_models_router)
+app.include_router(meeting_analysis_router)
 
 app.include_router(demo_router)
 

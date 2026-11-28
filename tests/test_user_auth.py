@@ -4,12 +4,16 @@ from __future__ import annotations
 
 import hashlib
 import os
+import re
 import secrets
+import shutil
 import time
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
 
 os.environ["BOOTH_ACCESS_TOKEN"] = ""
 
+import anyio
 import pytest
 
 from portal.auth import (
@@ -19,6 +23,7 @@ from portal.auth import (
     hash_password,
     verify_password,
 )
+from portal.database import create_auth_token, get_session, get_user_by_id
 
 # ---------------------------------------------------------------------------
 # Fixtures
@@ -122,6 +127,26 @@ class TestRegistration:
             resp = await c.get("/register")
         assert resp.status_code == 200
         assert b"Create your account" in resp.content
+
+    @pytest.mark.anyio
+    async def test_register_page_renders_accessible_password_toggles(self, setup_db):
+        async with _client() as c:
+            resp = await c.get("/register")
+        assert resp.status_code == 200
+        content = resp.text
+
+        assert content.count('class="password-input-wrapper"') == 2
+        assert "js/password-toggle.js" in content
+        for btn_id, input_id in (("toggle-password", "password"), ("toggle-password-confirm", "password_confirm")):
+            toggle_btn_match = re.search(r'<button\b[^>]*id=["\']' + btn_id + r'["\'][^>]*>', content)
+            assert toggle_btn_match is not None, f"Toggle button #{btn_id} not found in rendered HTML"
+            assert re.search(r'\btype=["\']button["\']', toggle_btn_match.group(0)) is not None, (
+                f"Rendered toggle button #{btn_id} must have type='button' to prevent form submission"
+            )
+            assert f'aria-controls="{input_id}"' in toggle_btn_match.group(0)
+        assert 'aria-label="Show password"' in content
+        assert "password-toggle-icon--show" in content
+        assert "password-toggle-icon--hide hidden" in content
 
     @pytest.mark.anyio
     async def test_register_creates_listener_account(self, setup_db):
@@ -520,6 +545,74 @@ class TestUserLogin:
         assert b'href="#" id="forgot-password-link"' not in resp.content
 
     @pytest.mark.anyio
+    async def test_login_page_renders_accessible_password_toggle(self, setup_db):
+        async with _client() as c:
+            resp = await c.get("/login")
+        assert resp.status_code == 200
+        content = resp.text
+
+        # 1. Password input is hidden by default and wrapped in password-input-wrapper
+        assert 'class="password-input-wrapper"' in content
+        assert (
+            '<input type="password" id="password" name="password" placeholder="Enter your password" required' in content
+        )
+
+        # 2. Toggle button has type="button", accessible name, and aria-controls
+        toggle_btn_match = re.search(r'<button\b[^>]*id=["\']toggle-password["\'][^>]*>', content)
+        assert toggle_btn_match is not None, "Toggle button #toggle-password not found in rendered HTML"
+        assert re.search(r'\btype=["\']button["\']', toggle_btn_match.group(0)) is not None, (
+            "Rendered toggle button must have type='button' to prevent form submission"
+        )
+        assert 'class="password-toggle-btn"' in content
+        assert 'aria-label="Show password"' in content
+        assert 'title="Show password"' in content
+        assert 'aria-controls="password"' in content
+
+        # 3. Eye icons are rendered with aria-hidden="true" and hide icon starts hidden
+        assert "password-toggle-icon--show" in content
+        assert "password-toggle-icon--hide hidden" in content
+
+        # 4. Edge / IE duplicate password reveal controls are suppressed in CSS
+        auth_css = (Path(__file__).resolve().parent.parent / "portal" / "static" / "css" / "auth.css").read_text(
+            encoding="utf-8"
+        )
+        assert "::-ms-reveal" in auth_css
+        assert "::-ms-clear" in auth_css
+        assert ".password-input-wrapper" in auth_css
+        assert ".password-toggle-btn" in auth_css
+
+        # 5. Shared JS module contains setupPasswordToggle and wires every toggle
+        assert "js/password-toggle.js" in content
+        toggle_js = (
+            Path(__file__).resolve().parent.parent / "portal" / "static" / "js" / "password-toggle.js"
+        ).read_text(encoding="utf-8")
+        assert "setupPasswordToggle" in toggle_js
+        assert "setupAllPasswordToggles" in toggle_js
+        assert "password-toggle-btn" in toggle_js
+        assert "aria-controls" in toggle_js
+
+        # 6. Execute the Node unit test suite for interactive toggle behavior
+        node_bin = shutil.which("node")
+        if not node_bin:
+            pytest.skip("Node.js not found")
+        test_file = Path(__file__).resolve().parent / "test_password_toggle.js"
+        result = await anyio.run_process([node_bin, str(test_file)], check=False)
+        stdout_text = result.stdout.decode()
+        stderr_text = result.stderr.decode()
+        match = re.search(r"Password Toggle tests completed: (\d+) passed, (\d+) failed", stdout_text)
+        assert match is not None, (
+            f"Node test summary not found in output:\nstdout:\n{stdout_text}\nstderr:\n{stderr_text}"
+        )
+        passed_count = int(match.group(1))
+        failed_count = int(match.group(2))
+        assert passed_count > 0, (
+            f"Expected at least one passed assertion, got {passed_count}\nstdout:\n{stdout_text}\nstderr:\n{stderr_text}"
+        )
+        assert failed_count == 0, (
+            f"Expected 0 failed assertions, got {failed_count}\nstdout:\n{stdout_text}\nstderr:\n{stderr_text}"
+        )
+
+    @pytest.mark.anyio
     async def test_login_with_correct_credentials(self, setup_db):
         await _create_test_user(email="login@example.com", password="securepass123")
         async with _client() as c:
@@ -755,8 +848,6 @@ class TestEmailVerification:
 class TestPasswordReset:
     @pytest.mark.anyio
     async def test_reset_password_page_renders_for_valid_token(self, setup_db):
-        from portal.database import create_auth_token, get_session
-
         user = await _create_test_user(email="reset-valid@example.com")
         async with get_session() as s:
             await create_auth_token(s, jti="valid-reset-token", user_id=user.id, token_type="password_reset")
@@ -768,6 +859,27 @@ class TestPasswordReset:
         assert b"alert-error" not in resp.content
 
     @pytest.mark.anyio
+    async def test_reset_password_page_renders_accessible_password_toggle(self, setup_db):
+        user = await _create_test_user(email="reset-toggle@example.com")
+        async with get_session() as s:
+            await create_auth_token(s, jti="toggle-reset-token", user_id=user.id, token_type="password_reset")
+
+        async with _client() as c:
+            resp = await c.get("/auth/reset/toggle-reset-token")
+        assert resp.status_code == 200
+        content = resp.text
+
+        assert content.count('class="password-input-wrapper"') == 1
+        assert "js/password-toggle.js" in content
+        toggle_btn_match = re.search(r'<button\b[^>]*id=["\']toggle-password["\'][^>]*>', content)
+        assert toggle_btn_match is not None, "Toggle button #toggle-password not found in rendered HTML"
+        assert re.search(r'\btype=["\']button["\']', toggle_btn_match.group(0)) is not None, (
+            "Rendered toggle button must have type='button' to prevent form submission"
+        )
+        assert 'aria-controls="password"' in toggle_btn_match.group(0)
+        assert 'aria-label="Show password"' in content
+
+    @pytest.mark.anyio
     async def test_reset_password_page_rejects_nonexistent_token(self, setup_db):
         async with _client() as c:
             resp = await c.get("/auth/reset/nonexistent-token")
@@ -777,8 +889,6 @@ class TestPasswordReset:
 
     @pytest.mark.anyio
     async def test_reset_password_page_rejects_expired_token(self, setup_db):
-        from portal.database import create_auth_token, get_session
-
         user = await _create_test_user(email="reset-expired@example.com")
         async with get_session() as s:
             await create_auth_token(
@@ -795,8 +905,6 @@ class TestPasswordReset:
     async def test_reset_password_page_rejects_used_token(self, setup_db):
         from datetime import datetime, timezone
 
-        from portal.database import create_auth_token, get_session
-
         user = await _create_test_user(email="reset-used@example.com")
         async with get_session() as s:
             tok = await create_auth_token(s, jti="used-reset-token", user_id=user.id, token_type="password_reset")
@@ -811,8 +919,6 @@ class TestPasswordReset:
 
     @pytest.mark.anyio
     async def test_reset_password_page_rejects_wrong_token_type(self, setup_db):
-        from portal.database import create_auth_token, get_session
-
         user = await _create_test_user(email="reset-wrongtype@example.com")
         async with get_session() as s:
             await create_auth_token(s, jti="verification-token-not-reset", user_id=user.id, token_type="verification")
@@ -914,8 +1020,6 @@ class TestPasswordReset:
 
     @pytest.mark.anyio
     async def test_reset_password_post_redemption_failure_shows_invalid_token(self, setup_db):
-        from portal.database import create_auth_token, get_session
-
         user = await _create_test_user(email="reset-expired-post@example.com")
         async with get_session() as s:
             await create_auth_token(
@@ -1130,9 +1234,51 @@ class TestLastSignIn:
         assert attempts == 2
 
     @pytest.mark.anyio
-    async def test_inactive_password_reset_does_not_sign_in(self, setup_db):
-        from portal.database import create_auth_token, get_session, get_user_by_id
+    @pytest.mark.parametrize(
+        ("error_message", "error_kind", "expected_attempts"),
+        [
+            ("database is locked", "operational", 3),
+            ("disk I/O error", "operational", 1),
+            ("QueuePool limit reached, connection timed out", "pool_timeout", 1),
+            ("Can't reconnect until invalid transaction is rolled back", "other_sqlalchemy", 1),
+        ],
+        ids=["retries-exhausted", "non-retryable", "pool-timeout", "other-sqlalchemy-error"],
+    )
+    async def test_password_login_succeeds_when_sign_in_write_fails(
+        self, setup_db, monkeypatch, caplog, error_message, error_kind, expected_attempts
+    ):
+        from sqlalchemy.exc import InvalidRequestError, OperationalError
+        from sqlalchemy.exc import TimeoutError as PoolTimeoutError
 
+        import portal.routers.auth as auth_router
+
+        user = await _create_test_user(email=f"{error_kind}-{expected_attempts}@example.com")
+        attempts = 0
+
+        async def always_fail(*args, **kwargs):
+            nonlocal attempts
+            attempts += 1
+            if error_kind == "pool_timeout":
+                raise PoolTimeoutError(error_message)
+            if error_kind == "other_sqlalchemy":
+                raise InvalidRequestError(error_message)
+            raise OperationalError(error_message, {}, Exception())
+
+        monkeypatch.setattr(auth_router, "update_user", always_fail)
+        with caplog.at_level("WARNING", logger="portal.routers.auth"):
+            async with _client() as client:
+                response = await client.post("/login", data={"email": user.email, "password": "securepass123"})
+                assert response.status_code == 303
+                # The issued cookie must be a valid session: it has to authenticate a real request.
+                assert client.cookies.get("user_token")
+                account = await client.get("/account", follow_redirects=False)
+                assert account.status_code == 200
+
+        assert attempts == expected_attempts
+        assert f"Failed to record last_sign_in_at for user {user.id}" in caplog.text
+
+    @pytest.mark.anyio
+    async def test_inactive_password_reset_does_not_sign_in(self, setup_db):
         user = await _create_test_user(email="inactive-reset@example.com")
         async with get_session() as session:
             stored = await get_user_by_id(session, user.id)
@@ -1197,8 +1343,6 @@ class TestLastSignIn:
 
     @pytest.mark.anyio
     async def test_successful_password_reset_records_timestamp(self, setup_db):
-        from portal.database import create_auth_token, get_session, get_user_by_id
-
         user = await _create_test_user(email="reset-sign-in@example.com")
         async with get_session() as session:
             await create_auth_token(session, jti="reset-sign-in-token", user_id=user.id, token_type="password_reset")
@@ -1568,8 +1712,6 @@ class TestMagicLinkAuthentication:
     @pytest.mark.anyio
     async def test_magic_link_redirect_places_auth_sync_in_query_before_fragment(self, setup_db):
         from urllib.parse import quote
-
-        from portal.database import create_auth_token, get_session
 
         user = await _create_test_user()
         test_cases = [
