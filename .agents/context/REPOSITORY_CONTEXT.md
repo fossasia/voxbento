@@ -146,7 +146,11 @@ Client → Server messages:
 | `booth:accept-handoff` | `_handle_accept_handoff` | Accepts interpreter handoff |
 | `booth:cancel-handoff` | `_handle_cancel_handoff` | Cancels interpreter handoff |
 
-Server → Client broadcasts: `booth:joined`, `booth:state`, `booth:chat`, `booth:error`; direct reply: `booth:publish-ticket`
+Server → Client broadcasts: `booth:joined`, `booth:state`, `booth:chat`, `booth:error`, `booth:glossary`, `booth:floor-caption`; direct reply: `booth:publish-ticket`
+
+Interpreter Assist (#1375, `portal/interpreter_assist.py`): `booth:joined` includes the booth's glossary; room glossary
+edits push `booth:glossary`; the room's floor captions (from `broadcast_transcription`) are queued per floor and sent to
+the room's open booths as `booth:floor-caption` with glossary hits, without delaying listener captions.
 
 Role is NEVER trusted from client data — always read from the server-side `Session.granted_role` derived from cookies at connect time.
 

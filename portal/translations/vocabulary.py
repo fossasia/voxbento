@@ -6,7 +6,7 @@ import io
 import itertools
 import re
 import unicodedata
-from collections.abc import Iterable
+from collections.abc import Callable, Iterable
 from dataclasses import dataclass
 
 import pycountry
@@ -380,15 +380,8 @@ def restore_terms(translated: str, segment: ProtectedSegment) -> str | None:
     return _SPACED_PLACEHOLDER.sub(target_term, translated)
 
 
-async def resolve_vocabulary_entries(
-    session: AsyncSession,
-    event_id: int,
-    room_id: int | None,
-    booth_id: int | None,
-    target_language: str,
-    transcript_text: str,
-    max_entries: int = 80,
-) -> list[AIVocabularyEntry]:
+def _scoped_entries_query(event_id: int, room_id: int | None, booth_id: int | None, target_language: str):
+    """Entries of the event for ``target_language`` (or ``all``) that apply to this room and booth."""
     # Each scope is matched exactly: an entry pinned to one booth must not be
     # selected for its siblings just because they share a room.
     scope_filters = [
@@ -404,21 +397,17 @@ async def resolve_vocabulary_entries(
                 AIVocabularyEntry.room_id.is_(None) | (AIVocabularyEntry.room_id == room_id)
             )
         scope_filters.append(booth_filter)
-    stream = await session.stream_scalars(
-        select(AIVocabularyEntry).where(
-            AIVocabularyEntry.event_id == event_id,
-            AIVocabularyEntry.target_language.in_(("all", target_language)),
-            or_(*scope_filters),
-        )
+    return select(AIVocabularyEntry).where(
+        AIVocabularyEntry.event_id == event_id,
+        AIVocabularyEntry.target_language.in_(("all", target_language)),
+        or_(*scope_filters),
     )
-    candidates: list[AIVocabularyEntry] = []
-    processed = 0
-    async for entry in stream:
-        if _term_matches(entry, transcript_text):
-            candidates.append(entry)
-        processed += 1
-        if processed % _RESOLVER_YIELD_EVERY == 0:
-            await asyncio.sleep(0)
+
+
+def _deduplicate_by_scope(
+    candidates: list[AIVocabularyEntry], room_id: int | None, booth_id: int | None
+) -> tuple[list[AIVocabularyEntry], Callable[[AIVocabularyEntry], int]]:
+    """Keep one entry per source term: the narrowest scope, then the highest priority, wins."""
 
     def scope_rank(entry: AIVocabularyEntry) -> int:
         if booth_id is not None and entry.booth_id == booth_id:
@@ -437,6 +426,49 @@ async def resolve_vocabulary_entries(
             continue
         seen.add(entry)
         deduplicated.append(entry)
+    return deduplicated, scope_rank
+
+
+async def booth_glossary_entries(
+    session: AsyncSession,
+    event_id: int,
+    room_id: int | None,
+    booth_id: int | None,
+    target_language: str,
+) -> list[AIVocabularyEntry]:
+    """The whole glossary an interpreter of this booth works with, one entry per source term."""
+    stream = await session.stream_scalars(_scoped_entries_query(event_id, room_id, booth_id, target_language))
+    candidates: list[AIVocabularyEntry] = []
+    async for entry in stream:
+        candidates.append(entry)
+        if len(candidates) % _RESOLVER_YIELD_EVERY == 0:
+            await asyncio.sleep(0)
+    deduplicated, _ = _deduplicate_by_scope(candidates, room_id, booth_id)
+    # Read by people: highest priority first, then alphabetical.
+    deduplicated.sort(key=lambda entry: (-entry.priority, entry.source_term.casefold(), entry.id))
+    return deduplicated
+
+
+async def resolve_vocabulary_entries(
+    session: AsyncSession,
+    event_id: int,
+    room_id: int | None,
+    booth_id: int | None,
+    target_language: str,
+    transcript_text: str,
+    max_entries: int = 80,
+) -> list[AIVocabularyEntry]:
+    stream = await session.stream_scalars(_scoped_entries_query(event_id, room_id, booth_id, target_language))
+    candidates: list[AIVocabularyEntry] = []
+    processed = 0
+    async for entry in stream:
+        if _term_matches(entry, transcript_text):
+            candidates.append(entry)
+        processed += 1
+        if processed % _RESOLVER_YIELD_EVERY == 0:
+            await asyncio.sleep(0)
+
+    deduplicated, scope_rank = _deduplicate_by_scope(candidates, room_id, booth_id)
 
     # High-priority entries are documented as always included, so they take the cap first.
     deduplicated.sort(

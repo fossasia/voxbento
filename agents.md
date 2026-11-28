@@ -87,6 +87,7 @@ VoxBento is a production-grade **browser-first interpretation booth console** fo
 | `portal/youtube_account.py` | Google OAuth and YouTube Live API metadata (no media): Sign in with YouTube, broadcast linking, YouTube status |
 | `portal/outage_log.py` | `OutageLog` — reconcile loops log a repeating failure once per outage, not per tick |
 | `portal/booth_recovery.py` | Saves each booth's Go Live switch and active interpreter to `booth_live_state` and restores them at startup (TD-03) |
+| `portal/interpreter_assist.py` | Interpreter Assist (#1375): booth glossary cache, glossary hits in floor captions, ordered relay of a room's floor captions to its booths |
 | `portal/attendance.py` | `AttendanceTracker` — interpreter visits and interpreting time from booth state, batched writes to `interpreter_attendance` (#1215) |
 | `portal/live_demo.py` | Home-page live demo (`/ws/demo/live`): local Whisper → NLLB → Supertonic pipeline, site + visitor glossary, admission limits, and the admin-edited `live_demo_settings` row (`/admin/live-demo/`) |
 | `portal/live_demo_ai.py` | Independent live demo speech, translation and voice settings and encrypted keys; no event or room dependency |
@@ -189,7 +190,12 @@ Validation: `portal/booth_identity.py` — slug: `^[a-z0-9]+(?:-[a-z0-9]+)*$`; l
 | `booth:update-state` | `_handle_update_state` | `mic_active`, `ingest_connected` |
 | `booth:request-publish-ticket` | `_handle_request_publish_ticket` | — (participant from the WS session) |
 
-Server → Client: `booth:joined`, `booth:state`, `booth:chat`, `booth:error`, `booth:publish-ticket`
+Server → Client: `booth:joined`, `booth:state`, `booth:chat`, `booth:error`, `booth:publish-ticket`, `booth:glossary`, `booth:floor-caption`
+
+Interpreter Assist (#1375): `booth:joined` carries the booth's glossary (`glossary`), and a room glossary edit pushes
+`booth:glossary` to the room's open booths. The room's floor captions reach its booths as `booth:floor-caption` with
+server-side glossary hits (UTF-16 offsets). Both go through `manager.broadcast`, so only sockets with a role in the
+receiving booth get them; the public caption socket and its token scoping are unchanged.
 
 Booth WHIP publishing is authenticated (#783): MediaMTX forwards the `Authorization: Bearer` ticket to
 `/internal/media-auth`, which redeems it once (`portal/booth_publish.py`, 30 s TTL, bound to the booth's

@@ -136,7 +136,30 @@
         </div>
       </details>
 
-      <!-- 2. Boothmate audio volume -->
+      <!-- 2. Interpreter Assist: glossary and live floor transcript -->
+      <details class='card card--collapsible card--assist' open>
+        <summary class='card-head card-head--summary'>
+          <h2 class='card-title'>
+            <span class='card-icon'>📖</span> Interpreter Assist
+            <span id='assist-term-count' class='count-chip' title='Glossary entries for this booth'>0</span>
+          </h2>
+        </summary>
+        <div class='card-body assist-body'>
+          <section class='assist-section' aria-labelledby='assist-floor-heading'>
+            <h3 id='assist-floor-heading' class='diag-heading'>Floor transcript</h3>
+            <div id='assist-floor-log' class='assist-floor-log'></div>
+            <p id='assist-floor-empty' class='card-empty'>The speaker's words appear here while floor transcription is on, with glossary terms marked.</p>
+          </section>
+          <section class='assist-section'>
+            <label class='diag-heading' for='assist-search'>Glossary</label>
+            <input id='assist-search' class='input input-sm' type='search' placeholder='Search terms…' autocomplete='off' />
+            <ul id='assist-glossary' class='assist-glossary'></ul>
+            <p id='assist-glossary-empty' class='card-empty'>No glossary for this booth yet.</p>
+          </section>
+        </div>
+      </details>
+
+      <!-- 3. Boothmate audio volume -->
       <section class='card'>
         <div class='card-head'>
           <h2 class='card-title'><span class='card-icon'>🔊</span> Boothmate Audio</h2>
@@ -152,7 +175,7 @@
         </div>
       </section>
 
-      <!-- 3. Booth chat -->
+      <!-- 4. Booth chat -->
       <section class='card card--chat'>
         <div class='card-head'>
           <h2 class='card-title'><span class='card-icon'>💬</span> Booth Chat</h2>
@@ -167,7 +190,7 @@
         </div>
       </section>
 
-      <!-- 4. Relay audio -->
+      <!-- 5. Relay audio -->
       <details class='card card--collapsible'>
         <summary class='card-head card-head--summary'>
           <h2 class='card-title'><span class='card-icon'>🎧</span> Relay Audio</h2>
@@ -197,7 +220,7 @@
         </div>
       </details>
 
-      <!-- 5. Audio setup & diagnostics -->
+      <!-- 6. Audio setup & diagnostics -->
       <details class='card card--collapsible'>
         <summary class='card-head card-head--summary'>
           <h2 class='card-title'><span class='card-icon'>⚙️</span> Audio Setup</h2>

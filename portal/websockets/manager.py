@@ -28,6 +28,14 @@ from portal.booth_publish import (
 )
 from portal.config import settings
 from portal.globals import booths
+from portal.interpreter_assist import (
+    FLOOR_LANGUAGE,
+    GLOSSARY_LOOKUP_TIMEOUT_SECONDS,
+    BoothGlossary,
+    FloorCaptionRelay,
+    GlossaryCache,
+    GlossaryMessage,
+)
 from portal.roles import ALL_ROLES, INTERPRETER, can_set_active
 from portal.tasks import track_task
 from portal.webhooks.events import BOOTH_INTERPRETER_JOINED
@@ -204,6 +212,18 @@ class ConnectionManager:
 
     def get_session(self, ws: WebSocket) -> Session | None:
         return self._sessions.get(id(ws))
+
+    def booth_ids_in_room(self, event_slug: str, room_id: int) -> list[str]:
+        """Interpreter booths of one room that have at least one socket open, floor excluded."""
+        booth_ids = []
+        for booth_id in self._rooms:
+            try:
+                slug, booth_room_id, language_code = parse_booth_id(booth_id)
+            except ValueError:
+                continue
+            if slug == event_slug and booth_room_id == room_id and language_code != FLOOR_LANGUAGE:
+                booth_ids.append(booth_id)
+        return sorted(booth_ids)
 
     def detach_participant(self, booth_id: str, participant_id: str, keep: WebSocket) -> list[WebSocket]:
         """Take *participant_id* away from every socket in the booth but *keep*.
@@ -712,6 +732,47 @@ class TTSConnectionManager:
 manager = ConnectionManager()
 listener_manager = ListenerConnectionManager()
 tts_manager = TTSConnectionManager()
+# Interpreter Assist (#1375): delivered through manager.broadcast, so only sockets that hold
+# a role in the receiving booth get the room's glossary and floor captions.
+glossary_cache = GlossaryCache()
+#: Longest a join waits for the booth's glossary; a slower read follows as booth:glossary.
+JOIN_GLOSSARY_TIMEOUT = GLOSSARY_LOOKUP_TIMEOUT_SECONDS
+floor_caption_relay = FloorCaptionRelay(
+    send=manager.broadcast, booth_ids_in_room=manager.booth_ids_in_room, glossary=glossary_cache
+)
+
+
+async def notify_glossary_changed(event_slug: str, room_id: int) -> None:
+    """Send the new glossary to every booth of the room that is open now."""
+    glossary_cache.invalidate_room(event_slug, room_id)
+    for booth_id in manager.booth_ids_in_room(event_slug, room_id):
+        glossary = await glossary_cache.refresh(booth_id)
+        if glossary is None:
+            # The read failed: interpreters keep the list they have rather than an empty one.
+            continue
+        await manager.broadcast(booth_id, dict(glossary.message()))
+
+
+async def _join_glossary(ws: WebSocket, booth_id: str) -> GlossaryMessage:
+    """The glossary for booth:joined, never holding the join up for longer than JOIN_GLOSSARY_TIMEOUT."""
+    glossary = await glossary_cache.get_within(booth_id, JOIN_GLOSSARY_TIMEOUT)
+    pending = glossary_cache.pending(booth_id)
+    if pending is not None:
+        # The read was too slow for the join; it keeps running and its result follows.
+        track_task(asyncio.create_task(_send_glossary_when_read(ws, pending)))
+    return glossary.message()
+
+
+async def _send_glossary_when_read(ws: WebSocket, pending: asyncio.Task[BoothGlossary | None]) -> None:
+    """Follow a join that went out without its glossary once the slow read finishes."""
+    glossary = await asyncio.shield(pending)
+    session = manager.get_session(ws)
+    if glossary is None or session is None or session.revoked:
+        return
+    try:
+        await ws.send_text(json.dumps(glossary.message()))
+    except (WebSocketDisconnect, RuntimeError, OSError):
+        logger.debug("Booth socket closed before its glossary was sent", exc_info=True)
 
 
 async def broadcast_booth_state(booth_id: str, state: dict) -> None:
@@ -736,6 +797,9 @@ async def broadcast_transcription(booth_id: str, payload: str | dict):
     else:
         # Aggregator payload
         await listener_manager.broadcast(booth_id, payload)
+        if booth_id.endswith(f"-{FLOOR_LANGUAGE}"):
+            # Queued, never awaited: the booths of the room get it without delaying listeners.
+            floor_caption_relay.offer(booth_id, payload)
 
 
 async def _handle_join(ws: WebSocket, session: Session, data: dict) -> None:
@@ -826,8 +890,18 @@ async def _handle_join(ws: WebSocket, session: Session, data: dict) -> None:
     # never change it, so we deliberately do NOT re-apply any persisted value
     # here — doing so would flip an interpreter live (or Mission Control to
     # "Stop") simply because they reconnected.
+    # Interpreter Assist: the booth's glossary comes with the join, so only someone who joined
+    # with a role in this booth receives it. Later edits arrive as booth:glossary.
+    glossary = await _join_glossary(ws, session.booth_id)
     await ws.send_text(
-        json.dumps({"type": "booth:joined", "participant_id": participant.participant_id, "state": state})
+        json.dumps(
+            {
+                "type": "booth:joined",
+                "participant_id": participant.participant_id,
+                "state": state,
+                "glossary": glossary,
+            }
+        )
     )
     await broadcast_booth_state(session.booth_id, state)
 

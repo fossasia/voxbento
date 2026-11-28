@@ -3,10 +3,12 @@ import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 import vm from 'node:vm'
 import { createBackoff, finalCloseMessage } from '../portal/static/js/booth-reconnect.js'
+import { createInterpreterAssist } from '../portal/static/js/interpreter-assist.js'
 import { micIsActive, watchMicTracks } from '../portal/static/js/mic-activity.js'
 
 const source = readFileSync(new URL('../portal/static/js/interpreter-booth.js', import.meta.url), 'utf8')
   .replace(/^import .* from '\.\/booth-reconnect.js'\r?\n/, '')
+  .replace(/^import .* from '\.\/interpreter-assist.js'\r?\n/, '')
   .replace(/^import .* from '\.\/mic-activity.js'\r?\n/, '')
   .replace('boot().catch((error) => {', 'Promise.resolve().catch((error) => {')
 
@@ -26,6 +28,7 @@ function harness({ getUserMedia = async () => ({ getAudioTracks: () => [] }) } =
   }
   const context = vm.createContext({
     console, URL, Promise, WebSocket: Socket, createBackoff, finalCloseMessage, micIsActive, watchMicTracks,
+    createInterpreterAssist,
     document: { getElementById: (id) => id === 'interpreter-portal'
       ? { dataset: { boothId: 'test-1-en', eventSlug: 'test', roomId: '1' } } : null },
     localStorage: { getItem: () => null },
@@ -227,7 +230,7 @@ console.log('Booth socket lifecycle checks passed')
     'jitsi-frame': frame,
   }
   const context = vm.createContext({
-    URL, URLSearchParams, createBackoff, localStorage: { getItem: () => null },
+    URL, URLSearchParams, createBackoff, createInterpreterAssist, localStorage: { getItem: () => null },
     document: { getElementById: (id) => elements[id] },
     createWhepClient: () => ({
       start: ({ whepUrl }) => switches.push(whepUrl),

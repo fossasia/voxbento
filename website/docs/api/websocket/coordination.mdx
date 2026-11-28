@@ -145,6 +145,36 @@ Received when another participant sends a message.
 }
 ```
 
+### 3. `booth:glossary`
+The glossary entries that apply to this booth: event-wide entries, the room's entries and the booth's own, for the booth's language or `all`. When one source term has several entries, the booth's own wins over the room's, then the higher priority. Every entry is sent, highest priority first, and every one is marked in floor captions.
+
+The glossary arrives inside `booth:joined` (as its `glossary` field) and again as its own message whenever an event owner changes the room's glossary.
+
+```json
+{
+  "type": "booth:glossary",
+  "terms": [
+    { "id": 12, "source_term": "keynote", "target_term": "discours d'ouverture", "description": "Opening talk" }
+  ]
+}
+```
+
+### 4. `booth:floor-caption`
+The room's floor captions, while floor transcription is on, with every glossary term found in them. `status` is `partial` (still being spoken), `final` or `clear` (the partial line ended without a final). `start` and `end` are UTF-16 offsets into `text`, the way JavaScript indexes strings. Terms are found with the same matcher the AI translation uses, so whole words only, except in scripts written without spaces.
+
+```json
+{
+  "type": "booth:floor-caption",
+  "status": "final",
+  "text": "The keynote starts now.",
+  "segment_id": "8f0c…",
+  "seq": 42,
+  "hits": [{ "start": 4, "end": 11, "term_id": 12, "target_term": "discours d'ouverture" }]
+}
+```
+
+Both messages are sent only to sockets that hold a role in the receiving booth, and only for that booth's own room.
+
 ## The Complete Handoff Flow (Under the Hood)
 
 When a `room_coordinator` clicks "Set Active" in the UI, here is the exact sequence of technical events:
