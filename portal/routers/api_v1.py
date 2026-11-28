@@ -492,9 +492,6 @@ async def delete_event(
             status_code=status.HTTP_409_CONFLICT, detail="Cannot delete event while active booths are running."
         )
 
-    for b in active_booths:
-        await booths.remove_booth(event_slug, b["room_id"], b["language_code"])
-
     await revoke_booths_for_deleted_entity(db, level="event", target_id=event.id)
     event.deleted_at = datetime.now(timezone.utc)
 
@@ -506,7 +503,12 @@ async def delete_event(
         status_code=status.HTTP_204_NO_CONTENT,
     )
     db.add(audit)
-    await db.flush()
+    # Commit first, so a failed delete leaves the booths running.
+    await db.commit()
+    for b in active_booths:
+        await booths.remove_booth(event_slug, b["room_id"], b["language_code"])
+    for b in active_booths:
+        await stop_transcription_worker(b["booth_id"])
     return None
 
 
@@ -733,8 +735,11 @@ async def _delete_removed_languages_and_booths(
     existing_booths: dict[str, DBBooth],
     existing_langs: dict[str, RoomTranslationLanguage],
     token: OAuthToken,
-) -> None:
-    """Delete unrequested booths and languages, enforcing active-session safety checks."""
+) -> list[str]:
+    """Delete unrequested booths and languages, enforcing active-session safety checks.
+
+    Returns the removed language codes; the caller stops their transcription after the commit.
+    """
     from portal.booth_identity import make_booth_id
     from portal.globals import booths
 
@@ -750,6 +755,7 @@ async def _delete_removed_languages_and_booths(
     for code, b in removed_booths:
         booth_id = make_booth_id(event.slug, room.id, code)
         await stop_booth_publish(booth_id, take_booth_publishers(booth_id))
+        await revoke_booths_for_deleted_entity(db, level="booth", target_id=b.id)
         await db.delete(b)
         db.add(
             OAuthAuditLog(
@@ -764,6 +770,8 @@ async def _delete_removed_languages_and_booths(
     for code, rl in existing_langs.items():
         if code not in requested_langs:
             await db.delete(rl)
+
+    return [code for code, _ in removed_booths]
 
 
 async def _create_missing_languages_and_booths(
@@ -815,20 +823,24 @@ async def _sync_target_languages_and_booths(
     eventyay_room_id: str,
     requested_langs: set[str],
     token: OAuthToken,
-) -> None:
-    """Reconcile requested target languages with the room's persisted booths and translation languages."""
+) -> list[str]:
+    """Reconcile requested target languages with the room's persisted booths and translation languages.
+
+    Returns the removed language codes.
+    """
     lang_res = await db.execute(select(RoomTranslationLanguage).where(RoomTranslationLanguage.room_id == room.id))
     existing_langs = {rl.language_code: rl for rl in lang_res.scalars().all()}
 
     booth_res = await db.execute(select(DBBooth).where(DBBooth.room_id == room.id))
     existing_booths = {b.language_code: b for b in booth_res.scalars().all()}
 
-    await _delete_removed_languages_and_booths(
+    removed_codes = await _delete_removed_languages_and_booths(
         db, event, room, eventyay_room_id, requested_langs, existing_booths, existing_langs, token
     )
     await _create_missing_languages_and_booths(
         db, event, room, eventyay_room_id, requested_langs, existing_booths, existing_langs, token
     )
+    return removed_codes
 
 
 async def _build_booths_response(db: AsyncSession, event_slug: str, room_id: int) -> list[dict[str, str]]:
@@ -870,9 +882,12 @@ async def upsert_room(
     payload_dict = payload.model_dump(exclude_unset=True)
     room, action, status_code_ret = await _create_or_update_base_room(db, event, eventyay_room_id, payload_dict)
 
+    removed_codes: list[str] = []
     if "target_languages" in payload_dict and payload_dict["target_languages"] is not None:
         requested_langs = set(payload_dict["target_languages"])
-        await _sync_target_languages_and_booths(db, event, room, eventyay_room_id, requested_langs, token)
+        removed_codes = await _sync_target_languages_and_booths(
+            db, event, room, eventyay_room_id, requested_langs, token
+        )
 
     # Audit Logging
     audit = OAuthAuditLog(
@@ -888,6 +903,13 @@ async def upsert_room(
 
     returned_booths = await _build_booths_response(db, event.slug, room.id)
 
+    # Commit first, so a failed update leaves the removed booths' transcription running.
+    await db.commit()
+    # A join before the commit can bring a removed booth back in memory, so clear it again.
+    for code in removed_codes:
+        await booths.remove_booth(event_slug, room.id, code)
+    for code in removed_codes:
+        await stop_transcription_worker(make_booth_id(event_slug, room.id, code))
     return {"status": "success", "room_id": room.id, "booths": returned_booths}
 
 
@@ -919,9 +941,14 @@ async def delete_room(
             status_code=status.HTTP_409_CONFLICT, detail="Cannot delete room while active booths are running."
         )
 
-    for b in room_booths:
-        await booths.remove_booth(event_slug, b["room_id"], b["language_code"])
-
+    # Every booth in the room goes with it, including one another event placed there.
+    room_booth_keys = (
+        await db.execute(
+            select(Event.slug, DBBooth.language_code)
+            .join(Event, Event.id == DBBooth.event_id)
+            .where(DBBooth.room_id == room.id)
+        )
+    ).all()
     await revoke_booths_for_deleted_entity(db, level="room", target_id=room.id)
     await delete_db_room(db, room.id)
 
@@ -933,7 +960,11 @@ async def delete_room(
         status_code=status.HTTP_204_NO_CONTENT,
     )
     db.add(audit)
-    await db.flush()
+    await db.commit()
+    for booth_event_slug, language_code in room_booth_keys:
+        await booths.remove_booth(booth_event_slug, room.id, language_code)
+    for booth_event_slug, language_code in room_booth_keys:
+        await stop_transcription_worker(make_booth_id(booth_event_slug, room.id, language_code))
     return None
 
 
@@ -1086,6 +1117,9 @@ async def delete_booth_endpoint(
 
     await revoke_booths_for_deleted_entity(db, level="booth", target_id=booth.id)
     await delete_booth(db, booth.id)
+    await db.commit()
+    await booths.remove_booth(event_slug, target_room_id, language_code)
+    await stop_transcription_worker(make_booth_id(event_slug, target_room_id, language_code))
     return {"status": "deleted"}
 
 
