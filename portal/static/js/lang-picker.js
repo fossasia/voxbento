@@ -20,18 +20,18 @@ export function initLangPicker({ tagsEl, searchEl, dropdownEl, hiddenEl, languag
   let focusedIndex = -1;
 
   function renderTags() {
-    // A saved code the language list does not know stays selected, just without a tag.
-    const known = [...selected].filter((code) => byCode.has(code));
-    tagsEl.replaceChildren(...known.map((code) => {
+    // A saved code the language list does not know (such as an older "pt-BR") gets a tag with
+    // just its code, so it can be seen and removed like any other choice.
+    tagsEl.replaceChildren(...[...selected].map((code) => {
       const lang = byCode.get(code);
       const tag = document.createElement('span');
       tag.className = 'lang-tag';
       const name = document.createElement('span');
-      name.textContent = label(lang);
+      name.textContent = lang ? label(lang) : code;
       const remove = document.createElement('button');
       remove.type = 'button';
       remove.className = 'lang-tag-remove';
-      remove.setAttribute('aria-label', `Remove ${lang.name}`);
+      remove.setAttribute('aria-label', `Remove ${lang ? lang.name : code}`);
       remove.textContent = '×';
       remove.addEventListener('click', () => {
         selected.delete(code);

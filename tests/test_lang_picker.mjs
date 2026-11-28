@@ -75,11 +75,16 @@ assert.deepEqual(matchLanguages(LANGUAGES, new Set(), 'zzz'), [], 'no match');
   assert.equal(els.tagsEl.children[0].children[1].attributes['aria-label'], 'Remove English');
 }
 
-// A saved code the list does not know is still submitted, just without a tag.
+// A saved code the list does not know is still submitted, and its tag shows the code and removes it.
 {
-  const els = createPicker(['en', 'xx']);
+  const els = createPicker(['en', 'pt-BR']);
+  assert.deepEqual(tagLabels(els), ['English (en)', 'pt-BR']);
+  assert.deepEqual(hiddenCodes(els), ['en', 'pt-BR']);
+  const removeUnknown = els.tagsEl.children[1].children[1];
+  assert.equal(removeUnknown.attributes['aria-label'], 'Remove pt-BR');
+  removeUnknown.handlers.click();
   assert.deepEqual(tagLabels(els), ['English (en)']);
-  assert.deepEqual(hiddenCodes(els), ['en', 'xx']);
+  assert.deepEqual(hiddenCodes(els), ['en'], 'a removed unknown code is no longer submitted');
 }
 
 // Typing suggests languages; choosing one adds it and closes the list.
