@@ -31,7 +31,7 @@ def upgrade() -> None:
 
     cols_to_add = []
     if "can_host" not in users_cols:
-        cols_to_add.append(sa.Column("can_host", sa.Boolean(), server_default="0", nullable=False))
+        cols_to_add.append(sa.Column("can_host", sa.Boolean(), server_default=sa.false(), nullable=False))
     if "hosting_requested_at" not in users_cols:
         cols_to_add.append(sa.Column("hosting_requested_at", sa.DateTime(timezone=True), nullable=True))
     if "hosting_revoked_at" not in users_cols:

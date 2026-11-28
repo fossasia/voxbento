@@ -35,7 +35,7 @@ Interpreter browser
 - `active_workers: dict[str, dict]` — keyed by `booth_id`; value has `{task, provider, stderr_task}`
 - `active_processes: dict[str, asyncio.subprocess.Process]` — the ffmpeg process per booth
 - Both protected by `active_workers_lock: asyncio.Lock`
-- `MAX_TOTAL_WORKERS = 10` — process-global hard limit
+- `MAX_TRANSCRIPTION_WORKERS` (default 10, configurable via Settings) — process-global worker limit
 
 ---
 
@@ -91,7 +91,7 @@ await aggregator.handle_clear(booth_id)                   # silence endpoint
 
 ## Deepgram Provider Details
 
-- Connects to `wss://api.deepgram.com/v1/listen?model=nova-2&...&interim_results=true`
+- Connects to `wss://api.deepgram.com/v1/listen?model=nova-3&...&interim_results=true` (`build_listen_url`; glossary keyterms on nova-3)
 - Runs concurrent `sender` (pipes PCM) and `receiver` (gets transcripts) tasks
 - Handles `KeepAlive` (every 5s timeout to prevent WS close)
 - `speech_final=True` or `is_final=True` → `handle_final`; otherwise → `handle_partial`
@@ -125,5 +125,5 @@ await aggregator.handle_clear(booth_id)                   # silence endpoint
 2. Check ffmpeg process is alive: `active_processes[booth_id].returncode is None`.
 3. Check MediaMTX RTSP is reachable: `rtsp://mediamtx:8554/{event_slug}/{room_id}/{language_code}`.
 4. Check API key: `get_api_key(event, ProviderEnum.X)` — returns `None` if not set.
-5. Check `MAX_TOTAL_WORKERS` not exceeded.
+5. Check worker capacity limit (`MAX_TRANSCRIPTION_WORKERS`) not exceeded.
 6. Check `event.transcription_api_enabled` is `True` for external providers.

@@ -8,7 +8,13 @@ import pytest
 from httpx import ASGITransport, AsyncClient
 
 from fastapi_app import app
-from portal.auth import create_user_token, hash_password, verify_password
+from portal.auth import (
+    create_user_token,
+    decode_token,
+    generate_admin_csrf_token,
+    hash_password,
+    verify_password,
+)
 from portal.database import (
     configure,
     create_event,
@@ -49,7 +55,14 @@ async def make_user(*, password: str | None = "old-password", **kwargs) -> tuple
             **kwargs,
         )
         user_id = user.id
-    return user_id, {"user_token": create_user_token(user_id=user_id, email="priya@example.org")}
+    user_token = create_user_token(user_id=user_id, email="priya@example.org")
+    session_id = str(decode_token(user_token)["jti"])
+    csrf_token = generate_admin_csrf_token(session_id)
+
+    return user_id, {
+        "user_token": user_token,
+        "admin_csrf": csrf_token,
+    }
 
 
 async def account_html(cookies: dict[str, str], query: str = "") -> str:
@@ -112,7 +125,7 @@ async def test_display_name_can_be_changed():
     async with client() as http:
         res = await http.post(
             "/account/profile",
-            data={"display_name": "  Priya   Sharma "},
+            data={"display_name": "  Priya   Sharma ", "csrf_token": cookies["admin_csrf"]},
             headers=SAME_ORIGIN,
             cookies=cookies,
             follow_redirects=False,
@@ -132,7 +145,7 @@ async def test_invalid_display_name_is_refused(name):
     async with client() as http:
         res = await http.post(
             "/account/profile",
-            data={"display_name": name},
+            data={"display_name": name, "csrf_token": cookies["admin_csrf"]},
             headers=SAME_ORIGIN,
             cookies=cookies,
             follow_redirects=False,
@@ -150,7 +163,7 @@ async def test_profile_update_rejects_cross_origin():
     async with client() as http:
         res = await http.post(
             "/account/profile",
-            data={"display_name": "Evil"},
+            data={"display_name": "Evil", "csrf_token": cookies["admin_csrf"]},
             headers={"origin": "https://evil.example"},
             cookies=cookies,
         )
@@ -265,11 +278,14 @@ async def test_setting_a_first_password_and_removing_it():
     user_id, cookies = await make_user(password=None)
     async with client() as http:
         short = await http.post("/api/auth/set-password", json={"password": "short"}, cookies=cookies)
+        too_long = await http.post("/api/auth/set-password", json={"password": "a" * 80}, cookies=cookies)
         first = await http.post("/api/auth/set-password", json={"password": "first-password"}, cookies=cookies)
         bad_remove = await http.post("/api/auth/remove-password", json={"password": "wrong"}, cookies=cookies)
         removed = await http.post("/api/auth/remove-password", json={"password": "first-password"}, cookies=cookies)
         page = await http.get("/account?success=password_removed", cookies=cookies)
     assert short.status_code == 400
+    assert too_long.status_code == 400
+    assert too_long.json()["detail"].startswith("Password must be at most 72 bytes.")
     assert first.status_code == 200
     assert bad_remove.status_code == 403
     assert removed.status_code == 200
@@ -284,3 +300,45 @@ async def test_password_api_rejects_non_object_json():
     async with client() as http:
         res = await http.post("/api/auth/set-password", json=["x"], cookies=cookies)
     assert res.status_code == 400
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize(
+    "path",
+    [
+        "/api/auth/set-password",
+        "/api/auth/remove-password",
+        "/api/auth/check-email",
+        "/api/auth/magic-link",
+        "/api/auth/forgot-password",
+    ],
+)
+@pytest.mark.parametrize("body", [b"", b"not json", b'{"password": ', b"\xff\xfe"])
+async def test_auth_json_api_rejects_malformed_json(path, body):
+    """A request body that is not valid JSON is a client error, not a server crash."""
+    _, cookies = await make_user()
+    async with client() as http:
+        res = await http.post(path, content=body, headers={"content-type": "application/json"}, cookies=cookies)
+    assert res.status_code == 400
+    assert res.json()["detail"] == "Request body must be valid JSON"
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize(
+    "path",
+    [
+        "/api/auth/set-password",
+        "/api/auth/remove-password",
+        "/api/auth/check-email",
+        "/api/auth/magic-link",
+        "/api/auth/forgot-password",
+    ],
+)
+@pytest.mark.parametrize("body", [b"[]", b'["x"]', b'"text"', b"123", b"null", b"true"])
+async def test_auth_json_api_rejects_non_object_json_body(path, body):
+    """Valid JSON that is not an object is rejected before any handler calls .get() on it."""
+    _, cookies = await make_user()
+    async with client() as http:
+        res = await http.post(path, content=body, headers={"content-type": "application/json"}, cookies=cookies)
+    assert res.status_code == 400
+    assert res.json()["detail"] == "Request body must be a JSON object"

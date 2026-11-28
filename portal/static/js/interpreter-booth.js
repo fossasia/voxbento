@@ -1,4 +1,5 @@
 import { createBackoff, finalCloseMessage } from './booth-reconnect.js'
+import { micIsActive, watchMicTracks } from './mic-activity.js'
 
 const portal = document.getElementById('interpreter-portal')
 
@@ -24,6 +25,8 @@ const state = {
   peerConnection: null,
   whipResourceUrl: null,
   micMuted: true,
+  /** The device itself is muted (keyboard key, OS input mute, headset button), as the browser reports it. */
+  micDeviceMuted: false,
   ingestConnected: false,
   ingestStarting: false,
   ingestReachable: Boolean(portal.dataset.whipBase),
@@ -45,7 +48,7 @@ const state = {
   handoffInitiatorId: null,
   /** Track whether booth audio WHEP has been auto-started for passive */
   boothAudioAutoStarted: false,
-  /** The Jitsi monitor is loaded once; rejoining after a reconnect keeps it. */
+  /** A booth reconnect keeps the selected floor monitor playing. */
   monitoringStarted: false,
   /** Set when the page is closing or the server ended the session for good. */
   stopReconnecting: false,
@@ -74,7 +77,6 @@ const elements = {
   handoverAnnouncer: document.getElementById('handover-announcer'),
   liveBadge: document.getElementById('live-badge'),
   liveBadgeText: document.getElementById('live-badge-text'),
-  passRelay: document.getElementById('pass-relay'),
   relayAudio: document.getElementById('relay-audio'),
   relayDeviceSelect: document.getElementById('relay-device-select'),
   showVirtualRelayDevices: document.getElementById('show-virtual-relay-devices'),
@@ -246,7 +248,7 @@ function scheduleReconnect(delayMs) {
 function reconcileIngestAfterRejoin() {
   if (!state.ingestConnected || state.relayingOut) return
   if (state.activeInterpreterId === state.participantId && state.broadcastUnlocked) {
-    wsSend({ type: 'booth:update-state', mic_active: !state.micMuted, ingest_connected: true })
+    wsSend({ type: 'booth:update-state', mic_active: currentMicActive(), ingest_connected: true })
   } else {
     stopLiveIngest().catch((error) => console.warn('Could not finish stopping previous booth audio:', error))
   }
@@ -339,10 +341,6 @@ function bindEventHandlers() {
   elements.toggleMic.addEventListener('click', async () => {
     await toggleMicMute()
   })
-
-  if (elements.passRelay) {
-    elements.passRelay.addEventListener('click', toggleRelayAudio)
-  }
 
   if (elements.relayDeviceSelect && elements.relayAudio) {
     elements.relayDeviceSelect.addEventListener('change', async () => {
@@ -703,7 +701,49 @@ function joinBooth() {
   wsSend(payload)
 }
 
+const floorMonitor = typeof createWhepClient === 'function' ? createWhepClient() : null
+
 function joinMonitoringFeed() {
+  const selector = document.getElementById('monitor-source')
+  if (!selector) return
+  selector.disabled = false
+  selector.onchange = joinMonitoringFeed
+  const roomAudio = selector.value === 'floor'
+  const useMeeting = selector.value === 'jitsi'
+  const useRelay = selector.value === 'relay'
+  if (relayListening && !useRelay) setRelayListening(false)
+  document.getElementById('meeting-player').classList.toggle('hidden', !useMeeting)
+  document.getElementById('floor-player').classList.toggle('hidden', !roomAudio)
+  const hlsPlayer = document.getElementById('floor-hls')
+  if (roomAudio) {
+    elements.jitsiFrame.removeAttribute('src')
+    if (hlsPlayer) {
+      hlsPlayer.src = hlsPlayer.dataset.url
+      return
+    }
+    const audio = document.getElementById('floor-audio')
+    const status = document.getElementById('floor-status')
+    status.textContent = 'Connecting to room audio…'
+    floorMonitor.start({
+      whepUrl: audio.dataset.url,
+      audioEl: audio,
+      onState: (st) => {
+        let message = 'Connecting to room audio…'
+        if (st.audioActive) message = 'Listening to room audio'
+        else if (st.playbackBlocked) message = 'Press play to hear room audio'
+        else if (st.retrying) message = 'Waiting for the room floor feed…'
+        setTextIfChanged(status, message)
+      },
+    })
+    return
+  }
+  hlsPlayer?.removeAttribute('src')
+  floorMonitor?.stop()
+  if (!useMeeting) {
+    elements.jitsiFrame.removeAttribute('src')
+    if (useRelay && !relayListening) setRelayListening(true)
+    return
+  }
   try {
     const rawUrl = portal.dataset.jitsiUrl
     if (!rawUrl) {
@@ -834,21 +874,12 @@ const boothWhep = typeof createWhepClient === 'function' ? createWhepClient() : 
 // ── Relay Listening ───────────────────────────────────────────────────────────
 
 let relayListening = false
-let relayDefaultText = ''
 
-function toggleRelayAudio() {
+function setRelayListening(listening) {
   if (!state.relayWhepUrl) return
-  
-  if (!relayDefaultText && elements.passRelay) {
-    relayDefaultText = elements.passRelay.textContent.trim()
-  }
 
-  relayListening = !relayListening
+  relayListening = listening
   if (relayListening) {
-    if (elements.passRelay) {
-      elements.passRelay.classList.add('btn-primary')
-      elements.passRelay.textContent = 'Stop Listening to Relay'
-    }
     if (elements.relayStatus) elements.relayStatus.textContent = 'Connecting...'
     relayWhep.start({
       whepUrl: state.relayWhepUrl,
@@ -868,10 +899,6 @@ function toggleRelayAudio() {
       }
     })
   } else {
-    if (elements.passRelay) {
-      elements.passRelay.classList.remove('btn-primary')
-      elements.passRelay.textContent = relayDefaultText
-    }
     if (elements.relayStatus) {
       elements.relayStatus.textContent = 'Not Listening'
       elements.relayStatus.className = 'status-badge'
@@ -905,8 +932,18 @@ function stopBoothAudioListening() {
 
 // ── Microphone management ─────────────────────────────────────────────────────
 
-async function ensureMicStream() {
-  if (state.micStream) return state.micStream
+// The request in flight, so overlapping callers (going live while pressing Unmute) share one
+// stream: a second stream would be published while the watcher followed the other.
+let micStreamRequest = null
+
+function ensureMicStream() {
+  if (state.micStream) return Promise.resolve(state.micStream)
+  // Cleared when settled, so a refused request (permission, unplugged device) can be retried.
+  micStreamRequest ??= openMicStream().finally(() => { micStreamRequest = null })
+  return micStreamRequest
+}
+
+async function openMicStream() {
   if (micTestStream) {
     stopMicTest()
   }
@@ -919,8 +956,34 @@ async function ensureMicStream() {
       autoGainControl: true,
     },
   })
+  watchMicDevice(state.micStream)
   startMicMeter(state.micStream)
   return state.micStream
+}
+
+// ── Real microphone state (#1214) ─────────────────────────────────────────────
+
+let micWatcher = null
+
+/** What everyone else should see: not muted by the Mute button and not muted by the device. */
+function currentMicActive() {
+  return micIsActive({ uiMuted: state.micMuted, deviceMuted: state.micDeviceMuted })
+}
+
+/** Follow the browser's report of the real microphone state for this stream. */
+function watchMicDevice(stream) {
+  micWatcher?.stop()
+  micWatcher = watchMicTracks(stream, (deviceMuted) => {
+    state.micDeviceMuted = deviceMuted
+    renderMicControls()
+    // Before the stream is published nobody sees a speaking state, so there is nothing to correct.
+    // After a handoff the server refuses mic_active from a participant who is no longer active.
+    const isActive = state.activeInterpreterId === state.participantId
+    if (state.joined && state.participantId && state.ingestConnected && isActive) {
+      wsSend({ type: 'booth:update-state', mic_active: currentMicActive() })
+    }
+  })
+  state.micDeviceMuted = micWatcher.deviceMuted()
 }
 
 async function startMicTest() {
@@ -981,7 +1044,7 @@ function startMicMeter(stream) {
     ctx.clearRect(0, 0, canvas.width, canvas.height)
     ctx.fillStyle = '#e9ecef'
     ctx.fillRect(0, 0, canvas.width, canvas.height)
-    if (state.micMuted) {
+    if (!currentMicActive()) {
       ctx.fillStyle = '#9ca3af'
     } else if (volume > 0.95) {
       ctx.fillStyle = '#dc3545'
@@ -1119,7 +1182,7 @@ async function toggleMicMute() {
   if (state.joined && state.participantId) {
     wsSend({
       type: 'booth:update-state',
-      mic_active: !state.micMuted && state.ingestConnected,
+      mic_active: currentMicActive() && state.ingestConnected,
     })
   }
 }
@@ -1234,7 +1297,7 @@ async function startLiveIngest() {
     await startTranscription()
     wsSend({
       type: 'booth:update-state',
-      mic_active: !state.micMuted,
+      mic_active: currentMicActive(),
       ingest_connected: true,
     })
     showError('')
@@ -1339,7 +1402,7 @@ function attemptRelayStart(attempt) {
         await startTranscription()
       }
 
-      wsSend({ type: 'booth:update-state', mic_active: !state.micMuted, ingest_connected: true })
+      wsSend({ type: 'booth:update-state', mic_active: currentMicActive(), ingest_connected: true })
       showError('')
     } catch (error) {
       if (state.peerConnection) {
@@ -1412,7 +1475,6 @@ function renderRoleControls() {
 
   if (elements.handoverBtn) elements.handoverBtn.style.display = canGo ? '' : 'none'
   if (elements.toggleMic) elements.toggleMic.style.display = canGo ? '' : 'none'
-  if (elements.passRelay) elements.passRelay.style.display = canGo ? '' : 'none'
 }
 
 function renderParticipants() {
@@ -1471,6 +1533,13 @@ function renderParticipants() {
     ingestPill.className = 'participant-pill'
     ingestPill.textContent = participant.ingest_connected ? 'ingest connected' : 'ingest idle'
     pillGroup.append(micPill, ingestPill)
+    // The server keeps a dropped participant's place while they reconnect.
+    if (participant.connected === false) {
+      const reconnectingPill = document.createElement('span')
+      reconnectingPill.className = 'participant-pill'
+      reconnectingPill.textContent = 'reconnecting…'
+      pillGroup.append(reconnectingPill)
+    }
     bottom.append(pillGroup)
 
     // Active/Passive status is shown via the role pill above.
@@ -1511,7 +1580,13 @@ function renderMicControls() {
     state.ingestConnected ? 'Ingest connected' : 'Ingest disconnected',
     state.ingestConnected ? 'success' : 'warning',
   )
-  elements.micState.textContent = state.micMuted ? 'Muted' : state.micStream ? 'Ready' : 'Inactive'
+  elements.micState.textContent = state.micMuted
+    ? 'Muted'
+    : state.micDeviceMuted
+      ? 'Muted by your device'
+      : state.micStream
+        ? 'Ready'
+        : 'Inactive'
 
   const micOnIcon = elements.toggleMic.querySelector('.ctrl-icon--mic-on')
   const micOffIcon = elements.toggleMic.querySelector('.ctrl-icon--mic-off')

@@ -32,5 +32,6 @@ A browser-first interpretation booth console.
 5. No jQuery, no inline `<script>` blocks.
 6. Do not change `uv.lock` unless you run `uv sync --python 3.13 --dev` and all tests pass.
 7. Use `eventyay.*` or `portal.*` imports for new code.
+8. For AI attribution in PR descriptions and reviews, follow the AI Attribution Rules in `agents.md`.
 
 Do not duplicate or override project rules in this file. Use `agents.md` as the single source of truth.
