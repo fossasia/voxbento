@@ -94,7 +94,11 @@ async def test_language_independence(db_data, mock_broadcast):
         patch.object(worker, "_call_llm", new=fake_call_llm),
     ):
         with patch("portal.tts.worker.synthesize", new=fake_synthesize):
-            with patch("portal.websockets.manager.tts_manager.has_listeners", return_value=True):
+            with (
+            patch("portal.websockets.manager.tts_manager.has_listeners", return_value=True),
+        patch("portal.websockets.manager.tts_manager.has_audio_listeners", return_value=True),
+            patch("portal.websockets.manager.tts_manager.has_audio_listeners", return_value=True),
+        ):
                 with patch(
                     "portal.websockets.manager.TTSConnectionManager.broadcast_bundle", new_callable=AsyncMock
                 ) as mock_bundle:
@@ -158,7 +162,11 @@ async def test_vocabulary_lookup_failure_still_translates(db_data, mock_broadcas
     with patch.object(worker, "_call_llm", new=fake_call_llm):
         with patch("portal.translations.worker.resolve_vocabulary_entries", new=boom):
             with patch("portal.tts.worker.synthesize", new=fake_synthesize):
-                with patch("portal.websockets.manager.tts_manager.has_listeners", return_value=True):
+                with (
+            patch("portal.websockets.manager.tts_manager.has_listeners", return_value=True),
+        patch("portal.websockets.manager.tts_manager.has_audio_listeners", return_value=True),
+            patch("portal.websockets.manager.tts_manager.has_audio_listeners", return_value=True),
+        ):
                     with patch(
                         "portal.websockets.manager.TTSConnectionManager.broadcast_bundle", new_callable=AsyncMock
                     ) as mock_bundle:
@@ -202,7 +210,11 @@ async def test_vocabulary_lookup_timeout_still_translates(db_data, mock_broadcas
         with patch.object(worker, "_call_llm", new=fake_call_llm):
             with patch("portal.translations.worker.resolve_vocabulary_entries", new=stalls):
                 with patch("portal.tts.worker.synthesize", new=fake_synthesize):
-                    with patch("portal.websockets.manager.tts_manager.has_listeners", return_value=True):
+                    with (
+            patch("portal.websockets.manager.tts_manager.has_listeners", return_value=True),
+        patch("portal.websockets.manager.tts_manager.has_audio_listeners", return_value=True),
+            patch("portal.websockets.manager.tts_manager.has_audio_listeners", return_value=True),
+        ):
                         with patch(
                             "portal.websockets.manager.TTSConnectionManager.broadcast_bundle", new_callable=AsyncMock
                         ) as mock_bundle:
@@ -265,7 +277,11 @@ async def test_captions_and_tts_share_one_contextual_translation(db_data, mock_b
 
     with patch.object(worker, "_call_llm", new=fake_call_llm):
         with patch("portal.tts.worker.synthesize", new=fake_synthesize):
-            with patch("portal.websockets.manager.tts_manager.has_listeners", return_value=True):
+            with (
+            patch("portal.websockets.manager.tts_manager.has_listeners", return_value=True),
+        patch("portal.websockets.manager.tts_manager.has_audio_listeners", return_value=True),
+            patch("portal.websockets.manager.tts_manager.has_audio_listeners", return_value=True),
+        ):
                 with patch(
                     "portal.websockets.manager.TTSConnectionManager.broadcast_bundle", new_callable=AsyncMock
                 ) as mock_bundle:
@@ -321,7 +337,11 @@ async def test_glossary_lookup_does_not_hold_an_inference_slot(db_data, mock_bro
     with patch.object(worker, "_call_llm", new=fake_call_llm):
         with patch("portal.translations.worker.resolve_vocabulary_entries", new=slow_lookup):
             with patch("portal.tts.worker.synthesize", new=fake_synthesize):
-                with patch("portal.websockets.manager.tts_manager.has_listeners", return_value=True):
+                with (
+            patch("portal.websockets.manager.tts_manager.has_listeners", return_value=True),
+        patch("portal.websockets.manager.tts_manager.has_audio_listeners", return_value=True),
+            patch("portal.websockets.manager.tts_manager.has_audio_listeners", return_value=True),
+        ):
                     with patch(
                         "portal.websockets.manager.TTSConnectionManager.broadcast_bundle", new_callable=AsyncMock
                     ):
@@ -356,7 +376,11 @@ async def test_pipeline_failure_degrades_gracefully(db_data, mock_broadcast):
 
     with patch.object(worker, "_call_llm", new=fake_call_llm):
         with patch("portal.tts.worker.synthesize", new=fake_synthesize):
-            with patch("portal.websockets.manager.tts_manager.has_listeners", return_value=True):
+            with (
+            patch("portal.websockets.manager.tts_manager.has_listeners", return_value=True),
+        patch("portal.websockets.manager.tts_manager.has_audio_listeners", return_value=True),
+            patch("portal.websockets.manager.tts_manager.has_audio_listeners", return_value=True),
+        ):
                 with patch(
                     "portal.websockets.manager.TTSConnectionManager.broadcast_bundle", new_callable=AsyncMock
                 ) as mock_bundle:
@@ -470,7 +494,11 @@ async def test_queue_counter_restored_when_glossary_lookup_cancelled(db_data, mo
     # A subsequent translation for the same language is still accepted.
     with patch.object(worker, "_call_llm", new=fake_call_llm):
         with patch("portal.tts.worker.synthesize", new=fake_synthesize):
-            with patch("portal.websockets.manager.tts_manager.has_listeners", return_value=True):
+            with (
+            patch("portal.websockets.manager.tts_manager.has_listeners", return_value=True),
+        patch("portal.websockets.manager.tts_manager.has_audio_listeners", return_value=True),
+            patch("portal.websockets.manager.tts_manager.has_audio_listeners", return_value=True),
+        ):
                 with patch(
                     "portal.websockets.manager.TTSConnectionManager.broadcast_bundle", new_callable=AsyncMock
                 ) as bundle:
@@ -675,6 +703,7 @@ def test_build_language_tasks_bypass_and_listener_gating():
 
     with (
         patch("portal.websockets.manager.tts_manager.has_listeners", return_value=True),
+        patch("portal.websockets.manager.tts_manager.has_audio_listeners", return_value=True),
         patch("portal.websockets.manager.listener_manager.has_listeners", return_value=False),
     ):
         with_listeners = worker._build_language_tasks(job, 1, "text", "booth", "uuid", 1)
@@ -696,6 +725,7 @@ async def test_translation_provider_exception_degrades_gracefully(db_data, mock_
     with (
         patch.object(worker, "_call_llm", new=boom),
         patch("portal.websockets.manager.tts_manager.has_listeners", return_value=True),
+        patch("portal.websockets.manager.tts_manager.has_audio_listeners", return_value=True),
         patch("portal.websockets.manager.TTSConnectionManager.broadcast_bundle", new_callable=AsyncMock) as mock_bundle,
     ):
         await worker.handle_translation(
@@ -878,6 +908,7 @@ async def test_handle_translation_holds_no_connection_while_translating(db_data,
         patch.object(worker, "_call_llm", new=fake_call_llm),
         patch("portal.tts.worker.synthesize", new=AsyncMock(return_value=b"audio")),
         patch("portal.websockets.manager.tts_manager.has_listeners", return_value=True),
+        patch("portal.websockets.manager.tts_manager.has_audio_listeners", return_value=True),
         patch("portal.websockets.manager.TTSConnectionManager.broadcast_bundle", new_callable=AsyncMock) as bundle,
     ):
         await worker.handle_translation(
@@ -920,8 +951,8 @@ async def test_download_status_failure_preserves_inference_timeout(db_data, mock
             provider="local",
             model="uncached-test-model",
             api_key="",
-            lang_code="fr",
-            lang_name="French",
+            lang_code="es",
+            lang_name="Spanish",
             source_lang_code="en",
             source_lang_name="English",
             segment_id=db_data["segment"].id,
@@ -936,3 +967,96 @@ async def test_download_status_failure_preserves_inference_timeout(db_data, mock
     assert all(call.args[7] == "Bonjour" and call.args[8] is None for call in bundle.call_args_list)
     assert "PermissionError" in caplog.text
     assert "private model path" not in caplog.text
+
+
+@pytest.mark.anyio
+async def test_caption_only_listeners_skip_tts_synthesis(db_data, mock_broadcast):
+    """Caption-only / overlay listeners must not trigger TTS synthesis."""
+    worker = TranslationWorker(mock_broadcast)
+
+    with (
+        patch.object(worker, "_call_llm", new_callable=AsyncMock, return_value="Bonjour"),
+        patch("portal.websockets.manager.tts_manager.has_listeners", return_value=False),
+        patch("portal.websockets.manager.tts_manager.has_audio_listeners", return_value=False),
+        patch("portal.websockets.manager.listener_manager.has_listeners", return_value=True),
+        patch("portal.tts.worker.synthesize", new_callable=AsyncMock) as mock_synth,
+        patch("portal.websockets.manager.TTSConnectionManager.broadcast_bundle", new_callable=AsyncMock) as mock_bundle,
+    ):
+        await worker.handle_translation(
+            room_id=db_data["room"].id,
+            segment_id=db_data["segment"].id,
+            text="Hello",
+            booth_id_str="floor",
+            uuid_segment_id="caption-only-uuid",
+            seq=1,
+        )
+
+    assert mock_synth.await_count == 0
+    fr_calls = [c for c in mock_bundle.call_args_list if c.args[1] == "fr"]
+    assert len(fr_calls) == 1
+    assert fr_calls[0].kwargs["audio_pending"] is False
+
+
+@pytest.mark.anyio
+async def test_dynamic_audio_listener_recheck_before_synthesis(db_data, mock_broadcast):
+    """TTS synthesis rechecks has_audio_listeners right before synthesizing."""
+    worker = TranslationWorker(mock_broadcast)
+
+    # Audio listener disconnects during LLM call -> synthesis skipped.
+    with (
+        patch.object(worker, "_call_llm", new_callable=AsyncMock, return_value="Bonjour"),
+        patch("portal.websockets.manager.tts_manager.has_listeners", return_value=True),
+        patch("portal.websockets.manager.tts_manager.has_audio_listeners", return_value=True),
+        patch("portal.websockets.manager.tts_manager.has_audio_listeners", return_value=False),
+        patch("portal.tts.worker.synthesize", new_callable=AsyncMock) as mock_synth,
+        patch("portal.websockets.manager.TTSConnectionManager.broadcast_bundle", new_callable=AsyncMock),
+    ):
+        await worker._translate_and_broadcast(
+            event=db_data["event"],
+            room=db_data["room"],
+            provider="local",
+            model="m",
+            api_key="",
+            lang_code="fr",
+            lang_name="French",
+            source_lang_code="en",
+            source_lang_name="English",
+            segment_id=db_data["segment"].id,
+            text="Hello",
+            booth_id_str="floor",
+            uuid_segment_id="disconnect-mid-uuid",
+            seq=1,
+            synthesize_audio=True,
+            recheck_audience=True,
+        )
+    assert mock_synth.await_count == 0
+
+    # Audio listener joins during LLM call -> synthesis runs and Stage 2 is audio_only=True.
+    with (
+        patch.object(worker, "_call_llm", new_callable=AsyncMock, return_value="Bonjour"),
+        patch("portal.websockets.manager.tts_manager.has_listeners", return_value=True),
+        patch("portal.websockets.manager.tts_manager.has_audio_listeners", return_value=True),
+        patch("portal.websockets.manager.tts_manager.has_audio_listeners", return_value=True),
+        patch("portal.tts.worker.synthesize", new_callable=AsyncMock, return_value=b"pcm"),
+        patch("portal.websockets.manager.TTSConnectionManager.broadcast_bundle", new_callable=AsyncMock) as mock_bundle,
+    ):
+        await worker._translate_and_broadcast(
+            event=db_data["event"],
+            room=db_data["room"],
+            provider="local",
+            model="m",
+            api_key="",
+            lang_code="es",
+            lang_name="Spanish",
+            source_lang_code="en",
+            source_lang_name="English",
+            segment_id=db_data["segment"].id,
+            text="Hello",
+            booth_id_str="floor",
+            uuid_segment_id="join-mid-uuid",
+            seq=2,
+            synthesize_audio=False,
+            recheck_audience=True,
+        )
+    assert mock_bundle.await_count == 2
+    assert mock_bundle.call_args_list[1].kwargs["audio_only"] is True

@@ -3208,6 +3208,35 @@ def test_ws_tts_cleanup_on_disconnect():
     assert len(tts_manager._rooms.get(key, set())) == initial_count
 
 
+def test_ws_tts_audio_zero_registers_text_only_listener():
+    import anyio
+
+    from portal.database import Event, Room, get_session
+    from portal.websockets.manager import tts_manager
+
+    async def setup():
+        async with get_session() as session:
+            ev = Event(slug="ttstest-audio0", display_name="TTS Audio 0", listener_join_code="secret123")
+            session.add(ev)
+            await session.flush()
+            room = Room(display_name="r", event_id=ev.id, audio_delay_ms=0)
+            session.add(room)
+            await session.flush()
+            return room.id
+
+    room_id = anyio.run(setup)
+    headers = {"Origin": "http://testserver"}
+    cookies = {"listener_code_ttstest-audio0": "secret123"}
+    booth_id = f"ttstest-audio0-{room_id}-en"
+
+    with client.websocket_connect(f"/ws/tts/{room_id}/en/{booth_id}?audio=0", cookies=cookies, headers=headers):
+        assert tts_manager.has_listeners(room_id, "en", booth_id) is True
+        assert tts_manager.has_audio_listeners(room_id, "en", booth_id) is False
+
+        with client.websocket_connect(f"/ws/tts/{room_id}/en/{booth_id}", cookies=cookies, headers=headers):
+            assert tts_manager.has_audio_listeners(room_id, "en", booth_id) is True
+
+
 def test_ws_tts_rejects_unscoped_query_token():
     import anyio
     import jwt

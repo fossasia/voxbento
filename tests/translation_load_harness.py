@@ -230,6 +230,10 @@ class StubTTSManager:
         """Every language has a listener, so the worker translates all of them."""
         return True
 
+    def has_audio_listeners(self, room_id: int, language_code: str, booth_id: str) -> bool:
+        """Every language requests audio in the load harness."""
+        return True
+
     async def broadcast_bundle(
         self,
         room_id: int,
@@ -242,6 +246,7 @@ class StubTTSManager:
         translation: str = "",
         error: str | None = None,
         audio_pending: bool | None = None,
+        audio_only: bool = False,
     ) -> None:
         """Keep the first bundle's error code: it says whether the text was translated."""
         # A second bundle for the same segment carries the audio.

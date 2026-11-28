@@ -206,7 +206,10 @@ async def test_a_language_only_youtube_needs_gets_no_speech_synthesis(room_with_
 async def test_a_language_with_a_tts_listener_still_gets_speech(room_with_languages, offered):
     data = room_with_languages
     booth = f"{data['event'].slug}-{data['room'].id}-floor"
-    with patch("portal.websockets.manager.TTSConnectionManager.has_listeners", return_value=True):
+    with (
+        patch("portal.websockets.manager.TTSConnectionManager.has_listeners", return_value=True),
+        patch("portal.websockets.manager.TTSConnectionManager.has_audio_listeners", return_value=True),
+    ):
         assert sorted(await translate(data, booth)) == ["French", "Spanish"]
     assert data["synth"].await_count == 2
     # Each text bundle says speech follows.

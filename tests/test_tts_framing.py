@@ -82,3 +82,37 @@ async def test_tts_manager_does_not_buffer():
     # It should send immediately, frontend handles ordering now
     assert len(ws.sent_messages) == 1
     assert b"audio2" in ws.sent_messages[0]
+
+
+@pytest.mark.anyio
+async def test_tts_manager_tracks_audio_vs_text_only_subscribers():
+    manager = TTSConnectionManager()
+    audio_ws = MockWebSocket()
+    text_ws = MockWebSocket()
+
+    manager.add(text_ws, 1, "es", "floor_1", wants_audio=False)
+    assert manager.has_listeners(1, "es", "floor_1") is True
+    assert manager.has_audio_listeners(1, "es", "floor_1") is False
+
+    manager.add(audio_ws, 1, "es", "floor_1", wants_audio=True)
+    assert manager.has_audio_listeners(1, "es", "floor_1") is True
+
+    # Stage 1 reaches both subscribers; Stage 2 (audio_only=True) reaches only audio_ws.
+    await manager.broadcast_bundle(1, "es", "floor_1", b"", "u1", 1, "hello", "hola", None, audio_pending=True)
+    await manager.broadcast_bundle(
+        1, "es", "floor_1", b"pcm", "u1", 1, "hello", "hola", None, audio_only=True
+    )
+
+    assert len(text_ws.sent_messages) == 1
+    assert len(audio_ws.sent_messages) == 2
+    assert b"pcm" in audio_ws.sent_messages[1]
+
+    manager.remove(audio_ws, 1, "es", "floor_1")
+    assert manager.has_listeners(1, "es", "floor_1") is True
+    assert manager.has_audio_listeners(1, "es", "floor_1") is False
+    assert isinstance(manager._rooms[manager._get_key(1, "es", "floor_1")], set)
+
+    manager.remove(text_ws, 1, "es", "floor_1")
+    assert manager.has_listeners(1, "es", "floor_1") is False
+    assert manager._get_key(1, "es", "floor_1") not in manager._rooms
+    assert text_ws not in manager._text_only_sockets

@@ -247,8 +247,10 @@ function showAudioPlayer(show) {
   }
 }
 
+var ttsAudioDesired = false;
+
 function ttsPlaybackBlocked() {
-  return ttsWs !== null && audioCtx !== null && audioCtx.state === "suspended";
+  return ttsAudioDesired && ttsWs !== null && audioCtx !== null && audioCtx.state === "suspended";
 }
 
 function updateTapToListen() {
@@ -362,34 +364,38 @@ function stopCurrentStream() {
   setStatus("Waiting for selection...", "waiting");
 }
 
-function startTtsWs(roomId, langCode, boothId, audioDelayMs) {
+function startTtsWs(roomId, langCode, boothId, audioDelayMs, wantsAudio) {
   speechDelivery.reset();
   stopTtsWs();
-  if (!audioCtx) {
-    audioCtx = new (window.AudioContext || window.webkitAudioContext)();
-    audioCtx.onstatechange = updateTapToListen;
-  }
-  if (audioCtx.state === "suspended") {
-    audioCtx.resume();
-  }
+  ttsAudioDesired = wantsAudio !== false;
+  if (ttsAudioDesired) {
+    if (!audioCtx) {
+      audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+      audioCtx.onstatechange = updateTapToListen;
+    }
+    if (audioCtx.state === "suspended") {
+      audioCtx.resume();
+    }
 
-  // Create jitter-buffered audio scheduler for gapless playback
-  if (audioScheduler) {
-    audioScheduler.reset();
+    // Create jitter-buffered audio scheduler for gapless playback
+    if (audioScheduler) {
+      audioScheduler.reset();
+    }
+    audioScheduler = window.AudioScheduler.create(audioCtx, {
+      jitterBufferSec: 0.25,
+      comfortNoiseEnabled: false,
+      comfortNoiseLevelDb: -40,
+    });
   }
-  audioScheduler = window.AudioScheduler.create(audioCtx, {
-    jitterBufferSec: 0.25,
-    comfortNoiseEnabled: false,
-    comfortNoiseLevelDb: -40,
-  });
 
   ttsRetryDelayMs = 1000;
-  openTtsWs(roomId, langCode, boothId);
+  openTtsWs(roomId, langCode, boothId, ttsAudioDesired);
 }
 
 // Kept apart from startTtsWs so a reconnect leaves the audio context and the
 // speech already scheduled on it alone.
-function openTtsWs(roomId, langCode, boothId) {
+function openTtsWs(roomId, langCode, boothId, wantsAudio) {
+  var audioDesired = wantsAudio !== false;
   var wsProto = window.location.protocol === "https:" ? "wss:" : "ws:";
   var wsUrl =
     wsProto +
@@ -400,7 +406,8 @@ function openTtsWs(roomId, langCode, boothId) {
     "/" +
     langCode +
     "/" +
-    boothId;
+    boothId +
+    (audioDesired ? "" : "?audio=0");
   var ws = new WebSocket(wsUrl);
   ttsWs = ws;
   ws.binaryType = "arraybuffer";
@@ -449,7 +456,8 @@ function openTtsWs(roomId, langCode, boothId) {
         if (
           !frame.header.error &&
           frame.audioBytes &&
-          frame.audioBytes.byteLength > 0
+          frame.audioBytes.byteLength > 0 &&
+          audioCtx
         ) {
           // Slice the buffer to ensure it is byte-aligned for Int16Array
           var alignedBuffer = frame.audioBytes.buffer.slice(
@@ -518,7 +526,7 @@ function openTtsWs(roomId, langCode, boothId) {
       // starts over from the first segment the new socket gets.
       speechDelivery.reset();
       resetSegmentQueue();
-      openTtsWs(roomId, langCode, boothId);
+      openTtsWs(roomId, langCode, boothId, audioDesired);
     }, ttsRetryDelayMs);
     ttsRetryDelayMs = Math.min(ttsRetryDelayMs * 2, 15000);
   };
@@ -539,6 +547,7 @@ function resetSegmentQueue() {
 }
 
 function stopTtsWs() {
+  ttsAudioDesired = false;
   ttsLiveStatus = null;
   ttsStatusHeld = false;
   if (ttsRetryTimer) {
@@ -1280,7 +1289,7 @@ function applyTtsOverlay() {
   var wantsTtsAudio = ttsSyncEnabled && Boolean(targetLangValue) && canSyncTts;
 
   if (wantsTranslationText || wantsTtsAudio) {
-    startTtsWs(roomId, targetLangValue, boothId, selectedAudioDelayMs);
+    startTtsWs(roomId, targetLangValue, boothId, selectedAudioDelayMs, wantsTtsAudio);
 
     if (wantsTtsAudio) {
       audioEl.muted = true;
