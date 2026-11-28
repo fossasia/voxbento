@@ -286,6 +286,23 @@ async def test_relay_does_nothing_without_open_booths_or_for_non_floor_ids():
 
 
 @pytest.mark.anyio
+async def test_turning_floor_transcription_off_sends_the_booths_nothing(monkeypatch):
+    from portal.websockets import manager as ws_manager
+
+    offered: list[tuple[str, object]] = []
+    monkeypatch.setattr(ws_manager.floor_caption_relay, "offer", lambda bid, payload: offered.append((bid, payload)))
+
+    # Switching the floor's transcription off stops its worker and sends this empty caption to listeners;
+    # with no worker running, nothing else is broadcast for the floor.
+    await ws_manager.broadcast_transcription("conf-3-floor", "")
+    assert offered == []
+
+    # While it runs, the worker's captions do reach the booths.
+    await ws_manager.broadcast_transcription("conf-3-floor", _caption("final", "Welcome."))
+    assert [bid for bid, _ in offered] == ["conf-3-floor"]
+
+
+@pytest.mark.anyio
 async def test_one_failing_booth_does_not_stop_the_others():
     sent: list[str] = []
 
