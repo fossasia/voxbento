@@ -115,6 +115,49 @@ async def test_utterance_end_closes_a_phrase_endpointing_missed(recorder):
 
 
 @pytest.mark.anyio
+async def test_a_bare_is_final_short_phrase_is_not_judged_as_a_whole_turn(recorder):
+    """is_final can settle one short word of a longer turn, so it waits for the rest instead of being filtered (#299)."""
+    aggregator, messages = recorder
+    booth = "conf-1-floor"
+    await stt.handle_message(aggregator, booth, _result("Thank you.", is_final=True))
+    # Nothing is published or discarded yet: the phrase is only the start of the turn.
+    assert _finals(messages) == []
+
+    await stt.handle_message(aggregator, booth, _result("Now let us begin the talk.", is_final=True, speech_final=True))
+    assert _finals(messages) == ["Thank you. Now let us begin the talk."]
+
+
+@pytest.mark.anyio
+async def test_a_short_phrase_the_recogniser_followed_is_not_discarded_as_invented(recorder):
+    """Interim results show real speech was heard, so a spoken "Thank you." must reach listeners (#299)."""
+    aggregator, messages = recorder
+    booth = "conf-1-floor"
+    await stt.handle_message(aggregator, booth, _result("Thank you"))
+    await stt.handle_message(aggregator, booth, _result("Thank you.", is_final=True, speech_final=True))
+    assert _finals(messages) == ["Thank you."]
+
+
+@pytest.mark.anyio
+async def test_the_same_phrase_with_no_speech_behind_it_is_still_discarded(recorder):
+    """The guard comes from the interim result, not from the phrase: with none, it is an artefact."""
+    aggregator, messages = recorder
+    booth = "conf-1-floor"
+    await stt.handle_message(aggregator, booth, _result("Thank you.", is_final=True, speech_final=True))
+    assert _finals(messages) == []
+
+
+@pytest.mark.anyio
+async def test_the_interim_guard_covers_one_phrase_only(recorder):
+    """A later artefact is not excused because an earlier phrase was real speech."""
+    aggregator, messages = recorder
+    booth = "conf-1-floor"
+    await stt.handle_message(aggregator, booth, _result("Thank you"))
+    await stt.handle_message(aggregator, booth, _result("Thank you.", is_final=True, speech_final=True))
+    await stt.handle_message(aggregator, booth, _result("Thank you.", is_final=True, speech_final=True))
+    assert _finals(messages) == ["Thank you."]
+
+
+@pytest.mark.anyio
 async def test_stale_utterance_end_does_not_clear_the_next_phrase(recorder):
     aggregator, messages = recorder
     booth = "conf-1-floor"
