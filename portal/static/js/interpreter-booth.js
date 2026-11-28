@@ -1,5 +1,6 @@
 import { createBackoff, finalCloseMessage } from './booth-reconnect.js'
 import { micIsActive, watchMicTracks } from './mic-activity.js'
+import { createCoughKey, isCoughShortcut, isTypingTarget, micTrackEnabled } from './cough-key.js'
 
 const portal = document.getElementById('interpreter-portal')
 
@@ -72,6 +73,7 @@ const elements = {
   chatForm: document.getElementById('chat-form'),
   chatInput: document.getElementById('chat-input'),
   toggleMic: document.getElementById('toggle-mic'),
+  coughBtn: document.getElementById('cough-btn'),
   handoverBtn: document.getElementById('handover-btn'),
   handoverLabel: document.getElementById('handover-label'),
   handoverAnnouncer: document.getElementById('handover-announcer'),
@@ -111,6 +113,37 @@ let micAudioCtx = null
 let micAnalyser = null
 let loopbackRecorder = null
 let loopbackAudio = null
+
+// ── Cough key (#1395) ─────────────────────────────────────────────────────────
+
+/** Only the active interpreter with the microphone on has anything to cough over. */
+function canCough() {
+  return Boolean(
+    state.joined &&
+    state.participantId &&
+    state.activeInterpreterId === state.participantId &&
+    !state.micMuted,
+  )
+}
+
+const coughKey = createCoughKey({
+  canCough,
+  onChange: () => {
+    syncMicTracks()
+    renderMicControls()
+  },
+})
+
+/** The one place the booth turns its microphone track on or off. */
+function syncMicTracks() {
+  if (!state.micStream) return
+  const enabled = micTrackEnabled({
+    micMuted: state.micMuted,
+    coughHeld: coughKey.isHeld(),
+    relayingOut: state.relayingOut,
+  })
+  state.micStream.getAudioTracks().forEach((track) => { track.enabled = enabled })
+}
 
 
 boot().catch((error) => {
@@ -200,7 +233,8 @@ function connectWebSocket() {
       if (finalMessage) {
         state.stopReconnecting = true
         state.micMuted = true
-        state.micStream?.getAudioTracks().forEach((track) => { track.enabled = false })
+        coughKey.releaseAll()
+        syncMicTracks()
         stopLiveIngest().catch((error) => console.warn('Could not finish stopping revoked booth audio:', error))
         setBadge(elements.connectionStatus, 'Disconnected', 'danger')
         showError(finalMessage)
@@ -342,6 +376,8 @@ function bindEventHandlers() {
     await toggleMicMute()
   })
 
+  bindCoughButton()
+
   if (elements.relayDeviceSelect && elements.relayAudio) {
     elements.relayDeviceSelect.addEventListener('change', async () => {
       try {
@@ -423,11 +459,28 @@ function bindEventHandlers() {
   }
 
   document.addEventListener('keydown', (event) => {
+    if (isTypingTarget(document.activeElement)) return
+    if (isCoughShortcut(event)) {
+      event.preventDefault()
+      if (!event.repeat) coughKey.press('key')
+      return
+    }
     if (event.code !== 'Space') return
-    const tag = document.activeElement?.tagName?.toLowerCase()
-    if (tag === 'input' || tag === 'textarea' || tag === 'select') return
     event.preventDefault()
+    // Holding Space must not flip the microphone on and off with every key repeat.
+    if (event.repeat) return
     toggleMicMute().catch(() => {})
+  })
+
+  // Released wherever focus went meanwhile, so the microphone can't stay cut off.
+  document.addEventListener('keyup', (event) => {
+    if (event.code === 'KeyC') coughKey.release('key')
+  })
+
+  // A key or pointer released outside the window never reaches the page: let go of the cough.
+  window.addEventListener('blur', () => coughKey.releaseAll())
+  document.addEventListener('visibilitychange', () => {
+    if (document.hidden) coughKey.releaseAll()
   })
 
   elements.preflightRetry.addEventListener('click', () => {
@@ -564,11 +617,12 @@ function applyBoothState(payload, { skipAutoStart = false } = {}) {
   if (state.participantId && state.activeInterpreterId !== state.participantId) {
     if (!state.micMuted) {
       state.micMuted = true
-      if (state.micStream) {
-        state.micStream.getAudioTracks().forEach((t) => { t.enabled = false })
-      }
+      syncMicTracks()
     }
   }
+  // A cough held through a handover ends with it. The track follows micMuted, so letting go
+  // never turns a muted microphone back on.
+  if (!canCough()) coughKey.releaseAll()
 
   const lostActivePublisher =
     state.ingestConnected &&
@@ -601,14 +655,10 @@ function applyBoothState(payload, { skipAutoStart = false } = {}) {
 
   if (lostPublishingRights) {
     state.relayingOut = true
-    if (state.micStream) {
-      state.micStream.getAudioTracks().forEach((t) => { t.enabled = false })
-    }
+    syncMicTracks()
     stopLiveIngest().catch(() => {}).then(() => {
       state.relayingOut = false
-      if (state.micStream) {
-        state.micStream.getAudioTracks().forEach((t) => { t.enabled = !state.micMuted })
-      }
+      syncMicTracks()
     })
   }
 
@@ -630,9 +680,7 @@ function applyBoothState(payload, { skipAutoStart = false } = {}) {
     state.ingestStarting = true
     if (state.micMuted) {
       state.micMuted = false
-      if (state.micStream) {
-        state.micStream.getAudioTracks().forEach((t) => { t.enabled = true })
-      }
+      syncMicTracks()
       renderMicControls()
     }
     attemptRelayStart(0)
@@ -956,6 +1004,8 @@ async function openMicStream() {
       autoGainControl: true,
     },
   })
+  // A new stream starts with its tracks on: follow Mute and the cough key from the start.
+  syncMicTracks()
   watchMicDevice(state.micStream)
   startMicMeter(state.micStream)
   return state.micStream
@@ -1168,17 +1218,52 @@ function stopLoopbackTest() {
   elements.loopbackProgressRow.classList.add('hidden')
 }
 
+/** Hold the Cough button with a mouse, pen or finger, or with Space / Enter once it has focus. */
+function bindCoughButton() {
+  const button = elements.coughBtn
+  if (!button) return
+
+  button.addEventListener('pointerdown', (event) => {
+    if (event.button !== 0) return
+    event.preventDefault()
+    if (!coughKey.press(`pointer:${event.pointerId}`)) return
+    // The release reaches the button even if the pointer slides off it.
+    button.setPointerCapture?.(event.pointerId)
+  })
+  const releasePointer = (event) => coughKey.release(`pointer:${event.pointerId}`)
+  button.addEventListener('pointerup', releasePointer)
+  button.addEventListener('pointercancel', releasePointer)
+  button.addEventListener('lostpointercapture', releasePointer)
+
+  // Space and Enter hold the focused button instead of toggling Mute.
+  const isButtonKey = (event) => event.code === 'Space' || event.code === 'Enter' || event.code === 'NumpadEnter'
+  button.addEventListener('keydown', (event) => {
+    if (!isButtonKey(event)) return
+    event.preventDefault()
+    event.stopPropagation()
+    if (!event.repeat) coughKey.press('button-key')
+  })
+  button.addEventListener('keyup', (event) => {
+    if (!isButtonKey(event)) return
+    event.preventDefault()
+    coughKey.release('button-key')
+  })
+  button.addEventListener('blur', () => coughKey.release('button-key'))
+  // Long-pressing on a touch screen would otherwise open the context menu and cancel the hold.
+  button.addEventListener('contextmenu', (event) => event.preventDefault())
+}
+
 async function toggleMicMute() {
   // Flip state and update UI immediately for instant visual feedback.
   state.micMuted = !state.micMuted
+  // Pressing Mute ends a cough, so letting go of C later can't turn the microphone back on.
+  coughKey.releaseAll()
   renderMicControls()
   // Then acquire the mic stream if not yet open (may take a moment).
   if (!state.micStream) {
     await ensureMicStream()
   }
-  state.micStream.getAudioTracks().forEach((track) => {
-    track.enabled = !state.micMuted
-  })
+  syncMicTracks()
   if (state.joined && state.participantId) {
     wsSend({
       type: 'booth:update-state',
@@ -1261,9 +1346,7 @@ async function startLiveIngest() {
   }
   try {
     await ensureMicStream()
-    if (state.micStream) {
-      state.micStream.getAudioTracks().forEach((t) => { t.enabled = !state.micMuted })
-    }
+    syncMicTracks()
     if (state.peerConnection) {
       state.peerConnection.close()
       state.peerConnection = null
@@ -1372,9 +1455,7 @@ function attemptRelayStart(attempt) {
     if (state.ingestConnected) { state.ingestStarting = false; return }
     try {
       await ensureMicStream()
-      if (state.micStream) {
-        state.micStream.getAudioTracks().forEach((t) => { t.enabled = !state.micMuted })
-      }
+      syncMicTracks()
       if (state.peerConnection) {
         state.peerConnection.close()
         state.peerConnection = null
@@ -1475,6 +1556,7 @@ function renderRoleControls() {
 
   if (elements.handoverBtn) elements.handoverBtn.style.display = canGo ? '' : 'none'
   if (elements.toggleMic) elements.toggleMic.style.display = canGo ? '' : 'none'
+  if (elements.coughBtn) elements.coughBtn.style.display = canGo ? '' : 'none'
 }
 
 function renderParticipants() {
@@ -1580,13 +1662,16 @@ function renderMicControls() {
     state.ingestConnected ? 'Ingest connected' : 'Ingest disconnected',
     state.ingestConnected ? 'success' : 'warning',
   )
+  const coughing = coughKey.isHeld()
   elements.micState.textContent = state.micMuted
     ? 'Muted'
-    : state.micDeviceMuted
-      ? 'Muted by your device'
-      : state.micStream
-        ? 'Ready'
-        : 'Inactive'
+    : coughing
+      ? 'Cough – muted'
+      : state.micDeviceMuted
+        ? 'Muted by your device'
+        : state.micStream
+          ? 'Ready'
+          : 'Inactive'
 
   const micOnIcon = elements.toggleMic.querySelector('.ctrl-icon--mic-on')
   const micOffIcon = elements.toggleMic.querySelector('.ctrl-icon--mic-off')
@@ -1601,6 +1686,16 @@ function renderMicControls() {
   elements.toggleMic.disabled = !isActive
   if (!state.broadcastUnlocked) {
     elements.toggleMic.setAttribute('title', 'Broadcast locked by Coordinator (Local test only)')
+  }
+
+  if (elements.coughBtn) {
+    elements.coughBtn.disabled = !canCough()
+    elements.coughBtn.classList.toggle('pressed', coughing)
+    elements.coughBtn.setAttribute('aria-pressed', String(coughing))
+    elements.coughBtn.setAttribute(
+      'title',
+      state.micMuted ? 'Unmute to use the cough key' : 'Hold to cut your microphone (hold C)',
+    )
   }
   elements.micDeviceSelect.disabled = state.ingestConnected
 
