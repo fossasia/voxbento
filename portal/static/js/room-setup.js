@@ -23,7 +23,6 @@ function readJson(value, fallback) {
 if (root && form) {
   const isCreate = root.dataset.mode === 'create';
   const boothCodes = readJson(root.dataset.boothCodes || '[]', []);
-  const liveCodes = new Set(readJson(root.dataset.liveCodes || '[]', []));
   const deliveryLabels = readJson(root.dataset.deliveryLabels || '{}', {});
   const voiceSupport = readJson(root.dataset.voiceSupport || '{}', {});
   const translationSupport = readJson(root.dataset.translationSupport || '{}', {});
@@ -312,12 +311,10 @@ if (root && form) {
     reviewFallback.hidden = true;
 
     warnings.replaceChildren();
-    const wantedBooths = new Set(langs.filter((l) => l.delivery === 'interpreter').map((l) => l.code));
-    boothCodes.filter((code) => !wantedBooths.has(code)).forEach((code) => {
+    const selected = new Set(chosenCodes());
+    boothCodes.filter((code) => !selected.has(code)).forEach((code) => {
       const li = document.createElement('li');
-      li.textContent = liveCodes.has(code)
-        ? `The ${nameOf(code)} booth is live right now, so it will be kept. Remove it after the session.`
-        : `The ${nameOf(code)} booth will be removed, with its invite links and assigned interpreters.`;
+      li.textContent = `${nameOf(code)} remains available as a configured audio source.`;
       warnings.append(li);
     });
     warnings.hidden = warnings.childElementCount === 0;
