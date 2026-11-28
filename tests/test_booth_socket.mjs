@@ -7,9 +7,9 @@ import { createInterpreterAssist } from '../portal/static/js/interpreter-assist.
 import { micIsActive, watchMicTracks } from '../portal/static/js/mic-activity.js'
 
 const source = readFileSync(new URL('../portal/static/js/interpreter-booth.js', import.meta.url), 'utf8')
-  .replace(/^import .* from '\.\/booth-reconnect.js'\n/, '')
-  .replace(/^import .* from '\.\/interpreter-assist.js'\n/, '')
-  .replace(/^import .* from '\.\/mic-activity.js'\n/, '')
+  .replace(/^import .* from '\.\/booth-reconnect.js'\r?\n/, '')
+  .replace(/^import .* from '\.\/interpreter-assist.js'\r?\n/, '')
+  .replace(/^import .* from '\.\/mic-activity.js'\r?\n/, '')
   .replace('boot().catch((error) => {', 'Promise.resolve().catch((error) => {')
 
 function harness({ getUserMedia = async () => ({ getAudioTracks: () => [] }) } = {}) {
