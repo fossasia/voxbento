@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import re
 from datetime import timedelta
+from types import SimpleNamespace
 from unittest import mock
 from unittest.mock import AsyncMock
 from uuid import uuid4
@@ -40,7 +41,9 @@ async def environment(monkeypatch):
 
     async with httpx.AsyncClient(transport=httpx.MockTransport(control)) as media_client:
         monkeypatch.setattr(ingest, "get_http_client", lambda: media_client)
-        monkeypatch.setattr(ingest, "start_transcription_worker", AsyncMock())
+        monkeypatch.setattr(
+            ingest, "start_transcription_worker", AsyncMock(return_value=SimpleNamespace(status="started"))
+        )
         monkeypatch.setattr(ingest, "stop_transcription_worker", AsyncMock())
         async with get_session() as session:
             admin = await create_user(

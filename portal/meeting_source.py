@@ -38,7 +38,12 @@ from portal.program_ingest import (
 )
 from portal.transcription.process import audio_progress
 from portal.transcription.providers.base import ProviderConfig, ProviderEnum, get_api_key
-from portal.transcription.worker import start_transcription_worker, stop_transcription_worker
+from portal.transcription.worker import (
+    ERROR_CODE_REVALIDATION_TIMEOUT,
+    ERROR_CODE_STOPPING_TIMEOUT,
+    start_transcription_worker,
+    stop_transcription_worker,
+)
 from portal.websockets.manager import broadcast_transcription
 
 logger = logging.getLogger(__name__)
@@ -290,11 +295,7 @@ def status(room: Room) -> dict:
         state = current.state if current else "starting"
         reason = current.reason if current else "Launching the meeting agent."
     else:
-        state = (
-            current.state
-            if current and current.reason == EMPTY_ROOM_REASON
-            else "stopped"
-        )
+        state = current.state if current and current.reason == EMPTY_ROOM_REASON else "stopped"
         reason = (
             current.reason
             if current and current.reason == EMPTY_ROOM_REASON
@@ -447,10 +448,28 @@ async def reconcile_room(
         room_id=room.id,
         restart_on_key_change=True,
     )
+    if started.status == "failed":
+        logger.warning(
+            "meeting_agent transcription_start_failed room_id=%s booth_id=%s error_code=%s",
+            room.id,
+            booth_id,
+            started.error_code,
+        )
+        reason = (
+            "Transcription worker is stopping; retry shortly."
+            if started.error_code == ERROR_CODE_STOPPING_TIMEOUT
+            else (
+                "Timed out revalidating booth status; retry shortly."
+                if started.error_code == ERROR_CODE_REVALIDATION_TIMEOUT
+                else "Failed to start transcription worker."
+            )
+        )
+        current.state, current.reason = "degraded", reason
+        return
     current.worker_config = config
-    if started is True:
+    if started.status == "started":
         current.healthy_since = None
-    if started is True or current.worker_started_at is None:
+    if started.status == "started" or current.worker_started_at is None:
         # Read the clock again: replacing the old worker can take a while, and the grace period starts now.
         current.worker_started_at = monotonic()
     last_audio = audio_progress.get(booth_id)

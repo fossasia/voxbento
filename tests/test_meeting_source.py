@@ -5,6 +5,7 @@ import hashlib
 import json
 import logging
 from datetime import datetime, timezone
+from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
 import httpx
@@ -120,6 +121,7 @@ async def env(monkeypatch):
 
         async def started(**kwargs):
             meeting.audio_progress[kwargs["booth_id"]] = clock.now
+            return SimpleNamespace(status="started")
 
         start.side_effect = started
         monkeypatch.setattr(meeting, "start_transcription_worker", start)
@@ -903,3 +905,52 @@ async def test_deleted_event_worker_is_stopped_when_its_health_record_is_gone(en
     env["stop"].reset_mock()
     await meeting._stop_deleted_event_workers({env["room_id"]})
     env["stop"].assert_awaited_once_with(env["booth_id"])
+
+
+@pytest.mark.anyio
+async def test_failed_transcription_start_leaves_worker_running_and_skips_stall_check(env):
+    """When start_transcription_worker returns failed (stopping_timeout), do not trigger stop or advance worker clock."""
+    await env["client"].post(env["url"], json={"action": "connect", "meeting_url": "https://meet.example.org/TrackA"})
+    env["agents"].rooms[env["key"]]["stage"] = "in_meeting"
+    publish(env, 100)
+
+    # First pass: fake start returns failed
+    env["start"].side_effect = None
+    env["start"].return_value = SimpleNamespace(status="failed", error_code="stopping_timeout")
+    env["stop"].reset_mock()
+    # Advance clock past stall timeout
+    env["clock"].now += 100
+
+    await meeting.reconcile_once()
+
+    current = meeting.health[env["room_id"]]
+    assert current.state == "degraded"
+    assert current.worker_started_at is None
+    assert current.worker_config is None
+    env["stop"].assert_not_awaited()
+
+    # Second pass: worker successfully starts
+    env["start"].return_value = SimpleNamespace(status="started")
+    meeting.audio_progress[env["booth_id"]] = env["clock"].now
+    await meeting.reconcile_once()
+
+    assert current.state == "processing"
+    assert current.worker_started_at is not None
+    assert current.worker_config is not None
+    env["stop"].assert_not_awaited()
+
+
+@pytest.mark.anyio
+async def test_revalidation_timeout_transcription_start_marks_meeting_degraded(env):
+    """When start_transcription_worker returns failed (revalidation_timeout), set degraded with accurate reason."""
+    await env["client"].post(env["url"], json={"action": "connect", "meeting_url": "https://meet.example.org/TrackA"})
+    env["agents"].rooms[env["key"]]["stage"] = "in_meeting"
+    publish(env, 100)
+
+    env["start"].side_effect = None
+    env["start"].return_value = SimpleNamespace(status="failed", error_code="revalidation_timeout")
+    await meeting.reconcile_once()
+
+    current = meeting.health[env["room_id"]]
+    assert current.state == "degraded"
+    assert current.reason == "Timed out revalidating booth status; retry shortly."

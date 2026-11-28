@@ -304,12 +304,12 @@ async def test_capacity_limit_respects_settings_override(monkeypatch: pytest.Mon
     started_1 = await start_transcription_worker(
         "event-1", "en", "booth-1", _noop_broadcast, "openai", "whisper-1", config
     )
-    assert started_1 is True
+    assert started_1.status == "started"
 
     started_2 = await start_transcription_worker(
         "event-1", "fr", "booth-2", _noop_broadcast, "openai", "whisper-1", config
     )
-    assert started_2 is True
+    assert started_2.status == "started"
 
     assert len(active_workers) == 2
 

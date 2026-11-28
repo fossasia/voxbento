@@ -44,9 +44,10 @@ def _reset_shared_http_client():
     async def _dummy_loop():
         pass
 
-    async def _dummy_enqueue(event_type: str, payload: dict):
+    async def _dummy_enqueue(event_type: str, payload: dict) -> bool:
         if event_type not in SUPPORTED_EVENT_TYPES:
             raise ValueError(f"Unknown webhook event type: {event_type!r}")
+        return True
 
     portal.webhooks.worker.webhook_worker_loop = _dummy_loop
     portal.webhooks.worker.enqueue_webhook = _dummy_enqueue

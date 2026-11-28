@@ -4,6 +4,7 @@ import asyncio
 import json
 import struct
 from datetime import datetime, timedelta, timezone
+from types import SimpleNamespace
 from unittest.mock import AsyncMock
 from uuid import uuid4
 
@@ -50,6 +51,7 @@ async def environment(monkeypatch):
 
         async def started(**kwargs):
             ingest.audio_progress[kwargs["booth_id"]] = asyncio.get_running_loop().time()
+            return SimpleNamespace(status="started")
 
         start.side_effect = started
         monkeypatch.setattr(ingest, "start_transcription_worker", start)
@@ -808,3 +810,53 @@ async def test_deleted_event_feed_is_released_while_media_listing_fails(environm
     async with get_session() as session:
         assert (await session.get(Room, room.id)).program_session_id is None
     assert (await client.post("/internal/media-auth", json=credentials(room, token))).status_code == 401
+
+
+@pytest.mark.anyio
+async def test_failed_transcription_start_leaves_worker_running_and_skips_stall_check(environment, monkeypatch):
+    """When start_transcription_worker returns failed (stopping_timeout), do not trigger stop or advance worker clock."""
+    client, event, rooms, media, _, start, stop, *_ = environment
+    room = rooms[0]
+    await connect_whip(client, event, room, media)
+
+    # First pass: fake start returns failed
+    start.side_effect = None
+    start.return_value = SimpleNamespace(status="failed", error_code="stopping_timeout")
+    stop.reset_mock()
+
+    await ingest.reconcile_once()
+
+    current = ingest.health[room.id]
+    assert current.state == "degraded"
+    assert current.worker_started_at is None
+    assert current.worker_config is None
+    stop.assert_not_awaited()
+
+    # Second pass: worker starts successfully
+    async def started(**kwargs):
+        ingest.audio_progress[kwargs["booth_id"]] = asyncio.get_running_loop().time()
+        return SimpleNamespace(status="started")
+
+    start.side_effect = started
+    await ingest.reconcile_once()
+
+    assert current.state == "processing"
+    assert current.worker_started_at is not None
+    assert current.worker_config is not None
+    stop.assert_not_awaited()
+
+
+@pytest.mark.anyio
+async def test_revalidation_timeout_transcription_start_marks_ingest_degraded(environment):
+    """When start_transcription_worker returns failed (revalidation_timeout), set degraded with accurate reason."""
+    client, event, rooms, media, _, start, stop, *_ = environment
+    room = rooms[0]
+    await connect_whip(client, event, room, media)
+
+    start.side_effect = None
+    start.return_value = SimpleNamespace(status="failed", error_code="revalidation_timeout")
+    await ingest.reconcile_once()
+
+    current = ingest.health[room.id]
+    assert current.state == "degraded"
+    assert current.reason == "Timed out revalidating booth status; retry shortly."

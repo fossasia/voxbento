@@ -24,7 +24,7 @@ from portal.webhooks.events import (
 logger = logging.getLogger(__name__)
 
 
-async def enqueue_webhook(event_type: str, payload: dict) -> None:
+async def enqueue_webhook(event_type: str, payload: dict) -> bool:
     """Helper to insert a new webhook delivery into the queue.
 
     Validates that the event type is supported before looking up active
@@ -52,8 +52,12 @@ async def enqueue_webhook(event_type: str, payload: dict) -> None:
             if deliveries:
                 db.add_all(deliveries)
                 await db.flush()
+        return True
+    except asyncio.CancelledError:
+        raise
     except Exception as e:
-        logger.error(f"Failed to enqueue webhook: {e}", exc_info=True)
+        logger.error("Failed to enqueue webhook: %s", e, exc_info=True)
+        return False
 
 
 _real_enqueue_webhook = enqueue_webhook

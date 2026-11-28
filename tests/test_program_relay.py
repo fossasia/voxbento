@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import json
 from datetime import datetime, timedelta, timezone
+from types import SimpleNamespace
 from unittest.mock import AsyncMock
 from uuid import uuid4
 
@@ -85,6 +86,7 @@ async def relay_env(monkeypatch):
 
         async def started(**kwargs):
             ingest.audio_progress[kwargs["booth_id"]] = asyncio.get_running_loop().time()
+            return SimpleNamespace(status="started")
 
         start.side_effect = started
         monkeypatch.setattr(ingest, "start_transcription_worker", start)

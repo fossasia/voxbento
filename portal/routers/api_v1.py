@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import math
 import re
 from datetime import datetime, timezone
 from types import SimpleNamespace
@@ -11,13 +12,14 @@ from fastapi.responses import PlainTextResponse
 from pydantic import BaseModel, Field, field_validator
 from sqlalchemy import and_, or_, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import selectinload
 
 from portal.auth import coordinates_room, load_membership_scope, require_oauth_scope
 from portal.booth_identity import make_booth_id, make_mediamtx_path, validate_language_code
 from portal.booth_publish import stop_booth_publish, take_booth_publishers
 from portal.config import settings
 from portal.database import delete_room as delete_db_room
-from portal.database import get_db_session
+from portal.database import get_db_session, get_session
 from portal.globals import booths
 from portal.models import (
     DBBooth,
@@ -34,8 +36,16 @@ from portal.models import (
 )
 from portal.rate_limit import auth_rate_limiter
 from portal.roles import EVENT_OWNER
+from portal.routers.api import broadcast_transcription, resolve_transcription_config
 from portal.transcription.constants import ProviderEnum
-from portal.transcription.worker import active_workers, start_transcription_worker, stop_transcription_worker
+from portal.transcription.worker import (
+    ERROR_CODE_REVALIDATION_TIMEOUT,
+    ERROR_CODE_STOPPING_TIMEOUT,
+    TranscriptionStartResult,
+    active_workers,
+    start_transcription_worker,
+    stop_transcription_worker,
+)
 from portal.translations.constants import TranslationProviderEnum
 from portal.translations.model_languages import language_support_error
 from portal.websockets.revocation import revoke_booths_for_deleted_entity
@@ -1084,8 +1094,17 @@ async def delete_booth_endpoint(
 
     from portal.database import delete_booth
 
+    booth_id = make_booth_id(event_slug, target_room_id, language_code)
+    await booths.remove_booth(event_slug, target_room_id, language_code)
     await revoke_booths_for_deleted_entity(db, level="booth", target_id=booth.id)
     await delete_booth(db, booth.id)
+    await db.commit()
+    stopped = await stop_transcription_worker(booth_id)
+    if not stopped:
+        logger.warning(
+            "[%s] Booth was deleted but transcription worker shutdown timed out; teardown continues in background.",
+            booth_id,
+        )
     return {"status": "deleted"}
 
 
@@ -1106,16 +1125,108 @@ async def start_transcription(
     target_room_id = _extract_room_id(room, room_id)
     language_code = _validate_lang(language_code)
 
-    booth_id = make_booth_id(event_slug, target_room_id, language_code)
+    try:
+        canonical_language = validate_language_code(language_code)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
 
-    # Actually start transcription using the registry
-    if booth_id not in booths:
-        raise HTTPException(status_code=400, detail="Booth not active in memory")
+    booth_id = make_booth_id(event_slug, target_room_id, canonical_language)
 
-    # We call the real worker
-    await start_transcription_worker(booth_id, event.id)
+    stmt = (
+        select(DBBooth)
+        .options(selectinload(DBBooth.event))
+        .where(
+            DBBooth.event_id == event.id,
+            DBBooth.room_id == target_room_id,
+            DBBooth.language_code == canonical_language,
+        )
+    )
+    result = await db.execute(stmt)
+    db_booth = result.scalars().first()
+    if not db_booth:
+        raise HTTPException(status_code=404, detail="Booth not found")
+    if not db_booth.transcription_enabled:
+        return {"status": "disabled", "message": "Transcription is not enabled for this booth."}
 
-    return {"status": "started", "booth_id": booth_id}
+    provider, model_size, config = resolve_transcription_config(db_booth, event=event)
+
+    # End the database transaction and release the connection before waiting on worker startup
+    await db.commit()
+
+    async def _revalidate_active() -> bool:
+        async with get_session() as s:
+            check_stmt = (
+                select(DBBooth.id)
+                .join(Event, Event.id == DBBooth.event_id)
+                .where(
+                    Event.slug == event_slug,
+                    Event.deleted_at.is_(None),
+                    DBBooth.room_id == target_room_id,
+                    DBBooth.language_code == canonical_language,
+                    DBBooth.transcription_enabled.is_(True),
+                    DBBooth.transcription_provider == provider,
+                    DBBooth.transcription_model == model_size,
+                )
+            )
+            if provider.lower() != "local":
+                check_stmt = check_stmt.where(Event.transcription_api_enabled.is_(True))
+            return (await s.scalar(check_stmt)) is not None
+
+    try:
+        result = await start_transcription_worker(
+            event_slug,
+            canonical_language,
+            booth_id,
+            broadcast_transcription,
+            provider,
+            model_size,
+            config,
+            room_id=target_room_id,
+            restart_on_key_change=True,
+            wait_for_ready=True,
+            revalidate_active=_revalidate_active,
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=429, detail=str(e)) from e
+
+    if not isinstance(result, TranscriptionStartResult):
+        logger.error("[%s] Unexpected start_transcription_worker result type: %s", booth_id, type(result))
+        raise HTTPException(
+            status_code=500,
+            detail="Failed to start transcription worker",
+        )
+
+    if result.status == "failed":
+        logger.error("[%s] Transcription worker failed to start: %s", booth_id, result.error)
+        if result.error_code in (ERROR_CODE_STOPPING_TIMEOUT, ERROR_CODE_REVALIDATION_TIMEOUT):
+            retry_after = str(math.ceil(settings.transcription_startup_timeout_secs))
+            detail = (
+                "Transcription worker is still stopping; retry shortly"
+                if result.error_code == ERROR_CODE_STOPPING_TIMEOUT
+                else "Timed out revalidating booth status; retry shortly"
+            )
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail=detail,
+                headers={"Retry-After": retry_after},
+            )
+        if result.error_code == "booth_deleted":
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Booth is no longer active",
+            )
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Failed to start transcription worker",
+        )
+
+    return {
+        "status": "started",
+        "already_running": result.status == "already_running",
+        "booth_id": booth_id,
+        "provider": result.provider,
+        "model": result.model,
+    }
 
 
 @router.post("/events/{event_slug}/rooms/{room_id}/booths/{language_code}/transcription/stop")
@@ -1135,8 +1246,18 @@ async def stop_transcription(
     target_room_id = _extract_room_id(room, room_id)
     language_code = _validate_lang(language_code)
 
+    # End the database transaction and release the connection before waiting on worker shutdown
+    await db.commit()
+
     booth_id = make_booth_id(event_slug, target_room_id, language_code)
-    await stop_transcription_worker(booth_id)
+    stopped = await stop_transcription_worker(booth_id)
+    if not stopped:
+        retry_after = "2"
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Transcription worker is still stopping; retry shortly",
+            headers={"Retry-After": retry_after},
+        )
     return {"status": "stopped", "booth_id": booth_id}
 
 
@@ -1163,11 +1284,13 @@ async def get_transcription_status(
     statuses = {}
     for b in booths_list:
         bid = make_booth_id(event_slug, target_room_id, b.language_code)
+        worker = active_workers.get(bid)
+        is_running = worker is not None and worker.is_running
         statuses[b.language_code] = {
             "is_active": booths.get_booth_sync(bid) is not None,
             # Running transcription is tracked by the worker registry, not on the
             # in-memory Booth, which has no transcription_task attribute.
-            "transcription_running": bid in active_workers,
+            "transcription_running": is_running,
         }
 
     return {"room_id": target_room_id, "statuses": statuses}
