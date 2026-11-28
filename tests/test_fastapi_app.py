@@ -126,7 +126,7 @@ def _ws_ready(*sockets) -> None:
 def test_token_redactor_handles_combined_request_line():
     import logging
 
-    from fastapi_app import _UvicornTokenRedactor
+    from portal.logging_config import RedactionFilter
 
     # Combined string shape (e.g. httptools protocol)
     record = logging.LogRecord(
@@ -138,7 +138,7 @@ def test_token_redactor_handles_combined_request_line():
         args=("127.0.0.1:1234", "GET /embed/test-event/en?token=secretjwt123 HTTP/1.1"),
         exc_info=None,
     )
-    _UvicornTokenRedactor().filter(record)
+    RedactionFilter().filter(record)
     output = record.getMessage()
     assert "secretjwt123" not in output
     assert "[REDACTED]" in output
@@ -147,7 +147,7 @@ def test_token_redactor_handles_combined_request_line():
 def test_token_redactor_handles_split_args():
     import logging
 
-    from fastapi_app import _UvicornTokenRedactor
+    from portal.logging_config import RedactionFilter
 
     # Split string shape (e.g. h11 protocol)
     record = logging.LogRecord(
@@ -159,7 +159,7 @@ def test_token_redactor_handles_split_args():
         args=("127.0.0.1:1234", "GET", "/embed/test-event/en?token=secretjwt123", "1.1", 200),
         exc_info=None,
     )
-    _UvicornTokenRedactor().filter(record)
+    RedactionFilter().filter(record)
     output = record.getMessage()
     assert "secretjwt123" not in output
     assert "[REDACTED]" in output
@@ -168,7 +168,7 @@ def test_token_redactor_handles_split_args():
 def test_token_redactor_handles_legacy_api_query_credentials():
     import logging
 
-    from fastapi_app import _UvicornTokenRedactor
+    from portal.logging_config import RedactionFilter
 
     record = logging.LogRecord(
         name="uvicorn.access",
@@ -179,7 +179,7 @@ def test_token_redactor_handles_legacy_api_query_credentials():
         args=(),
         exc_info=None,
     )
-    _UvicornTokenRedactor().filter(record)
+    RedactionFilter().filter(record)
     output = record.getMessage()
     assert "secretjwt123" not in output
     assert "[REDACTED]" in output
@@ -188,7 +188,7 @@ def test_token_redactor_handles_legacy_api_query_credentials():
 def test_token_redactor_hides_overlay_join_code():
     import logging
 
-    from fastapi_app import _UvicornTokenRedactor
+    from portal.logging_config import RedactionFilter
 
     # OBS / vMix overlays carry the join code on every page load and session refresh.
     record = logging.LogRecord(
@@ -200,7 +200,7 @@ def test_token_redactor_hides_overlay_join_code():
         args=("127.0.0.1:1234", "GET", "/overlay/demo/1/en/session?code=ROOM42", "1.1", 200),
         exc_info=None,
     )
-    _UvicornTokenRedactor().filter(record)
+    RedactionFilter().filter(record)
     output = record.getMessage()
     assert "ROOM42" not in output
     assert "code=[REDACTED]" in output
@@ -211,7 +211,7 @@ def test_token_redactor_hides_internal_hook_secret():
 
     from uvicorn.logging import AccessFormatter
 
-    from fastapi_app import _UvicornTokenRedactor
+    from portal.logging_config import RedactionFilter
 
     record = logging.LogRecord(
         name="uvicorn.access",
@@ -222,7 +222,7 @@ def test_token_redactor_hides_internal_hook_secret():
         args=("127.0.0.1:1234", "POST", "/internal/media-auth?key=hook-secret", "1.1", 204),
         exc_info=None,
     )
-    _UvicornTokenRedactor().filter(record)
+    RedactionFilter().filter(record)
     output = record.getMessage()
     assert "hook-secret" not in output
     assert "key=[REDACTED]" in output
@@ -3692,3 +3692,31 @@ def test_unhandled_exception_response_has_security_headers():
     assert res.status_code == 500
     assert res.headers["x-content-type-options"] == "nosniff"
     assert res.headers["content-security-policy"] == "frame-ancestors 'self'"
+
+
+@pytest.mark.parametrize(
+    ("accept", "content_type"),
+    [("text/html", "text/html"), ("application/json", "application/json")],
+)
+def test_unhandled_exception_response_negotiates_type_and_carries_request_id(accept, content_type):
+    """The logging middleware must not answer unhandled errors in place of this handler.
+
+    When it did, a browser asking for HTML received JSON. The handler keeps the
+    negotiation and echoes the correlation id the middleware left on the scope,
+    so the 500 can be tied back to the "request failed" log line.
+    """
+
+    @app.get("/__boom_negotiate", include_in_schema=False)
+    async def boom():
+        raise RuntimeError("boom")
+
+    try:
+        res = TestClient(app, raise_server_exceptions=False).get(
+            "/__boom_negotiate", headers={"accept": accept}
+        )
+    finally:
+        app.router.routes = [r for r in app.router.routes if getattr(r, "path", "") != "/__boom_negotiate"]
+
+    assert res.status_code == 500
+    assert res.headers["content-type"].startswith(content_type)
+    assert len(res.headers.get("x-request-id", "")) == 16
