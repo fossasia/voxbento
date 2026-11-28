@@ -334,6 +334,7 @@ def test_hosted_and_self_hosted_limits_come_from_the_settings(monkeypatch):
 
     assert worker_module.scheduler_for("openai").capacity == 7
     assert worker_module.scheduler_for("gemini").capacity == 7
+    assert worker_module.scheduler_for("google_translate").capacity == 7
     assert worker_module.scheduler_for("self_hosted").capacity == 3
     # One scheduler per provider, shared by every room.
     assert worker_module.scheduler_for("openai") is worker_module.scheduler_for("openai")

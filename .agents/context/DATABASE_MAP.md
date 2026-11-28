@@ -45,6 +45,7 @@ users (1)
 | `gemini_api_key` | Text nullable | Fernet-encrypted |
 | `anthropic_api_key` | Text nullable | Fernet-encrypted |
 | `groq_api_key` | Text nullable | Fernet-encrypted |
+| `google_translate_api_key` | Text nullable | Fernet-encrypted |
 | `created_at` | DateTime(tz) | UTC |
 
 Cascade: deletes rooms + booths when event is deleted.
@@ -310,6 +311,7 @@ Tracks which languages the translation worker should generate for a given room o
 | 043 | `043_add_live_demo_settings.py` | `live_demo_settings` singleton for the home-page live demo |
 | 046 | `046_live_demo_room_ai.py` | Transitional room-linked demo settings and daily limit |
 | 047 | `047_live_demo_independent_ai.py` | Independent demo providers, models, encrypted keys, persona/style; removes room link |
+| 048 | `048_add_google_translate_api_key.py` | `events.google_translate_api_key` (Fernet-encrypted, #1202) |
 | 044 | `044_youtube_connections.py` | `youtube_connections` table (one per event), `rooms.youtube_broadcast_id`, `rooms.youtube_stream_id` (#1087) |
 
 Run migrations: `uv run alembic upgrade head`

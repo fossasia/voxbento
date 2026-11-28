@@ -17,6 +17,7 @@ from portal.translations.providers import local as local_provider
 from portal.translations.providers.anthropic import AnthropicProvider
 from portal.translations.providers.base import ProviderEngine
 from portal.translations.providers.gemini import GeminiProvider
+from portal.translations.providers.google_translate import GoogleTranslateEngine
 from portal.translations.providers.local import LocalProvider
 from portal.translations.providers.openai import OpenAIProvider
 from portal.translations.scheduler import StaleTranslationJob, TranslationJob, TranslationScheduler
@@ -54,6 +55,7 @@ ENGINES: dict[str, TranslationEngine] = {
         EngineKind.LLM_API,
         max_concurrency=_api_concurrency,
     ),
+    TranslationProviderEnum.GOOGLE_TRANSLATE.value: GoogleTranslateEngine(),
     TranslationProviderEnum.LOCAL.value: LocalProvider(),
 }
 for p in OPENAI_COMPATIBLE_ENDPOINTS.keys():
@@ -781,5 +783,6 @@ class TranslationWorker:
             api_key=api_key,
         )
         if not translated:
-            logger.warning(f"Provider {provider} returned empty translation for text: '{text}'")
+            # The length, never the text: transcripts stay out of the logs.
+            logger.warning("Provider %s returned no translation for a %d-character segment", provider, len(text))
         return translated

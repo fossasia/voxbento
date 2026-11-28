@@ -19,6 +19,7 @@ _PROVIDER_FIELDS = {
     TranslationProviderEnum.GEMINI.value: "encrypted_gemini_api_key",
     TranslationProviderEnum.ANTHROPIC.value: "encrypted_anthropic_api_key",
     TranslationProviderEnum.GROQ.value: "encrypted_groq_api_key",
+    TranslationProviderEnum.GOOGLE_TRANSLATE.value: "encrypted_google_translate_api_key",
 }
 
 

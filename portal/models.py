@@ -90,6 +90,9 @@ class Event(Base):
         "anthropic_api_key", Text, nullable=True, default=None
     )
     encrypted_groq_api_key: Mapped[str | None] = mapped_column("groq_api_key", Text, nullable=True, default=None)
+    encrypted_google_translate_api_key: Mapped[str | None] = mapped_column(
+        "google_translate_api_key", Text, nullable=True, default=None
+    )
     listener_join_code: Mapped[str | None] = mapped_column(String(64), nullable=True, default=None)
     meeting_analysis_enabled: Mapped[bool] = mapped_column(Boolean, default=False, server_default="0")
     meeting_analysis_provider: Mapped[str] = mapped_column(String(50), default="local", server_default="local")
