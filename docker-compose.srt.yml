@@ -1,0 +1,14 @@
+# Activate with: docker compose -f docker-compose.yml -f docker-compose.srt.yml up
+# Enables SRT ingest on MediaMTX and the portal. Passphrases are set per-path via the Control API.
+services:
+  mediamtx:
+    environment:
+      MTX_SRT: "yes"
+      MTX_SRTADDRESS: ":8890"
+    ports:
+      - "8890:8890/udp"
+
+  portal:
+    environment:
+      PROGRAM_INGEST_ENABLED: "true"
+      SRT_INGEST_ENABLED: "true"

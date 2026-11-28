@@ -116,6 +116,8 @@ class TestValidateLanguageCode:
     def test_validate_language_code_floor(self):
         assert validate_language_code("floor") == "floor"
         assert validate_language_code("FLOOR") == "floor"
+        with pytest.raises(ValueError):
+            validate_language_code("floor_backup")
 
 
 # ── validate_instance ─────────────────────────────────────────────────────────

@@ -215,29 +215,28 @@ async def test_revoke_is_durable_when_kick_404_leaves_same_source_live(environme
 
 
 @pytest.mark.anyio
-@pytest.mark.parametrize("failure", ["connection", "http", "json", "schema"])
-async def test_media_control_failure_returns_503_without_replacing_reservation(environment, monkeypatch, failure):
+async def test_reconnect_conflict_returns_409_without_replacing_reservation_or_calling_mediamtx(environment, monkeypatch):
     client, event, rooms, *_ = environment
     room = rooms[0]
     token = await enable(client, event, room)
     original = credentials(room, token)
     assert (await client.post("/internal/media-auth", json=original)).status_code == 204
-    ingest.health.clear()  # Force the persisted reservation's control-plane check.
+    # Set active reservation within grace period
+    ingest.health[room.id] = ingest.IngestHealth(reservation_started_at=ingest.time.monotonic())
 
-    def unavailable(request):
-        if failure == "connection":
-            raise httpx.ConnectError("upstream details", request=request)
-        if failure == "http":
-            return httpx.Response(502, text="upstream details")
-        if failure == "json":
-            return httpx.Response(200, text="not JSON")
-        return httpx.Response(200, json={"name": None})
+    media_calls = []
 
-    async with httpx.AsyncClient(transport=httpx.MockTransport(unavailable)) as media_client:
+    def tracking_control(request):
+        media_calls.append((request.method, str(request.url)))
+        return httpx.Response(200, json={})
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(tracking_control)) as media_client:
         monkeypatch.setattr(ingest, "get_http_client", lambda: media_client)
         response = await client.post("/internal/media-auth", json=credentials(room, token))
-    assert response.status_code == 503
-    assert response.json() == {"detail": "Media control unavailable"}
+    # Must reject conflict from stored reservation with 409 without calling MediaMTX
+    assert response.status_code == 409
+    assert response.json() == {"detail": "A floor publisher is already connected or connecting"}
+    assert not any("/paths/get/" in url for _, url in media_calls)
     async with get_session() as session:
         saved = await session.get(Room, room.id)
         assert saved.program_session_id == original["id"]

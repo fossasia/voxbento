@@ -691,8 +691,7 @@ def room_audio_choice(room: Room) -> str:
     if room.floor_source == "program_ingest":
         if room.program_session_secret_hash:
             return AUDIO_DESK
-        if room.program_key_hash:
-            return AUDIO_ENCODER
+        return AUDIO_ENCODER
     if room.meeting_agent_enabled:
         return AUDIO_MEETING
     return ""

@@ -49,14 +49,29 @@ BACKOFF_MAX_SECS = 30.0
 DEFAULT_CA_FILE = "/etc/ssl/certs/ca-certificates.crt"
 TERMINATE_TIMEOUT_SECS = 3.0
 # Error text is classified, never forwarded: FFmpeg can echo the destination URL (and key).
-ERROR_CLASSES = (
-    (re.compile(r"(?i)401|403|unauthori[sz]ed|forbidden|access denied"), "Destination rejected the stream key."),
+# Fatal errors indicate a misconfiguration that retrying cannot fix; the relay halts on these.
+FATAL_ERRORS = (
+    (
+        re.compile(r"(?i)\b(?:401|403)\b|unauthori[sz]ed|forbidden|access denied|stream.*key.*invalid"),
+        "Destination rejected the stream key — update the YouTube stream key.",
+    ),
+    (
+        re.compile(r"(?i)stream.*ended|broadcast.*complete|already.*ended"),
+        "YouTube broadcast has already ended — create a new live stream.",
+    ),
+)
+# Transient errors are worth retrying; backoff and reconnect.
+TRANSIENT_ERRORS = (
     (
         re.compile(r"(?i)connection refused|timed out|no route|network is unreachable|name or service"),
-        "Destination unreachable.",
+        "Destination temporarily unreachable.",
     ),
+    (re.compile(r"(?i)broken pipe|connection reset|eof"), "Connection dropped by peer."),
     (re.compile(r"(?i)tls|ssl|certificate|handshake"), "TLS handshake with the destination failed."),
-    (re.compile(r"(?i)rtsp|404 not found|server returned 404"), "Floor stream unavailable at the media server."),
+    (
+        re.compile(r"(?i)rtsp|404 not found|server returned 404"),
+        "Floor stream unavailable at the media server.",
+    ),
     (
         re.compile(r"(?i)codec|could not find tag|not supported|invalid data"),
         "Feed is not H.264/AAC; relay requires that input contract.",
@@ -71,11 +86,20 @@ def redact(text: str, secrets_: list[str]) -> str:
     return text
 
 
-def classify(line: str) -> str:
-    for pattern, reason in ERROR_CLASSES:
+def classify(line: str) -> tuple[str, bool]:
+    """Return (reason, is_fatal). Fatal errors should halt retries."""
+    if re.search(r"(?i)rtsp", line):
+        for pattern, reason in TRANSIENT_ERRORS:
+            if pattern.search(line):
+                return reason, False
+        return "Floor stream unavailable at the media server.", False
+    for pattern, reason in FATAL_ERRORS:
         if pattern.search(line):
-            return reason
-    return GENERIC_REASON
+            return reason, True
+    for pattern, reason in TRANSIENT_ERRORS:
+        if pattern.search(line):
+            return reason, False
+    return GENERIC_REASON, False
 
 
 def validate_destination(destination: str, allowed_hosts: set[str], allow_insecure: bool = False) -> None:
@@ -215,9 +239,11 @@ class RelayManager:
             return 400, {"error": str(exc)}
         with self.lock:
             current = self.relays.get(relay_id)
-            if current and current.source == source and current.fingerprint == fingerprint:
+            if current and current.source == source and current.fingerprint == fingerprint and current.state != "failed":
                 return 200, current.public()
-            if current is None and len(self.relays) >= self.max_relays:
+            active_relays = [r for r in self.relays.values() if r.state != "failed"]
+            is_active = current is not None and current.state != "failed"
+            if not is_active and len(active_relays) >= self.max_relays:
                 return 503, {"error": "Relay capacity reached"}
             if current:
                 self._stop_locked(current)
@@ -260,10 +286,16 @@ class RelayManager:
         relay.state, relay.reason = "stopped", "Relay stopped."
         self._terminate(relay.process)
 
-    @staticmethod
-    def _terminate(process: subprocess.Popen | None) -> None:
+    _terminate_lock = threading.Lock()
+
+    @classmethod
+    def _terminate(cls, process: subprocess.Popen | None) -> None:
         if process is None or process.poll() is not None:
             return
+        with cls._terminate_lock:
+            if process.poll() is not None or getattr(process, "_is_terminating", False):
+                return
+            process._is_terminating = True
         try:
             if os.name == "posix":
                 os.killpg(process.pid, signal.SIGTERM)
@@ -309,23 +341,47 @@ class RelayManager:
 
             def drain_errors() -> None:
                 # Keep the most specific classification seen; FFmpeg's last line is often generic.
+                # Fatal errors (bad stream key, ended broadcast) stop the retry loop immediately.
                 nonlocal reason
                 assert process.stderr is not None
                 for line in process.stderr:
                     if line.strip():
-                        kind = classify(redact(line.strip(), secrets_))
+                        kind, is_fatal = classify(redact(line.strip(), secrets_))
                         if kind != GENERIC_REASON:
                             reason = kind
+                        if is_fatal:
+                            logger.error(
+                                "relay fatal error relay_id=%s reason=%s — halting retries",
+                                relay.relay_id,
+                                reason,
+                            )
+                            with self.lock:
+                                relay.stop.set()
+                                relay.state, relay.reason = "failed", reason
+                            try:
+                                if os.name == "posix":
+                                    os.killpg(process.pid, signal.SIGTERM)
+                                else:
+                                    process.terminate()
+                            except ProcessLookupError:
+                                pass
+                            return
 
             def watchdog() -> None:
                 # A destination that stops reading blocks FFmpeg's writes: bytes stop growing
                 # although the process is alive. Treat that as not forwarding and reconnect.
                 while process.poll() is None and not relay.stop.wait(0.25):
                     limit = self.stall_secs if relay.forwarding else self.start_timeout_secs
-                    if time.monotonic() - relay.last_progress > limit:
-                        relay.stalled = True
-                        relay.state = "stalled"
-                        relay.reason = STALLED_REASON if relay.forwarding else NOT_FORWARDING_REASON
+                    should_terminate = False
+                    with self.lock:
+                        if relay.state == "failed" or relay.stop.is_set():
+                            return
+                        if time.monotonic() - relay.last_progress > limit:
+                            relay.stalled = True
+                            relay.state = "stalled"
+                            relay.reason = STALLED_REASON if relay.forwarding else NOT_FORWARDING_REASON
+                            should_terminate = True
+                    if should_terminate:
                         self._terminate(process)
                         return
 
@@ -334,6 +390,9 @@ class RelayManager:
             threading.Thread(target=watchdog, daemon=True).start()
             assert process.stdout is not None
             for line in process.stdout:
+                with self.lock:
+                    if relay.stop.is_set() or relay.state == "failed":
+                        continue
                 key, _, value = line.strip().partition("=")
                 if key == "out_time_us" and value.lstrip("-").isdigit():
                     relay.out_time_us = max(relay.out_time_us, int(value))
@@ -342,20 +401,27 @@ class RelayManager:
                     relay.bytes_out = int(value)
                     # The first report is the FLV header; forwarding needs bytes after it.
                     if not first:
-                        relay.forwarding = True
-                        relay.last_progress = time.monotonic()
-                        if relay.state != "live" and not relay.stalled:
-                            relay.state, relay.reason = "live", "Relaying the program feed to the destination."
-                            attempt = 0
+                        with self.lock:
+                            relay.forwarding = True
+                            relay.last_progress = time.monotonic()
+                            if (
+                                relay.state != "live"
+                                and not relay.stalled
+                                and not relay.stop.is_set()
+                                and relay.state != "failed"
+                            ):
+                                relay.state, relay.reason = "live", "Relaying the program feed to the destination."
+                                attempt = 0
             process.wait()
             errors.join(1)
-            if relay.stop.is_set():
-                return
-            attempt += 1
-            relay.restarts += 1
-            if relay.stalled:
-                reason = STALLED_REASON if relay.forwarding else NOT_FORWARDING_REASON
-            relay.state, relay.reason = "retrying", reason
+            with self.lock:
+                if relay.stop.is_set() or relay.state == "failed":
+                    return
+                attempt += 1
+                relay.restarts += 1
+                if relay.stalled:
+                    reason = STALLED_REASON if relay.forwarding else NOT_FORWARDING_REASON
+                relay.state, relay.reason = "retrying", reason
             logger.warning(
                 "relay exited relay_id=%s restarts=%s reason=%s", relay.relay_id, relay.restarts, relay.reason
             )

@@ -30,6 +30,7 @@ YOUTUBE_KEY = "abcd-efgh-ijkl-mnop-qrst"
 async def relay_env(monkeypatch):
     configure("sqlite+aiosqlite://")
     await init_db()
+    monkeypatch.setattr(settings, "jwt_secret", "test_jwt_secret_fixed_for_relay_32chars")
     monkeypatch.setattr(settings, "program_ingest_enabled", True)
     monkeypatch.setattr(settings, "program_relay_enabled", True)
     monkeypatch.setattr(settings, "program_relay_control_secret", RELAY_SECRET)
@@ -656,3 +657,94 @@ async def test_deleted_event_relay_is_stopped_while_media_listing_fails(relay_en
         assert (await session.get(Room, room.id)).program_session_id is None
     # The encoder reconnecting is refused.
     assert (await client.post("/internal/media-auth", json=rtmps_publish(room, secret))).status_code == 401
+
+
+@pytest.mark.anyio
+async def test_relay_resave_same_key_restarts_failed_relay(relay_env):
+    env = relay_env
+    client, event, room = env["client"], env["event"], env["rooms"][0]
+    secret = await enable_relay(client, event, room)
+    await save_destination(client, event, room, key=YOUTUBE_KEY)
+    await connect(env, room, secret)
+    await ingest.reconcile_once()
+
+    assert str(room.id) in env["relays"]
+    assert env["relays"][str(room.id)]["state"] == "live"
+
+    # Simulate fatal failure on the relay service (e.g. broadcast ended / terminated)
+    env["relays"][str(room.id)]["state"] = "failed"
+    env["relays"][str(room.id)]["reason"] = "YouTube broadcast completed"
+    relay.relay_health[room.id] = relay.RelayHealth("failed", "YouTube broadcast completed")
+
+    # Reconcile while failed does NOT auto-restart because fingerprint hasn't changed
+    env["calls"].clear()
+    await ingest.reconcile_once()
+    assert env["relays"][str(room.id)]["state"] == "failed"
+    assert ("PUT", f"/relays/{room.id}") not in env["calls"]
+
+    # Explicit save with the EXACT SAME key must call stop_relay(room_id, forget_health=False)
+    # which evicts the room from the relay daemon
+    await save_destination(client, event, room, key=YOUTUBE_KEY)
+    assert ("DELETE", f"/relays/{room.id}") in env["calls"]
+    assert str(room.id) not in env["relays"]
+
+    # At next reconcile, relay daemon has no entry for room, so start_relay is invoked again
+    await ingest.reconcile_once()
+    assert str(room.id) in env["relays"]
+    assert env["relays"][str(room.id)]["state"] == "live"
+
+
+@pytest.mark.anyio
+async def test_relay_resave_unchanged_key_does_not_restart_healthy_relay(relay_env):
+    env = relay_env
+    client, event, room = env["client"], env["event"], env["rooms"][0]
+    await enable_relay(client, event, room)
+    await save_destination(client, event, room, key=YOUTUBE_KEY)
+    relay.relay_health[room.id] = relay.RelayHealth("live", "Forwarding to YouTube.")
+
+    env["calls"].clear()
+    resp = await client.put(relay_url(event, room), json={"server_url": YOUTUBE_SERVER, "stream_key": YOUTUBE_KEY})
+    assert resp.status_code == 200
+
+    # Healthy relay must NOT be stopped when re-saving unchanged key
+    assert ("DELETE", f"/relays/{room.id}") not in env["calls"]
+
+
+@pytest.mark.anyio
+async def test_relay_resave_reports_502_when_stop_fails(relay_env):
+    env = relay_env
+    client, event, room = env["client"], env["event"], env["rooms"][0]
+    await enable_relay(client, event, room)
+    await save_destination(client, event, room, key=YOUTUBE_KEY)
+
+    # Bring down the relay service so DELETE /relays/{room.id} fails with 500 (httpx.HTTPError)
+    env["service"]["up"] = False
+
+    new_key = "rotated-key-12345"
+    resp = await client.put(relay_url(event, room), json={"server_url": YOUTUBE_SERVER, "stream_key": new_key})
+    assert resp.status_code == 502
+    assert "Relay service unavailable" in resp.json()["detail"]
+
+    # Destination was still stored so the operator can retry without losing it
+    async with get_session() as session:
+        stored_room = await session.get(Room, room.id)
+        assert stored_room.program_relay_server == YOUTUBE_SERVER
+        assert decrypt_val(stored_room.program_relay_key_enc) == new_key
+
+
+@pytest.mark.anyio
+async def test_relay_resave_succeeds_when_old_key_unreadable(relay_env):
+    env = relay_env
+    client, event, room = env["client"], env["event"], env["rooms"][0]
+    await enable_relay(client, event, room)
+
+    async with get_session() as session:
+        stored_room = await session.get(Room, room.id)
+        stored_room.program_relay_server = YOUTUBE_SERVER
+        stored_room.program_relay_key_enc = "corrupted-unreadable-ciphertext"
+        await session.commit()
+
+    resp = await client.put(relay_url(event, room), json={"server_url": YOUTUBE_SERVER, "stream_key": YOUTUBE_KEY})
+    assert resp.status_code == 200
+    assert ("DELETE", f"/relays/{room.id}") in env["calls"]
+

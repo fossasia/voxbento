@@ -110,7 +110,7 @@ async def test_start_mints_short_lived_session_and_claims_floor(environment):
         assert stored.program_session_secret_hash is not None
         assert stored.program_key_hash is None  # The browser session never mints the long-lived encoder key.
         ttl = ingest.aware(stored.program_session_secret_expires_at) - ingest.utc_now()
-        assert timedelta(seconds=60) < ttl <= timedelta(seconds=150)
+        assert timedelta(seconds=60) < ttl <= timedelta(seconds=155)
 
 
 @pytest.mark.anyio

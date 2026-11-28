@@ -36,6 +36,8 @@ Before deploying, confirm that your server meets the following requirements:
 | `8443` | TCP | Jitsi | Jitsi Meet HTTPS interface |
 | `8889` | TCP | MediaMTX | WHIP ingest and WHEP playback |
 | `8189` | UDP | MediaMTX | WebRTC ICE (media transport) |
+| `1936` | TCP | MediaMTX | Optional: RTMPS contribution ingest (`docker-compose.rtmps.yml` or `relay`) |
+| `8890` | UDP | MediaMTX | Optional: SRT contribution ingest (`docker-compose.srt.yml`) |
 
 ## Deploy with Docker Compose
 
@@ -99,6 +101,18 @@ Build images and start the full stack in the foreground:
     ```bash
     docker compose up --build -d
     ```
+
+    To enable SRT contribution ingest on port `8890/udp`, add `docker-compose.srt.yml` to your `COMPOSE_FILE` in `.env` (recommended), or pass all active compose files:
+    ```bash
+    # Standard deployment:
+    docker compose -f docker-compose.yml -f docker-compose.srt.yml up --build -d
+    # Or when combined with YouTube relaying:
+    docker compose -f docker-compose.yml -f docker-compose.relay.yml -f docker-compose.srt.yml up --build -d
+    ```
+
+    :::warning MediaMTX Upgrade Drain Notice
+    When upgrading or restarting MediaMTX (`docker compose restart mediamtx`), active SRT and RTMPS connections terminate immediately as UDP/TCP socket state cannot be preserved across container restarts. Configure all encoders with automatic reconnect enabled (e.g. 2-second retry delay). The portal reconciler automatically repopulates dynamic per-path SRT credentials on startup as soon as MediaMTX is ready.
+    :::
 
   ### Verify the portal is running
 

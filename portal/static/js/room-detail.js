@@ -30,10 +30,22 @@ function initAudioChooser() {
   if (!chooser) return;
   const radios = [...chooser.querySelectorAll('input[name="audio_choice"]')];
   const panels = [...document.querySelectorAll('[data-audio-panel]')];
+  const storageKey = 'voxbento_audio_choice_' + window.location.pathname;
+  const saved = (function() {
+    try { return localStorage.getItem(storageKey); } catch { return null; }
+  })();
+
+  if (saved && !radios.some((r) => r.checked)) {
+    const matching = radios.find((r) => r.value === saved);
+    if (matching) matching.checked = true;
+  }
 
   function sync() {
     const choice = radios.find((r) => r.checked)?.value || '';
     panels.forEach((panel) => { panel.hidden = panel.dataset.audioPanel !== choice; });
+    if (choice) {
+      try { localStorage.setItem(storageKey, choice); } catch {}
+    }
   }
 
   radios.forEach((radio) => radio.addEventListener('change', sync));
