@@ -8,8 +8,11 @@ from urllib.parse import parse_qs, urlsplit
 
 import pytest
 import websockets
+from websockets.datastructures import Headers
+from websockets.exceptions import InvalidStatus
+from websockets.http11 import Response
 
-from portal.database import get_session
+from portal.database import configure, dispose, get_session, init_db
 from portal.live_demo import AudioPipe
 from portal.models import AIVocabularyEntry, Event, Room
 from portal.transcription.providers import elevenlabs as stt
@@ -28,10 +31,6 @@ def _keyterm_params_length(terms: list[str]) -> int:
 
 
 def _rejection(status: int):
-    from websockets.datastructures import Headers
-    from websockets.exceptions import InvalidStatus
-    from websockets.http11 import Response
-
     return InvalidStatus(Response(status, "Bad Request", Headers(), b""))
 
 
@@ -183,6 +182,7 @@ async def test_the_room_glossary_is_sent_as_keyterms(monkeypatch):
     assert looked_up == [7]
     assert _query(urls[0])["keyterms"] == ["VoxBento", "Eventyay"]
     # The session ran as before: audio, then the closing commit.
+    assert any(message["audio_base_64"] for message in socket.sent[:-1])
     assert socket.sent[-1]["commit"] is True
 
 
@@ -259,8 +259,6 @@ async def test_a_handshake_refused_with_400_without_terms_is_an_ordinary_failure
 
 @pytest.mark.anyio
 async def test_the_room_lookup_uses_elevenlabs_limits_and_the_glossary_switch():
-    from portal.database import configure, dispose, init_db
-
     configure("sqlite+aiosqlite://")
     await init_db()
     try:

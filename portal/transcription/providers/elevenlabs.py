@@ -72,6 +72,7 @@ class ElevenLabsProvider(TranscriptionProvider):
         config: ProviderConfig,
         booth_state: BoothTranscriptionState | None = None,
     ) -> str:
+        # Sent without keyterms: run_stream replaces the chunked path, so captions never come through here.
         api_key = config.get_key()
         if not api_key:
             logger.error("ElevenLabs API key missing")
