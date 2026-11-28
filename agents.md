@@ -85,6 +85,7 @@ VoxBento is a production-grade **browser-first interpretation booth console** fo
 | `portal/program_ingest.py` | Floor authorization and reconciliation for Program Stream Ingest |
 | `portal/program_relay.py` | YouTube RTMPS destination management and relay health convergence |
 | `portal/youtube_account.py` | Google OAuth and YouTube Live API metadata (no media): Sign in with YouTube, broadcast linking, YouTube status |
+| `portal/youtube_captions.py` / `portal/youtube_caption_sync.py` | Posting final captions to a broadcast's CC track (engine; caption URLs memory-only) / the saved per-room choice, YouTube set-up and the restore/stop reconcile loop |
 | `portal/outage_log.py` | `OutageLog` — reconcile loops log a repeating failure once per outage, not per tick |
 | `portal/booth_recovery.py` | Saves each booth's Go Live switch and active interpreter to `booth_live_state` and restores them at startup (TD-03) |
 | `portal/attendance.py` | `AttendanceTracker` — interpreter visits and interpreting time from booth state, batched writes to `interpreter_attendance` (#1215) |
@@ -98,7 +99,7 @@ VoxBento is a production-grade **browser-first interpretation booth console** fo
 | `portal/static/js/admin.js` | Admin panel JS helpers |
 | `mediamtx.yml` | MediaMTX config — WHIP/WHEP paths, RTSP, Control API, `overridePublisher` |
 | `docker-compose.yml` | portal + mediamtx + jitsi-web/prosody/jicofo/jvb |
-| `alembic/versions/` | 44 migrations (001–044); run `uv run alembic upgrade head` |
+| `alembic/versions/` | 50 migrations (001–050); run `uv run alembic upgrade head` |
 
 ---
 

@@ -17,6 +17,7 @@ from fastapi.responses import JSONResponse, RedirectResponse, Response
 from pydantic import BaseModel, Field
 
 from portal import youtube_account as yt
+from portal import youtube_caption_sync as caption_sync
 from portal.auth import get_current_user, require_admin_csrf, require_event_owner, resolve_principal
 from portal.config import settings
 from portal.crypto import decrypt_val, encrypt_val
@@ -31,6 +32,7 @@ logger = logging.getLogger(__name__)
 
 EVENT_PATH = "/admin/events/{event_id}/youtube"
 BROADCAST_PATH = "/admin/events/{event_id}/rooms/{room_id}/youtube/broadcast"
+CAPTIONS_PATH = "/admin/events/{event_id}/rooms/{room_id}/youtube/captions"
 CALLBACK_PATH = "/youtube/oauth/callback"
 STATE_COOKIE = "vb_yt_oauth"
 STATE_COOKIE_PATH = "/youtube/oauth"
@@ -42,6 +44,11 @@ NO_STORE = {"Cache-Control": "no-store"}
 class BroadcastChoice(BaseModel):
     # A pasted watch/live/Studio link or a bare video id.
     broadcast: str = Field(min_length=1, max_length=300)
+
+
+class CaptionChoice(BaseModel):
+    # None or "" = off; "floor" = the spoken language; otherwise one of the room's translation languages.
+    language: str | None = Field(default=None, max_length=20)
 
 
 def _require_enabled() -> None:
@@ -216,6 +223,10 @@ async def _store_connection(event_id: int, room_id: int, owner: bool, sub: str, 
         logger.warning("youtube event_id=%s action=connect_failed reason=encryption_key", event_id)
         return _finish(_room_page(event_id, room_id, "error", owner))
     yt.forget_event(event_id, room_ids)
+    if channel_changed:
+        # Every room's broadcast (and caption choice) belonged to the old channel.
+        for changed_room_id in room_ids:
+            await caption_sync.stop(changed_room_id)
     await yt.revoke(old_token)
     logger.info("youtube event_id=%s action=connected", event_id)
     return _finish(_room_page(event_id, room_id, "connected", owner))
@@ -261,6 +272,7 @@ async def youtube_broadcast_set(request: Request, event_id: int, room_id: int, c
     _check_origin(request)
     _require_enabled()
     needs_sign_in = False
+    restart_captions = False
     # The event lock keeps a disconnect or reconnect from landing between the YouTube lookups and
     # the commit, so a room can never keep a broadcast from a connection that is gone.
     async with room_lock(room_id), yt.event_lock(event_id):
@@ -271,6 +283,7 @@ async def youtube_broadcast_set(request: Request, event_id: int, room_id: int, c
             connection = await yt.get_connection(session, event_id)
             if connection is None:
                 raise HTTPException(409, "Sign in with YouTube first.")
+            previous = (room.youtube_broadcast_id, room.youtube_stream_id)
             try:
                 broadcast = await yt.link_broadcast(session, room, connection, choice.broadcast)
             except ValueError as exc:
@@ -283,6 +296,13 @@ async def youtube_broadcast_set(request: Request, event_id: int, room_id: int, c
             except yt.YouTubeAPIError as exc:
                 raise HTTPException(502, yt.describe(exc)) from None
             else:
+                restart_captions = bool(room.youtube_captions_language) and previous != (
+                    room.youtube_broadcast_id,
+                    room.youtube_stream_id,
+                )
+                if restart_captions:
+                    # Captions must never keep going to the previous broadcast's stream.
+                    await caption_sync.stop(room_id)
                 body = {
                     "broadcast_id": broadcast.id,
                     "title": broadcast.title,
@@ -293,6 +313,8 @@ async def youtube_broadcast_set(request: Request, event_id: int, room_id: int, c
                 }
     if needs_sign_in:
         return _sign_in_again()
+    if restart_captions:
+        caption_sync.kick(room_id)
     return JSONResponse(body, headers=NO_STORE)
 
 
@@ -308,6 +330,9 @@ async def youtube_broadcast_clear(request: Request, event_id: int, room_id: int)
                 raise HTTPException(404, "Room not found")
             room.youtube_broadcast_id = None
             room.youtube_stream_id = None
+            # Captions belonged to the broadcast; linking another one starts with captions off.
+            room.youtube_captions_language = None
+        await caption_sync.stop(room_id)
     yt.forget_room(room_id)
     logger.info("youtube event_id=%s room_id=%s action=broadcast_unlinked", event_id, room_id)
     return JSONResponse({"broadcast_id": None}, headers=NO_STORE)
@@ -334,7 +359,56 @@ async def youtube_disconnect(request: Request, event_id: int) -> JSONResponse:
                 room_ids = await yt.unlink_event_rooms(session, event_id)
                 await session.delete(connection)
         yt.forget_event(event_id, room_ids)
+        for unlinked_room_id in room_ids:
+            await caption_sync.stop(unlinked_room_id)
         # Revoked before the lock is released, so no other event can obtain the grant in between.
         await yt.revoke(token)
     logger.info("youtube event_id=%s action=disconnected", event_id)
     return JSONResponse({"connected": False}, headers=NO_STORE)
+
+
+@router.put(CAPTIONS_PATH, dependencies=[Depends(require_event_owner), Depends(require_admin_csrf)])
+async def youtube_captions_set(request: Request, event_id: int, room_id: int, choice: CaptionChoice) -> JSONResponse:
+    """Choose which captions go to the linked broadcast's CC track, or turn them off.
+
+    Turning captions on sets the broadcast up for posted captions (before it goes live) and starts
+    delivery at once; the choice is saved only when that worked, so a refusal changes nothing.
+    """
+    _check_origin(request)
+    _require_enabled()
+    language = (choice.language or "").strip() or None
+    needs_sign_in = False
+    async with room_lock(room_id), yt.event_lock(event_id):
+        async with get_session() as session:
+            room = await get_room_by_id(session, room_id)
+            if not room or room.event_id != event_id:
+                raise HTTPException(404, "Room not found")
+            languages = await caption_sync.enabled_languages(session, room_id)
+            if language is None:
+                room.youtube_captions_language = None
+                await caption_sync.stop(room_id)
+                logger.info("youtube event_id=%s room_id=%s action=captions_off", event_id, room_id)
+            else:
+                connection = await yt.get_connection(session, event_id)
+                if connection is None:
+                    raise HTTPException(409, "Sign in with YouTube first.")
+                if not room.youtube_broadcast_id or not room.youtube_stream_id:
+                    raise HTTPException(409, "Choose this room's YouTube broadcast first.")
+                problem = caption_sync.language_problem(room, language, languages)
+                if problem:
+                    raise HTTPException(422, problem)
+                try:
+                    await caption_sync.start(room, connection, language)
+                except ValueError as exc:
+                    raise HTTPException(409, str(exc)) from None
+                except yt.YouTubeAuthError:
+                    # access_token recorded last_error on the connection; committing shows it on the room page.
+                    needs_sign_in = True
+                except yt.YouTubeAPIError as exc:
+                    raise HTTPException(502, yt.describe(exc)) from None
+                else:
+                    room.youtube_captions_language = language
+            body = caption_sync.status(room, languages)
+    if needs_sign_in:
+        return _sign_in_again()
+    return JSONResponse(body, headers=NO_STORE)

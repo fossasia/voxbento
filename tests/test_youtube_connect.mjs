@@ -21,13 +21,17 @@ async function page(routes) {
   const panels = [element({ dataset: { youtubeState: 'disconnected' } }), element({ dataset: { youtubeState: 'connected' } })];
   const elements = {
     'youtube-connect': element({
-      dataset: { statusUrl: '/yt', broadcastsUrl: '/yt/broadcasts', broadcastUrl: '/room/yt', roomStatusUrl: '/room/status' },
+      dataset: {
+        statusUrl: '/yt', broadcastsUrl: '/yt/broadcasts', broadcastUrl: '/room/yt', roomStatusUrl: '/room/status',
+        captionsUrl: '/room/yt/captions',
+      },
       querySelectorAll: (selector) => (selector === '[data-youtube-state]' ? panels : []),
     }),
     'youtube-broadcast-select': element({ value: '' }),
   };
   for (const id of ['youtube-message', 'youtube-channel', 'youtube-broadcast-form', 'youtube-broadcast-link',
-    'youtube-status-line', 'youtube-unlink', 'youtube-signin-again', 'youtube-disconnect']) {
+    'youtube-status-line', 'youtube-unlink', 'youtube-signin-again', 'youtube-disconnect', 'youtube-captions',
+    'youtube-captions-select', 'youtube-captions-status']) {
     elements[id] = element();
   }
   const calls = [];
@@ -50,7 +54,7 @@ async function page(routes) {
     fetch: async (url, options = {}) => {
       const key = `${options.method || 'GET'} ${url}`;
       calls.push({ key, body: options.body ? JSON.parse(options.body) : undefined, headers: options.headers || {} });
-      const [status, body] = routes[key] ? routes[key]() : [404, { detail: 'not found' }];
+      const [status, body] = routes[key] ? await routes[key]() : [404, { detail: 'not found' }];
       return { ok: status < 400, status, json: async () => body };
     },
   });
@@ -159,6 +163,117 @@ const whipStatus = () => [200, { enabled: true, mode: 'whip', destination: { con
   await timers[0]();
   await flush();
   assert.equal(calls.filter((call) => !call.key.startsWith('GET ')).length, 0);
+}
+
+// Captions on YouTube: shown for a linked broadcast, choices from the server, changes carry the CSRF token.
+{
+  const choices = [{ value: 'floor', label: 'Spoken language (en)' }, { value: 'fr', label: 'French' }];
+  let captions = { language: null, state: 'off', reason: '', last_ok_at: null, choices };
+  const status = () => [200, {
+    enabled: true, mode: 'rtmps', destination: { configured: false },
+    youtube: { broadcast_id: 'LiveVideo01', title: 'Talk', life_cycle_status: 'ready', captions },
+  }];
+  let answer = () => [200, { ...captions, language: 'fr', state: 'waiting' }];
+  const { elements, calls } = await page({
+    'GET /yt': connected, 'GET /yt/broadcasts': broadcasts, 'GET /room/status': status,
+    'PUT /room/yt/captions': () => answer(),
+  });
+  const box = elements['youtube-captions'];
+  const select = elements['youtube-captions-select'];
+  assert.equal(box.hidden, false);
+  assert.deepEqual(select.children.map((option) => option.value), ['', 'floor', 'fr']);
+  assert.equal(select.value, '');
+  assert.match(elements['youtube-captions-status'].textContent, /^Off/);
+
+  select.value = 'fr';
+  select.handlers.change();
+  await flush();
+  const put = calls.find((call) => call.key === 'PUT /room/yt/captions');
+  assert.deepEqual(put.body, { language: 'fr' });
+  assert.equal(put.headers['X-CSRF-Token'], 'csrf-123');
+  assert.match(elements['youtube-captions-status'].textContent, /Waiting for speech/);
+
+  // A refusal is shown and the select goes back to the language really in effect.
+  answer = () => [409, { detail: 'Captions must be set up before the broadcast starts.' }];
+  select.value = 'floor';
+  select.handlers.change();
+  await flush();
+  assert.equal(select.value, 'fr');
+  assert.equal(elements['youtube-message'].textContent, 'Captions must be set up before the broadcast starts.');
+  assert.equal(elements['youtube-message'].className, 'alert alert-error');
+
+  // Off sends null.
+  answer = () => [200, { ...captions, language: null, state: 'off' }];
+  select.value = '';
+  select.handlers.change();
+  await flush();
+  assert.equal(calls.filter((call) => call.key === 'PUT /room/yt/captions').at(-1).body.language, null);
+}
+
+// A slow caption change locks the selector, and a status read that started before it cannot undo it.
+{
+  const choices = [{ value: 'floor', label: 'Spoken language (en)' }, { value: 'fr', label: 'French' }];
+  const off = { language: null, state: 'off', reason: '', last_ok_at: null, choices };
+  const statusWith = (captions) => [200, {
+    enabled: true, mode: 'rtmps', destination: { configured: false },
+    youtube: { broadcast_id: 'LiveVideo01', title: 'Talk', life_cycle_status: 'ready', captions },
+  }];
+  let statusAnswer = () => statusWith(off);
+  let putAnswer = () => [200, { ...off, language: 'fr', state: 'waiting' }];
+  const { elements, calls, timers } = await page({
+    'GET /yt': connected, 'GET /yt/broadcasts': broadcasts, 'GET /room/status': () => statusAnswer(),
+    'PUT /room/yt/captions': () => putAnswer(),
+  });
+  const select = elements['youtube-captions-select'];
+
+  // The 60-second poll starts and is still waiting for the server, which saw captions as off.
+  let finishStatus;
+  statusAnswer = () => new Promise((resolve) => { finishStatus = () => resolve(statusWith(off)); });
+  timers[0]();
+  await flush();
+
+  let finishPut;
+  putAnswer = () => new Promise((resolve) => { finishPut = () => resolve([200, { ...off, language: 'fr', state: 'waiting' }]); });
+  select.value = 'fr';
+  select.handlers.change();
+  await flush();
+  assert.equal(select.disabled, true);
+  finishPut();
+  await flush();
+  assert.equal(select.disabled, false);
+  assert.equal(select.value, 'fr');
+
+  finishStatus();
+  await flush();
+  assert.equal(select.value, 'fr');
+  assert.match(elements['youtube-captions-status'].textContent, /Waiting for speech/);
+
+  // A poll that fires during a change is skipped.
+  putAnswer = () => new Promise((resolve) => { finishPut = () => resolve([200, { ...off, language: 'floor', state: 'waiting' }]); });
+  select.value = 'floor';
+  select.handlers.change();
+  await flush();
+  const reads = calls.filter((call) => call.key === 'GET /room/status').length;
+  timers[0]();
+  await flush();
+  assert.equal(calls.filter((call) => call.key === 'GET /room/status').length, reads);
+  finishPut();
+  await flush();
+  assert.equal(select.value, 'floor');
+}
+
+// A failing target explains itself; an unlinked room hides the control.
+{
+  const failing = { language: 'floor', state: 'failing', reason: 'YouTube rejected the caption (HTTP 403).', last_ok_at: null, choices: [] };
+  const { elements } = await page({
+    'GET /yt': connected, 'GET /yt/broadcasts': broadcasts,
+    'GET /room/status': () => [200, { enabled: false, mode: 'whip', destination: {}, youtube: { broadcast_id: 'X', captions: failing } }],
+  });
+  assert.equal(elements['youtube-captions-status'].textContent, 'Not posting: YouTube rejected the caption (HTTP 403).');
+}
+{
+  const { elements } = await page({ 'GET /yt': connected, 'GET /yt/broadcasts': broadcasts, 'GET /room/status': whipStatus });
+  assert.equal(elements['youtube-captions'].hidden, true);
 }
 
 console.log('youtube-connect.js: ok');

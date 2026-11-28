@@ -9,6 +9,7 @@ import asyncio
 import base64
 import gc
 import hashlib
+import json
 import logging
 import time
 from urllib.parse import parse_qs, urlsplit
@@ -80,6 +81,8 @@ async def yt_env(monkeypatch):
     google = {
         "calls": [],
         "revoked": [],
+        # Bodies of liveBroadcasts.update calls (plan 006 caption set-up).
+        "puts": [],
         "omit_refresh": False,
         "refresh_error": None,
         "channel_id": "UCchannel0001",
@@ -141,6 +144,14 @@ async def yt_env(monkeypatch):
             return httpx.Response(
                 200, json={"items": [{"id": google["channel_id"], "snippet": {"title": "Test Channel"}}]}
             )
+        if resource == "liveBroadcasts" and request.method == "PUT":
+            payload = json.loads(request.content)
+            google["puts"].append({"params": dict(params), "body": payload})
+            if google.get("put_error"):
+                return httpx.Response(403, json={"error": {"errors": [{"reason": google["put_error"]}]}})
+            item = by_id()[payload["id"]]
+            item["contentDetails"] = dict(payload["contentDetails"], enableClosedCaptions=True)
+            return httpx.Response(200, json={"id": payload["id"], **payload})
         if resource == "liveBroadcasts":
             if google.get("broadcast_error"):
                 error = {"errors": [{"reason": google["broadcast_error"]}], "message": f"secret {STREAM_KEY}"}
