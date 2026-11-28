@@ -385,7 +385,7 @@ async def _authorize_tts(
         token_lang = payload.get("language_code", "")
         token_room = payload.get("room_id")
         if token_event and token_lang:
-            if payload.get("token_id") is not None and await is_invite_token_revoked(str(payload["token_id"]), ttl=0):
+            if payload.get("token_id") is not None and await is_invite_token_revoked(str(payload["token_id"]), ttl=0, raise_on_error=True):
                 raise WSAuthError("Invitation revoked.")
             if (
                 token_event != event_slug
@@ -438,7 +438,7 @@ async def _authorize_tts(
         token_lang = payload.get("language_code", "")
         token_room = payload.get("room_id")
         if token_event and token_lang:
-            if payload.get("token_id") is not None and await is_invite_token_revoked(str(payload["token_id"]), ttl=0):
+            if payload.get("token_id") is not None and await is_invite_token_revoked(str(payload["token_id"]), ttl=0, raise_on_error=True):
                 raise WSAuthError("Invitation revoked.")
             if (
                 token_event != event_slug
@@ -488,6 +488,11 @@ async def ws_tts(websocket: WebSocket, room_id: int, language_code: str, booth_i
         # A throttled join code clears on its own, so it gets 1008 (retry) as on /ws/captions.
         await websocket.accept()
         await websocket.close(code=1008 if isinstance(exc.__cause__, JoinCodeThrottled) else 4003)
+        return
+    except SQLAlchemyError:
+        _log.exception("TTS authorization database lookup failed")
+        await websocket.accept()
+        await websocket.close(code=1011)
         return
 
     async def authorize() -> None:

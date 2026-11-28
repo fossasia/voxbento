@@ -37,7 +37,9 @@ def invalidate_token_revocation_cache(token_str: str | None = None) -> None:
         _REVOKED_TOKEN_CACHE.pop(str(token_str), None)
 
 
-async def is_invite_token_revoked(token_str: str, ttl: float = 5.0) -> bool:
+async def is_invite_token_revoked(
+    token_str: str, ttl: float = 5.0, *, raise_on_error: bool = False
+) -> bool:
     """Check if an invite token is revoked in the database with a short TTL cache."""
     import asyncio
     import time
@@ -65,6 +67,8 @@ async def is_invite_token_revoked(token_str: str, ttl: float = 5.0) -> bool:
             logger.exception(
                 "Error checking token revocation for public_id %s after retry; failing closed", key
             )
+            if raise_on_error:
+                raise
             # Fail closed on database errors without poisoning the cache
             return True
     return True

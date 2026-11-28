@@ -738,9 +738,10 @@ def test_unrelated_active_account_does_not_shadow_tts_invite(recovery, revoked):
     client.cookies.set("user_token", old_token(target))
     client.cookies.set("session_token", participant)
     if revoked:
-        with pytest.raises(WebSocketDisconnect):
+        with pytest.raises(WebSocketDisconnect) as exc:
             with client.websocket_connect(tts_path(room)) as ws:
                 _expect_refusal(ws)
+        assert exc.value.code == 4003
     else:
         with client.websocket_connect(tts_path(room)) as socket:
             broadcast(client, room)
@@ -873,6 +874,35 @@ def test_caption_session_lookup_failure_allows_client_retry(recovery, monkeypatc
     with client.websocket_connect(f"/ws/captions/recovery-test-{room.id}-en?token={token}") as socket:
         with pytest.raises(WebSocketDisconnect) as exc:
             socket.receive_json()
+        assert exc.value.code == 1011
+
+
+def test_tts_session_lookup_failure_allows_client_retry(recovery, monkeypatch):
+    """A database error during TTS authorization closes with 1011 to allow reconnect."""
+    from sqlalchemy.exc import OperationalError
+
+    import portal.database
+    from portal.auth import invalidate_token_revocation_cache
+
+    client, (_, _, event, room, _) = recovery
+
+    invalidate_token_revocation_cache()
+
+    async def failing_lookup(session, key):
+        raise OperationalError("SELECT invite_tokens", {}, RuntimeError("database unavailable"))
+
+    monkeypatch.setattr(portal.database, "get_invite_token_by_public_id", failing_lookup)
+    token = create_participant_token(
+        booth_id=f"recovery-test-{room.id}-en",
+        role="interpreter",
+        event_slug="recovery-test",
+        room_id=room.id,
+        language_code="en",
+        token_id="tok-transient-fail",
+    )
+    with client.websocket_connect(tts_path(room) + "?token=" + token) as socket:
+        with pytest.raises(WebSocketDisconnect) as exc:
+            socket.receive_text()
         assert exc.value.code == 1011
 
 

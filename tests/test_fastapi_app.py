@@ -14,6 +14,7 @@ os.environ["BOOTH_ACCESS_TOKEN"] = ""
 
 import pytest
 from fastapi.testclient import TestClient
+from fastapi.websockets import WebSocketDisconnect
 
 from fastapi_app import app
 from portal.auth import create_participant_token, create_user_token
@@ -3038,10 +3039,27 @@ def test_ws_captions_releases_reservation_on_cancellation(monkeypatch):
 
 def test_ws_tts_rejects_anonymous():
     """Anonymous connection to TTS websocket without auth is rejected."""
-    from fastapi.websockets import WebSocketDisconnect
+    with client.websocket_connect("/ws/tts/1/en/testcon-1-en") as ws:
+        with pytest.raises(WebSocketDisconnect) as exc_info:
+            ws.receive_text()
+    assert exc_info.value.code == 4003
 
     with pytest.raises(WebSocketDisconnect) as exc_info:
         with client.websocket_connect("/ws/tts/1/en/testcon-1-en") as ws:
+            _expect_refusal(ws)
+
+
+def test_ws_tts_auth_failure_closes_with_4003_not_1006():
+    """Auth failure must accept the handshake before closing with code 4003.
+
+    Verifies that ws_tts calls accept() before close() so that the connection
+    is accepted and closed with application code 4003 rather than failing at
+    the HTTP handshake level. Entering the websocket_connect context before
+    asserting on _expect_refusal(ws) ensures that a pre-accept handshake
+    rejection fails the test on context entry.
+    """
+    with client.websocket_connect("/ws/tts/1/en/testcon-1-en") as ws:
+        with pytest.raises(WebSocketDisconnect) as exc_info:
             _expect_refusal(ws)
     assert exc_info.value.code == 4003
 
