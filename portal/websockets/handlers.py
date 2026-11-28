@@ -23,7 +23,7 @@ from portal.auth import (
     user_session_is_valid,
 )
 from portal.database import get_booth_language_name, get_session, get_user_by_id
-from portal.globals import booths
+from portal.join_code_limit import JoinCodeThrottled
 from portal.websockets.manager import (
     REASON_ACCOUNT_DEACTIVATED,
     REASON_AUTH_REVOKED,
@@ -41,9 +41,9 @@ from portal.websockets.manager import (
     _handle_set_active,
     _handle_set_broadcast_unlocked,
     _handle_update_state,
-    broadcast_booth_state,
     listener_manager,
     manager,
+    release_participant,
     tts_manager,
     utc_now,
 )
@@ -141,6 +141,8 @@ async def ws_booth(websocket: WebSocket, booth_id: str) -> None:
     if ws_granted_role is not None:
         manager.add(websocket, session)
     last_role_check = _monotonic()
+    # Set when the server ends the session over access, so the participant does not wait to reconnect.
+    access_ended = False
 
     try:
         while True:
@@ -155,6 +157,7 @@ async def ws_booth(websocket: WebSocket, booth_id: str) -> None:
                 except (WebSocketDisconnect, RuntimeError, OSError):
                     # close_user_sessions() may already have closed this socket.
                     _log.debug("Revoked booth socket was already closing", exc_info=True)
+                access_ended = True
                 break
 
             now = _monotonic()
@@ -170,6 +173,7 @@ async def ws_booth(websocket: WebSocket, booth_id: str) -> None:
                     _log.exception("Failed to recheck WebSocket booth role; keeping connection open")
                 else:
                     if current_role != session.granted_role:
+                        access_ended = True
                         await websocket.close(code=4003)
                         break
             try:
@@ -213,14 +217,7 @@ async def ws_booth(websocket: WebSocket, booth_id: str) -> None:
         pass
     finally:
         manager.remove(websocket)
-        if session.participant_id:
-            state = await booths.leave_participant(
-                session.booth_id,
-                session.participant_id,
-                session.language,
-                session.channel_id,
-            )
-            await broadcast_booth_state(session.booth_id, state)
+        await release_participant(session, immediate=access_ended or session.revoked)
 
 
 @router.websocket("/ws/captions/{booth_id}")
@@ -484,8 +481,13 @@ async def ws_tts(websocket: WebSocket, room_id: int, language_code: str, booth_i
     """TTS WebSocket endpoint with pre-accept authorization."""
     try:
         await _authorize_tts(websocket, room_id, language_code, booth_id)
-    except WSAuthError:
-        await websocket.close(code=4003)
+    except WSAuthError as exc:
+        # Accept before closing: a close before accept() becomes an HTTP 403 and
+        # browsers only report 1006, so the listener could not tell a refusal
+        # (stop) from a dropped connection (reconnect). Nothing is registered or sent.
+        # A throttled join code clears on its own, so it gets 1008 (retry) as on /ws/captions.
+        await websocket.accept()
+        await websocket.close(code=1008 if isinstance(exc.__cause__, JoinCodeThrottled) else 4003)
         return
 
     async def authorize() -> None:

@@ -251,7 +251,7 @@ async def authorize_publish(data: MediaAuth) -> None:
     if final_component != "floor":
         # Interpreter booths publish from the browser only, with a single-use
         # ticket issued to the active interpreter over the booth WebSocket.
-        if data.protocol != "webrtc" or not await authorize_booth_publish(data.path, data.token):
+        if data.protocol != "webrtc" or not await authorize_booth_publish(data.path, data.token, data.id):
             deny(data.ip)
         return
     match = FLOOR_PATH.fullmatch(data.path)
@@ -483,22 +483,23 @@ async def ensure_floor_path(path: str) -> None:
     response.raise_for_status()
 
 
-async def open_sender_session(room: Room, event: Event, offset_ms: int, ttl_secs: int) -> str:
+async def open_sender_session(
+    room: Room, event: Event, offset_ms: int, ttl_secs: int, *, switch_from: str | None = None
+) -> str:
     """Claim a free floor for the browser sender and mint a short-lived publish secret.
 
     Caller holds the room lock and DB transaction. Starting is rejected with 409 when
     an external encoder or another sender owns the floor; the Jitsi floor bot is an
-    explicit takeover on the owner's click. Never touches the encoder credential.
+    explicit takeover on the owner's click. A transport switch retires the previous encoder credential.
     """
     path = make_mediamtx_path(event.slug, room.id, "floor")
-    if room.floor_source == "program_ingest" and room.program_ingest_mode == program_relay.RELAY_MODE:
-        raise HTTPException(
-            409, "YouTube relay mode owns the floor; switch the room to independent outputs (WHIP) first."
-        )
-    if room.floor_source == "program_ingest" and room.program_ingest_mode == program_relay.RTMPS_MODE:
-        raise HTTPException(
-            409, "An RTMPS encoder owns the floor; switch the room to independent outputs (WHIP) first."
-        )
+    switching_transport = (
+        room.floor_source == "program_ingest" and room.program_ingest_mode in program_relay.RTMPS_MODES
+    )
+    if switch_from and (not switching_transport or switch_from != room.program_ingest_mode):
+        raise HTTPException(409, "The room audio source changed. Reload the sender before starting.")
+    if switching_transport and not switch_from:
+        raise HTTPException(409, "Reload the sender to confirm switching from RTMPS or YouTube relay.")
     if room.floor_source == "program_ingest":
         # Floor already owned by program ingest; never displace a connected or
         # still-negotiating publisher (external encoder or another sender).
@@ -526,15 +527,22 @@ async def open_sender_session(room: Room, event: Event, offset_ms: int, ttl_secs
         except httpx.RequestError:
             logger.warning("program_ingest floor_bot_unreachable room_id=%s", room.id)
         current_path = await media_path(path)
+    if switching_transport and room.program_ingest_mode == program_relay.RELAY_MODE:
+        # Require the relay stop to succeed before issuing any browser credential.
+        await program_relay.stop_relay(room.id)
     await ensure_floor_path(path)
     # Clear a lingering bot source on takeover, or a stale program-ingest reservation.
     await kick(path, current_path.source if current_path else None)
     if room.program_session_id:
-        await kick(path, MediaSource(type="webRTCSession", id=room.program_session_id))
+        await kick(path, reserved_source(room))
         room.program_session_id = None
     await stop_transcription_worker(make_booth_id(event.slug, room.id, "floor"))
     room.program_sync_offset_ms = offset_ms
     room.floor_source = "program_ingest"
+    if switching_transport:
+        # A transport-bound RTMPS key must never become a valid WHIP credential.
+        room.program_key_hash = None
+        room.program_key_expires_at = None
     room.program_ingest_mode = program_relay.WHIP_MODE
     secret = secrets.token_urlsafe(32)
     room.program_session_secret_hash = await asyncio.to_thread(digest_program_secret, secret)
@@ -735,31 +743,57 @@ async def reconcile_processing(
         current.processing_state, current.processing_reason = current.state, current.reason
 
 
-async def stop_deleted_event_workers() -> None:
-    """Stop the floor worker of rooms whose event was deleted.
+async def deleted_floor_workers() -> list[tuple[int, str, bool]]:
+    """``(room id, booth id, reused)`` of each running floor worker whose room was deleted, or whose event was.
 
-    A delete can commit after a reconcile pass already read the room and started its worker, and
-    ``health`` can lose the room before that (``close_sender_session``), so find the workers among
-    the running ones instead: once the event is deleted the reconciler no longer sees the room.
+    The admin pages delete the rows outright, so a room with no row left counts as deleted too. SQLite can
+    give a deleted room's id to a new room, so the whole booth id has to match, two workers can share a
+    room id, and in the same event a new room that runs no floor captions does not own the old worker.
+    ``reused`` says the room id now belongs to that new room.
     """
-    booth_ids: dict[int, str] = {}
+    workers = []
     for booth_id in list(active_workers):
         try:
             _, room_id, language_code = parse_booth_id(booth_id)
         except ValueError:
             continue
         if language_code == "floor":
-            booth_ids[room_id] = booth_id
-    if not booth_ids:
-        return
+            workers.append((room_id, booth_id))
+    if not workers:
+        return []
     async with get_session() as session:
-        deleted_room_ids = (
-            await session.scalars(
-                select(Room.id).join(Event).where(Room.id.in_(booth_ids), Event.deleted_at.is_not(None))
+        rows = (
+            await session.execute(
+                select(Room.id, Event.slug, Room.floor_source, Room.meeting_agent_enabled)
+                .join(Event)
+                .where(Room.id.in_({room_id for room_id, _ in workers}), Event.deleted_at.is_(None))
             )
         ).all()
-    for room_id in deleted_room_ids:
-        await stop_room_worker(health.get(room_id) or IngestHealth(), booth_ids[room_id], room_id)
+    # Only the meeting agent and program ingest reconcilers start floor workers, and only for these rooms.
+    live = {
+        room_id: slug
+        for room_id, slug, floor_source, agent_enabled in rows
+        if floor_source == "program_ingest" or (floor_source == "jitsi_bot" and agent_enabled)
+    }
+    reused = {room_id for room_id, *_ in rows}
+    return sorted(
+        (room_id, booth_id, room_id in reused)
+        for room_id, booth_id in workers
+        if room_id not in live or booth_id != make_booth_id(live[room_id], room_id, "floor")
+    )
+
+
+async def stop_deleted_event_workers() -> None:
+    """Stop the floor worker of rooms that were deleted, or whose event was.
+
+    A delete can commit after a reconcile pass already read the room and started its worker, and
+    ``health`` can lose the room before that (``close_sender_session``), so find the workers among
+    the running ones instead: once the room or its event is deleted the reconciler no longer sees it.
+    """
+    for room_id, booth_id, reused in await deleted_floor_workers():
+        # A reused room id's health record is the new room's, so leave its worker settings alone.
+        current = IngestHealth() if reused else health.get(room_id) or IngestHealth()
+        await stop_room_worker(current, booth_id, room_id)
 
 
 async def release_deleted_event_sessions() -> None:
@@ -817,6 +851,15 @@ async def stop_deleted_event_relays() -> None:
             await program_relay.stop_relay(room_id)
         except Exception:  # noqa: BLE001
             logger.warning("program_ingest deleted_event_relay_stop_failed room_id=%s", room_id)
+
+
+async def start_current_relay(room_id: int, source: str, url: str) -> dict | None:
+    # The room can switch to WHIP between collecting wanted relays and starting them.
+    async with room_lock(room_id), get_session() as session:
+        room = await session.get(Room, room_id)
+        if not room or room.floor_source != "program_ingest" or room.program_ingest_mode != program_relay.RELAY_MODE:
+            return None
+        return await program_relay.start_relay(room_id, source, url)
 
 
 async def reconcile_once() -> None:
@@ -877,7 +920,7 @@ async def reconcile_once() -> None:
             logger.warning("program_ingest reconcile_failed room_id=%s", room_id)
     if settings.program_relay_enabled:
         # Also runs with no relay rooms so orphaned relays from a restart or switch are stopped.
-        await program_relay.sync(wanted, relay_rooms)
+        await program_relay.sync(wanted, relay_rooms, start_current_relay)
     for room_id in set(health) - set(ids):
         health.pop(room_id, None)
 
