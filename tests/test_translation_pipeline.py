@@ -10,6 +10,7 @@ from sqlalchemy import select
 from portal.database import get_session
 from portal.models import (
     AIVocabularyEntry,
+    BoothTranslationLanguage,
     DBBooth,
     Event,
     Room,
@@ -574,16 +575,90 @@ async def test_handle_translation_floor_disabled_aborts(db_data, mock_broadcast)
 # ── Unit coverage for the extracted handle_translation helpers ──
 
 
+def test_normalize_source_language_code():
+    """Language normalization strips whitespace and filters placeholders to None."""
+    from portal.translations.worker import normalize_source_language_code
+
+    # Absent or empty codes
+    assert normalize_source_language_code(None) is None
+    assert normalize_source_language_code("") is None
+    assert normalize_source_language_code("   ") is None
+
+    # Automatic / placeholder codes (case-insensitive and trimmed)
+    assert normalize_source_language_code("auto") is None
+    assert normalize_source_language_code("Auto") is None
+    assert normalize_source_language_code("AUTO") is None
+    assert normalize_source_language_code("  auto  ") is None
+    assert normalize_source_language_code("floor") is None
+    assert normalize_source_language_code("Floor") is None
+    assert normalize_source_language_code("FLOOR") is None
+    assert normalize_source_language_code("  floor  ") is None
+    assert normalize_source_language_code("unknown") is None
+    assert normalize_source_language_code("Unknown") is None
+    assert normalize_source_language_code("UNKNOWN") is None
+    assert normalize_source_language_code("  unknown  ") is None
+    assert normalize_source_language_code("und") is None
+    assert normalize_source_language_code("UND") is None
+
+    # Legitimate language codes are preserved
+    assert normalize_source_language_code("en") == "en"
+    assert normalize_source_language_code("  hi  ") == "hi"
+    assert normalize_source_language_code("de") == "de"
+    assert normalize_source_language_code("fr") == "fr"
+    assert normalize_source_language_code("es") == "es"
+    assert normalize_source_language_code("en-US") == "en-US"
+    assert normalize_source_language_code("hi-IN") == "hi-IN"
+
+
+def test_resolve_effective_source_language():
+    """Effective source language prefers valid configured code, falling back to detected language."""
+    from portal.translations.worker import resolve_effective_source_language
+
+    # Valid configured code takes precedence
+    assert resolve_effective_source_language("en", "hi") == "en"
+    assert resolve_effective_source_language("de", None) == "de"
+    assert resolve_effective_source_language("hi", "en") == "hi"
+
+    # Absent or placeholder configured code falls back to detected language
+    assert resolve_effective_source_language(None, "hi") == "hi"
+    assert resolve_effective_source_language("", "hi") == "hi"
+    assert resolve_effective_source_language("   ", "hi") == "hi"
+    assert resolve_effective_source_language("auto", "hi") == "hi"
+    assert resolve_effective_source_language("Auto", "hi") == "hi"
+    assert resolve_effective_source_language("floor", "hi") == "hi"
+    assert resolve_effective_source_language("FLOOR", "hi") == "hi"
+    assert resolve_effective_source_language("unknown", "hi") == "hi"
+    assert resolve_effective_source_language("Unknown", "hi") == "hi"
+    assert resolve_effective_source_language("und", "hi") == "hi"
+
+    # Both configured and detected are absent or placeholders -> None
+    assert resolve_effective_source_language(None, None) is None
+    assert resolve_effective_source_language("auto", None) is None
+    assert resolve_effective_source_language("floor", None) is None
+    assert resolve_effective_source_language("unknown", None) is None
+    assert resolve_effective_source_language("auto", "unknown") is None
+    assert resolve_effective_source_language("floor", "auto") is None
+    assert resolve_effective_source_language("", "") is None
+
+
 def test_resolve_source_lang_name():
-    """Source language name resolution: known code -> name, unknown -> code, None -> English."""
+    """Source language name resolution: known code -> name, unknown -> code, None/placeholders -> English."""
     from portal.translations.worker import _resolve_source_lang_name
 
     assert _resolve_source_lang_name("en") == "English"
     assert _resolve_source_lang_name("fr") == "French"
+    assert _resolve_source_lang_name("hi") == "Hindi"
+    assert _resolve_source_lang_name("de") == "German"
     # Unknown alpha-2 code falls back to the code itself.
     assert _resolve_source_lang_name("zz") == "zz"
-    # No source language falls back to English.
+    # No source language or placeholder codes fall back to English.
     assert _resolve_source_lang_name(None) == "English"
+    assert _resolve_source_lang_name("") == "English"
+    assert _resolve_source_lang_name("   ") == "English"
+    assert _resolve_source_lang_name("auto") == "English"
+    assert _resolve_source_lang_name("floor") == "English"
+    assert _resolve_source_lang_name("unknown") == "English"
+    assert _resolve_source_lang_name("und") == "English"
 
 
 def test_enabled_translation_langs_filters_disabled():
@@ -936,3 +1011,266 @@ async def test_download_status_failure_preserves_inference_timeout(db_data, mock
     assert all(call.args[7] == "Bonjour" and call.args[8] is None for call in bundle.call_args_list)
     assert "PermissionError" in caplog.text
     assert "private model path" not in caplog.text
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize(
+    ("room_language", "expected"),
+    [
+        (None, "Hindi"),
+        ("", "Hindi"),
+        ("   ", "Hindi"),
+        ("auto", "Hindi"),
+        ("Auto", "Hindi"),
+        ("floor", "Hindi"),
+        ("FLOOR", "Hindi"),
+        ("unknown", "Hindi"),
+        ("Unknown", "Hindi"),
+        ("und", "Hindi"),
+        ("en", "English"),
+        ("de", "German"),
+    ],
+)
+async def test_translation_source_prefers_the_room_then_the_detected_language(
+    db_data, mock_broadcast, room_language, expected
+):
+    """An auto-detecting room labels the source with what was heard; a named language still wins."""
+    async with get_session() as session:
+        room = await session.get(Room, db_data["room"].id)
+        room.floor_language_code = room_language
+        await session.commit()
+
+    worker = TranslationWorker(mock_broadcast)
+    sources = []
+
+    async def fake_call_llm(provider, model, api_key, text, lang_name, source_lang_name, **kwargs):
+        sources.append(source_lang_name)
+        return "translated"
+
+    async def fake_synthesize(room_id, text, lang_code):
+        return b"fake_audio"
+
+    with (
+        patch.object(worker, "_call_llm", new=fake_call_llm),
+        patch("portal.tts.worker.synthesize", new=fake_synthesize),
+        patch("portal.websockets.manager.tts_manager.has_listeners", return_value=True),
+        patch("portal.websockets.manager.TTSConnectionManager.broadcast_bundle", new_callable=AsyncMock),
+    ):
+        await worker.handle_translation(
+            room_id=db_data["room"].id,
+            segment_id=db_data["segment"].id,
+            text="translate me",
+            booth_id_str="floor",
+            uuid_segment_id="uuid",
+            seq=1,
+            detected_language="hi",
+        )
+
+    assert sources
+    assert set(sources) == {expected}
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize(
+    ("booth_language", "expected"),
+    [
+        (None, "Hindi"),
+        ("", "Hindi"),
+        ("   ", "Hindi"),
+        ("auto", "Hindi"),
+        ("Auto", "Hindi"),
+        ("floor", "Hindi"),
+        ("FLOOR", "Hindi"),
+        ("unknown", "Hindi"),
+        ("Unknown", "Hindi"),
+        ("und", "Hindi"),
+        ("en", "English"),
+        ("de", "German"),
+    ],
+)
+async def test_translation_source_prefers_the_booth_then_the_detected_language(
+    db_data, mock_broadcast, booth_language, expected
+):
+    """An auto-detecting booth labels the source with what was heard; a configured booth language wins."""
+    from portal.translations.worker import _resolve_source_lang_name, resolve_effective_source_language
+
+    async with get_session() as session:
+        booth = DBBooth(
+            event_id=db_data["event"].id,
+            room_id=db_data["room"].id,
+            language_code="en",
+            language_name="English",
+            translation_enabled=True,
+            translation_provider="local",
+            translation_model="test",
+        )
+        session.add(booth)
+        await session.flush()
+
+        session.add(
+            BoothTranslationLanguage(
+                booth_id=booth.id, language_code="fr", language_name="French", enabled=True
+            )
+        )
+
+        segment = TranscriptSegment(
+            room_id=db_data["room"].id,
+            booth_id=booth.id,
+            text="translate me",
+            language_code="en",
+        )
+        session.add(segment)
+        await session.flush()
+        booth_id = booth.id
+        segment_id = segment.id
+
+    worker = TranslationWorker(mock_broadcast)
+    sources = []
+
+    async def fake_call_llm(provider, model, api_key, text, lang_name, source_lang_name, **kwargs):
+        sources.append(source_lang_name)
+        return "translated"
+
+    async def fake_synthesize(room_id, text, lang_code):
+        return b"fake_audio"
+
+    orig_resolve_booth = worker._resolve_booth_context
+
+    async def fake_resolve_booth(session, room_id, segment, detected_language=None):
+        ctx = await orig_resolve_booth(session, room_id, segment, detected_language=detected_language)
+        if ctx:
+            ctx.source_lang_code = resolve_effective_source_language(booth_language, detected_language)
+            ctx.source_lang_name = _resolve_source_lang_name(ctx.source_lang_code)
+        return ctx
+
+    with (
+        patch.object(worker, "_call_llm", new=fake_call_llm),
+        patch.object(worker, "_resolve_booth_context", new=fake_resolve_booth),
+        patch("portal.tts.worker.synthesize", new=fake_synthesize),
+        patch("portal.websockets.manager.tts_manager.has_listeners", return_value=True),
+        patch("portal.websockets.manager.TTSConnectionManager.broadcast_bundle", new_callable=AsyncMock),
+    ):
+        await worker.handle_translation(
+            room_id=db_data["room"].id,
+            segment_id=segment_id,
+            text="translate me",
+            booth_id_str=f"booth-{booth_id}",
+            uuid_segment_id="uuid",
+            seq=1,
+            detected_language="hi",
+        )
+
+    assert sources
+    assert set(sources) == {expected}
+
+
+@pytest.mark.anyio
+async def test_resolve_context_precedence_and_fallback(db_data, mock_broadcast):
+    """Directly verifies configured floor/booth language precedence over detected language and fallback."""
+    from unittest.mock import MagicMock
+
+    worker = TranslationWorker(mock_broadcast)
+
+    # 1. Floor with valid configured language takes precedence
+    async with get_session() as session:
+        room = await session.get(Room, db_data["room"].id)
+        room.floor_language_code = "en"
+        await session.flush()
+        floor_ctx_configured = await worker._resolve_floor_context(
+            session, room.id, "floor", detected_language="hi"
+        )
+        assert floor_ctx_configured is not None
+        assert floor_ctx_configured.source_lang_code == "en"
+
+    # 2. Floor with absent or placeholder language falls back to detected language
+    for placeholder in (None, "", "   ", "auto", "Auto", "floor", "FLOOR", "unknown", "Unknown", "und"):
+        async with get_session() as session:
+            room = await session.get(Room, db_data["room"].id)
+            room.floor_language_code = placeholder
+            await session.flush()
+            floor_ctx_fallback = await worker._resolve_floor_context(
+                session, room.id, "floor", detected_language="hi"
+            )
+            assert floor_ctx_fallback is not None
+            assert floor_ctx_fallback.source_lang_code == "hi"
+
+    # 3. Floor with placeholder language and missing detected language resolves to None
+    for placeholder in (None, "", "auto", "floor", "unknown"):
+        async with get_session() as session:
+            room = await session.get(Room, db_data["room"].id)
+            room.floor_language_code = placeholder
+            await session.flush()
+            floor_ctx_missing = await worker._resolve_floor_context(
+                session, room.id, "floor", detected_language=None
+            )
+            assert floor_ctx_missing is not None
+            assert floor_ctx_missing.source_lang_code is None
+
+    # 4. Booth with valid configured language takes precedence (both ORM and mock)
+    async with get_session() as session:
+        booth = DBBooth(
+            event_id=db_data["event"].id,
+            room_id=db_data["room"].id,
+            language_code="de",
+            language_name="German",
+            translation_enabled=True,
+            translation_provider="local",
+            translation_model="test",
+        )
+        session.add(booth)
+        await session.flush()
+        session.add(
+            BoothTranslationLanguage(
+                booth_id=booth.id, language_code="fr", language_name="French", enabled=True
+            )
+        )
+        segment = TranscriptSegment(
+            room_id=db_data["room"].id, booth_id=booth.id, text="hello", language_code="de"
+        )
+        session.add(segment)
+        await session.flush()
+
+        booth_ctx_configured = await worker._resolve_booth_context(
+            session, db_data["room"].id, segment, detected_language="hi"
+        )
+        assert booth_ctx_configured is not None
+        assert booth_ctx_configured.source_lang_code == "de"
+
+        # Real DBBooth configured with 'floor' placeholder falls back to detected language
+        booth.language_code = "floor"
+        await session.flush()
+        booth_ctx_floor = await worker._resolve_booth_context(
+            session, db_data["room"].id, segment, detected_language="hi"
+        )
+        assert booth_ctx_floor is not None
+        assert booth_ctx_floor.source_lang_code == "hi"
+
+    # 5. Booth with absent or placeholder language falls back to detected language
+    for placeholder in (None, "", "   ", "auto", "Auto", "floor", "FLOOR", "unknown", "Unknown", "und"):
+        mock_booth = MagicMock()
+        mock_booth.language_code = placeholder
+        mock_booth.translation_enabled = True
+        mock_booth.translation_provider = "local"
+        mock_booth.translation_model = "test"
+        mock_booth.translation_languages = booth.translation_languages
+        with patch.object(session, "scalar", side_effect=[mock_booth, db_data["room"]]):
+            booth_ctx_fallback = await worker._resolve_booth_context(
+                session, db_data["room"].id, segment, detected_language="hi"
+            )
+            assert booth_ctx_fallback is not None
+            assert booth_ctx_fallback.source_lang_code == "hi"
+
+    # 6. Booth with placeholder language and missing detected language resolves to None
+    for placeholder in (None, "", "auto", "floor", "unknown"):
+        mock_booth = MagicMock()
+        mock_booth.language_code = placeholder
+        mock_booth.translation_enabled = True
+        mock_booth.translation_provider = "local"
+        mock_booth.translation_model = "test"
+        mock_booth.translation_languages = booth.translation_languages
+        with patch.object(session, "scalar", side_effect=[mock_booth, db_data["room"]]):
+            booth_ctx_missing = await worker._resolve_booth_context(
+                session, db_data["room"].id, segment, detected_language=None
+            )
+            assert booth_ctx_missing is not None
+            assert booth_ctx_missing.source_lang_code is None

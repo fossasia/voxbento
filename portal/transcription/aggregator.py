@@ -36,6 +36,7 @@ class CaptionState:
     utterance_start_time: float = 0.0
     current_word_count: int = 0
     segment_id: str = field(default_factory=lambda: str(uuid.uuid4()))
+    source_language: str | None = None
 
 
 class CaptionAggregator:
@@ -50,6 +51,10 @@ class CaptionAggregator:
         if booth_id not in self.states:
             self.states[booth_id] = CaptionState(booth_id=booth_id)
         return self.states[booth_id]
+
+    def note_source_language(self, booth_id: str, language: str) -> None:
+        """Remember the language a provider detected for the segment being built."""
+        self._get_state(booth_id).source_language = language
 
     async def handle_partial(self, booth_id: str, text: str):
         """Broadcast live partial text, finalizing utterances that exceed the size/time limits."""
@@ -215,12 +220,13 @@ class CaptionAggregator:
         context_token = segment_timing.set(timing)
 
         try:
-            await self.publish_final(booth_id, final_text, segment_id, seq)
+            await self.publish_final(booth_id, final_text, segment_id, seq, state.source_language)
         finally:
             segment_timing.reset(context_token)
         state.current_utterance = ""
         state.utterance_start_time = 0.0
         state.current_word_count = 0
+        state.source_language = None
         state.segment_id = str(uuid.uuid4())
 
     async def _allocate_floor_sequence(self, state: CaptionState) -> tuple[int, SegmentTiming | None] | None:
@@ -244,7 +250,14 @@ class CaptionAggregator:
                 )
         return seq, timing
 
-    async def publish_final(self, booth_id: str, final_text: str, segment_id: str, seq: int | None):
+    async def publish_final(
+        self,
+        booth_id: str,
+        final_text: str,
+        segment_id: str,
+        seq: int | None,
+        source_language: str | None = None,
+    ):
         """Broadcast UUID-identified text; only sequenced captions enter persistence/translation."""
         payload = {
             "type": "caption",
@@ -275,12 +288,30 @@ class CaptionAggregator:
 
                         worker = TranslationWorker(self.broadcast_callback)
                         await worker.handle_translation(
-                            self.room_id, db_segment_id, final_text, booth_id, segment_id, seq
+                            self.room_id,
+                            db_segment_id,
+                            final_text,
+                            booth_id,
+                            segment_id,
+                            seq,
+                            detected_language=source_language,
                         )
                 except Exception as e:
                     logger.error(f"[{booth_id}] _save_and_translate failed: {e}", exc_info=True)
 
             track_task(asyncio.create_task(_save_and_translate()))
+
+    async def clear_partial(self, booth_id: str) -> None:
+        """Discard any unfinalized partial caption without finalizing it."""
+        state = self.states.get(booth_id)
+        if state is None or not state.current_utterance:
+            return
+        state.current_utterance = ""
+        state.utterance_start_time = 0.0
+        state.current_word_count = 0
+        state.source_language = None
+        state.segment_id = str(uuid.uuid4())
+        await self.broadcast_callback(booth_id, {"type": "caption", "status": "clear", "text": ""})
 
     async def handle_clear(self, booth_id: str):
         """Called when silence is explicitly detected or a turn ends."""

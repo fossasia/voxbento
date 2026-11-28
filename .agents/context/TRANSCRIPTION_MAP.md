@@ -88,6 +88,7 @@ Jitsi Meet Floor Conference
 | `portal/transcription/providers/deepgram.py` | `DeepgramProvider` — nova-3/nova-2 WebSocket streaming; glossary source terms (`speech_keyterms` in `portal/translations/vocabulary.py`, read once per stream, honours `floor_ai_vocabulary_enabled`) sent as nova-3 `keyterm`s or nova-2 `keywords=term:2`; settled chunks collected until `speech_final`/`UtteranceEnd` |
 | `portal/transcription/providers/nvidia.py` | `NVIDIAProvider` — Parakeet-RNNT/CTC via Riva gRPC |
 | `portal/transcription/providers/elevenlabs.py` | `ElevenLabsProvider` — scribe_v2 |
+| `portal/transcription/providers/sarvam.py` | `SarvamProvider` — Saaras v3 WebSocket streaming for 23 Indian languages (`+ auto`) |
 | `portal/translations/worker.py` | `TranslationWorker`: per-language translation dispatch, timeouts and delivery; `ENGINES` maps each provider to its `TranslationEngine`; `scheduler_for` gives each local model, the self-hosted server and each event on a hosted provider one shared `TranslationScheduler`; listeners are checked when a segment is queued and again when it gets its engine slot |
 | `portal/translations/scheduler.py` | `TranslationScheduler`: at most `max_concurrency` engine calls in flight; rooms take turns, then languages, and a room below its fair share of slots goes first; per-language limits (2 running, 15 admitted in all, waiting or running); a job that cannot start within the lag budget (`TRANSLATION_MAX_LAG_SECONDS`, counted from when the segment reached `handle_translation`) raises `StaleTranslationJob` and is dropped as `stale`. The live demo's local translations use it too |
 | `portal/translations/engine.py` | `TranslationEngine` interface (`translate_batch`, `translate_text`), `Language`, `TranslationContext`, `EngineKind`; the worker calls engines only through it |
@@ -112,6 +113,7 @@ Jitsi Meet Floor Conference
 | `deepgram` | `DeepgramProvider` | `nova-3`, `nova-2` | `deepgram_api_key` | WebSocket streaming (with `numerals=true` for interpretation) |
 | `nvidia` | `NVIDIAProvider` | `parakeet-rnnt`, `parakeet-ctc` | `nvidia_api_key` | Riva gRPC |
 | `elevenlabs` | `ElevenLabsProvider` | `scribe_v2` | `elevenlabs_api_key` | — |
+| `sarvam` | `SarvamProvider` | `saaras:v3` | `sarvam_api_key` | WebSocket streaming (`wss://api.sarvam.ai/speech-to-text/ws`) |
 
 API keys are stored encrypted on the `events` table (`encrypted_*_api_key` columns).
 `get_api_key(event, ProviderEnum.X)` decrypts via `portal.crypto.decrypt_val`.
@@ -163,6 +165,7 @@ Cancels the asyncio Task and awaits it; removes from state dicts.
 | `handle_partial(booth_id, text)` | streaming partial | Broadcasts `{type:"caption", status:"partial", text}`. Force-finalizes if ≥50 words or ≥15 seconds in same utterance |
 | `handle_final(booth_id, text)` | completed utterance | Broadcasts `{type:"caption", status:"final", text}`; resets state |
 | `handle_chunk(booth_id, text)` | Whisper text chunk | Appends to buffer; splits on sentence boundary (`[.?!]+`); broadcasts `final` for each sentence, `partial` for remainder |
+| `clear_partial(booth_id)` | reconnect cleanup | Discards unfinalized partial state without finalizing it and broadcasts `{type:"caption", status:"clear"}` |
 | `handle_clear(booth_id)` | silence/endpoint | Broadcasts `{type:"caption", status:"clear"}` |
 
 Final captions on a room's canonical floor feed allocate `seq` atomically from
@@ -222,6 +225,43 @@ If the booth is currently live (`state.active_interpreter_id is not None`), the 
 Clients subscribe to `/ws/captions/{booth_id}` (no auth).
 Receives: `booth:state`, `caption {status: partial|final|clear, text}`.
 Used by: listener pages, subtitling overlays.
+
+---
+
+## Translation Worker & Scheduler Architecture
+
+### Translation Scheduling
+- `TranslationScheduler` (`portal/translations/scheduler.py`): Controls concurrent engine execution up to `max_concurrency` slots.
+- Concurrency isolation via `scheduler_for(provider, model, event_id)` / `_scheduler_key`:
+  - **Local**: Keyed by `(provider, model)` — each loaded model has independent threads so local models do not block one another.
+  - **Self-hosted**: Keyed by `(provider, "")` — shared across all rooms on the operator's server.
+  - **Hosted cloud** (Gemini, Anthropic, OpenAI): Keyed by `(provider, f"event-{event_id}")` — isolates API rate limits and quota per event.
+- Fair-share queueing: Rooms take turns, languages within a room take turns, and rooms below their fair share of slots take priority.
+- Channel limits: At most 2 running tasks per language channel and 15 admitted in total (waiting or running). Late-arriving segments beyond capacity are dropped gracefully.
+- Early slot release: After translation text inference completes, the scheduler slot and channel are released (`job.close()`) before TTS synthesis so slow audio generation never starves upstream translation queues.
+
+### Source Language Propagation & Fallback
+- `SarvamProvider` (`portal/transcription/providers/sarvam.py`) performs auto-detection of 23 Indian languages (`+ auto`).
+- `CaptionAggregator.note_source_language(booth_id, language)` records detected language on the active `CaptionState`.
+- Upon utterance completion, `CaptionAggregator.publish_final` passes `source_language` to `handle_translation(..., detected_language=source_language)`.
+- Context resolution in `TranslationWorker`:
+  - **Floor translations**: `_resolve_floor_context` sets source language to `room.floor_language_code or detected_language`.
+  - **Booth translations**: `_resolve_booth_context` sets source language to `booth.language_code or detected_language`.
+  - **Precedence**: Configured source language always takes precedence; when not configured (auto-detect), the provider-detected language is used.
+
+### Translation Worker Responsibilities
+1. **Job Resolution**: `handle_translation` resolves room, booth, event, provider, model, API keys, and target languages with listeners in a short-lived DB session, then closes the session before waiting on translation engines to preserve connection pool capacity.
+2. **Task Construction**: Builds tasks for active listener languages and YouTube caption tracks. If target matches source language, broadcasts source text directly without re-translating.
+3. **Execution & Inference**: Submits tasks to `TranslationScheduler`. Looks up glossaries (with `VOCABULARY_LOOKUP_TIMEOUT = 2.0s`), executes LLM inference with persona and style context, shielding cancellation while keeping slot until local execution ends.
+4. **Persistence & Delivery**:
+   - Persists `TranscriptTranslation` using an isolated DB session.
+   - Stage 1 broadcast (immediate translated text frame).
+   - Delivers to YouTube caption track if configured for the room.
+   - Stage 2 TTS synthesis (if audio enabled) and broadcasts audio bundle.
+   - Cleans up and logs timeouts/failures without dropping pipeline state.
+
+---
+
 ## Program floor ingest (#690)
 
 `portal/program_ingest.py` authenticates native MediaMTX floor publishes and

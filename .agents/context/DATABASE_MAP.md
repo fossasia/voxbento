@@ -40,6 +40,7 @@ users (1)
 | `deepgram_api_key` | Text nullable | Fernet-encrypted |
 | `nvidia_api_key` | Text nullable | Fernet-encrypted |
 | `elevenlabs_api_key` | Text nullable | Fernet-encrypted |
+| `sarvam_api_key` | Text nullable | Fernet-encrypted |
 | `translation_openai_api_key` | Text nullable | Fernet-encrypted |
 | `openrouter_api_key` | Text nullable | Fernet-encrypted |
 | `gemini_api_key` | Text nullable | Fernet-encrypted |
@@ -311,6 +312,8 @@ Tracks which languages the translation worker should generate for a given room o
 | 046 | `046_live_demo_room_ai.py` | Transitional room-linked demo settings and daily limit |
 | 047 | `047_live_demo_independent_ai.py` | Independent demo providers, models, encrypted keys, persona/style; removes room link |
 | 044 | `044_youtube_connections.py` | `youtube_connections` table (one per event), `rooms.youtube_broadcast_id`, `rooms.youtube_stream_id` (#1087) |
+| 045 | `045_meeting_analysis.py` | `events.meeting_analysis_*`, `meeting_reports` table (#1080) |
+| 050 | `050_add_sarvam_api_key.py` | events.sarvam_api_key (Text nullable, Fernet-encrypted) (#1173) |
 
 Run migrations: `uv run alembic upgrade head`
 
@@ -497,3 +500,9 @@ relay mode, encrypted (migration 028).
 
 - `oauth_authorization_codes`: stores authorization codes with `expires_at: DateTime(tz)`. Exposes `is_expired` property that normalizes SQLite-stripped naive datetimes to UTC-aware before comparison against `utc_now()`.
 - `oauth_tokens`: stores access and refresh token hashes with `expires_at: DateTime(tz)`. Exposes `is_expired` property used across token exchange and `require_oauth_scope` API dependencies to enforce consistent expiry boundaries across SQLite and PostgreSQL backends.
+
+## Migration 050 — Sarvam AI API key (#1173)
+
+Adds nullable `events.sarvam_api_key` (`Text`, mapped as `encrypted_sarvam_api_key`)
+stored Fernet-encrypted via `portal.crypto.encrypt_val` and read through
+`portal.transcription.providers.base.get_api_key`.
