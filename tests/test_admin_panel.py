@@ -3312,6 +3312,7 @@ class TestBoothCRUD:
             provider_name="local",
             model_size="tiny",
             config=None,
+            room_id=None,
         )
         monkeypatch.setitem(active_workers, bid, tiny_worker)
 
