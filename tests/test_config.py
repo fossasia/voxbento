@@ -170,3 +170,20 @@ def test_production_requires_an_encryption_key_for_queued_email():
             assert "API_KEY_ENCRYPTION_KEY" in str(exc)
         else:
             raise AssertionError(f"API_KEY_ENCRYPTION_KEY {key!r} must fail production validation")
+
+
+def test_max_transcription_workers_defaults_to_10(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("MAX_TRANSCRIPTION_WORKERS", raising=False)
+    monkeypatch.delenv("max_transcription_workers", raising=False)
+    assert Settings(_env_file=None).max_transcription_workers == 10
+
+
+def test_max_transcription_workers_env_override(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("MAX_TRANSCRIPTION_WORKERS", "25")
+    assert Settings(_env_file=None).max_transcription_workers == 25
+
+
+@pytest.mark.parametrize("invalid_val", [0, -1, 101])
+def test_max_transcription_workers_bounds(invalid_val: int) -> None:
+    with pytest.raises(ValidationError):
+        Settings(_env_file=None, max_transcription_workers=invalid_val)
