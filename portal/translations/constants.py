@@ -15,6 +15,12 @@ class TranslationProviderEnum(str, Enum):
     ANTHROPIC = "anthropic"
     GROQ = "groq"
     SELF_HOSTED = "self_hosted"
+    LIBRETRANSLATE = "libretranslate"
+
+
+#: Model id stored on rooms and booths when LibreTranslate is the provider. LibreTranslate
+#: runs one engine, so it has no model allow-list the operator picks from.
+LIBRETRANSLATE_MODEL_ID = "libretranslate"
 
 
 RETIRED_TRANSLATION_MODELS = frozenset({"gpt-4-turbo", "gpt-4-turbo-2024-04-09", "gpt-4o-mini-realtime-preview"})

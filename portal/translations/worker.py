@@ -17,6 +17,7 @@ from portal.translations.providers import local as local_provider
 from portal.translations.providers.anthropic import AnthropicProvider
 from portal.translations.providers.base import ProviderEngine
 from portal.translations.providers.gemini import GeminiProvider
+from portal.translations.providers.libretranslate import LibreTranslateProvider
 from portal.translations.providers.local import LocalProvider
 from portal.translations.providers.openai import OpenAIProvider
 from portal.translations.scheduler import StaleTranslationJob, TranslationJob, TranslationScheduler
@@ -65,9 +66,18 @@ ENGINES[TranslationProviderEnum.SELF_HOSTED.value] = ProviderEngine(
     EngineKind.OPENAI_COMPATIBLE_LLM,
     max_concurrency=_self_hosted_concurrency,
 )
+# LibreTranslate runs its own small HTTP API, separate from the OpenAI-compatible protocol.
+ENGINES[TranslationProviderEnum.LIBRETRANSLATE.value] = ProviderEngine(
+    TranslationProviderEnum.LIBRETRANSLATE.value, LibreTranslateProvider(), EngineKind.MT_API
+)
 
-# Providers that run without a per-event API key.
-KEYLESS_PROVIDERS = {TranslationProviderEnum.LOCAL.value, TranslationProviderEnum.SELF_HOSTED.value}
+# Providers that run without a per-event API key. LibreTranslate's key is server-wide and
+# optional, so event owners never need to set one.
+KEYLESS_PROVIDERS = {
+    TranslationProviderEnum.LOCAL.value,
+    TranslationProviderEnum.SELF_HOSTED.value,
+    TranslationProviderEnum.LIBRETRANSLATE.value,
+}
 
 #: Schedulers made on first use, by what each one limits (#1188); see ``scheduler_for``.
 SCHEDULERS: dict[tuple[str, str], TranslationScheduler] = {}
