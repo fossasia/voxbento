@@ -62,12 +62,19 @@ class TranscriptionWorkerSession:
         self.event_slug = event_slug
         self.language_code = language_code
         self.booth_id = booth_id
-        self.broadcast_callback = broadcast_callback
+        self._broadcast_to_listeners = broadcast_callback
+        self.broadcast_callback = self._broadcast
         self.provider_name = provider_name
         self.model_size = model_size
         self.config = config
         self.transcription_language = transcription_language
         self.room_id = room_id
+
+        from portal.transcription.aggregator import new_caption_source
+
+        language = transcription_language or language_code
+        # One for the whole session, retries included, so a floor language switch retires all of it.
+        self.caption_source = new_caption_source(booth_id, None if language == "floor" else language)
 
         self.state = State.STARTING
         self.stop_event = asyncio.Event()
@@ -83,6 +90,11 @@ class TranscriptionWorkerSession:
         self.rtsp_url = f"{settings.mediamtx_rtsp_base}/{channel_path}"
         self.provider = PROVIDERS.get(self.provider_name, PROVIDERS["local"])
         self.sample_rate = str(self.provider.sample_rate)
+
+    async def _broadcast(self, booth_id: str, payload) -> None:
+        # A provider can keep transcribing after stop(); once superseded, none of it reaches listeners.
+        if not self.caption_source.superseded:
+            await self._broadcast_to_listeners(booth_id, payload)
 
     def start(self):
         if self.task:
@@ -136,7 +148,12 @@ class TranscriptionWorkerSession:
                         if actual_language == "floor":
                             actual_language = ""
 
+                        from portal.transcription.aggregator import caption_source
                         from portal.transcription.providers.base import AudioIngester, StreamingProvider
+
+                        # Every caption this session publishes is in its language, even one finalized
+                        # after the room's floor language has moved on (#1397).
+                        caption_source.set(self.caption_source)
 
                         if isinstance(self.provider, StreamingProvider):
                             ingester = AudioIngester(process, sample_rate=self.sample_rate)

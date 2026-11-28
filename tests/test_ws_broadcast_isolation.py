@@ -300,6 +300,7 @@ def test_captions_listener_receives_sanitized_state_without_chat_or_participants
                 "language_code",
                 "broadcast_unlocked",
                 "ingest_status",
+                "on_air",
             }
             assert "participants" not in state
             assert "chat_messages" not in state

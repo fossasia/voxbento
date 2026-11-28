@@ -14,6 +14,7 @@ const token = root ? (root.dataset.token || "") : "";
 const config = { position: "bottom", fontSize: 36, bg: 70, lines: 2 };
 let finals = [];
 let partial = "";
+let partialLang = "";
 let idleTimer = null;
 
 
@@ -43,14 +44,16 @@ function applyConfig() {
 
 function render() {
   if (!linesBox) return;
-  const visible = finals.map((f) => f.text).concat(partial ? [partial] : []).slice(-config.lines);
+  const visible = finals.concat(partial ? [{ text: partial, lang: partialLang }] : []).slice(-config.lines);
   linesBox.replaceChildren(
-    ...visible.map((text, i) => {
+    ...visible.map(({ text, lang }, i) => {
       const line = document.createElement("div");
       line.className = "overlay-line";
       if (i < visible.length - 1) line.classList.add("overlay-line--older");
       line.textContent = text;
       line.dir = "auto";
+      // The floor can change language mid-talk, so each line says its own (#1397).
+      if (lang) line.lang = lang;
       line.style.setProperty("--caption-line-limit", String(i === visible.length - 1 ? config.lines - visible.length + 1 : 1));
       return line;
     }),
@@ -71,9 +74,11 @@ export function handleCaption(data) {
   const rawText = typeof data.text === "string" ? data.text : (typeof data.translated_text === "string" ? data.translated_text : "");
   const text = rawText.trim();
   const status = data.status || (data.type === "caption" ? "partial" : "final");
+  const lang = typeof data.source_language === "string" ? data.source_language : "";
 
   if (status === "partial") {
     partial = text;
+    partialLang = lang;
   } else if (status === "final") {
     if (text) {
       // A booth whose language is also a translation target gets the same segment
@@ -81,9 +86,9 @@ export function handleCaption(data) {
       const id = data.segment_id || null;
       const existing = id ? finals.findIndex((f) => f.id === id) : -1;
       if (existing >= 0) {
-        finals = finals.map((f, i) => (i === existing ? { id, text } : f));
+        finals = finals.map((f, i) => (i === existing ? { id, text, lang } : f));
       } else {
-        finals = finals.concat([{ id, text }]).slice(-4);
+        finals = finals.concat([{ id, text, lang }]).slice(-4);
       }
     }
     partial = "";

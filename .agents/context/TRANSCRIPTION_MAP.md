@@ -21,6 +21,10 @@ Active interpreter Go Live
    -rtsp_transport tcp → PCM s16le mono at provider.sample_rate (16kHz, 24kHz for OpenAI) → stdout pipe
 ```
 
+A two-way booth's worker (#1397) stays on the booth's own path. While the booth interprets
+into the room's spoken language, its own channel is silent and emits no captions, and the
+return channel's speech is not transcribed.
+
 ### 2. Floor Audio Pipeline
 ```
 Jitsi Meet Floor Conference
@@ -222,6 +226,34 @@ If the booth is currently live (`state.active_interpreter_id is not None`), the 
 Clients subscribe to `/ws/captions/{booth_id}` (no auth).
 Receives: `booth:state`, `caption {status: partial|final|clear, text}`.
 Used by: listener pages, subtitling overlays.
+## Floor language (#1397)
+
+`portal/floor_language.py` holds the language spoken on each room's floor right now:
+a two-way booth outputting into the spoken language (`set_booth_language`, called by
+`BoothRegistry._claim` and `_reset_output`, so every switch, release and restore goes
+through it), else
+Mission Control's choice (`rooms.floor_language_override`, offered by `choices()`, which
+leaves out languages a fixed-language floor translation model cannot translate from), else
+`rooms.floor_language_code`. Both floor reconcilers read `current(room)` for the worker's
+language and restart the worker when it changes; a change counts only once it has held
+for 1 s, so a switch back inside that window restarts nothing. The restart sends a
+`clear` caption so the old worker's partial does not stay on screen. Every provider uses
+this restart path; none changes language in place. Just before the clear the reconciler
+calls `supersede_captions(booth_id)`: a provider can keep transcribing after its session
+stops (the shared `run_stream` leaves its helper tasks running), and from then on that
+session broadcasts nothing. Its late finals are still stored with their own language but
+are not translated or sent to YouTube.
+
+The worker session sets `caption_source` (a ContextVar in `aggregator.py`, one
+`CaptionSource` per session) for its task, so captions from every provider carry `source_language` and segments store
+`source_language_code` in the language that session transcribed. Floor translation
+translates from the segment's language (older rows fall back to the room), so a
+target equal to it gets the original text with no engine or TTS call, and a YouTube
+track in that language gets the original words. Overlay lines set `lang` from
+`source_language`, and the listener page labels a floor caption with that language when it
+is not the room's spoken language. A floor meeting report on its own transcript is written in the
+language most of its session's segments were spoken in.
+
 ## Program floor ingest (#690)
 
 `portal/program_ingest.py` authenticates native MediaMTX floor publishes and

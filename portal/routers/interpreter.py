@@ -247,7 +247,8 @@ async def interpreter_booth_by_identity(
                 room_jitsi_url = db_booth.room.jitsi_url
             if db_booth.room.relay_booth_id:
                 relay_b = await get_booth_by_id(session, db_booth.room.relay_booth_id)
-                if relay_b:
+                # The relay booth's own interpreters would only hear themselves (#1397).
+                if relay_b and relay_b.id != db_booth.id:
                     relay_channel = make_mediamtx_path(event_slug, relay_b.room_id, relay_b.language_code)
                     relay_whep_url = f"{settings.mediamtx_whip_base}/{relay_channel}/whep"
                     relay_language_name = relay_b.language_name

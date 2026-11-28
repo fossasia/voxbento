@@ -59,6 +59,17 @@ def _reset_shared_http_client():
     portal.webhooks.worker.enqueue_webhook = original_enqueue
 
 
+@pytest.fixture(autouse=True)
+def _reset_floor_language():
+    """The floor language store is process memory keyed by room id, and every test database reuses room ids."""
+    from portal import floor_language
+
+    yield
+    floor_language._booths.clear()
+    floor_language._changed_at.clear()
+    floor_language._applied.clear()
+
+
 @pytest.fixture(params=["asyncio"])
 def anyio_backend(request):
     return request.param

@@ -1133,8 +1133,13 @@ async def redeem_auth_token(session: AsyncSession, jti: str, expected_type: str)
 # ---------------------------------------------------------------------------
 
 
-async def save_transcript_segment(booth_id_str: str, text: str, room_id: int | None = None) -> int | None:
-    """Save a finalized transcript segment to the database asynchronously and return its ID."""
+async def save_transcript_segment(
+    booth_id_str: str, text: str, room_id: int | None = None, source_language_code: str | None = None
+) -> int | None:
+    """Save a finalized transcript segment to the database asynchronously and return its ID.
+
+    ``source_language_code`` is the language the words were transcribed in (#1397).
+    """
     from sqlalchemy import select
 
     from portal.models import DBBooth, Event
@@ -1165,7 +1170,13 @@ async def save_transcript_segment(booth_id_str: str, text: str, room_id: int | N
                 )
                 booth_id = await session.scalar(stmt)
 
-            segment = TranscriptSegment(room_id=room_id, booth_id=booth_id, language_code=language_code, text=text)
+            segment = TranscriptSegment(
+                room_id=room_id,
+                booth_id=booth_id,
+                language_code=language_code,
+                source_language_code=source_language_code,
+                text=text,
+            )
             session.add(segment)
             await session.flush()
             return segment.id

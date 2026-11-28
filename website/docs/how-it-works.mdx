@@ -81,7 +81,11 @@ Changing rooms or sources clears captions, resets following, and restores the
 waiting placeholder.
 
 
-Before starting booth playback, the listener page waits for a live and unlocked status on `/ws/captions/{booth_id}`. This socket sends the current status on connection and updates when listener-visible state changes, even when transcription is disabled, so attendees who arrive early start listening without reloading. Status contains only booth identity, broadcast lock, and ingest status; interpreter participants and private booth chat stay inside the booth. The page reconnects after transient socket disconnects and stops playback when an unlocked booth is locked.
+Before starting booth playback, the listener page waits for a live and unlocked status on `/ws/captions/{booth_id}`. This socket sends the current status on connection and updates when listener-visible state changes, even when transcription is disabled, so attendees who arrive early start listening without reloading. Status contains only booth identity, broadcast lock, ingest status and `on_air`; interpreter participants and private booth chat stay inside the booth. The page reconnects after transient socket disconnects and stops playback when an unlocked booth is locked.
+
+`on_air` is worked out on the server: the booth is unlocked, its interpreter reports a connected stream, and MediaMTX has a publisher on the booth path. The portal reads the MediaMTX path list once every two seconds while listeners are connected and pushes a new status when it changes. When a booth turns live (stream connected or lock opened) and the last list showed no publisher, the portal checks that one path at once, so listeners don't wait for the next read. The booth reports its stream before ICE finishes, so the check reads the path up to six times, a quarter second apart, in the background, and resends the status once the publisher shows. Each path starts at most one check a second, one at a time. Booth paths are `alwaysAvailable`, so an empty one stays ready and keeps counting bytes; only its `source` shows whether anyone publishes. When MediaMTX cannot be read, `on_air` falls back to the lock and the interpreter's own report, and the outage is logged once.
+
+When a room has a floor source (its managed meeting agent is on, or program ingest has a valid credential or an open sender session; a saved meeting link alone does not count) and **Play the original audio while an interpreter is off air** is on, each interpreter channel on the listener page carries a `floor_fallback` (the floor's WHEP URL). Off air for three seconds in a row, the page plays the floor; the guard keeps a quick handover from bouncing listeners. When the booth comes back on air the page starts its stream on a muted standby element and moves it into the player once it has audio (or after five seconds), then stops the floor, so two streams are never heard at once. With a room listener delay the new stream first plays muted for that long, so its delay line is full when it takes over and the switch adds no silence; the five-second limit grows by the delay. Captions stay on the chosen channel. Without a fallback the page behaves as before: it waits silently and stops when the booth is locked. The embed player (`/embed/...`) gets the same `floor_fallback` for an interpreter channel and follows the same rules; it opens the booth's caption socket with its embed token for the status even when captions are off. When that socket closes with 4001 (the embed token expired) the embed keeps the stream in its player and stops switching until the host page reloads; a 4003 close stops it. Without a fallback the embed still plays the booth path at once. The floor is listed as its own channel whenever it can carry audio or has floor captions, labelled with the spoken language when that is known.
 
     For devices that do not handle WebRTC reliably, MediaMTX also produces HLS segments on a separate port. The listener page loads hls.js and falls back to HLS automatically when WHEP is unavailable. HLS introduces roughly three seconds of additional latency but works on virtually any device.
 
@@ -184,8 +188,8 @@ Jitsi session; they do not validate a deployment host's available disk space.
 1. **Audio Ingest:** The worker uses FFmpeg to pull the live audio stream from MediaMTX via RTSP (`rtsp://mediamtx:8554/{event_slug}/{room_id}/{language_code}` or `rtsp://mediamtx:8554/{event_slug}/{room_id}/floor`).
 2. **Transcoding:** FFmpeg transcodes the audio to PCM S16LE (mono, 16kHz or 24kHz depending on the provider) and pipes it to the selected `TranscriptionProvider`.
 3. **Speech-to-Text (Transcription):** The provider sends audio to an AI service (OpenAI, Deepgram, Atlas Cloud, ElevenLabs, NVIDIA, or Local Whisper). The Atlas Cloud adapter submits WAV chunks to Seed ASR 2.0 once and polls the asynchronous prediction. The `CaptionAggregator` receives raw text, splitting sentences and instantly broadcasting partial updates to listeners (`/ws/captions/{channel_id}`).
-4. **Finalization:** Once a full sentence is formed, the aggregator saves it to the database as a canonical `transcript_segment`.
-5. **Text-to-Text (Translation & AI Interpretation):** If target languages are enabled, the Translation Worker detects the finalized segment and generates translations using LLMs (Anthropic, OpenAI, Groq, Gemini, or an OpenAI-compatible server the operator runs, set with `SELF_HOSTED_LLM_BASE_URL`) or local NLLB models the operator lists in `LOCAL_TRANSLATION_MODELS`. Translation prompts dynamically integrate the room's configured **AI interpreter persona** and **interpretation style**, as well as matching domain terms from the room's **AI vocabulary glossary**, ensuring consistent, conference-grade terminology.
+4. **Finalization:** Once a full sentence is formed, the aggregator saves it to the database as a canonical `transcript_segment`, with the language it was transcribed in. Floor transcription follows the language spoken on the floor: Mission Control's **Floor language** choice, or the language of a two-way booth while it interprets back into the spoken language. The floor worker restarts in the new language once a change has held for one second, so switching back within that second restarts nothing.
+5. **Text-to-Text (Translation & AI Interpretation):** If target languages are enabled, the Translation Worker detects the finalized segment and translates it from the language it was spoken in. A target in that same language gets the original text, with no translation and no AI voice. Other targets get translations generated using LLMs (Anthropic, OpenAI, Groq, Gemini, or an OpenAI-compatible server the operator runs, set with `SELF_HOSTED_LLM_BASE_URL`) or local NLLB models the operator lists in `LOCAL_TRANSLATION_MODELS`. Translation prompts dynamically integrate the room's configured **AI interpreter persona** and **interpretation style**, as well as matching domain terms from the room's **AI vocabulary glossary**, ensuring consistent, conference-grade terminology.
 6. **Broadcast:** Translations are saved to the database and immediately broadcast as `translated_caption` events via the target booth's caption feed (`/ws/captions/{booth_id}`).
 
 7. **Text-to-Speech (TTS):** If a room language uses **AI voice**, the `TTSWorker` instantly receives the finalized translated text and synthesizes speech using the room's configured provider — **Deepgram Aura** (cloud WebSocket), **ElevenLabs v4** (cloud HTTP streaming; speaks 90+ languages including Thai) or **Supertonic** (self-hosted, in-process ONNX).
@@ -194,6 +198,37 @@ Jitsi session; they do not validate a deployment host's available disk space.
 :::info
 Transcription, Translation, and TTS workers are isolated from the main audio path. If an API provider lags, fails, or drops chunks, the core interpretation audio remains perfectly stable and unaffected.
 :::
+
+### Two-way booths
+
+A booth can be two-way (#1397): its interpreter switches between interpreting into the
+booth's language and back into the room's spoken language. The spoken language has its own
+MediaMTX path (`pycon2026/14/en` in an English room), created like booth paths. `booths.return_language_code`
+holds the setting, validated in one place (`portal/room_setup.py`) for room setup, booth
+edits and API v1 writes.
+
+The interpreter's browser sends `booth:set-output` over the booth WebSocket. The server
+records the new output in `BoothRegistry`, where one booth at a time may hold a room's
+return channel, then ends the booth's MediaMTX session on the channel it left and
+broadcasts the state. The browser publishes again with a fresh ticket, which the server
+binds to the new path, so listeners hear a short gap. The media auth hook refuses a ticket
+for any other path, and a ticket issued before a switch. Leaving, access revocation,
+reconnect grace expiry, Mission Control Stop and booth, room or event deletion end the
+booth's sessions on both paths and free the return channel. The direction is saved in
+`booth_live_state` and survives a portal restart.
+
+The floor caption feed (`/ws/captions/{event}-{room}-floor`) carries a listener-safe
+`channel:state` message `{return_on_air, whep_url, language_code}` when a two-way booth
+goes on or off air into the spoken language. On air there uses the same rule as a booth's
+`on_air` (unlocked, connected, and a MediaMTX publisher on the return path). While a booth
+outputs into the return channel its own channel reads off air, so its listeners hear the
+floor. The listener page data gives the floor entry a `return_whep_url` when one of the
+room's booths is two-way into the spoken language (the embed config does the same for the
+floor channel), and lists the floor for it even when the room has no floor audio. Then
+`floor_audio` is false and the channel is silent while the booth is not on air there. The player then plays the floor at once and the return stream while
+`return_on_air` is true, with the same make-before-break switch and 3 s guard as the floor
+fallback (`portal/static/js/channel-source.js`, `startOnFallback`). Transcription stays on the booth's own path,
+so the return channel is not captioned.
 
 ## Booth Identity
 
@@ -302,7 +337,13 @@ coordinators) next to a microphone and connection check.
 
 **Mission Control** (`/mission-control/{event}/`) shows one section per room the
 person may run. Each room shows its floor captions' state with Start and Stop
-(through `/api/rooms/{room_id}/floor-transcription/*`), and each booth card shows
+(through `/api/rooms/{room_id}/floor-transcription/*`) and a **Floor language** picker
+(the spoken language or one of the room's listener languages) for when the floor
+switches language. With floor translation on, it leaves out languages the translation model
+can't translate from. A two-way booth in such a language still gets floor captions, but no
+translation while it interprets into the spoken language. While a two-way booth interprets into the spoken language the picker
+shows that booth's language and is disabled; the Mission Control choice comes back when
+the booth switches back or stops. Each booth card shows
 who is in the booth and who is live, a listen-in slider, Go live / Stop broadcast
 and **Open booth**. The owner's room page is split into tabs (Languages, Room audio,
 AI settings, Settings); the open tab is remembered per room so saving a setting returns

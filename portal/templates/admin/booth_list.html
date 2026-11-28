@@ -23,6 +23,9 @@
 {% if request.query_params.get('error') == 'duplicate_language' %}
 <div class="alert alert-danger">{{ room.display_name }} already has a booth for that language.</div>
 {% endif %}
+{% if request.query_params.get('error') == 'return_language' %}
+<div class="alert alert-danger">A two-way booth in {{ room.display_name }} already interprets into that language, so it can't have its own booth.</div>
+{% endif %}
 
 {% if is_event_owner %}
 <div class="tm-pointer">

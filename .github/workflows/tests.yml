@@ -284,6 +284,7 @@ jobs:
           node --check portal/static/js/interpreter-booth.js
           node --check portal/static/js/booth-reconnect.js
           node --check portal/static/js/mic-activity.js
+          node --check portal/static/js/booth-output.js
           node --check portal/static/js/whep-listener.js
           node --check portal/static/js/admin.js
           node --check portal/static/js/attendance.js
@@ -301,6 +302,8 @@ jobs:
           node --check portal/static/js/live-demo.js
           node --check portal/static/js/live-demo-core.js
           node --check portal/static/js/live-demo-capture.js
+          node --check portal/static/js/floor-language.js
+          node --check portal/static/js/mission-control.js
           node --check .github/scripts/jules-review.mjs
           node --check .github/scripts/agent-attribution-lib.mjs
       - name: run node tests
@@ -310,6 +313,8 @@ jobs:
           node --test tests/test_demo_modal.js
           node tests/test_listener_event.js
           node tests/test_whep_listener.js
+          node tests/test_channel_source.mjs
+          node tests/test_embed_player.mjs
           node --test tests/test_whep_lifecycle.js
           node tests/test_subtitle_overlay.js
           node --test tests/test_overlay_connection.js
@@ -318,6 +323,8 @@ jobs:
           node tests/test_attendance.mjs
           node tests/test_mic_activity.mjs
           node tests/test_booth_socket.mjs
+          node tests/test_booth_output.mjs
+          node tests/test_booth_two_way.mjs
           node tests/test_room_ai.mjs
           node tests/test_lang_picker.mjs
           node tests/test_tabs.mjs
@@ -325,6 +332,7 @@ jobs:
           node tests/test_program_sender_source.mjs
           node tests/test_youtube_connect.mjs
           node tests/test_live_demo_core.mjs
+          node tests/test_floor_language.mjs
           node --test tests/test_modal_dialogs.mjs
           node --test tests/test_agent_attribution.mjs
 

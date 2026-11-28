@@ -140,6 +140,9 @@ class Room(Base):
     )
     floor_transcription_model: Mapped[str] = mapped_column(String(40), default="tiny", server_default=sa.text("'tiny'"))
     floor_language_code: Mapped[str | None] = mapped_column(String(10), nullable=True, default=None)
+    # Mission Control's choice of the language spoken on the floor right now (#1397); None is the spoken language.
+    # A two-way booth outputting into the spoken language overrides it while it does (portal/floor_language.py).
+    floor_language_override: Mapped[str | None] = mapped_column(String(10), nullable=True, default=None)
     floor_source: Mapped[str] = mapped_column(String(20), default="jitsi_bot", server_default="jitsi_bot")
     meeting_agent_enabled: Mapped[bool] = mapped_column(Boolean, default=False, server_default="0")
     program_key_hash: Mapped[str | None] = mapped_column(String(64), nullable=True)
@@ -179,6 +182,8 @@ class Room(Base):
     )
     floor_tts_voice: Mapped[str] = mapped_column(String(50), default="M1", server_default=sa.text("'M1'"))
     audio_delay_ms: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
+    # Listeners on an interpreter channel hear the floor while that booth is off air (#1397).
+    auto_floor_enabled: Mapped[bool] = mapped_column(Boolean, default=True, server_default=sa.true())
 
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
 
@@ -199,6 +204,13 @@ class Room(Base):
         """Floor transcription is on and has a real provider, so the floor has a caption channel."""
         provider = (self.floor_transcription_provider or "").strip().lower()
         return bool(self.floor_transcription_enabled) and provider not in {"", "none"}
+
+    @validates("floor_language_code")
+    def _drop_stale_floor_language_override(self, _key: str, value: str | None) -> str | None:
+        # A Mission Control floor language was picked for the old spoken language (#1397).
+        if value != self.floor_language_code:
+            self.floor_language_override = None
+        return value
 
     def __repr__(self) -> str:
         return f"<Room id={self.id} name={self.display_name!r}>"
@@ -226,6 +238,8 @@ class DBBooth(Base):
     room_id: Mapped[int] = mapped_column(ForeignKey("rooms.id", ondelete="CASCADE"), nullable=False)
     language_code: Mapped[str] = mapped_column(String(2))
     language_name: Mapped[str] = mapped_column(String(100))
+    # Two-way booth (#1397): the room's spoken language, which this booth can also interpret into.
+    return_language_code: Mapped[str | None] = mapped_column(String(2), nullable=True, default=None)
     transcription_enabled: Mapped[bool] = mapped_column(Boolean, default=False, server_default="0")
     transcription_provider: Mapped[str] = mapped_column(String(20), default="local", server_default=sa.text("'local'"))
     transcription_model: Mapped[str] = mapped_column(String(40), default="tiny", server_default=sa.text("'tiny'"))
@@ -301,6 +315,9 @@ class TranscriptSegment(Base):
         ForeignKey("booths.id", ondelete="CASCADE"), nullable=True, default=None
     )
     language_code: Mapped[str] = mapped_column(String(10))
+    # The language the words were transcribed in; language_code is the channel ("floor" or a booth's language).
+    # None on segments stored before #1397.
+    source_language_code: Mapped[str | None] = mapped_column(String(10), nullable=True, default=None)
     text: Mapped[str] = mapped_column(Text)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
 
@@ -826,6 +843,8 @@ class BoothLiveState(Base):
     active_invite_public_id: Mapped[str | None] = mapped_column(String(32), nullable=True)
     active_mic_active: Mapped[bool] = mapped_column(Boolean, default=False, server_default="0")
     active_ingest_connected: Mapped[bool] = mapped_column(Boolean, default=False, server_default="0")
+    # The return language a two-way booth is interpreting into; None while it outputs into its own (#1397).
+    output_language_code: Mapped[str | None] = mapped_column(String(2), nullable=True)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
 
     def __repr__(self) -> str:

@@ -4,6 +4,7 @@ import asyncio
 import logging
 import time
 import uuid
+from contextvars import ContextVar
 from dataclasses import dataclass, field
 from weakref import WeakValueDictionary
 
@@ -18,6 +19,36 @@ from portal.transcription.timing import SegmentTiming, segment_timing, timing_me
 
 logger = logging.getLogger(__name__)
 _floor_locks: WeakValueDictionary[int, asyncio.Lock] = WeakValueDictionary()
+CLEAR_CAPTION = {"type": "caption", "status": "clear", "text": ""}
+
+
+@dataclass(eq=False)
+class CaptionSource:
+    """The transcription worker session a caption comes from, and the language it transcribes in (#1397)."""
+
+    language: str | None
+    # Set once a floor language switch has cleared this session's captions off listeners' screens.
+    superseded: bool = False
+
+
+# Set by the worker's session task. The aggregators are built inside each provider, so they read it
+# from the task context, and so do helper tasks a provider leaves running after the session stops.
+caption_source: ContextVar[CaptionSource | None] = ContextVar("caption_source", default=None)
+_sources: WeakValueDictionary[str, CaptionSource] = WeakValueDictionary()
+
+
+def new_caption_source(booth_id: str, language: str | None) -> CaptionSource:
+    """Start the captions of a new worker session on the booth."""
+    source = CaptionSource(language)
+    _sources[booth_id] = source
+    return source
+
+
+def supersede_captions(booth_id: str) -> None:
+    """Keep the booth's stopped worker session off listeners' screens: call before clearing them."""
+    source = _sources.get(booth_id)
+    if source is not None:
+        source.superseded = True
 
 
 def floor_caption_lock(room_id: int) -> asyncio.Lock:
@@ -27,6 +58,12 @@ def floor_caption_lock(room_id: int) -> asyncio.Lock:
         lock = asyncio.Lock()
         _floor_locks[room_id] = lock
     return lock
+
+
+def language_tag() -> dict:
+    """``source_language`` for a caption payload, when the worker's language is known."""
+    source = caption_source.get()
+    return {"source_language": source.language} if source and source.language else {}
 
 
 @dataclass
@@ -77,6 +114,7 @@ class CaptionAggregator:
                 "status": "partial",
                 "text": state.current_utterance,
                 "segment_id": state.segment_id,
+                **language_tag(),
                 **await self.partial_timing(booth_id),
             },
         )
@@ -112,7 +150,7 @@ class CaptionAggregator:
         preview = f"{state.current_utterance} {text.strip()}".strip()
         await self.broadcast_callback(
             booth_id, {"type": "caption", "status": "partial", "text": preview,
-                       "segment_id": state.segment_id, **await self.partial_timing(booth_id)}
+                       "segment_id": state.segment_id, **language_tag(), **await self.partial_timing(booth_id)}
         )
 
     async def handle_chunk(self, booth_id: str, text: str):
@@ -170,6 +208,7 @@ class CaptionAggregator:
                     "status": "partial",
                     "text": state.current_utterance,
                     "segment_id": state.segment_id,
+                    **language_tag(),
                     **await self.partial_timing(booth_id),
                 },
             )
@@ -245,19 +284,26 @@ class CaptionAggregator:
         return seq, timing
 
     async def publish_final(self, booth_id: str, final_text: str, segment_id: str, seq: int | None):
-        """Broadcast UUID-identified text; only sequenced captions enter persistence/translation."""
+        """Broadcast UUID-identified text; only sequenced captions enter persistence/translation.
+
+        A superseded session's final is only stored, in its own language, so the transcript keeps
+        the speech. Its session drops the broadcast, and it is not translated or sent to YouTube.
+        """
+        source = caption_source.get()
+        superseded = source is not None and source.superseded
         payload = {
             "type": "caption",
             "status": "final",
             "text": final_text,
             "segment_id": segment_id,
+            **language_tag(),
             **timing_metadata(),
         }
         if seq is not None:
             payload["seq"] = seq
         await self.broadcast_callback(booth_id, payload)
 
-        if self.room_id is not None and booth_id.endswith("-floor"):
+        if self.room_id is not None and booth_id.endswith("-floor") and not superseded:
             # Non-blocking: queues the caption for the room's YouTube caption track, if one is set up.
             # YouTube numbers its own posts, so original text is offered even without a room sequence.
             timing = segment_timing.get()
@@ -269,8 +315,10 @@ class CaptionAggregator:
             async def _save_and_translate():
                 """Persist a sequenced caption and pass its identity to asynchronous translation."""
                 try:
-                    db_segment_id = await save_transcript_segment(booth_id, final_text, self.room_id)
-                    if db_segment_id is not None:
+                    db_segment_id = await save_transcript_segment(
+                        booth_id, final_text, self.room_id, source.language if source else None
+                    )
+                    if db_segment_id is not None and not superseded:
                         from portal.translations.worker import TranslationWorker
 
                         worker = TranslationWorker(self.broadcast_callback)

@@ -86,6 +86,8 @@ VoxBento is a production-grade **browser-first interpretation booth console** fo
 | `portal/program_relay.py` | YouTube RTMPS destination management and relay health convergence |
 | `portal/youtube_account.py` | Google OAuth and YouTube Live API metadata (no media): Sign in with YouTube, broadcast linking, YouTube status |
 | `portal/outage_log.py` | `OutageLog` — reconcile loops log a repeating failure once per outage, not per tick |
+| `portal/booth_on_air.py` | Listener-safe `on_air`: broadcast unlocked, ingest connected, and a publisher on the MediaMTX path (cached path list, #1397) |
+| `portal/floor_language.py` | Language spoken on each room's floor right now (two-way booth, Mission Control choice, spoken language), debounced for the floor worker (#1397) |
 | `portal/booth_recovery.py` | Saves each booth's Go Live switch and active interpreter to `booth_live_state` and restores them at startup (TD-03) |
 | `portal/attendance.py` | `AttendanceTracker` — interpreter visits and interpreting time from booth state, batched writes to `interpreter_attendance` (#1215) |
 | `portal/live_demo.py` | Home-page live demo (`/ws/demo/live`): local Whisper → NLLB → Supertonic pipeline, site + visitor glossary, admission limits, and the admin-edited `live_demo_settings` row (`/admin/live-demo/`) |
@@ -188,13 +190,16 @@ Validation: `portal/booth_identity.py` — slug: `^[a-z0-9]+(?:-[a-z0-9]+)*$`; l
 | `booth:set-active` | `_handle_set_active` | `target_id` |
 | `booth:update-state` | `_handle_update_state` | `mic_active`, `ingest_connected` |
 | `booth:request-publish-ticket` | `_handle_request_publish_ticket` | — (participant from the WS session) |
+| `booth:set-output` | `_handle_set_output` | `output` (`primary` or `return`) |
 
 Server → Client: `booth:joined`, `booth:state`, `booth:chat`, `booth:error`, `booth:publish-ticket`
 
 Booth WHIP publishing is authenticated (#783): MediaMTX forwards the `Authorization: Bearer` ticket to
 `/internal/media-auth`, which redeems it once (`portal/booth_publish.py`, 30 s TTL, bound to the booth's
 server-derived path) and re-checks that the holder is still the active interpreter and that Mission Control has
-broadcast unlocked. Anonymous publishes get 401. A `booth:join` naming another socket's `participant_id` gets a fresh ID.
+broadcast unlocked. A two-way booth (#1397) publishes to its own path or to the room's spoken-language path, whichever
+it outputs into now (`booth:set-output`); the ticket is bound to that path and the hook re-checks it, and only one booth
+at a time may output into a return channel (`BoothRegistry` claim, under its lock). Anonymous publishes get 401. A `booth:join` naming another socket's `participant_id` gets a fresh ID.
 The ticket is only checked when the session starts, so the hook also records the MediaMTX session `id` per booth (#1285).
 When that interpreter is removed (access revoked, `booth:leave`, reconnect grace expired) the portal kicks that session by
 id, so a newer publisher on the path is untouched; Mission Control Stop and booth deletion kick the path's current source.
@@ -203,7 +208,7 @@ booth state change, before its broadcast: a MediaMTX failure is logged and never
 in memory only: after a portal restart, revocation cannot kick a session opened before the restart (Stop and booth deletion
 still end the path's current source).
 
-Caption feed: `/ws/captions/{booth_id}` receives `caption`, `translated_caption` and public `booth:state`. `ws_captions` validates query JWTs: listener tokens are event-scoped, participant tokens are booth-scoped, and user tokens require a currently active account. Without a query token, events with a listener join code require that code, an active user session, or a scoped invite. Code attempts share a bounded pre-verification budget across listener/overlay HTTP, caption WS and TTS WS paths (`portal/join_code_limit.py`); excess caption guesses close with 1008, and excess TTS guesses are refused like any other TTS authorization failure. The audio-delay poll clears a listener code cookie that no longer matches, so tabs left open across a code regenerate do not spend the budget on every poll. Events without a join code retain public caption access with the anonymous connection cap. Rejections are accepted then closed with 4001 (missing/invalid credentials) or 4003 (scope mismatch), so browsers can distinguish them from transport failures. `booth:state` carries only `booth_id`, `event_slug`, `room_id`, `language_code`, `broadcast_unlocked` and `ingest_status`, never participants or booth chat. Overlay reconnects obtain a fresh listener token through `/overlay/.../session`, which rechecks the account/code and channel.
+Caption feed: `/ws/captions/{booth_id}` receives `caption`, `translated_caption` and public `booth:state`. `ws_captions` validates query JWTs: listener tokens are event-scoped, participant tokens are booth-scoped, and user tokens require a currently active account. Without a query token, events with a listener join code require that code, an active user session, or a scoped invite. Code attempts share a bounded pre-verification budget across listener/overlay HTTP, caption WS and TTS WS paths (`portal/join_code_limit.py`); excess caption guesses close with 1008, and excess TTS guesses are refused like any other TTS authorization failure. The audio-delay poll clears a listener code cookie that no longer matches, so tabs left open across a code regenerate do not spend the budget on every poll. Events without a join code retain public caption access with the anonymous connection cap. Rejections are accepted then closed with 4001 (missing/invalid credentials) or 4003 (scope mismatch), so browsers can distinguish them from transport failures. `booth:state` carries only `booth_id`, `event_slug`, `room_id`, `language_code`, `broadcast_unlocked`, `ingest_status` and `on_air` (unlocked, interpreter reports connected, the booth outputs into its own channel, and MediaMTX has a publisher on the path; `portal/booth_on_air.py`), never participants or booth chat. The floor feed (`{event}-{room}-floor`) also gets `channel:state` `{return_on_air, whep_url, language_code}` when a two-way booth goes on or off air into the spoken language, by the same rule as `on_air` applied to the return path. Overlay reconnects obtain a fresh listener token through `/overlay/.../session`, which rechecks the account/code and channel.
 
 Direct-push TTS feed: `/ws/tts/{room_id}/{language_code}/{booth_id}` — pre-authorized binary bundle stream (version byte, length-prefixed JSON header, optional 24 kHz PCM audio). Translation text is delivered concurrently over the captions feed and inside TTS bundle headers.
 

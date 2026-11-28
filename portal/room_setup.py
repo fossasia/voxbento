@@ -19,8 +19,9 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from starlette.datastructures import FormData
 
+from portal.booth_identity import parse_booth_id, validate_language_code
 from portal.config import settings
-from portal.database import create_booth, delete_booth, list_booths_for_room
+from portal.database import create_booth, delete_booth, get_session, list_booths_for_room
 from portal.models import DBBooth, Event, Room, RoomTranslationLanguage
 from portal.roles import INTERPRETER
 from portal.transcription.constants import ALLOWED_MODELS, ProviderEnum
@@ -103,6 +104,126 @@ ALL_LANGUAGES: tuple[tuple[str, str], ...] = tuple(sorted(LANGUAGE_NAMES.items()
 
 def language_name(code: str) -> str:
     return LANGUAGE_NAMES.get(code, code.upper())
+
+
+# ── Two-way booths ───────────────────────────────────────────────────────
+# A two-way booth also interprets back into the room's spoken language (#1397), e.g. a Thai
+# booth that answers a question asked in Thai into English. Its return language has its own
+# channel, so the same rules keep one publisher per channel wherever it is set.
+
+
+class ReturnLanguageInUse(ValueError):
+    """A booth would lose the return language it is interpreting into right now."""
+
+
+def two_way_language(spoken_language: str | None) -> str | None:
+    """The language a two-way booth in a room with this spoken language interprets back into, or None."""
+    if not spoken_language:
+        return None
+    try:
+        code = validate_language_code(spoken_language)
+    except ValueError:
+        return None
+    return None if code == "floor" else code
+
+
+def return_language_error(
+    return_code: str,
+    *,
+    booth_language: str,
+    spoken_language: str | None,
+    other_booth_languages: Iterable[str],
+) -> str | None:
+    """Why *return_code* can't be the return language of a booth, or None when it can."""
+    spoken = two_way_language(spoken_language)
+    if spoken is None:
+        return "A booth can only be two-way once the room's spoken language is set."
+    if return_code != spoken:
+        return f"A two-way booth interprets back into the room's spoken language, {language_name(spoken)}."
+    if return_code == booth_language:
+        return f"The {language_name(booth_language)} booth already interprets into {language_name(spoken)}."
+    if return_code in set(other_booth_languages):
+        return f"This room already has its own {language_name(spoken)} booth, so another booth can't interpret into it."
+    return None
+
+
+async def return_language_owner(session: AsyncSession, room_id: int, language_code: str) -> DBBooth | None:
+    """The booth in the room that interprets back into *language_code*, if any."""
+    return await session.scalar(
+        select(DBBooth).where(DBBooth.room_id == room_id, DBBooth.return_language_code == language_code)
+    )
+
+
+def return_owner_error(owner: DBBooth) -> str:
+    return (
+        f"The {owner.language_name} booth interprets back into {language_name(owner.return_language_code or '')}, "
+        "so this room can't have a booth for that language."
+    )
+
+
+async def booth_return_language(
+    session: AsyncSession, event_slug: str, room_id: int, language_code: str
+) -> tuple[str, str] | None:
+    """The booth's return language as (code, name) while it is still a valid one, else None.
+
+    Checked again for each switch, so a two-way setting that a later edit made invalid can't
+    put two booths on one channel.
+    """
+    room = await session.scalar(
+        select(Room).join(Event).where(Event.slug == event_slug, Event.deleted_at.is_(None), Room.id == room_id)
+    )
+    if room is None:
+        return None
+    room_booths = await list_booths_for_room(session, room_id)
+    booth = next((b for b in room_booths if b.language_code == language_code), None)
+    if booth is None or booth.return_language_code is None:
+        return None
+    others = [b.language_code for b in room_booths if b.id != booth.id]
+    error = return_language_error(
+        booth.return_language_code,
+        booth_language=booth.language_code,
+        spoken_language=room.floor_language_code,
+        other_booth_languages=others,
+    )
+    return None if error else (booth.return_language_code, language_name(booth.return_language_code))
+
+
+async def load_booth_return_language(booth_id: str) -> tuple[str, str] | None:
+    """``booth_return_language`` for a registry booth id, in its own session."""
+    try:
+        event_slug, room_id, language_code = parse_booth_id(booth_id)
+    except ValueError:
+        return None
+    async with get_session() as session:
+        return await booth_return_language(session, event_slug, room_id, language_code)
+
+
+async def drop_mismatched_returns(
+    session: AsyncSession, room_id: int, spoken_language: str | None, outputting: Iterable[str] = ()
+) -> tuple[str, ...]:
+    """Take two-way off the booths whose return language is no longer the room's spoken language.
+
+    *outputting* are the booth languages interpreting into their return language right now:
+    one of those losing it raises ``ReturnLanguageInUse`` and nothing is changed.
+    Returns the booth languages that stopped being two-way.
+    """
+    spoken = two_way_language(spoken_language)
+    live = set(outputting)
+    stale = [
+        booth
+        for booth in await list_booths_for_room(session, room_id)
+        if booth.return_language_code is not None and booth.return_language_code != spoken
+    ]
+    for booth in stale:
+        if booth.language_code in live:
+            raise ReturnLanguageInUse(
+                f"The {booth.language_name} booth is interpreting into "
+                f"{language_name(booth.return_language_code or '')} right now. Ask its interpreter to switch "
+                f"back to {booth.language_name}, then save again."
+            )
+    for booth in stale:
+        booth.return_language_code = None
+    return tuple(booth.language_code for booth in stale)
 
 
 # ── AI engines ───────────────────────────────────────────────────────────
@@ -340,6 +461,8 @@ class RoomPlan:
     speech_engine: str
     translation_engine: str
     voice_engine: str
+    # Interpreter languages whose booth also interprets back into the spoken language (#1397).
+    two_way: tuple[str, ...] = ()
 
     @property
     def interpreter_languages(self) -> tuple[str, ...]:
@@ -427,6 +550,7 @@ async def load_snapshot(
         else:
             delivery = AI_VOICE if room.floor_tts_enabled and ai_rows[code].tts_enabled else AI_TEXT
         languages.append((code, delivery))
+    spoken = two_way_language(room.floor_language_code)
     plan = RoomPlan(
         display_name=room.display_name,
         spoken_language=room.floor_language_code or "en",
@@ -435,14 +559,23 @@ async def load_snapshot(
         speech_engine=_available_or_first(catalog.speech, room.floor_transcription_provider),
         translation_engine=_available_or_first(catalog.translation, room.floor_translation_provider),
         voice_engine=_available_or_first(catalog.voice, room.floor_tts_provider),
+        two_way=tuple(b.language_code for b in booths if spoken and b.return_language_code == spoken),
     )
     return RoomSnapshot(plan, booth_codes, frozenset(live_codes))
 
 
 def parse_plan(
-    form: FormData, catalog: EngineCatalog, *, existing_booth_codes: Iterable[str] = ()
+    form: FormData,
+    catalog: EngineCatalog,
+    *,
+    existing_booth_codes: Iterable[str] = (),
+    outputting: Iterable[str] = (),
 ) -> tuple[RoomPlan, tuple[str, ...]]:
-    """Read the setup form. Always returns a plan (to re-show the form) plus any errors."""
+    """Read the setup form. Always returns a plan (to re-show the form) plus any errors.
+
+    *outputting* are the booth languages interpreting into their return language right now,
+    which must stay two-way.
+    """
     errors: list[str] = []
     existing_booths = set(existing_booth_codes)
 
@@ -480,14 +613,39 @@ def parse_plan(
     if not languages and not captions:
         errors.append("Choose at least one listener language, or turn on captions.")
 
+    spoken_language = spoken if spoken in LANGUAGE_NAMES else "en"
+    # Each checkbox carries the spoken language it was shown for, so a box ticked for
+    # English doesn't turn into "two-way with French" when the spoken language changes.
+    two_way = tuple(
+        code
+        for code, delivery in languages
+        if delivery == INTERPRETER and str(form.get(f"two_way_{code}", "")) == spoken_language
+    )
+    interpreter_codes = [code for code, delivery in languages if delivery in (INTERPRETER, BOTH)]
+    for code in two_way:
+        error = return_language_error(
+            spoken_language,
+            booth_language=code,
+            spoken_language=spoken_language,
+            other_booth_languages=[other for other in interpreter_codes if other != code],
+        )
+        if error:
+            errors.append(error)
+    for code in sorted(set(outputting) - set(two_way)):
+        errors.append(
+            f"The {language_name(code)} booth is interpreting into another language right now. "
+            f"Ask its interpreter to switch back to {language_name(code)}, then save again."
+        )
+
     plan = RoomPlan(
         display_name=display_name,
-        spoken_language=spoken if spoken in LANGUAGE_NAMES else "en",
+        spoken_language=spoken_language,
         languages=tuple(languages),
         captions=captions,
         speech_engine=str(form.get("speech_engine", _first(catalog.speech))).strip(),
         translation_engine=str(form.get("translation_engine", _first(catalog.translation))).strip(),
         voice_engine=str(form.get("voice_engine", _first(catalog.voice))).strip(),
+        two_way=two_way,
     )
 
     if plan.uses_speech_recognition and catalog.find("speech", plan.speech_engine) is None:
@@ -533,6 +691,8 @@ class ApplyResult:
     added_booths: tuple[str, ...]
     removed_booths: tuple[str, ...]
     kept_live_booths: tuple[str, ...]
+    # Booths that interpreted back into the spoken language and no longer do (#1397).
+    one_way_booths: tuple[str, ...] = ()
 
 
 def default_jitsi_url(event_slug: str, display_name: str) -> str:
@@ -571,6 +731,14 @@ async def apply_plan(
         await create_booth(
             session, event_id=event.id, room_id=room.id, language_code=code, language_name=language_name(code)
         )
+    one_way: list[str] = []
+    for booth in await list_booths_for_room(session, room.id):
+        if booth.language_code in kept_live:
+            continue
+        return_code = plan.spoken_language if booth.language_code in plan.two_way else None
+        if booth.return_language_code and booth.return_language_code != return_code:
+            one_way.append(booth.language_code)
+        booth.return_language_code = return_code
 
     room.floor_transcription_enabled = plan.uses_speech_recognition
     if plan.uses_speech_recognition:
@@ -605,7 +773,7 @@ async def apply_plan(
             room.floor_tts_provider = voice.provider
 
     await session.flush()
-    return ApplyResult(tuple(added), tuple(removed), tuple(kept_live))
+    return ApplyResult(tuple(added), tuple(removed), tuple(kept_live), tuple(one_way))
 
 
 def _nllb_language_name(code: str) -> str:

@@ -12,14 +12,16 @@ import pytest
 from sqlalchemy import select
 
 from fastapi_app import app
+from portal import floor_language
 from portal import meeting_source as meeting
 from portal import program_ingest as ingest
 from portal.auth import create_user_token, decode_token, generate_admin_csrf_token
 from portal.booth_identity import make_booth_id, make_mediamtx_path
 from portal.config import settings
 from portal.database import configure, create_user, dispose, get_session, init_db
-from portal.models import Event, Room
+from portal.models import Event, Room, RoomTranslationLanguage
 from portal.program_ingest import deleted_floor_workers
+from portal.transcription.aggregator import CLEAR_CAPTION
 from portal.transcription.worker import active_workers
 
 SECRET_URL = "https://meet.example.org/TrackA?jwt=meeting-secret-token"
@@ -903,3 +905,76 @@ async def test_deleted_event_worker_is_stopped_when_its_health_record_is_gone(en
     env["stop"].reset_mock()
     await meeting._stop_deleted_event_workers({env["room_id"]})
     env["stop"].assert_awaited_once_with(env["booth_id"])
+
+
+async def pick_floor_language(env, language_code: str) -> None:
+    response = await env["client"].post(
+        f"/api/rooms/{env['room_id']}/floor-language", json={"language_code": language_code}
+    )
+    assert response.status_code == 200, response.text
+
+
+@pytest.fixture
+async def thai_room(env, monkeypatch):
+    """A room with a Thai channel whose floor captions are running in English."""
+    monkeypatch.setattr(floor_language, "clock", env["clock"])
+    broadcast = AsyncMock()
+    monkeypatch.setattr(meeting, "broadcast_transcription", broadcast)
+    async with get_session() as session:
+        session.add(
+            RoomTranslationLanguage(room_id=env["room_id"], language_code="th", language_name="Thai", enabled=True)
+        )
+    await env["client"].post(env["url"], json={"action": "connect", "meeting_url": "https://meet.example.org/TrackA"})
+    env["agents"].rooms[env["key"]]["stage"] = "in_meeting"
+    publish(env, 100)
+    await meeting.reconcile_once()
+    assert env["start"].await_args.kwargs["transcription_language"] == "en"
+    return broadcast
+
+
+@pytest.mark.anyio
+async def test_floor_worker_follows_the_floor_language_after_a_second(env, thai_room):
+    """#1397: one restart in the new language, and the old worker's partial caption is cleared."""
+    await pick_floor_language(env, "th")
+    env["clock"].now += 0.5
+    publish(env, 200)
+    await meeting.reconcile_once()
+    env["stop"].assert_not_awaited()
+    assert env["start"].await_args.kwargs["transcription_language"] == "en"
+
+    env["clock"].now += 0.6
+    publish(env, 300)
+    await meeting.reconcile_once()
+    env["stop"].assert_awaited_once_with(env["booth_id"])
+    thai_room.assert_awaited_once_with(env["booth_id"], CLEAR_CAPTION)
+    assert env["start"].await_args.kwargs["transcription_language"] == "th"
+
+    env["clock"].now += 2
+    publish(env, 400)
+    await meeting.reconcile_once()
+    env["stop"].assert_awaited_once()
+
+
+@pytest.mark.anyio
+async def test_floor_language_switched_back_inside_the_window_restarts_nothing(env, thai_room):
+    await pick_floor_language(env, "th")
+    env["clock"].now += 0.5
+    await pick_floor_language(env, "en")
+    for received in (200, 300, 400):
+        env["clock"].now += 1
+        publish(env, received)
+        await meeting.reconcile_once()
+    env["stop"].assert_not_awaited()
+    thai_room.assert_not_awaited()
+    assert {call.kwargs["transcription_language"] for call in env["start"].await_args_list} == {"en"}
+
+
+@pytest.mark.anyio
+async def test_floor_language_choice_survives_a_portal_restart(env, thai_room):
+    await pick_floor_language(env, "th")
+    floor_language._changed_at.clear()
+    floor_language._applied.clear()  # a restart forgets everything in memory
+    meeting.health.clear()
+    publish(env, 200)
+    await meeting.reconcile_once()
+    assert env["start"].await_args.kwargs["transcription_language"] == "th"

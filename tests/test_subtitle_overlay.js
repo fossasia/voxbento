@@ -301,5 +301,24 @@ console.log('\n── Real-time subtitles updates (Issue #1072) ──');
   assert(linesBox.children.length === 4, 'captions without segment_id are not deduplicated');
 }
 
+// Test 12: each line says the language it was spoken in (#1397)
+{
+  const { activeWs, linesBox } = runOverlay({ boothId: 'pycon-1-floor' }, '?lines=4');
+  activeWs.onmessage({
+    data: JSON.stringify({ type: 'caption', status: 'final', text: 'Welcome', segment_id: 'a', source_language: 'en' }),
+  });
+  activeWs.onmessage({ data: JSON.stringify({ type: 'caption', status: 'final', text: 'Older', segment_id: 'c' }) });
+  activeWs.onmessage({
+    data: JSON.stringify({ type: 'caption', status: 'partial', text: 'Sawasdee', segment_id: 'b', source_language: 'th' }),
+  });
+  assert(linesBox.children[0].lang === 'en', 'final line carries its source language');
+  assert(linesBox.children[1].lang === undefined, 'a caption without a language sets none');
+  assert(linesBox.children[2].lang === 'th', 'partial line carries its source language');
+  activeWs.onmessage({
+    data: JSON.stringify({ type: 'translated_caption', text: 'Hello', segment_id: 'a', source_language: 7 }),
+  });
+  assert(linesBox.children[0].lang === undefined, 'a replaced line takes the language of the new text');
+}
+
 console.log(`\n${passed} passed, ${failed} failed\n`);
 if (failed > 0) process.exit(1);

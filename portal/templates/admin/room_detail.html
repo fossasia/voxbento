@@ -69,6 +69,9 @@
 {% elif just_updated %}
 <div class="alert alert-success" role="status">Languages saved.</div>
 {% endif %}
+{% if one_way_languages %}
+<div class="alert alert-info" role="status">{{ one_way_languages | join(', ') }} {{ 'is' if one_way_languages|length == 1 else 'are' }} no longer two-way. Turn two-way on again in Change languages if you still need it.</div>
+{% endif %}
 {% if kept_live_languages %}
 <div class="alert alert-warning" role="status">{{ kept_live_languages | join(', ') }} {{ 'booth is' if kept_live_languages|length == 1 else 'booths are' }} live right now, so {{ 'it was' if kept_live_languages|length == 1 else 'they were' }} kept. Change the languages again after the session to remove {{ 'it' if kept_live_languages|length == 1 else 'them' }}.</div>
 {% endif %}
@@ -437,6 +440,10 @@
         <label for="audio_delay_ms">Listener delay (milliseconds)</label>
         <input type="number" id="audio_delay_ms" name="audio_delay_ms" value="{{ room.audio_delay_ms }}" min="0" max="10000" step="1">
         <span class="hint">Holds back what listeners hear so it lines up with a livestream video that runs late. Leave at 0 if there is no video. 1000 = 1 second.</span>
+      </div>
+      <div class="field">
+        <label><input type="checkbox" name="auto_floor_enabled" {% if room.auto_floor_enabled %}checked{% endif %}> Play the original audio while an interpreter is off air</label>
+        <span class="hint">Listeners on an interpreter language hear the room floor until that interpreter goes live, and again if they go off air. Needs the managed meeting feed turned on or a program stream sent over WHIP; a meeting link alone is not enough. Open listener pages pick up a change when they reload.</span>
       </div>
       <div class="room-save-bar"><button type="submit" class="btn btn-primary">Save</button></div>
     </div>

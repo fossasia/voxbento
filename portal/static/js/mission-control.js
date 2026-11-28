@@ -7,12 +7,15 @@
  *   - See who is in each booth, who is live and who is speaking
  *   - Listen in through a per-booth volume slider (WHEP)
  *   - Turn a booth's broadcast on or off
- *   - Start and stop the floor captions of each room
+ *   - Start and stop the floor captions of each room, and pick the language spoken on the floor
  *   - Browse room reports and generate notes for a session
  *   - Open a booth themselves
  *
  * The page passes its data in data-config on #mission-control (no inline script).
  */
+
+import { directionLabel } from './booth-output.js';
+import { renderFloorLanguage } from './floor-language.js';
 
 const root = document.getElementById('mission-control');
 const config = JSON.parse(root?.dataset.config || '{}');
@@ -20,6 +23,8 @@ const roomsContainer = document.getElementById('rooms-container');
 
 /** @type {Map<string, {state:object, ws:WebSocket|null, whep:object|null, audioElement:HTMLAudioElement|null, currentVolume:number, pendingFocusId:string}>} */
 const boothMap = new Map();
+// room id -> that room's floor language picker, which follows a two-way booth (#1397).
+const floorPickers = new Map();
 
 function el(tag, className, text) {
   const node = document.createElement(tag);
@@ -118,6 +123,11 @@ function renderFloorCaptions(room) {
   const label = el('span', 'mc-captions-label', 'Floor captions');
   const status = el('span', 'mc-pill', 'Checking…');
   box.append(label, status);
+  if (room.floor_language) {
+    const picker = renderFloorLanguage(room, { notify: (message) => showToast(message, 'error') });
+    floorPickers.set(room.id, picker);
+    box.appendChild(picker);
+  }
 
   if (room.floor_source === 'program_ingest') {
     status.textContent = 'From the program feed';
@@ -204,7 +214,9 @@ function connectWs(boothId) {
 
     if (data.type === 'booth:state') {
       entry.state = { ...data.state, room_name: data.state.room_name ?? entry.state.room_name };
+      followOutput(boothId);
       renderCard(boothId);
+      showFloorHolder(entry.state.room_id);
     }
     // Silently ignore booth:joined — we do not join as a participant.
   };
@@ -244,9 +256,10 @@ function handleVolumeChange(boothId, volume) {
   const vol = parseInt(volume, 10);
 
   if (vol > 0 && !entry.whep) {
-    const whepUrl = `${config.whipBase}/${entry.state.mediamtx_path}/whep`;
+    // A two-way booth is heard on the channel it interprets into now (#1397).
+    entry.whepPath = listenPath(entry.state);
     const whep = window.createWhepClient();
-    whep.start({ whepUrl, audioEl: entry.audioElement });
+    whep.start({ whepUrl: `${config.whipBase}/${entry.whepPath}/whep`, audioEl: entry.audioElement });
     entry.whep = whep;
   } else if (vol === 0 && entry.whep) {
     entry.whep.stop();
@@ -256,6 +269,27 @@ function handleVolumeChange(boothId, volume) {
   if (entry.audioElement) {
     entry.audioElement.volume = vol / 100;
   }
+}
+
+const listenPath = (state) => state.output_mediamtx_path;
+
+// The picker shows the booth interpreting into the spoken language, which sets the floor language.
+function showFloorHolder(roomId) {
+  const picker = floorPickers.get(roomId);
+  if (!picker) return;
+  const holder = [...boothMap.values()]
+    .map((entry) => entry.state)
+    .find((s) => s.room_id === roomId && s.output_language_code && s.output_language_code !== s.language_code);
+  picker.setHeldBy(holder ? { code: holder.language_code, name: holder.language } : null);
+}
+
+/** Keep listening to a two-way booth when it switches channel. */
+function followOutput(boothId) {
+  const entry = boothMap.get(boothId);
+  if (!entry?.whep || entry.whepPath === listenPath(entry.state)) return;
+  entry.whep.stop();
+  entry.whep = null;
+  handleVolumeChange(boothId, entry.currentVolume);
 }
 
 // ---------------------------------------------------------------------------
@@ -306,6 +340,8 @@ function renderCard(boothId) {
   const title = el('h3', 'mc-booth-title', s.language);
   title.appendChild(el('span', 'mc-booth-code', s.language_code));
   head.appendChild(title);
+  const direction = directionLabel(s);
+  if (direction) head.appendChild(el('span', 'mc-pill', direction));
   head.appendChild(el('span', `mc-pill ${onAir ? 'is-on' : 'is-off'}`, onAir ? '● On air' : 'Not on air'));
   card.appendChild(head);
 

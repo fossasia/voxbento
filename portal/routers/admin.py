@@ -16,7 +16,7 @@ import pycountry
 from fastapi import APIRouter, Depends, Form, HTTPException, Query, Request, status
 from fastapi.responses import JSONResponse, RedirectResponse, Response
 from fastapi.templating import Jinja2Templates
-from pydantic import BaseModel
+from pydantic import BaseModel, ConfigDict
 from sqlalchemy import delete, func, select
 from sqlalchemy import inspect as sa_inspect
 from sqlalchemy.exc import IntegrityError, SQLAlchemyError
@@ -24,7 +24,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import joinedload
 from starlette.datastructures import FormData
 
-from portal import live_demo, live_demo_ai, meeting_source
+from portal import floor_language, live_demo, live_demo_ai, meeting_source
 from portal import roles as roles_module
 from portal.auth import (
     ADMIN_CSRF_COOKIE,
@@ -148,6 +148,7 @@ from portal.roles import EVENT_OWNER, assignment_error, role_label
 from portal.room_setup import (
     AI_VOICE,
     EngineCatalog,
+    ReturnLanguageInUse,
     RoomPlan,
     RoomSummary,
     apply_plan,
@@ -155,12 +156,18 @@ from portal.room_setup import (
     booth_speech_models,
     brand_name,
     default_jitsi_url,
+    drop_mismatched_returns,
     engine_catalog,
+    language_name,
     load_snapshot,
     parse_plan,
+    return_language_error,
+    return_language_owner,
+    return_owner_error,
     room_audio_choice,
     server_unavailable_reason,
     summarize,
+    two_way_language,
     voice_languages_for,
 )
 from portal.room_setup import ALL_LANGUAGES as ROOM_ALL_LANGUAGES
@@ -203,7 +210,7 @@ from portal.user_admin import FIELDS as USER_ACCESS_FIELDS
 from portal.user_admin import AccessChange, UserAdminError, delete_user_account, is_last_active_admin, set_user_access
 from portal.user_menu import resolve_user_menu, user_menu_context
 from portal.utils import _check_mediamtx, _make_jitsi_url, get_client_ip, safe_redirect, verify_same_origin
-from portal.websockets.manager import broadcast_transcription, manager
+from portal.websockets.manager import broadcast_transcription, manager, note_return_language
 from portal.websockets.revocation import revoke_booths_for_deleted_entity, revoke_membership_push
 from portal.workspace_routing import management_template_context, management_url
 
@@ -605,6 +612,12 @@ async def _room_has_booth_language(session: AsyncSession, room_id: int, language
     return existing is not None
 
 
+async def _language_is_a_return(room_id: int, language_code: str) -> bool:
+    """Whether a two-way booth in the room interprets back into *language_code* (#1397)."""
+    async with get_session() as session:
+        return await return_language_owner(session, room_id, language_code) is not None
+
+
 async def _create_booth_unless_duplicate(
     *, event_id: int, room_id: int, language_code: str, language_name: str
 ) -> bool:
@@ -673,6 +686,27 @@ def _mission_control_reports(event: Event, room_id: int, principal: dict, is_adm
     return {"url": f"{prefix}/events/{event.id}/rooms/{room_id}/analysis/"}
 
 
+def _floor_language_state(room: Room, room_booths: list[DBBooth]) -> dict | None:
+    """What Mission Control's floor language picker shows, or None when the room has no floor captions."""
+    if not room.has_floor_captions or not room.floor_language_code:
+        return None
+    value = floor_language.requested(room)
+    manual = room.floor_language_override or room.floor_language_code
+    codes = floor_language.choices(room, room_booths)
+    for code in (manual, value):
+        if code not in codes:
+            # Picked before the language was taken out of the room: still shown, so it can be changed back.
+            codes.append(code)
+    held = floor_language.booth_holding(room.id)
+    return {
+        "value": value,
+        "manual": manual,
+        "choices": [{"code": code, "name": language_name(code)} for code in codes],
+        # A two-way booth interpreting into the spoken language sets the floor language meanwhile.
+        "held_by": {"code": held, "name": language_name(held)} if held else None,
+    }
+
+
 @router.get("/mission-control/{event_slug}/")
 async def mission_control_grid(request: Request, event_slug: str, user=Depends(require_user)):
     is_admin, _ = await get_accessible_event_ids(request, user_id=int(user["sub"]))
@@ -694,6 +728,10 @@ async def mission_control_grid(request: Request, event_slug: str, user=Depends(r
             if allowed_room_ids is not None and db_b.room_id not in allowed_room_ids:
                 continue
             booth_id = make_booth_id(event.slug, db_b.room_id, db_b.language_code)
+            return_code = db_b.return_language_code
+            return_name = room_language_name(return_code) if return_code else ""
+            # Mission Control shows each two-way booth's direction (#1397).
+            booths.set_return_language_sync(booth_id, return_code, return_name)
             in_mem = booths._booths.get(booth_id)
             if in_mem is not None:
                 state = in_mem.as_public_dict()
@@ -715,6 +753,10 @@ async def mission_control_grid(request: Request, event_slug: str, user=Depends(r
                     # Mission Control. A booth with no active session is off.
                     "broadcast_unlocked": False,
                     "ingest_status": "disconnected",
+                    "return_language_code": return_code,
+                    "return_language": return_name,
+                    "output_language_code": db_b.language_code,
+                    "output_mediamtx_path": mtx_path,
                     "participants": [],
                     "chat_messages": [],
                 }
@@ -728,6 +770,7 @@ async def mission_control_grid(request: Request, event_slug: str, user=Depends(r
                 "name": room.display_name,
                 "floor_captions": room.has_floor_captions,
                 "floor_source": room.floor_source or "jitsi_bot",
+                "floor_language": _floor_language_state(room, [b for b in db_booths if b.room_id == room.id]),
                 "reports": _mission_control_reports(event, room.id, principal, is_admin),
             }
             for room in await list_rooms_for_event(session, event.id)
@@ -1084,6 +1127,9 @@ async def admin_setup_add_booth(request: Request, event_id: int):
         if not language_name:
             lang = pycountry.languages.get(alpha_2=language_code)
             language_name = lang.name if lang else language_code.upper()
+    if error is None and await _language_is_a_return(room.id, language_code):
+        error = "return_language"
+    if error is None:
         try:
             created = await _create_booth_unless_duplicate(
                 event_id=event_id,
@@ -1259,7 +1305,12 @@ async def admin_room_setup_save(request: Request, event_id: int, room_id: int):
         room = await room_in_event(session, event_id, room_id)
         catalog = engine_catalog(event)
         booth_codes = [b.language_code for b in await list_booths_for_room(session, room_id)]
-        plan, errors = parse_plan(form, catalog, existing_booth_codes=booth_codes)
+        plan, errors = parse_plan(
+            form,
+            catalog,
+            existing_booth_codes=booth_codes,
+            outputting=booths.outputting_into_return(event.slug, room_id),
+        )
         live = _live_booth_codes(event.slug, room_id, booth_codes)
         if errors:
             admin_flags = await get_access_flags(request, event_id=event_id, room_id=room_id)
@@ -1279,9 +1330,18 @@ async def admin_room_setup_save(request: Request, event_id: int, room_id: int):
         result = await apply_plan(session, event, room, plan, catalog, live_booth_codes=live)
     # The session has committed: drop the old voice settings so AI text languages stop speaking now.
     invalidate_tts_config(room_id)
+    for code in plan.interpreter_languages:
+        two_way = code in plan.two_way
+        await note_return_language(
+            make_booth_id(event.slug, room_id, code),
+            plan.spoken_language if two_way else None,
+            room_language_name(plan.spoken_language) if two_way else "",
+        )
     query = {"updated": "1"}
     if result.kept_live_booths:
         query["kept_live"] = ",".join(result.kept_live_booths)
+    if result.one_way_booths:
+        query["one_way"] = ",".join(result.one_way_booths)
     target = (
         f"events/{event_id}/setup/rooms"
         if from_setup
@@ -1711,6 +1771,7 @@ async def admin_room_detail(request: Request, event_id: int, room_id: int):
     kept_live = [
         room_language_name(code) for code in request.query_params.get("kept_live", "").split(",") if code.strip()
     ]
+    one_way = [room_language_name(code) for code in request.query_params.get("one_way", "").split(",") if code.strip()]
     return templates.TemplateResponse(
         request=request,
         name="admin/room_detail.html",
@@ -1730,6 +1791,7 @@ async def admin_room_detail(request: Request, event_id: int, room_id: int):
             "just_created": request.query_params.get("created") == "1",
             "just_updated": request.query_params.get("updated") == "1",
             "kept_live_languages": kept_live,
+            "one_way_languages": one_way,
             "fallback_jitsi_url": fallback_jitsi_url,
             "catalog": catalog,
             # Services that cannot translate this room's languages are not offered.
@@ -1924,6 +1986,7 @@ def _process_room_general_section(room: Room, form: FormData) -> None:
         room.display_name = display_name
     room.jitsi_url = jitsi_url if jitsi_url else None
     room.audio_delay_ms = audio_delay_ms
+    room.auto_floor_enabled = form.get("auto_floor_enabled") == "on"
 
 
 async def _process_room_relay_section(session: AsyncSession, room: Room, event_id: int, form: FormData) -> None:
@@ -2060,6 +2123,7 @@ async def admin_edit_room(request: Request, event_id: int, room_id: int):
             room = await get_room_by_id(session, room_id)
             if room is None or room.event_id != event_id:
                 raise HTTPException(status_code=404, detail="Room not found.")
+            spoken_before = room.floor_language_code
 
             _require_room_form_translatable(room, form, form_section)
 
@@ -2085,11 +2149,26 @@ async def admin_edit_room(request: Request, event_id: int, room_id: int):
             if form_section == "ai":
                 await _process_room_ai_section(session, room, event_id, form)
 
+            one_way: tuple[str, ...] = ()
+            event_slug = ""
+            if room.floor_language_code != spoken_before:
+                event = await get_event_by_id(session, event_id)
+                event_slug = event.slug if event else ""
+                try:
+                    one_way = await drop_mismatched_returns(
+                        session, room.id, room.floor_language_code, booths.outputting_into_return(event_slug, room.id)
+                    )
+                except ReturnLanguageInUse as exc:
+                    raise TranslationLanguageError(status_code=409, detail=str(exc))
             await session.flush()
     except TranslationLanguageError as error:
         return await _translation_form_response(request, error, event_id, room_id)
+    for code in one_way:
+        await note_return_language(make_booth_id(event_slug, room_id, code), None, "")
+    # The room page lists the booths that stopped being two-way.
+    query = f"?{urllib.parse.urlencode({'one_way': ','.join(one_way)})}" if one_way else ""
     return safe_redirect(
-        url=management_url(request, f"events/{event_id}/rooms/{room_id}/"),
+        url=management_url(request, f"events/{event_id}/rooms/{room_id}/{query}"),
         status_code=status.HTTP_303_SEE_OTHER,
     )
 
@@ -2388,6 +2467,39 @@ async def api_floor_transcription_status(room_id: int):
     return body
 
 
+class FloorLanguageRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    language_code: str
+
+
+@router.post(
+    "/api/rooms/{room_id}/floor-language",
+    dependencies=[Depends(require_room_event_access), Depends(require_admin_csrf)],
+)
+async def api_set_floor_language(room_id: int, data: FloorLanguageRequest):
+    """Mission Control's choice of the language spoken on the floor (#1397); captions follow it after a second."""
+    async with get_session() as session:
+        room = await get_room_by_id(session, room_id)
+        if not room:
+            raise HTTPException(status_code=404, detail="Invalid room")
+        if data.language_code not in floor_language.choices(room, await list_booths_for_room(session, room.id)):
+            # A room language left out because floor translation can't translate from it says so.
+            unsupported = room.floor_translation_enabled and language_support_error(
+                room.floor_translation_provider, room.floor_translation_model, [data.language_code]
+            )
+            raise HTTPException(
+                status_code=400,
+                detail=unsupported or "Pick the room's spoken language or one of its listener languages.",
+            )
+        override = None if data.language_code == room.floor_language_code else data.language_code
+        if override != room.floor_language_override:
+            # Before the commit, so a reconcile tick that reads the new choice also sees the debounce window.
+            floor_language.note_change(room.id)
+            room.floor_language_override = override
+    return {"language_code": floor_language.requested(room)}
+
+
 @router.post(
     "/admin/events/{event_id}/rooms/{room_id}/delete",
     dependencies=[Depends(require_event_owner), Depends(require_admin_csrf)],
@@ -2444,6 +2556,11 @@ async def admin_create_booth(request: Request, event_id: int, room_id: int):
     redirect_path = f"events/{event_id}/rooms/{room_id}/booths/"
     async with get_session() as session:
         await room_in_event(session, event_id, room_id)
+    if await _language_is_a_return(room_id, language_code):
+        return safe_redirect(
+            url=management_url(request, f"{redirect_path}?error=return_language"),
+            status_code=status.HTTP_303_SEE_OTHER,
+        )
     try:
         created = await _create_booth_unless_duplicate(
             event_id=event_id,
@@ -2554,6 +2671,10 @@ async def admin_booth_detail(request: Request, event_id: int, room_id: int, boot
     whep_url = f"{settings.mediamtx_whip_base}/{mediamtx_path}/whep"
     mem_booth = booths.get_booth_sync(bid)
     is_live = mem_booth is not None and mem_booth.ingest_status == "connected"
+    # Two-way is offered once the room's spoken language is set and isn't this booth's own (#1397).
+    two_way_spoken = two_way_language(room.floor_language_code)
+    if two_way_spoken == db_booth.language_code:
+        two_way_spoken = None
     participants = list(mem_booth.participants.values()) if mem_booth else []
     active_interpreter = None
     if mem_booth and mem_booth.active_interpreter_id:
@@ -2625,6 +2746,11 @@ async def admin_booth_detail(request: Request, event_id: int, room_id: int, boot
             "booth_id": bid,
             "mediamtx_path": mediamtx_path,
             "whep_url": whep_url,
+            "two_way_spoken": two_way_spoken,
+            "two_way_spoken_name": room_language_name(two_way_spoken) if two_way_spoken else "",
+            "return_language_name": (
+                room_language_name(db_booth.return_language_code) if db_booth.return_language_code else ""
+            ),
             "overlay_url": _overlay_url(event, db_booth.room_id, db_booth.language_code),
             "is_live": is_live,
             "participants": participants,
@@ -2941,6 +3067,47 @@ async def admin_booth_translation_settings(
     )
 
 
+async def _apply_booth_two_way(
+    session: AsyncSession, booth: DBBooth, form: FormData, old_code: str, old_return: str | None
+) -> str:
+    """Set the booth's return language from the settings form and check it (#1397). Returns the event slug.
+
+    The form says it showed the two-way choice with ``two_way_shown``; the checkbox value is the
+    spoken language it was shown for. A booth interpreting into its return language right now keeps it.
+    """
+    room = await get_room_by_id(session, booth.room_id)
+    event = await get_event_by_id(session, booth.event_id)
+    return_code = booth.return_language_code
+    if "two_way_shown" in form:
+        spoken = two_way_language(room.floor_language_code)
+        return_code = spoken if spoken and form.get("two_way") == spoken else None
+    live = booths.get_booth_sync(make_booth_id(event.slug, booth.room_id, old_code))
+    if live is not None and live.outputs_into_return and (return_code, booth.language_code) != (old_return, old_code):
+        raise TranslationLanguageError(
+            status_code=409,
+            detail=(
+                f"The {booth.language_name} booth is interpreting into {room_language_name(old_return or '')} "
+                "right now. Ask its interpreter to switch back, then save again."
+            ),
+        )
+    if return_code is not None:
+        others = [b.language_code for b in await list_booths_for_room(session, booth.room_id) if b.id != booth.id]
+        error = return_language_error(
+            return_code,
+            booth_language=booth.language_code,
+            spoken_language=room.floor_language_code,
+            other_booth_languages=others,
+        )
+        if error:
+            raise TranslationLanguageError(status_code=400, detail=error)
+    if booth.language_code != old_code:
+        owner = await return_language_owner(session, booth.room_id, booth.language_code)
+        if owner is not None and owner.id != booth.id:
+            raise TranslationLanguageError(status_code=400, detail=return_owner_error(owner))
+    booth.return_language_code = return_code
+    return event.slug
+
+
 @router.post(
     "/admin/events/{event_id}/rooms/{room_id}/booths/{booth_id}/edit",
     dependencies=[Depends(require_event_owner), Depends(require_admin_csrf)],
@@ -2953,6 +3120,7 @@ async def admin_edit_booth(request: Request, event_id: int, room_id: int, booth_
     try:
         async with get_session() as session:
             booth = await booth_in_room(session, event_id, room_id, booth_id)
+            old_code, old_return = booth.language_code, booth.return_language_code
             if language_name:
                 booth.language_name = language_name
             if language_code_raw:
@@ -2968,9 +3136,15 @@ async def admin_edit_booth(request: Request, event_id: int, room_id: int, booth_
                         (language_code, *_enabled_codes(booth.translation_languages)),
                     )
                 booth.language_code = language_code
+            event_slug = await _apply_booth_two_way(session, booth, form, old_code, old_return)
             await session.flush()
+            return_language = booth.return_language_code
+            live_booth_id = make_booth_id(event_slug, room_id, booth.language_code)
     except TranslationLanguageError as error:
         return await _translation_form_response(request, error, event_id, room_id, booth_id)
+    await note_return_language(
+        live_booth_id, return_language, room_language_name(return_language) if return_language else ""
+    )
     return safe_redirect(
         url=_booth_saved_url(request, event_id, room_id, booth_id, "settings"),
         status_code=status.HTTP_303_SEE_OTHER,

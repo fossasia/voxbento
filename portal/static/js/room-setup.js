@@ -4,7 +4,8 @@
 // adding a room, puts the review on its own screen when changing one, keeps the
 // per-language choices in sync and shows only the questions that apply. Each language
 // reaches listeners one way: an interpreter, an AI voice or AI captions. Captions are the
-// speaker's own words and stay on whenever a language uses AI.
+// speaker's own words and stay on whenever a language uses AI. An interpreter language can
+// be two-way: its booth can also interpret back into the spoken language (#1397).
 
 import { syncTranslationOptions } from './translation-fit.js';
 
@@ -68,11 +69,21 @@ if (root && form) {
   const deliveryOf = (code) => rowOf(code)?.querySelector('input[type="radio"]:checked')?.value || '';
   const isAi = (delivery) => delivery === 'ai_voice' || delivery === 'ai_text';
 
-  const languages = () => chosenCodes().map((code) => ({ code, name: nameOf(code), delivery: deliveryOf(code) }));
+  const twoWayBox = (code) => rowOf(code)?.querySelector('[data-rs-two-way]');
+  const isTwoWay = (code) => {
+    const box = twoWayBox(code);
+    return Boolean(box && !box.hidden && box.querySelector('input').checked);
+  };
+  const languages = () => chosenCodes().map((code) => ({
+    code, name: nameOf(code), delivery: deliveryOf(code), twoWay: isTwoWay(code),
+  }));
   const aiLanguages = () => languages().filter((l) => isAi(l.delivery));
   const usesAi = () => aiLanguages().length > 0;
   const voiceLanguages = () => languages().filter((l) => l.delivery === 'ai_voice');
   const spokenName = () => selectedText(spokenSelect) || 'the room\'s language';
+  // Booths that are two-way now, and the spoken language they interpret back into.
+  const wasTwoWay = [...form.querySelectorAll('[data-rs-was-two-way]')].map((input) => input.name.replace('two_way_', ''));
+  const savedSpokenName = selectedText(spokenSelect);
 
   function listNames(names) {
     if (names.length < 2) return names.join('');
@@ -154,11 +165,32 @@ if (root && form) {
         radio.name = `delivery_${code}`;
         radio.checked = radio.value === 'interpreter';
       });
+      const twoWay = row.querySelector('[data-rs-two-way] input');
+      twoWay.name = `two_way_${code}`;
+      twoWay.value = spokenSelect.value;
       deliveryList.append(row);
     });
     deliveryGroup.hidden = codes.length === 0;
     noLanguages.hidden = codes.length > 0;
     syncDeliveryMessages();
+    syncTwoWay();
+  }
+
+  // Two-way is an interpreter's choice, always with the current spoken language. A box ticked
+  // for another spoken language no longer applies, so changing the spoken language clears it.
+  function syncTwoWay() {
+    const spoken = spokenSelect.value;
+    chosenCodes().forEach((code) => {
+      const box = twoWayBox(code);
+      if (!box) return;
+      const input = box.querySelector('input');
+      if (input.value !== spoken) {
+        input.value = spoken;
+        input.checked = false;
+      }
+      box.querySelector('[data-rs-two-way-name]').textContent = spokenName();
+      box.hidden = code === spoken || deliveryOf(code) !== 'interpreter';
+    });
   }
 
   function syncDeliveryMessages() {
@@ -269,7 +301,7 @@ if (root && form) {
     terms.forEach((term, i) => {
       if (term.textContent !== 'Listener languages') values.set(term.textContent, details[i].textContent);
     });
-    languages().forEach((lang) => values.set(lang.name, deliveryLabels[lang.delivery] || 'Interpreter and AI (choose one)'));
+    languages().forEach((lang) => values.set(lang.name, deliveryText(lang)));
     return values;
   }
 
@@ -295,6 +327,11 @@ if (root && form) {
     container.hidden = false;
   }
 
+  function deliveryText(lang) {
+    const label = deliveryLabels[lang.delivery] || 'Interpreter and AI (choose one)';
+    return lang.twoWay ? `${label}, two-way with ${spokenName()}` : label;
+  }
+
   function renderReview() {
     review.replaceChildren();
     const langs = languages();
@@ -303,7 +340,7 @@ if (root && form) {
     addReviewItem('Speakers use', selectedText(spokenSelect));
     addReviewItem(
       'Listener languages',
-      langs.length ? langs.map((l) => `${l.name}: ${deliveryLabels[l.delivery] || 'not chosen yet'}`) : 'None',
+      langs.length ? langs.map((l) => `${l.name}: ${l.delivery ? deliveryText(l) : 'not chosen yet'}`) : 'None',
     );
     const captions = ai || captionsBox.checked;
     addReviewItem('Captions', captions ? `On, in ${spokenName()}` : 'Off');
@@ -318,6 +355,11 @@ if (root && form) {
       li.textContent = liveCodes.has(code)
         ? `The ${nameOf(code)} booth is live right now, so it will be kept. Remove it after the session.`
         : `The ${nameOf(code)} booth will be removed, with its invite links and assigned interpreters.`;
+      warnings.append(li);
+    });
+    wasTwoWay.filter((code) => wantedBooths.has(code) && !isTwoWay(code)).forEach((code) => {
+      const li = document.createElement('li');
+      li.textContent = `The ${nameOf(code)} booth will no longer interpret back into ${savedSpokenName}.`;
       warnings.append(li);
     });
     warnings.hidden = warnings.childElementCount === 0;

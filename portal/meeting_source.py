@@ -22,6 +22,7 @@ from fastapi import HTTPException
 from sqlalchemy import select
 from sqlalchemy.exc import SQLAlchemyError
 
+from portal import floor_language
 from portal.booth_identity import make_booth_id, make_mediamtx_path
 from portal.config import settings
 from portal.database import get_session
@@ -36,6 +37,7 @@ from portal.program_ingest import (
     pipeline_problem,
     room_lock,
 )
+from portal.transcription.aggregator import CLEAR_CAPTION, supersede_captions
 from portal.transcription.process import audio_progress
 from portal.transcription.providers.base import ProviderConfig, ProviderEnum, get_api_key
 from portal.transcription.worker import start_transcription_worker, stop_transcription_worker
@@ -432,9 +434,14 @@ async def reconcile_room(
         return
     current.state, current.reason = "receiving", "Meeting audio received; starting transcription."
     api_key = get_api_key(event, ProviderEnum(room.floor_transcription_provider))
-    config = (room.floor_transcription_provider, room.floor_transcription_model, room.floor_language_code)
+    language = floor_language.current(room)
+    config = (room.floor_transcription_provider, room.floor_transcription_model, language)
     if current.worker_config and current.worker_config != config:
         await _stop_worker(current, booth_id)
+        # The old worker's unfinished words went with it: take them off listeners' screens, and keep
+        # anything it still finishes (a provider can outlive the stop) from coming back after the clear.
+        supersede_captions(booth_id)
+        await broadcast_transcription(booth_id, CLEAR_CAPTION)
     started = await start_transcription_worker(
         event_slug=event.slug,
         language_code="floor",
@@ -443,7 +450,7 @@ async def reconcile_room(
         provider=room.floor_transcription_provider,
         model_size=room.floor_transcription_model,
         config=ProviderConfig(api_key=api_key),
-        transcription_language=room.floor_language_code,
+        transcription_language=language,
         room_id=room.id,
         restart_on_key_change=True,
     )

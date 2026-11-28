@@ -1510,7 +1510,15 @@ def test_ws_broadcast_unlock_interpreter_rejected():
     assert "Only Room Coordinators" in msg["message"]
 
 
-_LISTENER_STATE_KEYS = {"booth_id", "event_slug", "room_id", "language_code", "broadcast_unlocked", "ingest_status"}
+_LISTENER_STATE_KEYS = {
+    "booth_id",
+    "event_slug",
+    "room_id",
+    "language_code",
+    "broadcast_unlocked",
+    "ingest_status",
+    "on_air",
+}
 
 
 def test_ws_listener_notified_when_booth_goes_live():
@@ -3564,6 +3572,9 @@ def test_build_embed_context_keys_and_fallbacks():
         postmessage_target_origin="*",
         allowed_origins_list=[],
         audio_delay_ms=250,
+        floor_fallback=None,
+        return_whep_url=None,
+        floor_audio=True,
     )
 
     assert set(ctx.keys()) == {
@@ -3583,6 +3594,9 @@ def test_build_embed_context_keys_and_fallbacks():
         "postmessage_target_origin",
         "allowed_origins_list",
         "audio_delay_ms",
+        "floor_fallback",
+        "return_whep_url",
+        "floor_audio",
     }
     # font is capitalised for display
     assert ctx["font_family"] == "Inter"
@@ -3609,6 +3623,9 @@ def test_build_embed_context_keys_and_fallbacks():
         postmessage_target_origin="*",
         allowed_origins_list=[],
         audio_delay_ms=0,
+        floor_fallback=None,
+        return_whep_url=None,
+        floor_audio=True,
     )
     assert ctx2["target_lang_code"] == "es"
     assert ctx2["font_family"] == "Roboto"

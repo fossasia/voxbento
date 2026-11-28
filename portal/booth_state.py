@@ -5,6 +5,7 @@ from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
 from uuid import uuid4
 
+from portal import floor_language
 from portal.attendance import AttendanceTracker
 from portal.booth_identity import (
     BoothInstance,
@@ -18,6 +19,11 @@ from portal.booth_identity import (
 from portal.roles import Role, can_go_live, can_set_active, role_label
 from portal.tasks import track_task
 from portal.webhooks.events import SESSION_STATUS_CHANGED
+
+# What a two-way booth interprets into (#1397): its own language, or the room's spoken language.
+PRIMARY = "primary"
+RETURN = "return"
+OUTPUTS = (PRIMARY, RETURN)
 
 # Booth roles come from portal.roles, the one place roles are defined (#757).
 ParticipantRole = Role
@@ -108,6 +114,13 @@ class Booth:
     participants: dict[str, Participant] = field(default_factory=dict)
     chat_messages: list[ChatMessage] = field(default_factory=list)
     ingest_status: str = "disconnected"
+    # Two-way booths (#1397): the language this booth can also interpret into, and the one it
+    # interprets into now (its own language unless switched). Server-only names, not participant data.
+    return_language_code: str | None = None
+    return_language: str = ""
+    output_language_code: str = ""
+    # Language name of another booth interpreting into this booth's return language now, if any.
+    return_taken_by: str | None = None
 
     def __post_init__(self) -> None:
         if self.event_slug and self.language_code and self.room_id is not None:
@@ -115,6 +128,19 @@ class Booth:
                 self.mediamtx_path = make_mediamtx_path(self.event_slug, self.room_id, self.language_code)
             if not self.channel_id:
                 self.channel_id = self.mediamtx_path
+        if not self.output_language_code:
+            self.output_language_code = self.language_code
+
+    @property
+    def outputs_into_return(self) -> bool:
+        return self.output_language_code != self.language_code
+
+    @property
+    def output_mediamtx_path(self) -> str:
+        """The MediaMTX path the active interpreter publishes to now."""
+        if not self.outputs_into_return:
+            return self.mediamtx_path
+        return make_mediamtx_path(self.event_slug, self.room_id, self.output_language_code)
 
     def refresh_ingest_status(self) -> None:
         """Set ``ingest_status`` from whether any participant is still publishing."""
@@ -148,6 +174,7 @@ class Booth:
             "active_invite_public_id": active.invite_public_id if active else None,
             "active_mic_active": bool(active and active.mic_active),
             "active_ingest_connected": bool(active and active.ingest_connected),
+            "output_language_code": self.output_language_code if self.outputs_into_return else None,
         }
 
     def as_public_dict(self) -> dict:
@@ -165,6 +192,11 @@ class Booth:
             "handoff_initiator_id": self.handoff_initiator_id,
             "broadcast_unlocked": self.broadcast_unlocked,
             "ingest_status": self.ingest_status,
+            "return_language_code": self.return_language_code,
+            "return_language": self.return_language,
+            "output_language_code": self.output_language_code,
+            "output_mediamtx_path": self.output_mediamtx_path,
+            "return_taken_by": self.return_taken_by,
             "participants": [participant_public_dict(p) for p in self.participants.values()],
             "chat_messages": [asdict(m) for m in self.chat_messages[-100:]],
         }
@@ -193,11 +225,88 @@ class BoothRegistry:
         # Booths whose live record may have changed since portal.booth_recovery last saved it.
         self._dirty: set[str] = set()
         self._dirty_event = asyncio.Event()
+        # Which booth interprets into each return channel, by (event slug, room id, language):
+        # one booth per channel, so two two-way booths into the same language take turns (#1397).
+        self._return_claims: dict[tuple[str, int | None, str], str] = {}
 
     def _changed(self, booth: Booth) -> None:
         """Record a change to *booth*'s participants or live state. Caller holds the lock."""
+        # With nobody left to interpret, the return channel is free for another booth.
+        if booth.active_interpreter_id is None:
+            self._reset_output(booth)
         self.attendance.observe(booth)
         self._mark_dirty(booth.booth_id)
+
+    def _reset_output(self, booth: Booth) -> None:
+        """Point *booth* back at its own channel and free its return channel. Caller holds the lock."""
+        if booth.outputs_into_return:
+            # Only _claim points a booth at a return channel, and it records the claim.
+            del self._return_claims[(booth.event_slug, booth.room_id, booth.output_language_code)]
+            booth.output_language_code = booth.language_code
+            self._refresh_taken(booth.event_slug, booth.room_id)
+            # The floor is back to the room's own language (or the Mission Control choice).
+            floor_language.set_booth_language(booth.room_id, booth.booth_id, None)
+
+    def _claim(self, booth: Booth, code: str) -> None:
+        """Point *booth* at the return channel *code*, which nobody else holds. Caller holds the lock."""
+        self._return_claims[(booth.event_slug, booth.room_id, code)] = booth.booth_id
+        booth.output_language_code = code
+        self._refresh_taken(booth.event_slug, booth.room_id)
+        # The person on the floor now speaks the booth's language, so the floor AI follows it.
+        floor_language.set_booth_language(booth.room_id, booth.booth_id, booth.language_code)
+
+    def _refresh_taken(self, event_slug: str, room_id: int | None) -> None:
+        """Tell the room's two-way booths which other booth holds their return channel now."""
+        for booth in self.room_booths(event_slug, room_id):
+            owner = self.return_claim_owner(event_slug, room_id, booth.return_language_code or "")
+            booth.return_taken_by = owner.language if owner is not None and owner is not booth else None
+
+    def room_booths(self, event_slug: str, room_id: int | None) -> list[Booth]:
+        return [b for b in self._booths.values() if b.event_slug == event_slug and b.room_id == room_id]
+
+    def return_claim_owner(self, event_slug: str, room_id: int | None, language_code: str) -> Booth | None:
+        """The booth interpreting into this language's channel as its return language, if any."""
+        owner = self._return_claims.get((event_slug, room_id, language_code))
+        return self._booths.get(owner) if owner else None
+
+    def room_return_booth(self, event_slug: str, room_id: int) -> Booth | None:
+        """The booth interpreting into a return channel of this room, if any (one spoken language per room)."""
+        for (slug, room, _), booth_id in self._return_claims.items():
+            if (slug, room) == (event_slug, room_id):
+                return self._booths.get(booth_id)
+        return None
+
+    def output_owner_sync(self, path: str) -> str | None:
+        """The booth that publishes to MediaMTX *path* now, if any. Safe without the lock: nothing awaits."""
+        for booth in self._booths.values():
+            if booth.output_mediamtx_path == path:
+                return booth.booth_id
+        return None
+
+    def outputting_into_return(self, event_slug: str, room_id: int) -> set[str]:
+        """Languages of the room's booths that interpret into their return language now."""
+        return {
+            booth.language_code
+            for booth in self._booths.values()
+            if booth.event_slug == event_slug and booth.room_id == room_id and booth.outputs_into_return
+        }
+
+    def set_return_language_sync(self, booth_id: str, code: str | None, name: str) -> bool:
+        """Record the booth's return language from the database, if the booth is in memory.
+
+        A booth that loses the return language it interprets into goes back to its own.
+        Returns whether anything changed. Safe without the lock: nothing here awaits.
+        """
+        booth = self._booths.get(booth_id)
+        if booth is None or (booth.return_language_code, booth.return_language) == (code, name):
+            return False
+        booth.return_language_code = code
+        booth.return_language = name
+        if booth.outputs_into_return and booth.output_language_code != code:
+            self._reset_output(booth)
+            self._changed(booth)
+        self._refresh_taken(booth.event_slug, booth.room_id)
+        return True
 
     def _mark_dirty(self, booth_id: str) -> None:
         self._dirty.add(booth_id)
@@ -260,11 +369,26 @@ class BoothRegistry:
                     )
                     booth.active_interpreter_id = participant_id
                     placeholders.append((booth.booth_id, participant_id))
+                    self._restore_output(booth, record.get("output_language_code"))
                 booth.refresh_ingest_status()
                 self.attendance.observe(booth)
                 # Saved again so the recovery heartbeat keeps these rows current.
                 self._mark_dirty(booth.booth_id)
         return placeholders
+
+    def _restore_output(self, booth: Booth, code: object) -> None:
+        """Point a restored booth back at the return channel it interpreted into, if still free."""
+        if not isinstance(code, str) or code == booth.language_code:
+            return
+        try:
+            code = validate_language_code(code)
+        except ValueError:
+            return
+        if code == "floor" or not booth.event_slug or (booth.event_slug, booth.room_id, code) in self._return_claims:
+            return
+        # Refreshed from the database when the interpreter rejoins.
+        booth.return_language_code = code
+        self._claim(booth, code)
 
     def _get_or_create_booth(
         self,
@@ -597,6 +721,7 @@ class BoothRegistry:
                     participant.ingest_connected = False
                     participant.updated_at = utc_now_iso()
                 booth.ingest_status = "disconnected"
+                self._reset_output(booth)
             self._changed(booth)
 
             # Enqueue webhook in background
@@ -656,6 +781,63 @@ class BoothRegistry:
             booth.refresh_ingest_status()
             self._changed(booth)
             return booth.as_public_dict()
+
+    async def set_output(
+        self,
+        booth_id: str,
+        requester_id: str | None,
+        output: str,
+        *,
+        can_reassign: bool,
+        return_language_code: str,
+        return_language: str,
+    ) -> tuple[dict, str | None]:
+        """Switch a two-way booth between its own channel and its return channel (#1397).
+
+        *return_language_code* is the booth's return language, read from the database for
+        this request. Allowed for the active interpreter and, with *can_reassign*, for anyone
+        who may choose the active interpreter. Only one booth interprets into a return channel
+        at a time. Returns the new state and the path the booth published to before, or None
+        when it already outputs there.
+
+        Raises ``ValueError`` (malformed request, no active interpreter, channel taken) and
+        ``PermissionError``.
+        """
+        if output not in OUTPUTS:
+            raise ValueError("output must be 'primary' or 'return'.")
+        async with self._lock:
+            booth = self._booths.get(booth_id)
+            if booth is None:
+                raise ValueError("Join the booth first.")
+            booth.return_language_code = return_language_code
+            booth.return_language = return_language
+            self._refresh_taken(booth.event_slug, booth.room_id)
+            is_active = requester_id is not None and booth.active_interpreter_id == requester_id
+            if not is_active and not can_reassign:
+                raise PermissionError(
+                    "Only the active interpreter, a room coordinator, an event owner or an Admin can switch the channel."
+                )
+            if booth.active_interpreter_id is None:
+                raise ValueError("Nobody is interpreting in this booth.")
+            target = return_language_code if output == RETURN else booth.language_code
+            if target == booth.output_language_code:
+                return booth.as_public_dict(), None
+            key = (booth.event_slug, booth.room_id, return_language_code)
+            if output == RETURN:
+                owner = self.return_claim_owner(*key)
+                if owner is not None and owner.booth_id != booth_id:
+                    raise ValueError(f"The {owner.language} booth is already interpreting into {return_language}.")
+            previous_path = booth.output_mediamtx_path
+            self._reset_output(booth)
+            if output == RETURN:
+                self._claim(booth, return_language_code)
+            # Nothing publishes to the new channel until the interpreter's browser reconnects there.
+            for participant in booth.participants.values():
+                participant.ingest_connected = False
+                participant.updated_at = utc_now_iso()
+            booth.refresh_ingest_status()
+            self._changed(booth)
+            return booth.as_public_dict(), previous_path
 
     async def initiate_handoff(
         self,
@@ -892,8 +1074,9 @@ class BoothRegistry:
         Safe without the lock: nothing here awaits, so no other coroutine runs meanwhile.
         """
         booth = self._booths.get(booth_id)
-        if booth is not None and booth.broadcast_unlocked:
+        if booth is not None and (booth.broadcast_unlocked or booth.outputs_into_return):
             booth.broadcast_unlocked = False
+            self._reset_output(booth)
             self._changed(booth)
 
     def get_booth_sync(self, booth_id: str) -> Booth | None:
@@ -919,9 +1102,7 @@ class BoothRegistry:
         """
         booth_id = make_booth_id(event_slug, room_id, language_code)
         async with self._lock:
-            self._booths.pop(booth_id, None)
-            self.attendance.forget_booth(booth_id)
-            self._mark_dirty(booth_id)
+            self._forget(booth_id)
 
     async def remove_idle_booths(self, event_slug: str, room_id: int, language_codes: list[str]) -> str | None:
         """Remove the booths for *language_codes* in one step, unless one of them is live.
@@ -936,10 +1117,16 @@ class BoothRegistry:
                 if booth is not None and booth.ingest_status == "connected":
                     return code
             for booth_id in booth_ids:
-                self._booths.pop(booth_id, None)
-                self.attendance.forget_booth(booth_id)
-                self._mark_dirty(booth_id)
+                self._forget(booth_id)
         return None
+
+    def _forget(self, booth_id: str) -> None:
+        """Drop a booth from memory and free its return channel. Caller holds the lock."""
+        booth = self._booths.pop(booth_id, None)
+        if booth is not None:
+            self._reset_output(booth)
+        self.attendance.forget_booth(booth_id)
+        self._mark_dirty(booth_id)
 
     async def validate_booth_event(self, booth_id: str, expected_event: str) -> None:
         """Raise PermissionError if *booth_id* does not belong to *expected_event*.

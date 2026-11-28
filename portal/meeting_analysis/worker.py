@@ -120,6 +120,17 @@ async def report_lines(session: AsyncSession, report: MeetingReport, *, covered_
     return [ReportLine(*row) for row in rows]
 
 
+async def spoken_language(session: AsyncSession, report: MeetingReport) -> str | None:
+    """The language most of the report's session was spoken in, or None when its lines don't say (before #1397)."""
+    return await session.scalar(
+        select(TranscriptSegment.source_language_code)
+        .where(*session_filter(report), TranscriptSegment.source_language_code.is_not(None))
+        .group_by(TranscriptSegment.source_language_code)
+        .order_by(func.count().desc(), TranscriptSegment.source_language_code)
+        .limit(1)
+    )
+
+
 async def _glossary(session: AsyncSession, report: MeetingReport, room: Room, spoken: str) -> tuple[str, ...]:
     """The glossary terms the report names, when the room uses its glossary."""
     if not room.floor_ai_vocabulary_enabled:
@@ -168,6 +179,9 @@ async def _prepare(report_id: int) -> _Job | None:
                 return None
         transcript, truncated = build_transcript(lines)
         covered = lines[: len(transcript.splitlines())] or lines[:1]
+        if report.channel_id == "floor" and not report.transcript_language:
+            # The floor can change language during a session (#1397): write in the one most of it was spoken in.
+            report.language_code = await spoken_language(session, report) or report.language_code
         context = {
             "event_name": event.display_name,
             "room_name": room.display_name,

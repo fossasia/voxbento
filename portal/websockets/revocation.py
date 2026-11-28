@@ -59,6 +59,8 @@ async def revoke_booths_for_deleted_entity(
 ) -> None:
     """Close all sessions in booths affected by the deletion of an event, room, or booth."""
     affected_booth_ids: list[str] = []
+    # A two-way booth's return path is ended too, even once the booth is gone from memory (#1397).
+    return_languages: dict[str, str | None] = {}
 
     if level == "booth":
         stmt = select(DBBooth).options(joinedload(DBBooth.event)).where(DBBooth.id == target_id)
@@ -66,6 +68,7 @@ async def revoke_booths_for_deleted_entity(
         if booth is not None and booth.event is not None:
             bid = make_booth_id(booth.event.slug, booth.room_id, booth.language_code)
             affected_booth_ids.append(bid)
+            return_languages[bid] = booth.return_language_code
     elif level == "room":
         stmt = select(DBBooth).options(joinedload(DBBooth.event)).where(DBBooth.room_id == target_id)
         booths = (await session.scalars(stmt)).all()
@@ -73,6 +76,7 @@ async def revoke_booths_for_deleted_entity(
             if b.event is not None:
                 bid = make_booth_id(b.event.slug, b.room_id, b.language_code)
                 affected_booth_ids.append(bid)
+                return_languages[bid] = b.return_language_code
     elif level == "event":
         stmt = select(DBBooth).options(joinedload(DBBooth.event)).where(DBBooth.event_id == target_id)
         booths = (await session.scalars(stmt)).all()
@@ -80,9 +84,10 @@ async def revoke_booths_for_deleted_entity(
             if b.event is not None:
                 bid = make_booth_id(b.event.slug, b.room_id, b.language_code)
                 affected_booth_ids.append(bid)
+                return_languages[bid] = b.return_language_code
 
     for booth_id in affected_booth_ids:
         try:
-            await manager.close_booth_sessions(booth_id)
+            await manager.close_booth_sessions(booth_id, return_language_code=return_languages.get(booth_id))
         except Exception:
             logger.exception("Failed to close booth %s sessions on %s deletion", booth_id, level)

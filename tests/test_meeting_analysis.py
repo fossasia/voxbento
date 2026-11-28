@@ -1525,3 +1525,28 @@ async def test_event_owners_reach_reports_from_mission_control_in_their_workspac
         listing = await c.get(reports["url"], cookies=cookies)
     assert reports["url"] == f"/workspace/events/{world['event']}/rooms/{world['room']}/analysis/"
     assert listing.status_code == 200 and "Meeting reports" in listing.text
+
+
+@pytest.mark.anyio
+async def test_a_floor_report_is_written_in_the_language_most_of_it_was_spoken_in(world, monkeypatch):
+    """#1397: the floor can change language mid-session; the segments say which one they were spoken in."""
+    fake = FakeProvider()
+    monkeypatch.setattr(worker, "get_provider", lambda name: fake)
+    async with get_session() as s:
+        start = utc_now() - timedelta(minutes=4)
+        for offset, code, text in ((0, "th", "Sawasdee khrap."), (10, "th", "Khop khun khrap."), (20, "en", "Thanks.")):
+            s.add(
+                TranscriptSegment(
+                    room_id=world["room"],
+                    language_code="floor",
+                    source_language_code=code,
+                    text=text,
+                    created_at=start + timedelta(seconds=offset),
+                )
+            )
+    report_id = await _report(world)
+    await worker.run_analysis(report_id)
+    report = await _load(report_id)
+    assert report.status == "done"
+    assert report.language_code == "th"
+    assert "Write every value in Thai." in fake.calls[0]["system"]
