@@ -22,7 +22,8 @@ from __future__ import annotations
 import asyncio
 import time
 from collections import OrderedDict, deque
-from collections.abc import Hashable
+from collections.abc import AsyncIterator, Hashable
+from contextlib import asynccontextmanager
 
 #: Calls one channel may have running at once.
 PER_CHANNEL = 2
@@ -88,6 +89,16 @@ class TranslationJob:
 
     async def __aexit__(self, *exc_info: object) -> None:
         self._release_slot()
+
+    @asynccontextmanager
+    async def slot(self, *, wait_timeout: float | None = None) -> AsyncIterator[TranslationJob]:
+        """Bound waiting for a slot separately from the time spent running the engine."""
+        async with asyncio.timeout(wait_timeout):
+            await self.__aenter__()
+        try:
+            yield self
+        finally:
+            self._release_slot()
 
     def keep_slot_until(self, call: asyncio.Future) -> None:
         """Keep the engine slot until ``call`` ends, even after the job itself has moved on.

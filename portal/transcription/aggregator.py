@@ -111,8 +111,14 @@ class CaptionAggregator:
         state = self._get_state(booth_id)
         preview = f"{state.current_utterance} {text.strip()}".strip()
         await self.broadcast_callback(
-            booth_id, {"type": "caption", "status": "partial", "text": preview,
-                       "segment_id": state.segment_id, **await self.partial_timing(booth_id)}
+            booth_id,
+            {
+                "type": "caption",
+                "status": "partial",
+                "text": preview,
+                "segment_id": state.segment_id,
+                **await self.partial_timing(booth_id),
+            },
         )
 
     async def handle_chunk(self, booth_id: str, text: str):
@@ -265,6 +271,11 @@ class CaptionAggregator:
 
         if self.room_id is not None and seq is not None:
             from portal.database import save_transcript_segment
+            from portal.translations.delivery import RESOLUTION_ORDER
+
+            resolution_turn = RESOLUTION_ORDER.reserve(
+                (self.room_id, booth_id, "resolution"), enabled=True, rejected=True
+            )
 
             async def _save_and_translate():
                 """Persist a sequenced caption and pass its identity to asynchronous translation."""
@@ -275,12 +286,25 @@ class CaptionAggregator:
 
                         worker = TranslationWorker(self.broadcast_callback)
                         await worker.handle_translation(
-                            self.room_id, db_segment_id, final_text, booth_id, segment_id, seq
+                            self.room_id,
+                            db_segment_id,
+                            final_text,
+                            booth_id,
+                            segment_id,
+                            seq,
+                            resolution_turn=resolution_turn,
                         )
                 except Exception as e:
                     logger.error(f"[{booth_id}] _save_and_translate failed: {e}", exc_info=True)
+                finally:
+                    if resolution_turn is not None:
+                        resolution_turn.close()
 
-            track_task(asyncio.create_task(_save_and_translate()))
+            task = asyncio.create_task(_save_and_translate())
+            if resolution_turn is not None:
+                # A task cancelled before it starts never reaches its own finally block.
+                task.add_done_callback(lambda _: resolution_turn.close())
+            track_task(task)
 
     async def handle_clear(self, booth_id: str):
         """Called when silence is explicitly detected or a turn ends."""

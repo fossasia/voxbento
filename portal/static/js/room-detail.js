@@ -61,12 +61,11 @@ function initAiSettings() {
     filterModels();
   }
 
-  const transProvider = document.getElementById('floor_translation_provider');
-  const transModel = document.getElementById('floor_translation_model');
-  if (transProvider && transModel) {
+  function initTranslationPicker(providerId, modelId, savedModel, localNote = null) {
+    const transProvider = document.getElementById(providerId);
+    const transModel = document.getElementById(modelId);
+    if (!transProvider || !transModel) return;
     const savedProvider = transProvider.value;
-    const savedModel = root.dataset.initialTranslationModel || '';
-    const localNote = document.querySelector('[data-local-translation-note]');
     let catalog = null;
     let loads = 0;
 
@@ -74,7 +73,10 @@ function initAiSettings() {
       const load = ++loads;
       const provider = transProvider.value;
       if (localNote) localNote.hidden = provider !== 'local';
+      let keep = provider === savedProvider ? savedModel : '';
       transModel.replaceChildren(new Option('Recommended for this service', ''));
+      if (keep) transModel.append(new Option(keep, keep, false, true));
+      transModel.disabled = !provider;
       if (!provider) return;
       try {
         // Only a list that loaded is kept, so a failed load tries again on the next change.
@@ -88,9 +90,10 @@ function initAiSettings() {
       }
       // The service may have changed while the list was loading; only the latest call fills the list.
       if (load !== loads) return;
+      keep = transModel.value;
+      transModel.replaceChildren(new Option('Recommended for this service', ''));
       const listed = catalog?.[provider];
       const models = [...(listed || [])];
-      const keep = provider === savedProvider ? savedModel : '';
       // Cloud services accept any model name, but a self-hosted model must be on the server's list.
       // If the list didn't load, keep the saved model and let the server check it on save.
       const mustBeListed = provider === 'self_hosted' && Boolean(listed);
@@ -101,6 +104,11 @@ function initAiSettings() {
     transProvider.addEventListener('change', loadModels);
     loadModels();
   }
+
+  initTranslationPicker('floor_translation_provider', 'floor_translation_model',
+    root?.dataset.initialTranslationModel || '', document.querySelector('[data-local-translation-note]'));
+  initTranslationPicker('translation_fallback_provider', 'translation_fallback_model',
+    root?.dataset.initialFallbackModel || '');
 
   const ttsProvider = document.getElementById('floor_tts_provider');
   if (ttsProvider) {

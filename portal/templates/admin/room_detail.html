@@ -28,7 +28,8 @@
 
 <div id="room-detail"
      data-room-id="{{ room.id }}"
-     data-initial-translation-model="{{ room.floor_translation_model or '' }}">
+     data-initial-translation-model="{{ room.floor_translation_model or '' }}"
+     data-initial-fallback-model="{{ room.translation_fallback_model or '' }}">
 
 {% set setup_url = management_prefix ~ '/events/' ~ event.id ~ '/rooms/' ~ room.id ~ '/setup' %}
 {% set edit_url = management_prefix ~ '/events/' ~ event.id ~ '/rooms/' ~ room.id ~ '/edit' %}
@@ -201,7 +202,7 @@
 </section>
 
 <section class="room-panel rs" id="room-panel-ai" role="tabpanel" aria-labelledby="room-tab-ai" data-room-panel="ai">
-{% if not summary.captions %}
+{% if not summary.captions and not has_booth_translation and not room.translation_fallback_provider %}
   <div class="room-card room-empty">
     <h2>This room doesn't use captions or AI</h2>
     <p class="room-card-sub">Turn on captions, or choose AI voice or AI captions for a language, and their settings appear here.</p>
@@ -247,10 +248,12 @@
       </details>
     </div>
 
-    {% if uses_ai %}
+    {% if uses_ai or has_booth_translation or room.translation_fallback_provider %}
     <div class="room-card">
       <h2>Translation</h2>
-      <p class="room-card-sub">The service that translates the captions for {{ ai_language_names | join(', ') }}.</p>
+      {% if uses_ai %}<p class="room-card-sub">The service that translates the captions for {{ ai_language_names | join(', ') }}.</p>
+      {% elif has_booth_translation %}<p class="room-card-sub">Booth translators use the fallback configured below.</p>
+      {% else %}<p class="room-card-sub">Translation is off. You can still change or remove its saved fallback.</p>{% endif %}
       <div class="field-row">
         <div class="field">
           <label for="floor_translation_provider">Service</label>
@@ -273,6 +276,33 @@
             <option value="">Recommended for this service</option>
           </select>
         </div>
+      </details>
+
+      <details class="room-more" {% if room.translation_fallback_provider %}open{% endif %}>
+        <summary>Fallback translator <span class="rs-label-note">optional</span></summary>
+        <p class="hint">Use another translator if the primary service fails or times out. After three consecutive failures, the primary rests for 30 seconds before one recovery attempt.</p>
+        <div class="field">
+          <label for="translation_fallback_provider">Fallback service</label>
+          <select id="translation_fallback_provider" name="translation_fallback_provider">
+            <option value="">No fallback</option>
+            {% if room.translation_fallback_provider and not catalog.find("translation", room.translation_fallback_provider) %}
+            <option value="{{ room.translation_fallback_provider }}" selected>{{ room.translation_fallback_provider | replace('_', '-') | capitalize }} — unavailable, choose another or turn off</option>
+            {% endif %}
+            {% for engine in catalog.translation if engine.provider not in fallback_translation_unfit or engine.provider == room.translation_fallback_provider %}
+            <option value="{{ engine.provider }}" {% if room.translation_fallback_provider == engine.provider %}selected{% endif %}>{{ engine.label }} — {{ engine.note }}</option>
+            {% endfor %}
+          </select>
+        </div>
+        <div class="field room-model">
+          <label for="translation_fallback_model">Fallback model</label>
+          <select id="translation_fallback_model" name="translation_fallback_model">
+            <option value="">Recommended for this service</option>
+            {% if room.translation_fallback_model %}
+            <option value="{{ room.translation_fallback_model }}" selected>{{ room.translation_fallback_model }}</option>
+            {% endif %}
+          </select>
+        </div>
+        <p class="hint">Uses this event's existing service credentials. A built-in fallback model must be downloaded by an admin first.</p>
       </details>
 
       <details class="room-more" data-translation-instructions {% if room.floor_ai_interpreter_persona or room.floor_ai_interpretation_style %}open{% endif %}>

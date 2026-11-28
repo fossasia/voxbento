@@ -58,6 +58,15 @@ assert.match(roomDetailSource, /import \{ initTabs \} from '\.\/tabs\.js';/);
 assert.doesNotMatch(roomDetailSource, /\bfunction\s+initTabs\b/);
 // vm scripts cannot import, so run the page code without its import line (tabs.js has its own tests).
 const roomDetail = roomDetailSource.replace(/^import .*$/m, '');
+function modelSelect(added) {
+  return {
+    get value() { return (added.find((option) => option.selected) || added[0])?.value || ''; },
+    set value(value) { added.forEach((option) => { option.selected = option.value === value; }); },
+    replaceChildren(...options) { added.length = 0; added.push(...options); },
+    append(option) { added.push(option); },
+  };
+}
+
 for (const details of [null, { hidden: false }]) {
   const provider = { value: 'local', addEventListener() {} };
   const options = [{ dataset: { provider: 'local' } }, { dataset: { provider: 'openai' } }];
@@ -84,7 +93,7 @@ for (const [provider, saved, listLoads, expected, selected] of [
 ]) {
   const added = [];
   const transProvider = { value: provider, addEventListener() {} };
-  const transModel = { replaceChildren(...opts) { added.length = 0; added.push(...opts); }, append(opt) { added.push(opt); } };
+  const transModel = modelSelect(added);
   const elements = {
     'room-detail': { dataset: { initialTranslationModel: saved } },
     floor_translation_provider: transProvider,
@@ -108,7 +117,7 @@ for (const [reverse, newerFails] of [[false, false], [true, false], [false, true
   const added = [];
   let onChange;
   const transProvider = { value: 'self_hosted', addEventListener(type, handler) { onChange = handler; } };
-  const transModel = { replaceChildren(...opts) { added.length = 0; added.push(...opts); }, append(opt) { added.push(opt); } };
+  const transModel = modelSelect(added);
   const elements = {
     'room-detail': { dataset: { initialTranslationModel: 'qwen2.5:7b' } },
     floor_translation_provider: transProvider,
@@ -133,3 +142,50 @@ for (const [reverse, newerFails] of [[false, false], [true, false], [false, true
   assert.deepEqual(added.filter((opt) => opt.selected).map((opt) => opt.value), []);
 }
 console.log('Room AI regression checks passed');
+
+// A saved custom fallback remains selected while the catalog request is still pending.
+{
+  const added = [];
+  let finish;
+  const elements = {
+    'room-detail': { dataset: { initialFallbackModel: 'my-custom-backup' } },
+    translation_fallback_provider: { value: 'openai', addEventListener() {} },
+    translation_fallback_model: modelSelect(added),
+  };
+  vm.runInNewContext(roomDetail, {
+    console: { error() {} },
+    initTabs() {},
+    Option: class {
+      constructor(text, value, defaultSelected, selected) { this.value = value; this.selected = Boolean(selected); }
+    },
+    fetch: () => new Promise((resolve) => { finish = resolve; }),
+    document: { querySelector: () => null, querySelectorAll: () => [], getElementById: (id) => elements[id] },
+  });
+  assert.deepEqual(added.filter((option) => option.selected).map((option) => option.value), ['my-custom-backup']);
+  finish({ ok: true, json: async () => ({ openai: ['gpt-4o-mini'] }) });
+  await new Promise(setImmediate);
+  assert.deepEqual(added.filter((option) => option.selected).map((option) => option.value), ['my-custom-backup']);
+}
+
+
+for (const edit of [false, true]) {
+  const added = [];
+  let finish;
+  const model = modelSelect(added);
+  const elements = {
+    'room-detail': { dataset: { initialFallbackModel: 'my-custom-backup' } },
+    translation_fallback_provider: { value: 'openai', addEventListener() {} },
+    translation_fallback_model: model,
+  };
+  vm.runInNewContext(roomDetail, {
+    console: { error() {} }, initTabs() {},
+    Option: class { constructor(text, value, defaultSelected, selected) { this.value = value; this.selected = Boolean(selected); } },
+    fetch: () => new Promise((resolve) => { finish = resolve; }),
+    document: { querySelector: () => null, querySelectorAll: () => [], getElementById: (id) => elements[id] },
+  });
+  assert.equal(model.value, 'my-custom-backup');
+  if (edit) model.value = '';
+  finish({ ok: true, json: async () => ({ openai: ['gpt-4o-mini'] }) });
+  await new Promise(setImmediate);
+  assert.equal(model.value, edit ? '' : 'my-custom-backup');
+}
