@@ -5,12 +5,148 @@ const speechDelivery = createDeliveryQueue();
 
 var captionsContainer = document.getElementById("captions-container");
 var toggleCaptionsBtn = document.getElementById("toggle-captions-btn");
+var captionsFocusBtn = document.getElementById("captions-focus-btn");
+var captionsFocusReturnTarget = null;
+var captionsWasMinimized = false;
+var captionsFocusInertElements = [];
+var captionsFocusScrollPosition = null;
+var captionsFocusPointerScrollPosition = null;
 toggleCaptionsBtn.addEventListener("click", function () {
   var hidden = captionsContainer.classList.toggle("minimized");
   toggleCaptionsBtn.textContent = hidden ? "Show" : "Hide";
   toggleCaptionsBtn.setAttribute("aria-expanded", String(!hidden));
   if (!hidden) scrollCaptionsToLatest();
 });
+
+function setCaptionsFocusPageInert(active) {
+  if (active) {
+    captionsFocusInertElements = [];
+    var current = captionsContainer;
+    while (current && current !== document.body) {
+      var parent = current.parentElement;
+      if (!parent) break;
+      Array.from(parent.children).forEach(function (sibling) {
+        if (sibling !== current && !sibling.contains(captionsContainer)) {
+          captionsFocusInertElements.push({ element: sibling, inert: sibling.inert });
+          sibling.inert = true;
+        }
+      });
+      current = parent;
+    }
+    return;
+  }
+
+  captionsFocusInertElements.forEach(function (item) {
+    item.element.inert = item.inert;
+  });
+  captionsFocusInertElements = [];
+}
+
+function syncCaptionsFocusMode(active) {
+  captionsContainer.classList.toggle("focus-mode", active);
+  document.body.classList.toggle("listener-captions-focus", active);
+  setCaptionsFocusPageInert(active);
+  captionsFocusBtn.setAttribute("aria-pressed", String(active));
+  captionsFocusBtn.setAttribute(
+    "aria-label",
+    active ? "Exit captions-only full screen" : "Enter captions-only full screen",
+  );
+  captionsFocusBtn.textContent = active ? "Exit full screen" : "Full screen";
+  if (!active) {
+    captionsContainer.classList.toggle("minimized", captionsWasMinimized);
+    toggleCaptionsBtn.textContent = captionsWasMinimized ? "Show" : "Hide";
+    toggleCaptionsBtn.setAttribute("aria-expanded", String(!captionsWasMinimized));
+    if (captionsFocusReturnTarget && typeof captionsFocusReturnTarget.focus === "function") {
+      captionsFocusReturnTarget.focus({ preventScroll: true });
+    }
+    if (captionsFocusScrollPosition) {
+      window.scrollTo(captionsFocusScrollPosition.x, captionsFocusScrollPosition.y);
+    }
+    captionsFocusReturnTarget = null;
+    captionsFocusScrollPosition = null;
+  }
+}
+
+async function enterCaptionsFocusMode() {
+  if (captionsContainer.classList.contains("focus-mode")) return;
+
+  captionsFocusReturnTarget = document.activeElement;
+  captionsWasMinimized = captionsContainer.classList.contains("minimized");
+  if (captionsWasMinimized) {
+    captionsContainer.classList.remove("minimized");
+    toggleCaptionsBtn.textContent = "Hide";
+    toggleCaptionsBtn.setAttribute("aria-expanded", "true");
+  }
+  syncCaptionsFocusMode(true);
+  scrollCaptionsToLatest();
+
+  if (typeof captionsContainer.requestFullscreen === "function") {
+    try {
+      await captionsContainer.requestFullscreen();
+      if (
+        !captionsContainer.classList.contains("focus-mode") &&
+        document.fullscreenElement === captionsContainer
+      ) {
+        await document.exitFullscreen();
+      }
+    } catch (error) {
+      console.warn("Unable to enter browser full screen; using captions focus layout.", error);
+    }
+  }
+}
+
+function exitCaptionsFocusMode() {
+  if (document.fullscreenElement === captionsContainer) {
+    document.exitFullscreen().catch(function (error) {
+      console.warn("Unable to exit browser full screen.", error);
+    });
+    return;
+  }
+  syncCaptionsFocusMode(false);
+}
+
+if (captionsFocusBtn) {
+  captionsFocusBtn.addEventListener("pointerdown", function () {
+    if (!captionsContainer.classList.contains("focus-mode")) {
+      captionsFocusPointerScrollPosition = { x: window.scrollX, y: window.scrollY };
+    }
+  });
+
+  captionsFocusBtn.addEventListener("pointercancel", function () {
+    captionsFocusPointerScrollPosition = null;
+  });
+
+  captionsFocusBtn.addEventListener("click", function () {
+    if (captionsContainer.classList.contains("focus-mode")) {
+      captionsFocusPointerScrollPosition = null;
+      exitCaptionsFocusMode();
+    } else {
+      captionsFocusScrollPosition = captionsFocusPointerScrollPosition || {
+        x: window.scrollX,
+        y: window.scrollY,
+      };
+      captionsFocusPointerScrollPosition = null;
+      enterCaptionsFocusMode();
+    }
+  });
+
+  document.addEventListener("fullscreenchange", function () {
+    if (document.fullscreenElement !== captionsContainer && captionsContainer.classList.contains("focus-mode")) {
+      syncCaptionsFocusMode(false);
+    }
+  });
+
+  document.addEventListener("keydown", function (event) {
+    if (
+      event.key === "Escape" &&
+      !event.defaultPrevented &&
+      captionsContainer.classList.contains("focus-mode") &&
+      document.fullscreenElement !== captionsContainer
+    ) {
+      exitCaptionsFocusMode();
+    }
+  });
+}
 
 // Caption text size, remembered per browser.
 var CAPTION_SIZES = [0.875, 1, 1.125, 1.25, 1.5, 1.75];

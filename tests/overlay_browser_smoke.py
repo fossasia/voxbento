@@ -70,6 +70,38 @@ async def main() -> None:
             options = {"viewport": {"width": 1920, "height": 1080}}
             if artifacts:
                 options["record_video_dir"] = str(artifacts)
+            errors = []
+            listener_context = await browser.new_context(viewport={"width": 1280, "height": 720})
+            listener = await listener_context.new_page()
+            listener.on("pageerror", lambda error: errors.append(str(error)))
+            await listener.add_init_script(
+                "Object.defineProperty(Element.prototype, 'requestFullscreen', { configurable: true, value: undefined });"
+            )
+            await listener.goto(
+                f"{origin}/listener/{event.slug}?code=DEMO42&room={room.id}&lang=en"
+            )
+            await expect(listener.locator("#captions-focus-btn")).to_be_visible()
+            await listener.evaluate("window.scrollTo(0, document.documentElement.scrollHeight)")
+            await listener.locator("#captions-focus-btn").evaluate(
+                "button => { window.__scrollAtFocusPointerDown = null; button.addEventListener('pointerdown', () => { window.__scrollAtFocusPointerDown = window.scrollY; }, { once: true }); }"
+            )
+            await listener.locator("#captions-focus-btn").click()
+            scroll_before = await listener.evaluate("window.__scrollAtFocusPointerDown")
+            assert scroll_before and scroll_before > 0, "the listener pointerdown must occur at a scrolled position"
+            await expect(listener.locator("#captions-focus-btn")).to_have_attribute("aria-pressed", "true")
+            bounds = await listener.locator("#captions-container").evaluate(
+                "element => { const rect = element.getBoundingClientRect(); return { x: rect.x, y: rect.y, width: rect.width, height: rect.height, viewportWidth: innerWidth, viewportHeight: innerHeight }; }"
+            )
+            assert abs(bounds["x"]) <= 1 and abs(bounds["y"]) <= 1
+            assert abs(bounds["width"] - bounds["viewportWidth"]) <= 1
+            assert abs(bounds["height"] - bounds["viewportHeight"]) <= 1
+            await listener.locator("#captions-focus-btn").click()
+            await expect(listener.locator("#captions-focus-btn")).to_have_attribute("aria-pressed", "false")
+            scroll_after = await listener.evaluate("window.scrollY")
+            assert abs(scroll_after - scroll_before) <= 1, (
+                f"listener scroll position changed after exiting focus mode: {scroll_before} -> {scroll_after}"
+            )
+            await listener_context.close()
             admin_context = await browser.new_context(**options)
             await admin_context.add_cookies(
                 [
@@ -81,7 +113,6 @@ async def main() -> None:
                 ]
             )
             builder = await admin_context.new_page()
-            errors = []
             builder.on("pageerror", lambda error: errors.append(str(error)))
             await builder.goto(f"{origin}/workspace/events/{event.id}/")
             await expect(builder.locator("#overlay-preview-frame")).to_have_count(0)

@@ -406,6 +406,80 @@
     margin-bottom: 0;
 }
 
+body.listener-captions-focus {
+    overflow: hidden;
+}
+.captions-container.focus-mode {
+    position: fixed;
+    inset: 0;
+    z-index: 1000;
+    display: flex;
+    flex-direction: column;
+    width: 100vw;
+    height: 100vh;
+    height: 100dvh;
+    min-height: 0;
+    max-height: none;
+    margin: 0;
+    padding: max(0.5rem, env(safe-area-inset-top)) max(0.5rem, env(safe-area-inset-right)) max(0.5rem, env(safe-area-inset-bottom)) max(0.5rem, env(safe-area-inset-left));
+    overflow: hidden;
+    border: 0;
+    box-shadow: none;
+    background: var(--vb-color-surface);
+}
+.captions-container.focus-mode .captions-toolbar {
+    flex: none;
+    padding: 0.5rem 0.75rem;
+    border-bottom: 1px solid var(--vb-color-border);
+}
+.captions-container.focus-mode .captions-toolbar__top {
+    margin-bottom: 0.5rem;
+}
+.captions-container.focus-mode .captions-title,
+.captions-container.focus-mode #toggle-captions-btn,
+.captions-container.focus-mode .captions-settings__full {
+    display: none;
+}
+.captions-container.focus-mode .captions-toolbar__actions {
+    margin-left: auto;
+}
+.captions-container.focus-mode .captions-settings {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: end;
+    gap: 0.5rem 0.75rem;
+}
+.captions-container.focus-mode .captions-settings > div {
+    flex: 1 1 10rem;
+}
+.captions-container.focus-mode .custom-options {
+    max-height: min(300px, calc(100dvh - 10rem));
+    overflow-y: auto;
+}
+.captions-container.focus-mode .captions-body {
+    display: flex;
+    flex: 1;
+    min-height: 0;
+    overflow: hidden;
+}
+.captions-container.focus-mode .live-captions {
+    width: 100%;
+    height: auto;
+    min-height: 0;
+    max-height: none;
+    flex: 1;
+    padding: clamp(1rem, 4vw, 3rem);
+    font-size: clamp(1.3125rem, calc(var(--caption-font-size) * 1.5), 3rem);
+}
+.captions-container.focus-mode .jump-to-latest {
+    bottom: max(0.875rem, env(safe-area-inset-bottom));
+}
+.captions-container.focus-mode.minimized .captions-body,
+.captions-container.focus-mode.minimized .captions-settings,
+.captions-container.focus-mode.minimized .caption-size-control {
+    display: flex;
+}
+
 @media (min-width: 640px) {
     .listener-page {
         --caption-font-size: 1.0625rem;
