@@ -25,6 +25,7 @@ class GeminiProvider(TranslationProvider):
         persona: str | None = None,
         style: str | None = None,
         vocabulary_entries: Sequence[Any] = (),
+        source_lang_code: str = "",
     ) -> str | None:
         if not api_key:
             return None

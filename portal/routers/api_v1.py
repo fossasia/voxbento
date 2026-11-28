@@ -58,6 +58,8 @@ _API_KEY_FIELDS: list[tuple[str, str]] = [
     ("anthropic_api_key", "encrypted_anthropic_api_key"),
     ("groq_api_key", "encrypted_groq_api_key"),
     ("atlascloud_api_key", "encrypted_atlascloud_api_key"),
+    ("azure_translator_api_key", "encrypted_azure_translator_api_key"),
+    ("azure_translator_region", "encrypted_azure_translator_region"),
 ]
 
 
@@ -1572,6 +1574,8 @@ class EventAPIKeysUpdate(BaseModel):
     anthropic_api_key: str | None = None
     groq_api_key: str | None = None
     atlascloud_api_key: str | None = None
+    azure_translator_api_key: str | None = None
+    azure_translator_region: str | None = None
 
 
 @router.patch("/events/{event_slug}/api_keys", response_model=dict)

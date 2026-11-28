@@ -260,6 +260,7 @@ async def test_provider_engine_passes_each_target_its_languages_and_glossary():
         "provider_name": "groq",
         "text": "Hello",
         "source_lang_name": "English",
+        "source_lang_code": "en",
         "model": "openai/gpt-oss-20b",
         "api_key": "gsk-test",
         "persona": "Formal",
