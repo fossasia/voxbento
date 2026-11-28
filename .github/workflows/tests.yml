@@ -310,6 +310,8 @@ jobs:
           node --test tests/test_demo_modal.js
           node tests/test_listener_event.js
           node tests/test_whep_listener.js
+          node tests/test_channel_source.mjs
+          node tests/test_embed_player.mjs
           node --test tests/test_whep_lifecycle.js
           node tests/test_subtitle_overlay.js
           node --test tests/test_overlay_connection.js

@@ -74,6 +74,7 @@ Cascade: deletes rooms + booths when event is deleted.
 | `floor_tts_provider` | String(20) | Default `'deepgram'`; TTS engine — `'deepgram'` (cloud) or `'supertonic'` (self-hosted ONNX) |
 | `floor_tts_voice` | String(50) | Default `'M1'`; Supertonic preset voice (M1–M5, F1–F5) |
 | `audio_delay_ms` | Integer | Default 0; optional listener-side WHEP playback delay for all sources in the room |
+| `auto_floor_enabled` | Boolean | Default on (migration 050); listeners on an interpreter channel hear the floor while that booth is off air (#1397) |
 | `created_at` | DateTime(tz) | UTC |
 
 ---
@@ -311,6 +312,7 @@ Tracks which languages the translation worker should generate for a given room o
 | 046 | `046_live_demo_room_ai.py` | Transitional room-linked demo settings and daily limit |
 | 047 | `047_live_demo_independent_ai.py` | Independent demo providers, models, encrypted keys, persona/style; removes room link |
 | 044 | `044_youtube_connections.py` | `youtube_connections` table (one per event), `rooms.youtube_broadcast_id`, `rooms.youtube_stream_id` (#1087) |
+| 050 | `050_room_auto_floor.py` | `rooms.auto_floor_enabled` (#1397) |
 
 Run migrations: `uv run alembic upgrade head`
 

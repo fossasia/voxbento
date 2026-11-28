@@ -18,6 +18,7 @@ from sqlalchemy.exc import SQLAlchemyError
 import portal.webhooks.worker as _wh_worker
 from portal.auth import WSAuthError, can_perform_role
 from portal.booth_identity import booth_id_to_mediamtx_path, parse_booth_id
+from portal.booth_on_air import confirm_live_path, forget_live_paths, is_on_air, needs_confirm, refresh_live_paths
 from portal.booth_publish import (
     TICKET_TTL_SECS,
     end_publishers,
@@ -474,12 +475,21 @@ class ConnectionManager:
 # The only booth fields public listeners receive. The full booth state also
 # carries participants and the interpreters' private chat, which must stay
 # inside the booth.
-_LISTENER_STATE_KEYS = ("booth_id", "event_slug", "room_id", "language_code", "broadcast_unlocked", "ingest_status")
+_LISTENER_STATE_KEYS = (
+    "booth_id",
+    "event_slug",
+    "room_id",
+    "language_code",
+    "broadcast_unlocked",
+    "ingest_status",
+    "on_air",
+)
 
 
 def listener_booth_state(state: dict) -> dict:
-    """Return the listener-safe subset of a booth state dict."""
-    return {key: state.get(key) for key in _LISTENER_STATE_KEYS}
+    """Return the listener-safe subset of a booth state dict, with whether the booth is on air."""
+    full = {**state, "on_air": is_on_air(state)}
+    return {key: full.get(key) for key in _LISTENER_STATE_KEYS}
 
 
 def _current_listener_state(booth_id: str, fallback: dict | None = None) -> dict | None:
@@ -539,6 +549,9 @@ class ListenerConnectionManager:
     def has_listeners(self, booth_id: str) -> bool:
         return bool(self._rooms.get(booth_id, set()))
 
+    def has_any_listeners(self) -> bool:
+        return bool(self._rooms)
+
     def remove(self, ws: WebSocket, booth_id: str) -> None:
         room = self._rooms.get(booth_id, set())
         room.discard(ws)
@@ -590,6 +603,13 @@ class ListenerConnectionManager:
                 return
             self._last_state[booth_id] = listener_state
             await self.broadcast(booth_id, {"type": "booth:state", "state": listener_state})
+
+    async def refresh_booth_states(self) -> None:
+        """Resend each watched booth's status if it changed, e.g. its stream appeared or went away."""
+        for booth_id in list(self._rooms):
+            booth = booths.get_booth_sync(booth_id)
+            if booth is not None:
+                await self.broadcast_booth_state(booth_id, booth.as_public_dict())
 
     async def send_booth_state(self, ws: WebSocket, booth_id: str) -> None:
         """Send one newly connected listener the booth's current status, if the booth exists."""
@@ -717,7 +737,52 @@ tts_manager = TTSConnectionManager()
 async def broadcast_booth_state(booth_id: str, state: dict) -> None:
     """Send the full state to the booth and the listener-safe status to its listeners."""
     await manager.broadcast(booth_id, {"type": "booth:state", "state": state})
+    booth = booths.get_booth_sync(booth_id)
+    if booth is not None and listener_manager.has_listeners(booth_id):
+        current = booth.as_public_dict()
+        if needs_confirm(current):
+            # Off the handler's path: the check can take a moment while the publisher connects.
+            task = asyncio.create_task(_confirm_and_resend(booth_id, current["mediamtx_path"]))
+            _go_live_checks.add(task)
+            task.add_done_callback(_go_live_checks.discard)
+            track_task(task)
     await listener_manager.broadcast_booth_state(booth_id, state)
+
+
+# Running go-live checks, cancelled at shutdown before the shared HTTP client closes.
+_go_live_checks: set[asyncio.Task] = set()
+
+
+async def cancel_go_live_checks() -> None:
+    checks = list(_go_live_checks)
+    for task in checks:
+        task.cancel()
+    await asyncio.gather(*checks, return_exceptions=True)
+
+
+async def _confirm_and_resend(booth_id: str, path: str) -> None:
+    """Tell listeners a booth is on air as soon as MediaMTX shows its publisher."""
+    if await confirm_live_path(path):
+        booth = booths.get_booth_sync(booth_id)
+        if booth is not None:
+            await listener_manager.broadcast_booth_state(booth_id, booth.as_public_dict())
+
+
+async def on_air_loop(interval_seconds: float = 2.0) -> None:
+    """Keep listeners' on-air status in step with MediaMTX, reading the path list only while someone listens."""
+    while True:
+        try:
+            if listener_manager.has_any_listeners():
+                await refresh_live_paths()
+                await listener_manager.refresh_booth_states()
+            else:
+                # Nobody to notify, so stop reading MediaMTX. A stale list must not decide the next listener's status.
+                forget_live_paths()
+        except Exception:  # noqa: BLE001 - the loop must outlive any single bad tick
+            # Unknown again, so listeners fall back to the interpreter's own report until the next tick.
+            forget_live_paths()
+            logger.exception("booth_on_air loop_error")
+        await asyncio.sleep(interval_seconds)
 
 
 async def broadcast_transcription(booth_id: str, payload: str | dict):

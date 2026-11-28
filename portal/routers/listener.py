@@ -18,7 +18,7 @@ from portal.auth import (
     is_cookie_secure,
     is_listener_token,
 )
-from portal.booth_identity import make_booth_id
+from portal.booth_identity import make_booth_id, make_mediamtx_path
 from portal.config import settings
 from portal.database import (
     get_event_by_slug,
@@ -30,7 +30,10 @@ from portal.database import (
 )
 from portal.globals import _JS_CACHE_BUST, asset_version_context
 from portal.join_code_limit import JoinCodeThrottled, verify_join_code
+from portal.models import Room
 from portal.overlay_channels import overlay_channels
+from portal.program_ingest import room_has_floor_audio
+from portal.room_setup import LANGUAGE_NAMES
 from portal.utils import _ensure_mediamtx_path
 
 # Allowlists for embed theming params — no free-text values accepted.
@@ -81,6 +84,24 @@ async def has_listener_access(
         ) from exc
 
 
+class FloorFallback(TypedDict):
+    whep_url: str
+    booth_id: str
+    channel_id: str
+
+
+def floor_fallback(event_slug: str, room: Room) -> FloorFallback | None:
+    """The floor an interpreter channel plays while its booth is off air, if the room has one (#1397)."""
+    if not (room.auto_floor_enabled and room_has_floor_audio(room)):
+        return None
+    channel_id = make_mediamtx_path(event_slug, room.id, "floor")
+    return {
+        "whep_url": f"{settings.mediamtx_whip_base}/{channel_id}/whep",
+        "booth_id": make_booth_id(event_slug, room.id, "floor"),
+        "channel_id": channel_id,
+    }
+
+
 @router.get("/listener/{event_slug}")
 async def listen_event_page(request: Request, event_slug: str, code: str | None = None) -> Any:
     """Listener page scoped by event, allowing users to select room and language."""
@@ -117,6 +138,7 @@ async def listen_event_page(request: Request, event_slug: str, code: str | None 
                 "audio_delay_ms": b.room.audio_delay_ms,
                 "translation_enabled": getattr(b, "translation_enabled", False),
                 "translation_languages": booth_lang_data,
+                "floor_fallback": floor_fallback(ev.slug, b.room),
             }
         )
         ensure_tasks.append(_ensure_mediamtx_path(channel_id))
@@ -138,16 +160,17 @@ async def listen_event_page(request: Request, event_slug: str, code: str | None 
             }
         )
 
-        if r.floor_transcription_enabled:
-            from portal.booth_identity import make_mediamtx_path
-
+        # The floor is listed whenever it can carry audio, captions or not (#1082).
+        if r.floor_transcription_enabled or room_has_floor_audio(r):
             channel_id = make_mediamtx_path(ev.slug, r.id, "floor")
+            spoken = r.floor_language_code if r.floor_language_code in LANGUAGE_NAMES else None
             booths_data.append(
                 {
                     "id": f"floor_{r.id}",
                     "room_id": r.id,
                     "language_code": "floor",
-                    "language_name": "Floor Audio (Original)",
+                    "spoken_language_code": spoken,
+                    "language_name": f"{LANGUAGE_NAMES[spoken]} (original)" if spoken else "Floor Audio (Original)",
                     "channel_id": channel_id,
                     "whep_url": f"{settings.mediamtx_whip_base}/{channel_id}/whep",
                     "audio_delay_ms": r.audio_delay_ms,
@@ -274,8 +297,8 @@ def _verify_embed_token(token: str, event_slug: str) -> None:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Token is not valid for this event.")
 
 
-async def _resolve_embed_room(session: Any, ev: Any, room_id: int | None) -> tuple[int, int]:
-    """Resolve the target room id and its audio delay for an embed request."""
+async def _resolve_embed_room(session: Any, ev: Any, room_id: int | None) -> Room:
+    """Resolve the target room for an embed request."""
     rooms = await list_rooms_for_event(session, ev.id, limit=None)
     if room_id is None:
         if not rooms:
@@ -285,12 +308,12 @@ async def _resolve_embed_room(session: Any, ev: Any, room_id: int | None) -> tup
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail="This event has multiple rooms. Please use the /embed/{event_slug}/{room_id}/{language_code} URL instead.",
             )
-        return rooms[0].id, rooms[0].audio_delay_ms
+        return rooms[0]
 
     room = next((r for r in rooms if r.id == room_id), None)
     if not room:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Room not found.")
-    return room.id, room.audio_delay_ms
+    return room
 
 
 async def _resolve_embed_channel(
@@ -369,6 +392,7 @@ def _build_embed_context(
     postmessage_target_origin: str,
     allowed_origins_list: list[str],
     audio_delay_ms: int,
+    floor_fallback: FloorFallback | None,
 ) -> dict[str, Any]:
     """Assemble the Jinja2 context for the embed template."""
     return {
@@ -388,6 +412,7 @@ def _build_embed_context(
         "postmessage_target_origin": postmessage_target_origin,
         "allowed_origins_list": allowed_origins_list,
         "audio_delay_ms": audio_delay_ms,
+        "floor_fallback": floor_fallback,
     }
 
 
@@ -414,8 +439,10 @@ async def _embed_listener_impl(
         if not ev:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Event not found.")
 
-        resolved_room_id, audio_delay_ms = await _resolve_embed_room(session, ev, room_id)
-        booth_id, channel_id = await _resolve_embed_channel(session, ev, event_slug, resolved_room_id, language_code)
+        room = await _resolve_embed_room(session, ev, room_id)
+        booth_id, channel_id = await _resolve_embed_channel(session, ev, event_slug, room.id, language_code)
+        # Only an interpreter channel falls back; the floor channel is the floor already.
+        fallback = None if language_code.lower() == "floor" else floor_fallback(ev.slug, room)
 
     whep_url = f"{settings.mediamtx_whip_base}/{channel_id}/whep"
     host = settings.public_base_url.replace("https://", "").replace("http://", "")
@@ -449,7 +476,8 @@ async def _embed_listener_impl(
         headless=headless,
         postmessage_target_origin=postmessage_target_origin,
         allowed_origins_list=allowed_origins_list,
-        audio_delay_ms=audio_delay_ms,
+        audio_delay_ms=room.audio_delay_ms,
+        floor_fallback=fallback,
     )
 
     return templates.TemplateResponse(request=request, name="embed.html", context=context, headers=response_headers)

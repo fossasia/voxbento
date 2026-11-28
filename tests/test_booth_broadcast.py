@@ -282,6 +282,7 @@ async def test_broadcast_booth_state_isolates_and_sanitizes():
             "language_code": None,
             "broadcast_unlocked": True,
             "ingest_status": "connected",
+            "on_air": True,
         }
         assert "participants" not in listener_payload["state"]
         assert "chat_messages" not in listener_payload["state"]

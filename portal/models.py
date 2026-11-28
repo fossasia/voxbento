@@ -179,6 +179,8 @@ class Room(Base):
     )
     floor_tts_voice: Mapped[str] = mapped_column(String(50), default="M1", server_default=sa.text("'M1'"))
     audio_delay_ms: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
+    # Listeners on an interpreter channel hear the floor while that booth is off air (#1397).
+    auto_floor_enabled: Mapped[bool] = mapped_column(Boolean, default=True, server_default=sa.true())
 
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
 
