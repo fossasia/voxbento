@@ -25,6 +25,7 @@ from portal.auth import (
     user_session_is_valid,
 )
 from portal.booth_identity import make_booth_id, make_mediamtx_path, validate_event_slug, validate_language_code
+from portal.booth_publish import stop_booth_publish, take_booth_publishers
 from portal.config import settings
 from portal.database import (
     create_invite_token,
@@ -408,6 +409,7 @@ async def delete_booth_by_language(
         await stop_transcription_worker(booth_id)
     finally:
         await booths.remove_booth(event_slug, room_db_id, language_code)
+        await stop_booth_publish(booth_id, take_booth_publishers(booth_id))
 
 
 @router.post("/events/{event_slug}/booths", status_code=status.HTTP_201_CREATED)
@@ -600,6 +602,7 @@ async def delete_event_booth(
         await stop_transcription_worker(booth_id)
     finally:
         await booths.remove_booth(event_slug, room_id, language_code)
+        await stop_booth_publish(booth_id, take_booth_publishers(booth_id))
 
 
 @router.get("/events/{event_slug}/booths")

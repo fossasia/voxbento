@@ -31,7 +31,7 @@ from portal.translations.engine import (
 )
 from portal.translations.model_languages import fixed_language_model
 from portal.translations.providers.base import TranslationProvider
-from portal.translations.registry import get_translation_model
+from portal.translations.registry import LanguageTagging, get_translation_model
 from portal.translations.vocabulary import protect_terms, restore_terms
 
 logger = logging.getLogger(__name__)
@@ -214,7 +214,12 @@ def get_model_and_tokenizer(model_size: str):
             hf_repo_id, rev = _hf_source(model_size)
             local_model_path = snapshot_download(repo_id=hf_repo_id, revision=rev, local_files_only=True)
 
-        tokenizer = transformers.AutoTokenizer.from_pretrained(local_model_path, src_lang="eng_Latn", revision="main")  # nosec
+        entry = get_translation_model(model_size)
+        if entry and entry.tokenizer_type:
+            tokenizer_options = {"tokenizer_type": entry.tokenizer_type}
+        else:
+            tokenizer_options = {"src_lang": "eng_Latn"}
+        tokenizer = transformers.AutoTokenizer.from_pretrained(local_model_path, revision="main", **tokenizer_options)  # nosec
         cpu_count = os.cpu_count() or 4
         intra_threads = min(cpu_count, 2)
         model = ctranslate2.Translator(
@@ -278,8 +283,21 @@ async def _in_thread(func, /, *args):
         raise
 
 
+def _translate_with_target_tag(model, tokenizer, text: str, target_tag: str) -> str:
+    """Translate with a model that reads a ``<2xx>`` target tag in front of the text (MADLAD-400).
+
+    The model detects the source language itself, so only the target is named.
+    """
+    source = tokenizer.convert_ids_to_tokens(tokenizer.encode(f"{target_tag} {text}"))
+    results = model.translate_batch([source], beam_size=1, max_decoding_length=256)
+    if not results or not results[0].hypotheses:
+        return ""
+    target = tokenizer.convert_tokens_to_ids(results[0].hypotheses[0])
+    return tokenizer.decode(target, skip_special_tokens=True).strip()
+
+
 class LocalProvider(TranslationProvider, TranslationEngine):
-    """NLLB through CTranslate2, in the portal process."""
+    """NLLB and M2M100 through CTranslate2, in the portal process."""
 
     kind = EngineKind.CT2_SEQ2SEQ
     #: Each loaded model runs ``CT2_INTER_THREADS`` translations at a time. Several models can be
@@ -364,12 +382,17 @@ class LocalProvider(TranslationProvider, TranslationEngine):
 
         target_lang_token = _engine_code(model, target_lang_code, target_lang_name)
         source_lang_token = _engine_code(model, source_lang_code, source_lang_name)
+        entry = get_translation_model(model)
+        # A target-tag model (MADLAD-400) detects the spoken language itself and is told only the
+        # target, so a source language it has no tag for, or none at all, does not stop it.
+        needs_source = entry is None or entry.language_tagging is not LanguageTagging.TARGET_TAG
         if not target_lang_token:
             logger.error("[NLLB] Model %r does not translate into %r (%s)", model, target_lang_code, target_lang_name)
             return None
-        if not source_lang_token:
+        if not source_lang_token and needs_source:
             logger.error("[NLLB] Model %r does not translate from %r (%s)", model, source_lang_code, source_lang_name)
             return None
+        source_lang_token = source_lang_token or ""
 
         logger.debug(
             f"[NLLB] Language tokens resolved: source_token='{source_lang_token}' target_token='{target_lang_token}'"
@@ -392,11 +415,15 @@ class LocalProvider(TranslationProvider, TranslationEngine):
         increment_model_ref(model_size)
         try:
             model, tokenizer = get_model_and_tokenizer(model_size)
+            entry = get_translation_model(model_size)
+            if entry is not None and entry.language_tagging is LanguageTagging.TARGET_TAG:
+                return _translate_with_target_tag(model, tokenizer, text.strip(), target_lang_token)
+
             source = tokenizer.convert_ids_to_tokens(tokenizer.encode(text.strip()))
             if not source:
                 return ""
 
-            # The NLLB tokenizer hardcodes eng_Latn as the first token based on how we initialized it.
+            # The tokenizer puts English (eng_Latn for NLLB, __en__ for M2M100) as the first token.
             # We must replace it with the actual source language token for the model to translate correctly.
             source[0] = source_lang_token
             # beam_size=1 provides 3x-4x speedup with high accuracy for real-time text
