@@ -134,6 +134,8 @@ of the encoder key (`program_key_hash`), and is accepted by the publish authoriz
 alongside it. The secret lives only in page memory and is cleared on stop and page
 hide. Apply migration 026 (`uv run alembic upgrade head`) with this feature.
 
+Opening the sender leaves the current source in place. For a room using RTMPS ingest or YouTube relay, confirm the switch on the sender page and click **Start sending**. A successful switch retires the old encoder key. Automatic reconnects cannot authorize a transport switch.
+
 Ownership stays explicit. Starting is rejected with `409` when another program-ingest
 publisher — an external encoder or another browser sender — is live or still
 negotiating on the floor; it never displaces one. The Jitsi floor bot is a deliberate
@@ -207,6 +209,8 @@ on the next reconciliation pass. Saving the same key again keeps the worker runn
 Rooms of a deleted event are skipped by the reconciler, which then stops the room's floor
 worker and its relay, disconnects its encoder and releases its reservation, so the room no longer
 counts against `PROGRAM_INGEST_MAX_ROOMS`. A deleted event no longer authorizes new publishes.
+A room the admin pages delete outright, alone or with its event, has its floor worker stopped
+the same way.
 These steps do not wait for the MediaMTX path list, so they also run while it is unavailable.
 
 States: disabled, waiting, receiving (audio decoder starting), processing (PCM
@@ -270,3 +274,7 @@ then set the feature flag false. Keep the floor authentication boundary and
 private ports; do not restore anonymous public floor publishing. Migration 025
 supports downgrade, but back up first: downgrade removes program configuration
 and sequence data.
+
+### Interpreter floor monitoring
+
+Program ingest rooms open the interpreter booth on **Room floor audio**. WHIP uses the room’s WHEP feed. RTMPS uses the MediaMTX HLS player at the browser-facing `MEDIAMTX_HLS_BASE` (default `/hls` through Caddy). For local development without Caddy, set it to `http://localhost:8888`. Reload an open booth after changing the room’s ingest transport.

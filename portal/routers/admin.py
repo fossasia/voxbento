@@ -24,7 +24,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import joinedload
 from starlette.datastructures import FormData
 
-from portal import live_demo, meeting_source
+from portal import live_demo, live_demo_ai, meeting_source
 from portal import roles as roles_module
 from portal.auth import (
     ADMIN_CSRF_COOKIE,
@@ -119,6 +119,7 @@ from portal.models import (
     Event,
     EventMembership,
     HostingRequest,
+    LiveDemoSettings,
     Room,
     RoomMembership,
     RoomTranslationLanguage,
@@ -187,7 +188,7 @@ from portal.transcription.worker import (
     stop_transcription_worker,
     wait_for_worker_start,
 )
-from portal.translations.constants import TRANSLATION_MODELS, TranslationProviderEnum
+from portal.translations.constants import RETIRED_TRANSLATION_MODELS, TRANSLATION_MODELS, TranslationProviderEnum
 from portal.translations.model_languages import language_support_error
 from portal.translations.vocabulary import (
     VocabularyOverlapIndex,
@@ -397,7 +398,12 @@ async def admin_live_demo(
         "sessions_per_ip_per_hour": demo.sessions_per_ip_per_hour,
         "max_targets": demo.max_targets,
         "glossary": demo.glossary_text,
+        "ai_source": demo.ai_source,
+        "daily_minutes": demo.daily_minutes,
     }
+    row = await db.get(LiveDemoSettings, 1)
+    if form is None:
+        values.update({name: getattr(row, name) if row else default for name, default in live_demo_ai.DEFAULTS.items()})
     return templates.TemplateResponse(
         request,
         "admin/live_demo.html",
@@ -411,6 +417,14 @@ async def admin_live_demo(
             "models_loading": live_demo.models_loading(),
             "voice_installed": live_demo.voice_installed(),
             "glossary_count": len(demo.glossary),
+            "speech_choices": live_demo_ai.SPEECH_CHOICES,
+            "translation_choices": live_demo_ai.TRANSLATION_CHOICES,
+            "voice_choices": live_demo_ai.VOICE_CHOICES,
+            "saved_keys": {
+                service: bool(row and getattr(row, f"encrypted_{service}_key"))
+                for service in ("speech", "translation", "voice")
+            },
+            "minutes_used_today": round(live_demo.minutes_used_today(), 1),
             "error": error,
         },
         status_code=status.HTTP_400_BAD_REQUEST if error else status.HTTP_200_OK,
@@ -428,6 +442,20 @@ async def admin_live_demo_save(
     sessions_per_ip_per_hour: str = Form(""),
     max_targets: str = Form(""),
     glossary: str = Form(""),
+    ai_source: str = Form(live_demo.AI_BUILT_IN),
+    speech_choice: str = Form("local|base"),
+    translation_choice: str = Form("local|nllb-200-distilled-600M"),
+    voice_provider: str = Form("supertonic"),
+    voice: str = Form(""),
+    persona: str = Form(""),
+    style: str = Form(""),
+    speech_key: str = Form(""),
+    translation_key: str = Form(""),
+    voice_key: str = Form(""),
+    clear_speech_key: str = Form(""),
+    clear_translation_key: str = Form(""),
+    clear_voice_key: str = Form(""),
+    daily_minutes: str = Form(""),
     user: dict = Depends(require_user),
     db: AsyncSession = Depends(get_db_session),
 ):
@@ -442,9 +470,33 @@ async def admin_live_demo_save(
         "sessions_per_ip_per_hour": sessions_per_ip_per_hour,
         "max_targets": max_targets,
         "glossary": glossary,
+        "ai_source": ai_source,
+        "speech_choice": speech_choice,
+        "translation_choice": translation_choice,
+        "voice_provider": voice_provider,
+        "voice": voice,
+        "persona": persona,
+        "style": style,
+        "daily_minutes": daily_minutes,
     }
     try:
-        await live_demo.save_settings(db, **form, editor_id=int(user["sub"]))
+        options = {name: form[name] for name in live_demo_ai.DEFAULTS}
+        await live_demo.save_settings(
+            db,
+            **{k: v for k, v in form.items() if k not in options},
+            ai_options=options,
+            api_keys={"speech": speech_key, "translation": translation_key, "voice": voice_key},
+            clear_keys=frozenset(
+                service
+                for service, clear in (
+                    ("speech", clear_speech_key),
+                    ("translation", clear_translation_key),
+                    ("voice", clear_voice_key),
+                )
+                if clear == "on"
+            ),
+            editor_id=int(user["sub"]),
+        )
     except live_demo.DemoSettingsError as exc:
         return await admin_live_demo(request, db, error=str(exc), form=form)
     return safe_redirect(url="/admin/live-demo/?saved=1", status_code=status.HTTP_303_SEE_OTHER)
@@ -614,6 +666,13 @@ async def mission_control_list(request: Request, user=Depends(require_user), pag
     )
 
 
+def _mission_control_reports(event: Event, room_id: int, principal: dict, is_admin: bool) -> dict | None:
+    if not event.meeting_analysis_enabled:
+        return None
+    prefix = "/workspace" if not is_admin and event.id in principal["owned_event_ids"] else "/admin"
+    return {"url": f"{prefix}/events/{event.id}/rooms/{room_id}/analysis/"}
+
+
 @router.get("/mission-control/{event_slug}/")
 async def mission_control_grid(request: Request, event_slug: str, user=Depends(require_user)):
     is_admin, _ = await get_accessible_event_ids(request, user_id=int(user["sub"]))
@@ -669,6 +728,7 @@ async def mission_control_grid(request: Request, event_slug: str, user=Depends(r
                 "name": room.display_name,
                 "floor_captions": room.has_floor_captions,
                 "floor_source": room.floor_source or "jitsi_bot",
+                "reports": _mission_control_reports(event, room.id, principal, is_admin),
             }
             for room in await list_rooms_for_event(session, event.id)
             if allowed_room_ids is None or room.id in allowed_room_ids
@@ -1378,6 +1438,7 @@ async def admin_event_api_settings_get(request: Request, event_id: int):
             "event": event,
             "analysis_providers": ANALYSIS_PROVIDER_LABELS,
             "analysis_defaults": ANALYSIS_DEFAULT_MODELS,
+            "analysis_auto_min_lines": settings.meeting_analysis_auto_min_lines,
             **admin_flags,
         },
     )
@@ -1411,6 +1472,7 @@ async def admin_event_api_settings_post(
     clear_anthropic_api_key: bool | None = Form(False),
     clear_groq_api_key: bool | None = Form(False),
     meeting_analysis_enabled: bool | None = Form(False),
+    meeting_analysis_auto: bool | None = Form(False),
     meeting_analysis_provider: str | None = Form(None),
 ):
     form = await request.form()
@@ -1429,6 +1491,7 @@ async def admin_event_api_settings_post(
             raise HTTPException(status_code=404, detail="Event not found.")
         event.transcription_api_enabled = bool(transcription_api_enabled)
         event.meeting_analysis_enabled = bool(meeting_analysis_enabled)
+        event.meeting_analysis_auto = bool(meeting_analysis_auto)
         if meeting_analysis_provider is not None:
             event.meeting_analysis_provider = meeting_analysis_provider
         if meeting_analysis_model is not None:
@@ -1672,6 +1735,9 @@ async def admin_room_detail(request: Request, event_id: int, room_id: int):
             # Services that cannot translate this room's languages are not offered.
             "translation_unfit": catalog.translation_hidden((room.floor_language_code, *snapshot.plan.ai_languages)),
             "audio_choice": room_audio_choice(room),
+            # Sign in with YouTube (#1087): only once the operator configures a Google client, and only
+            # for those its routes admit (event owners and Admins).
+            "youtube_connect_enabled": settings.youtube_connect_enabled and admin_flags["is_event_owner"],
             "speech_models": ROOM_SPEECH_MODELS,
             "voice_presets": ROOM_VOICE_PRESETS,
             "ai_language_names": [room_language_name(code) for code in snapshot.plan.ai_languages],
@@ -1757,6 +1823,10 @@ def _duplicate_booth_language(language_code: str) -> TranslationLanguageError:
 
 def _require_translatable(provider: str | None, model: str | None, language_codes: Iterable[str | None]) -> None:
     """Refuse a translation model that cannot handle the language spoken or a language translated into."""
+    if model in RETIRED_TRANSLATION_MODELS:
+        raise TranslationLanguageError(
+            status_code=400, detail=f"{model} has been retired and no longer translates. Choose another model."
+        )
     error = language_support_error(provider, model, language_codes)
     if error:
         raise TranslationLanguageError(status_code=400, detail=error)
@@ -1825,6 +1895,8 @@ def _apply_ai_settings(room: Room, form: FormData, catalog: EngineCatalog) -> No
         model = str(form.get("floor_translation_model", "")).strip()[:100]
         if translation.provider == TranslationProviderEnum.SELF_HOSTED.value:
             model = settings.self_hosted_llm_model_or_default(model) or ""
+        elif translation.provider == TranslationProviderEnum.LOCAL.value:
+            model = settings.local_translation_model_or_default(model) or ""
         model = model or translation.model
         # Only a changed choice is checked, so a room saved before this rule can still save its other settings.
         changed = (translation.provider, model) != (room.floor_translation_provider, room.floor_translation_model)
@@ -1888,6 +1960,14 @@ def _room_translation_choice(form: FormData, form_section: str) -> tuple[bool, s
         if floor_translation_enabled and form_section in ("", "translation") and not settings.self_hosted_llm_enabled:
             raise HTTPException(status_code=400, detail="Self-hosted translation is not configured on this server")
         floor_translation_model = settings.self_hosted_llm_model_or_default(floor_translation_model)
+    elif floor_translation_provider == TranslationProviderEnum.LOCAL.value:
+        if (
+            floor_translation_enabled
+            and form_section in ("", "translation")
+            and not settings.local_translation_model_list
+        ):
+            raise HTTPException(status_code=400, detail="Built-in translation is not offered on this server")
+        floor_translation_model = settings.local_translation_model_or_default(floor_translation_model)
     return floor_translation_enabled, floor_translation_provider, floor_translation_model
 
 
@@ -1989,6 +2069,10 @@ async def admin_edit_room(request: Request, event_id: int, room_id: int):
 
             if not form_section or form_section == "general":
                 _process_room_general_section(room, form)
+
+            if form_section == "monitor":
+                room.monitor_floor_enabled = form.get("monitor_floor_enabled") == "on"
+                room.monitor_meeting_enabled = form.get("monitor_meeting_enabled") == "on"
 
             if not form_section or form_section == "relay":
                 await _process_room_relay_section(session, room, event_id, form)
@@ -2155,9 +2239,14 @@ async def admin_delete_ai_vocabulary(request: Request, event_id: int, room_id: i
 
 @router.get("/api/admin/providers/translation/models", dependencies=[Depends(require_owner_or_coordinator)])
 async def get_translation_models():
-    if not settings.self_hosted_llm_enabled:
-        return TRANSLATION_MODELS
-    return {**TRANSLATION_MODELS, TranslationProviderEnum.SELF_HOSTED.value: list(settings.self_hosted_llm_model_list)}
+    models = {**TRANSLATION_MODELS}
+    # Built-in and self-hosted models are offered only as far as the server's allow lists go.
+    models.pop(TranslationProviderEnum.LOCAL.value, None)
+    if settings.local_translation_model_list:
+        models[TranslationProviderEnum.LOCAL.value] = list(settings.local_translation_model_list)
+    if settings.self_hosted_llm_enabled:
+        models[TranslationProviderEnum.SELF_HOSTED.value] = list(settings.self_hosted_llm_model_list)
+    return models
 
 
 MAX_AUDIO_DELAY_MS = 10_000
@@ -2494,20 +2583,24 @@ async def admin_booth_detail(request: Request, event_id: int, room_id: int, boot
         saved_speech_model = db_booth.transcription_model
         if saved_speech_model == "scribe_v2":
             saved_speech_model = "scribe_v2_realtime"
-        for models, saved_provider, saved_model in (
-            (speech_models, db_booth.transcription_provider, saved_speech_model),
-            (translation_models, db_booth.translation_provider, db_booth.translation_model),
+        for models, saved_provider, saved_model, retired in (
+            (speech_models, db_booth.transcription_provider, saved_speech_model, frozenset()),
+            (translation_models, db_booth.translation_provider, db_booth.translation_model, RETIRED_TRANSLATION_MODELS),
         ):
             if not saved_provider:  # a new booth has no translation service saved yet
                 continue
             offered = models.setdefault(saved_provider, [])
             if saved_model and saved_model not in {value for value, _ in offered}:
-                offered.append((saved_model, f"{saved_model} (current)"))
+                offered.append((saved_model, f"{saved_model} ({'retired' if saved_model in retired else 'current'})"))
         if settings.self_hosted_llm_enabled:
             # Set after the step above: a self-hosted model the server no longer lists can't be saved, so it isn't offered.
             translation_models[TranslationProviderEnum.SELF_HOSTED.value] = [
                 (model, model) for model in settings.self_hosted_llm_model_list
             ]
+        # Likewise a built-in model the server no longer offers can't be saved.
+        translation_models[TranslationProviderEnum.LOCAL.value] = [
+            (model, model) for model in settings.local_translation_model_list
+        ]
         catalog = engine_catalog(event)
         kept_speech_hint = _kept_speech_hint(event, catalog, db_booth.transcription_provider)
     return templates.TemplateResponse(
@@ -2530,6 +2623,9 @@ async def admin_booth_detail(request: Request, event_id: int, room_id: int, boot
             "saved_notice": _booth_saved_notice(request),
             "error_notice": getattr(request.state, "translation_error", None) or _booth_error_notice(request),
             "show_next_steps": not (db_booth.transcription_enabled or db_booth.translation_enabled),
+            "retired_translation_model": (
+                db_booth.translation_model if db_booth.translation_model in RETIRED_TRANSLATION_MODELS else ""
+            ),
             "booth_id": bid,
             "mediamtx_path": mediamtx_path,
             "whep_url": whep_url,
@@ -2810,6 +2906,14 @@ async def admin_booth_translation_settings(
                     )
                 if not settings.self_hosted_llm_allows(translation_model):
                     raise HTTPException(status_code=400, detail="That model is not allowed for self-hosted translation")
+            if (
+                translation_enabled
+                and translation_provider == TranslationProviderEnum.LOCAL.value
+                and not settings.local_translation_allows(translation_model)
+            ):
+                raise HTTPException(
+                    status_code=400, detail="That built-in translation model is not offered on this server"
+                )
             if translation_enabled:
                 _require_translatable(
                     translation_provider, translation_model, (db_booth.language_code, *translation_languages)
@@ -4143,34 +4247,6 @@ async def api_admin_get_transcripts(
             result = await session.execute(stmt)
             segments = result.scalars().all()
             return [{"id": s.id, "text": s.text, "created_at": s.created_at.isoformat()} for s in segments]
-
-
-@router.post("/admin/models/trigger_download", dependencies=[Depends(require_event_owner), Depends(require_admin_csrf)])
-async def api_trigger_download(request: Request):
-    from portal.translations.providers.local import trigger_download
-
-    data = await request.json()
-    model = data.get("model", "nllb-200-distilled-600M")
-
-    from portal.translations.constants import TRANSLATION_MODELS, TranslationProviderEnum
-
-    supported_local_models = TRANSLATION_MODELS.get(TranslationProviderEnum.LOCAL.value, [])
-
-    if model not in supported_local_models:
-        raise HTTPException(status_code=400, detail=f"Unsupported local model: {model}")
-
-    import asyncio
-
-    asyncio.get_running_loop().run_in_executor(None, trigger_download, model)
-    return {"status": "started"}
-
-
-@router.get("/admin/models/download_progress", dependencies=[Depends(require_event_owner)])
-async def api_download_progress(model: str = Query("nllb-200-distilled-600M")):
-    from portal.translations.providers.local import get_download_progress
-
-    progress = get_download_progress(model)
-    return progress
 
 
 @router.post(

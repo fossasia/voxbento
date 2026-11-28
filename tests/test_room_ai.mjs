@@ -11,11 +11,13 @@ for (const [saveStatus, triggerStatus] of [[400, 200], [500, 200], [200, 500], [
   const calls = [];
   const alerts = [];
   const intervals = [];
-  for (const id of ['room_ai_form', 'floor_translation_provider', 'nllb_download_modal',
-    'nllb_proceed_btn', 'nllb_download_progress_container']) {
+  for (const id of ['room_ai_form', 'floor_translation_provider', 'floor_tts_provider', 'supertonic_download_modal',
+    'supertonic_proceed_btn', 'supertonic_download_progress_container']) {
     elements.set(id, { hidden: true, handlers: {}, addEventListener(type, handler) { this.handlers[type] = handler; } });
   }
+  // Built-in translation is chosen too: only Admins download translation models (#1191), so saving must not.
   elements.get('floor_translation_provider').value = 'local';
+  elements.get('floor_tts_provider').value = 'supertonic';
   const form = elements.get('room_ai_form');
   form.getAttribute = () => '/save';
   const context = vm.createContext({
@@ -38,13 +40,14 @@ for (const [saveStatus, triggerStatus] of [[400, 200], [500, 200], [200, 500], [
   });
   vm.runInContext(downloader + '\ninitLocalModelDownloader();', context);
   await form.handlers.submit({ preventDefault() {} });
-  assert.equal(elements.get('nllb_download_modal').hidden, false);
-  elements.get('nllb_proceed_btn').handlers.click();
+  assert.equal(elements.get('supertonic_download_modal').hidden, false);
+  elements.get('supertonic_proceed_btn').handlers.click();
   await new Promise(setImmediate);
   assert.equal(calls.some((url) => url.includes('trigger_download')), saveStatus === 200);
   const success = saveStatus === 200 && triggerStatus === 200;
   assert.equal(intervals.length, success ? 1 : 0);
-  assert.equal(elements.get('nllb_download_progress_container').hidden, !success);
+  assert.equal(elements.get('supertonic_download_progress_container').hidden, !success);
+  assert.ok(calls.every((url) => url === '/save' || url.includes('/models/supertonic/')), calls.join(', '));
   assert.equal(alerts.length, success ? 0 : 1);
 }
 

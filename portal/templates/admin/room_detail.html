@@ -149,6 +149,9 @@
   </div>
   <a href="{{ management_prefix }}/events/{{ event.id }}/rooms/{{ room.id }}/analysis/" class="btn btn-outline">View reports</a>
 </div>
+{% if event.meeting_analysis_enabled %}
+<iframe class="room-reports-frame" title="Meeting reports" loading="lazy" src="{{ management_prefix }}/events/{{ event.id }}/rooms/{{ room.id }}/analysis/?panel=1"></iframe>
+{% endif %}
 
 {% if is_event_owner %}
 <div class="room-card room-card--row">
@@ -271,15 +274,10 @@
           </select>
         </div>
       </details>
-      <div id="nllb_download_progress_container" class="download-progress" hidden>
-        <span id="nllb_download_speed" class="download-speed">-- MB/s</span>
-        <div class="progress-track"><div id="nllb_download_bar" class="progress-fill"></div></div>
-        <span id="nllb_download_percent" class="download-percent">0%</span>
-      </div>
 
       <details class="room-more" data-translation-instructions {% if room.floor_ai_interpreter_persona or room.floor_ai_interpretation_style %}open{% endif %}>
         <summary>Instructions for the AI translator <span class="rs-label-note">optional</span></summary>
-        <p class="hint" data-local-translation-note>The built-in translator (NLLB) uses the glossary but doesn't read these instructions. Choose another service to use them.</p>
+        <p class="hint" data-local-translation-note>The built-in translator uses the glossary but doesn't read these instructions. Choose another service to use them.</p>
         <div class="field">
           <label for="floor_ai_interpreter_persona">What is this event about?</label>
           <textarea id="floor_ai_interpreter_persona" name="floor_ai_interpreter_persona" rows="3" placeholder="Example: An open source developer conference. Talks are technical.">{{ room.floor_ai_interpreter_persona or '' }}</textarea>
@@ -398,7 +396,7 @@
                   <form method="post" action="{{ management_prefix }}/events/{{ event.id }}/rooms/{{ room.id }}/ai-vocabulary/delete">
                     <input type="hidden" name="csrf_token" value="{{ request.state.admin_csrf_token }}" />
                     <input type="hidden" name="entry_id" value="{{ entry.id }}">
-                    <button type="submit" class="btn btn-sm btn-outline">Delete</button>
+                    <button type="submit" class="btn btn-sm btn-outline" title="Delete this glossary entry">Delete</button>
                   </form>
                 </td>
               </tr>
@@ -409,7 +407,7 @@
       <form method="post" action="{{ management_prefix }}/events/{{ event.id }}/rooms/{{ room.id }}/ai-vocabulary/delete" class="ai-vocabulary-clear">
         <input type="hidden" name="csrf_token" value="{{ request.state.admin_csrf_token }}" />
         <input type="hidden" name="entry_id" value="all">
-        <button type="submit" class="btn btn-sm btn-outline">Delete the whole glossary</button>
+        <button type="submit" class="btn btn-sm btn-outline" title="Delete the entire glossary">Delete the whole glossary</button>
       </form>
     {% else %}
       <p class="ai-vocabulary-empty">No glossary yet.</p>
@@ -433,7 +431,7 @@
       <div class="field">
         <label for="jitsi_url">Meeting link</label>
         <input type="url" id="jitsi_url" name="jitsi_url" value="{{ room.jitsi_url or fallback_jitsi_url }}" placeholder="e.g. https://meet.example.org/TrackA">
-        <span class="hint">Interpreters see and hear the room through this meeting. VoxBento uses the same link when it hears the room from the online meeting.</span>
+        <span class="hint">Used by the meeting monitor and the managed meeting feed.</span>
       </div>
       <div class="field">
         <label for="audio_delay_ms">Listener delay (milliseconds)</label>
@@ -441,6 +439,18 @@
         <span class="hint">Holds back what listeners hear so it lines up with a livestream video that runs late. Leave at 0 if there is no video. 1000 = 1 second.</span>
       </div>
       <div class="room-save-bar"><button type="submit" class="btn btn-primary">Save</button></div>
+    </div>
+  </form>
+
+  <form method="post" action="{{ edit_url }}">
+    <input type="hidden" name="csrf_token" value="{{ request.state.admin_csrf_token }}" />
+    <input type="hidden" name="form_section" value="monitor">
+    <div class="room-card">
+      <h2>Interpreter monitor sources</h2>
+      <p class="room-card-sub">Choose the feeds interpreters can select in this room. A feed appears once its source is configured. Changes apply when the booth opens or reloads.</p>
+      <label><input type="checkbox" name="monitor_floor_enabled" {% if room.monitor_floor_enabled %}checked{% endif %}> Room floor audio (audio desk, encoder, or managed meeting feed)</label>
+      <label><input type="checkbox" name="monitor_meeting_enabled" {% if room.monitor_meeting_enabled %}checked{% endif %}> Room meeting link</label>
+      <div class="room-save-bar"><button type="submit" class="btn btn-primary">Save monitor sources</button></div>
     </div>
   </form>
 
@@ -468,37 +478,13 @@
     <form method="post" action="{{ management_prefix }}/events/{{ event.id }}/rooms/{{ room.id }}/delete" class="inline-delete"
           data-confirm="Delete room '{{ room.display_name }}'? All booths in this room will be removed.">
       <input type="hidden" name="csrf_token" value="{{ request.state.admin_csrf_token }}" />
-      <button type="submit" class="btn btn-danger">Delete room</button>
+      <button type="submit" class="btn btn-danger" title="Permanently delete this room">Delete room</button>
       <span class="danger-text">This removes its booths and their invite links. It can't be undone.</span>
     </form>
   </div>
 </section>
 {% endif %}
 
-</div>
-
-<div id="nllb_download_modal" class="model-modal-overlay" hidden>
-  <div class="model-modal">
-    <h3>Download the built-in translator?</h3>
-    <p>The built-in translator runs on this server. The first time, it has to download a large file, which can take several minutes. Translation starts once it's ready.</p>
-    <div class="model-modal-actions">
-      <button type="button" class="btn btn-secondary" id="nllb_cancel_btn">Cancel</button>
-      <button type="button" class="btn btn-primary" id="nllb_proceed_btn">Download and save</button>
-    </div>
-  </div>
-</div>
-
-<div id="nllb_success_modal" class="model-modal-overlay" hidden>
-  <div class="model-modal model-modal--success">
-    <div class="model-modal-icon">
-      ✓
-    </div>
-    <h3>Translator ready</h3>
-    <p>The built-in translator is downloaded and ready.</p>
-    <div class="model-modal-actions">
-      <button type="button" class="btn btn-primary btn-modal-dismiss" id="nllb_success_got_it_btn">Got it</button>
-    </div>
-  </div>
 </div>
 
 <div id="supertonic_download_modal" class="model-modal-overlay" hidden>

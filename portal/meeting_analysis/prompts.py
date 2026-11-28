@@ -6,7 +6,7 @@ from dataclasses import dataclass
 from datetime import datetime
 from typing import Protocol
 
-from portal.meeting_analysis.constants import MAX_TRANSCRIPT_CHARS, PART_CHARS
+from portal.meeting_analysis.constants import GLOSSARY_CHARS, GLOSSARY_TERMS, MAX_TRANSCRIPT_CHARS, PART_CHARS
 from portal.meeting_analysis.schema import AnalysisResult
 
 
@@ -36,10 +36,11 @@ def format_offset(seconds: int) -> str:
     return f"{hours}:{minutes:02d}:{secs:02d}" if hours else f"{minutes:02d}:{secs:02d}"
 
 
-def transcript_lines(segments: Sequence[Segment]) -> list[TranscriptLine]:
+def transcript_lines(segments: Sequence[Segment], origin: datetime | None = None) -> list[TranscriptLine]:
+    """Clean lines, each timed from ``origin`` (the session start), or from the first segment without one."""
     if not segments:
         return []
-    first = segments[0].created_at
+    first = origin or segments[0].created_at
     lines = []
     for segment in segments:
         text = _clean(_TRANSCRIPT_TAG.sub(" ", segment.text or ""), 2000)
@@ -80,19 +81,17 @@ SYSTEM_PROMPT = """You write the notes for a live session from its transcript, f
 Reply with one JSON object and nothing else, using exactly these keys:
 {{
   "title": "a short title for this session, at most 8 words",
-  "overview": "one or two sentences on what the session was about and what came out of it",
+  "overview": "a 3–5 sentence executive summary of the session and its outcomes",
   "sections": [
-    {{"heading": "a heading that names one theme of this session", "points": ["one specific point"]}}
+    {{"heading": "section heading", "points": ["one specific point"]}}
   ]
 }}
 
 Rules:
 - Write every value in {language}.
-- Group the notes the way this session actually went: choose 2 to 6 sections whose headings name its own themes,
-  for example the products, decisions or questions discussed. Don't use a fixed template or generic headings
-  such as "Summary" or "Key topics".
-- If decisions were made or follow-ups agreed, give them their own section with a heading that says so.
-  If there were none, leave that section out.
+- Include Key topics and a chronological Timestamped digest. Prefix each digest point with its source timestamp.
+- Include Action items for agreed follow-ups, naming the owner when the speaker attribution or discussion
+  identifies one. Leave ownership unspecified when unclear. Translate section headings into the report language.
 - Each section has 1 to 6 short, specific points, in the order they came up.
 - Use only what the transcript says. Name people only as the transcript names them, and never invent names,
   owners, numbers or decisions.
@@ -105,12 +104,42 @@ set of notes covering all of these parts: one title, one overview, and sections 
 parts instead of repeating it. Keep the same JSON keys and follow the rules above."""
 
 
-def _context(event_name: str, room_name: str, channel_label: str) -> list[str]:
-    return [
+def fit_glossary(terms: Sequence[str], limit: int = GLOSSARY_CHARS, count: int = GLOSSARY_TERMS) -> tuple[str, ...]:
+    """The glossary terms the prompt names: cleaned, each once, within the prompt's budget."""
+    kept: list[str] = []
+    seen: set[str] = set()
+    size = 0
+    for term in terms:
+        text = _clean(_TRANSCRIPT_TAG.sub(" ", term), 120)
+        folded = text.casefold()
+        if not text or folded in seen:
+            continue
+        if len(kept) >= count or size + len(text) + 3 > limit:
+            break
+        seen.add(folded)
+        kept.append(text)
+        size += len(text) + 3
+    return tuple(kept)
+
+
+def _context(
+    event_name: str,
+    room_name: str,
+    channel_label: str,
+    glossary: Sequence[str] = (),
+    translated: bool = False,
+) -> list[str]:
+    context = [
         f"Event: {_clean(event_name, 200)}",
         f"Room: {_clean(room_name, 200)}",
         f"Channel: {_clean(channel_label, 200)}",
     ]
+    if translated:
+        context.append("The transcript is a machine translation of what was said, so a few words may be off.")
+    if glossary:
+        context.append("Glossary: when these names and terms come up, spell them exactly as written here.")
+        context += [f"- {term}" for term in glossary]
+    return context
 
 
 def _system(language_name: str) -> str:
@@ -126,8 +155,10 @@ def build_analysis_messages(
     transcript: str,
     truncated: bool = False,
     part: tuple[int, int] | None = None,
+    glossary: Sequence[str] = (),
+    translated: bool = False,
 ) -> tuple[str, str]:
-    context = _context(event_name, room_name, channel_label)
+    context = _context(event_name, room_name, channel_label, glossary, translated)
     if part is not None:
         context.append(f"This is part {part[0]} of {part[1]} of the session. Write notes for this part only.")
     if truncated:
@@ -166,8 +197,10 @@ def build_merge_messages(
     language_name: str,
     parts: Sequence[AnalysisResult],
     truncated: bool = False,
+    glossary: Sequence[str] = (),
+    translated: bool = False,
 ) -> tuple[str, str]:
-    context = _context(event_name, room_name, channel_label)
+    context = _context(event_name, room_name, channel_label, glossary, translated)
     if truncated:
         context.append("Only the first part of the session fits, so report on that part.")
     return _system(language_name) + "\n" + MERGE_RULES, "\n".join(context) + f"\n\n<notes>\n{_notes(parts)}\n</notes>"
