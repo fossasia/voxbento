@@ -106,6 +106,7 @@ def _resolver_socket(token: str = "", cookies: dict | None = None) -> SimpleName
         headers={},
         cookies=cookies or {},
         url=SimpleNamespace(netloc="testserver"),
+        accept=AsyncMock(),
         close=AsyncMock(),
     )
 

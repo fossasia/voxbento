@@ -523,8 +523,9 @@ def test_deactivated_user_cannot_reconnect_over_websocket():
         assert exc_info.value.code == 4003
 
     with pytest.raises(WebSocketDisconnect) as exc_info:
-        with client.websocket_connect(f"/ws/booth/{bid}", cookies=cookie):
-            pass
+        with client.websocket_connect(f"/ws/booth/{bid}", cookies=cookie) as refused:
+            # Refused sockets are accepted first so the browser can read the code.
+            refused.receive_text()
     assert exc_info.value.code == 4003
 
 

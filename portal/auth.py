@@ -877,7 +877,13 @@ def _ws_scope_error(booth_id: str, payload: dict, credential: str) -> str | None
 
 
 async def _ws_reject(websocket: WebSocket, code: int, message: str) -> NoReturn:
-    """Close *websocket* with *code* and refuse the connection with *message*."""
+    """Close *websocket* with *code* and refuse the connection with *message*.
+
+    Accept first: a close before ``accept()`` becomes an HTTP 403 handshake
+    failure, which browsers report as 1006, so the client could not tell a
+    refused session from a dropped connection and would keep retrying.
+    """
+    await websocket.accept()
     await websocket.close(code=code)
     raise WSAuthError(message)
 
