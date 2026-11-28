@@ -568,6 +568,8 @@ def fit_speech_terms(
     keyterms: list[str] = []
     seen: set[str] = set()
     for source_term in source_terms:
+        if len(keyterms) >= max_terms:
+            break
         term = clean_speech_term(source_term)
         folded = term.casefold()
         if not term or folded in seen:
@@ -578,8 +580,6 @@ def fit_speech_terms(
         seen.add(folded)
         keyterms.append(term)
         budget -= term_cost
-        if len(keyterms) >= max_terms:
-            break
     return keyterms
 
 

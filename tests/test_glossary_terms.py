@@ -30,6 +30,11 @@ def test_fit_speech_terms_uses_the_given_limits():
     assert fit_speech_terms(["a", "b", "c", "d"], **LIMITS) == ["a", "b", "c"]
 
 
+def test_fit_speech_terms_with_no_room_for_terms_gives_none():
+    assert fit_speech_terms(["VoxBento"], max_terms=0) == []
+    assert fit_speech_terms(["VoxBento"], budget=0) == []
+
+
 @pytest.mark.anyio
 async def test_a_failed_slow_or_missing_lookup_gives_no_terms(monkeypatch):
     async def broken(*_):
