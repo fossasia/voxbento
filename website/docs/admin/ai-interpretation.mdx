@@ -32,6 +32,8 @@ Event owners manage custom glossaries to enforce accurate translation of brand n
 
 On the room page's **AI settings** tab, use the **Glossary** card. Upload a UTF-8 CSV file (up to 2 MB) to append terms to the existing glossary or replace it entirely.
 
+The card is shown for every room that has captions, also when the room has no AI language. In a room with captions only, the **Use the glossary** switch sits in the **Captions** card, and each row needs `all` as `target_language` and the term repeated as `target_term`, because the glossary then only helps the captions spell the term correctly (see [Glossary in Speech Recognition](#glossary-in-speech-recognition)).
+
 #### CSV Format
 
 **Required headers:**
@@ -71,6 +73,14 @@ To prevent token bloating and latency spikes during live simultaneous interpreta
 5. Caps the final prompt glossary at a maximum of 80 entries within the prompt character budget.
 
 This keeps real-time prompts compact, minimizing LLM inference latency.
+
+## Glossary in Speech Recognition
+
+The glossary also helps the captions themselves. A product name or acronym that is transcribed wrongly can no longer be matched by the glossary, so the mistake would carry into the translation. When the room's **Use the glossary** switch is on, the built-in Whisper captions are given the source terms of the glossary (booth, room and event-wide entries, most important first, about 400 characters in total) to bias recognition towards their spelling.
+
+- The terms are read once when the caption worker starts, so a glossary change applies the next time the worker starts. The lookup has a two-second timeout. If it times out or hits a database error, captions run without glossary terms.
+- Only the built-in Whisper uses the terms so far; cloud transcription services will follow.
+- A short glossary of difficult names helps most. Whisper may still mishear a very quiet or heavily accented word.
 
 ## Provider Compatibility
 

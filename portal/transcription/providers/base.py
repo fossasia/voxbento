@@ -55,6 +55,9 @@ def get_api_key(event: Event, provider: ProviderEnum) -> str | None:
 @dataclass
 class ProviderConfig:
     api_key: str | None
+    # The event glossary's source terms, most important first, for providers that can bias recognition
+    # (#1164). Filled once when the worker starts; empty means no biasing.
+    terms: tuple[str, ...] = ()
     #: Text local Whisper reads as preceding speech, e.g. glossary terms to spell as written.
     prompt: str | None = None
     #: Terms Deepgram listens for. Empty: the room's glossary is looked up as before.

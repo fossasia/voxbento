@@ -133,7 +133,14 @@ class LocalProvider(TranscriptionProvider):
         if prompt is None:
             prompt = config.prompt
         return await asyncio.to_thread(
-            self._run_inference, audio_data, language_code, model_variant, booth_state, prompt, overlap_seconds
+            self._run_inference,
+            audio_data,
+            language_code,
+            model_variant,
+            booth_state,
+            config.terms,
+            prompt,
+            overlap_seconds,
         )
 
     def _run_inference(
@@ -142,10 +149,15 @@ class LocalProvider(TranscriptionProvider):
         language_code: str,
         model_size: str,
         booth_state: BoothTranscriptionState | None,
+        terms: tuple[str, ...] = (),
         prompt: str | None = None,
         overlap_seconds: float = 1.0,
     ) -> str:
         model = get_model(model_size)
+        options = {}
+        if terms:
+            # Biases decoding towards the event glossary's spellings (#1164); without terms the call is unchanged.
+            options["hotwords"] = ", ".join(terms)
         segments, _ = model.transcribe(
             audio_data,
             beam_size=5,
@@ -157,6 +169,7 @@ class LocalProvider(TranscriptionProvider):
             log_prob_threshold=-1.0,
             condition_on_previous_text=False,
             initial_prompt=prompt,
+            **options,
         )
 
         valid_words = []
