@@ -483,6 +483,45 @@ async def test_booth_language_cannot_change_to_one_its_model_lacks(admin_booth):
 
 
 @pytest.mark.anyio
+async def test_booth_language_cannot_change_to_one_another_booth_in_the_room_uses(admin_booth):
+    cookie, event_id, room_id, booth_id = admin_booth
+    async with get_session() as s:
+        await create_booth(s, event_id=event_id, room_id=room_id, language_code="en", language_name="English")
+
+    async with _client(cookie) as client:
+        url = f"/admin/events/{event_id}/rooms/{room_id}/booths/{booth_id}/edit"
+        refused = await client.post(url, data={"language_name": "Hindi", "language_code": "EN"}, headers=ORIGIN)
+        after_refused = await _booth(booth_id)
+        page = await client.post(url, data={"language_code": "en"}, headers={**ORIGIN, "accept": "text/html"})
+        after_page = await _booth(booth_id)
+
+    assert refused.status_code == 409
+    assert refused.json()["detail"] == "Another booth in this room already uses en."
+    assert (after_refused.language_code, after_refused.language_name) == ("fr", "French")
+    assert page.status_code == 409
+    assert "Another booth in this room already uses en." in page.text
+    assert (after_page.language_code, after_page.language_name) == ("fr", "French")
+
+
+@pytest.mark.anyio
+async def test_booth_language_can_match_a_booth_in_another_room(admin_booth):
+    cookie, event_id, room_id, booth_id = admin_booth
+    async with get_session() as s:
+        other = await create_room(s, event_id=event_id, display_name="Side Room")
+        await create_booth(s, event_id=event_id, room_id=other.id, language_code="en", language_name="English")
+
+    async with _client(cookie) as client:
+        res = await client.post(
+            f"/admin/events/{event_id}/rooms/{room_id}/booths/{booth_id}/edit",
+            data={"language_code": "en"},
+            headers=ORIGIN,
+        )
+
+    assert res.status_code == 303
+    assert (await _booth(booth_id)).language_code == "en"
+
+
+@pytest.mark.anyio
 async def test_booth_page_offers_only_services_that_translate_its_languages(admin_booth):
     """Booth page offers only services that translate its languages."""
     cookie, event_id, room_id, booth_id = admin_booth
