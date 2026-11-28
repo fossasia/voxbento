@@ -9,7 +9,7 @@ from sqlalchemy import or_, select
 from sqlalchemy.orm import joinedload
 
 from portal.auth import get_booth_sessions, is_invite_token_revoked, resolve_booth_role, resolve_session_user
-from portal.booth_identity import make_booth_id, make_mediamtx_path
+from portal.booth_identity import make_booth_id, make_mediamtx_path, validate_event_slug, validate_language_code
 from portal.booth_state import DISPLAY_NAME_MAX_LENGTH
 from portal.config import settings
 from portal.database import (
@@ -195,6 +195,19 @@ async def interpreter_booth_by_identity(
         return safe_redirect(
             url=f"/login?next=/interpreter/{event_slug}/{room_id}/{language_code}",
             status_code=status.HTTP_303_SEE_OTHER,
+        )
+    try:
+        slug = validate_event_slug(event_slug)
+        code = validate_language_code(language_code)
+    except ValueError:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="There is no booth at this address. Check the link with the event's owners.",
+        )
+    if (slug, code) != (event_slug, language_code):
+        query = f"?{request.url.query}" if request.url.query else ""
+        return safe_redirect(
+            url=f"/interpreter/{slug}/{room_id}/{code}{query}", status_code=status.HTTP_308_PERMANENT_REDIRECT
         )
     booth_id = make_booth_id(event_slug, room_id, language_code)
     granted_role = await resolve_booth_role(list(sessions.values()), booth_id)
