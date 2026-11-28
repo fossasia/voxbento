@@ -218,7 +218,18 @@ export function initEmbedPlayer(env = {}) {
         audioScheduler.scheduleBuffer(nextSeg.audioBuffer);
         advanceSeq(finishedSeq);
       } else {
+        // Waiting for Stage 2 audio: arm seqWaitTimer so a dropped Stage-2 frame cannot stall forever.
         isSegmentPlaying = false;
+        if (!seqWaitTimer) {
+          const elapsed = Date.now() - (nextSeg.receivedAt || Date.now());
+          seqWaitTimer = schedule(() => {
+            seqWaitTimer = null;
+            if (segmentStore[expectedSeq]) {
+              segmentStore[expectedSeq].error = 'tts_timeout';
+            }
+            pumpSegmentQueue();
+          }, Math.max(0, 65000 - elapsed));
+        }
       }
     }
 
@@ -250,11 +261,20 @@ export function initEmbedPlayer(env = {}) {
         error: frame.header.error || (frame.header.audio_pending === false && !hasAudio ? 'no_audio' : null),
         empty: !frame.header.translation && !frame.header.error && frame.header.audio_pending === false,
         audioBuffer,
+        receivedAt: (segmentStore[seq] && segmentStore[seq].receivedAt) || Date.now(),
       };
 
       const storedSeqs = Object.keys(segmentStore).map(Number).sort((a, b) => a - b);
       if (storedSeqs.length > 5) {
+        while (storedSeqs.length > 5) {
+          const oldest = storedSeqs.shift();
+          delete segmentStore[oldest];
+        }
         expectedSeq = storedSeqs[0];
+        if (seqWaitTimer) {
+          cancel(seqWaitTimer);
+          seqWaitTimer = null;
+        }
       }
       pumpSegmentQueue();
     }
@@ -297,6 +317,7 @@ export function initEmbedPlayer(env = {}) {
       ws.onclose = function (ev) {
         if (ttsWs !== ws) return;
         ttsWs = null;
+        clearPendingPlayback();
         if (ev.code === 4001 || ev.code === 4003 || (ev.code === 1006 && isJwtExpired(EMBED_TOKEN))) {
           setExpired();
           return;
