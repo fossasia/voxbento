@@ -146,7 +146,7 @@ Received when another participant sends a message.
 ```
 
 ### 3. `booth:glossary`
-The glossary entries that apply to this booth: event-wide entries, the room's entries and the booth's own, for the booth's language or `all`. When one source term has several entries, the booth's own wins over the room's, then the higher priority. At most 500 entries are sent, highest priority first; `truncated` says when there were more.
+The glossary entries that apply to this booth: event-wide entries, the room's entries and the booth's own, for the booth's language or `all`. When one source term has several entries, the booth's own wins over the room's, then the higher priority. Every entry is sent, highest priority first, and every one is marked in floor captions.
 
 The glossary arrives inside `booth:joined` (as its `glossary` field) and again as its own message whenever an event owner changes the room's glossary.
 
@@ -155,8 +155,7 @@ The glossary arrives inside `booth:joined` (as its `glossary` field) and again a
   "type": "booth:glossary",
   "terms": [
     { "id": 12, "source_term": "keynote", "target_term": "discours d'ouverture", "description": "Opening talk" }
-  ],
-  "truncated": false
+  ]
 }
 ```
 

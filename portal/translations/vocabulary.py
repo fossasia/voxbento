@@ -435,7 +435,6 @@ async def booth_glossary_entries(
     room_id: int | None,
     booth_id: int | None,
     target_language: str,
-    max_entries: int,
 ) -> list[AIVocabularyEntry]:
     """The whole glossary an interpreter of this booth works with, one entry per source term."""
     stream = await session.stream_scalars(_scoped_entries_query(event_id, room_id, booth_id, target_language))
@@ -447,7 +446,7 @@ async def booth_glossary_entries(
     deduplicated, _ = _deduplicate_by_scope(candidates, room_id, booth_id)
     # Read by people: highest priority first, then alphabetical.
     deduplicated.sort(key=lambda entry: (-entry.priority, entry.source_term.casefold(), entry.id))
-    return deduplicated[:max_entries]
+    return deduplicated
 
 
 async def resolve_vocabulary_entries(

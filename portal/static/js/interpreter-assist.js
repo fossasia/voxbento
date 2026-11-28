@@ -3,7 +3,7 @@
  * with each glossary term marked and its translation shown next to it.
  *
  * The server sends both over the booth socket:
- *   booth:glossary       { terms: [{ id, source_term, target_term, description }], truncated }
+ *   booth:glossary       { terms: [{ id, source_term, target_term, description }] }
  *   booth:floor-caption  { status: 'partial' | 'final' | 'clear', text, hits: [{ start, end, term_id, target_term }] }
  * Hit offsets are UTF-16 code units, the way JavaScript strings are indexed.
  *
@@ -142,12 +142,10 @@ export function createInterpreterAssist(doc = document) {
     search: doc.getElementById('assist-search'),
     glossary: doc.getElementById('assist-glossary'),
     glossaryEmpty: doc.getElementById('assist-glossary-empty'),
-    glossaryNote: doc.getElementById('assist-glossary-note'),
   }
   const enabled = Boolean(el.floorLog && el.glossary)
   const transcript = createFloorTranscript()
   let terms = []
-  let truncated = false
 
   function renderGlossary() {
     if (!enabled) return
@@ -176,7 +174,6 @@ export function createInterpreterAssist(doc = document) {
       el.glossaryEmpty.textContent = terms.length ? 'No term matches your search.' : 'No glossary for this booth yet.'
       el.glossaryEmpty.classList.toggle('hidden', visible.length > 0)
     }
-    if (el.glossaryNote) el.glossaryNote.classList.toggle('hidden', !truncated)
   }
 
   function renderFloor() {
@@ -197,7 +194,6 @@ export function createInterpreterAssist(doc = document) {
   return {
     setGlossary(message) {
       terms = Array.isArray(message?.terms) ? message.terms : []
-      truncated = Boolean(message?.truncated)
       renderGlossary()
     },
     handleFloorCaption(message) {

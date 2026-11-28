@@ -32,8 +32,6 @@ from portal.translations.vocabulary import booth_glossary_entries, find_term_spa
 logger = logging.getLogger(__name__)
 
 FLOOR_LANGUAGE = "floor"
-#: Entries sent to one booth. A glossary this long is already more than anyone can scan live.
-MAX_GLOSSARY_TERMS = 500
 #: How long a booth's glossary is reused before it is read again. Edits made through the room
 #: page are pushed at once; this only bounds how stale a change made elsewhere can be.
 GLOSSARY_CACHE_SECONDS = 60.0
@@ -67,7 +65,6 @@ class GlossaryTermPayload(TypedDict):
 class GlossaryMessage(TypedDict):
     type: Literal["booth:glossary"]
     terms: list[GlossaryTermPayload]
-    truncated: bool
 
 
 class CaptionHit(TypedDict):
@@ -111,13 +108,11 @@ class AssistTerm:
 class BoothGlossary:
     #: Highest priority first: earlier terms win overlap ties, as in the translation pipeline.
     terms: tuple[AssistTerm, ...] = ()
-    truncated: bool = False
 
     def message(self) -> GlossaryMessage:
         return {
             "type": "booth:glossary",
             "terms": [term.as_payload() for term in self.terms],
-            "truncated": self.truncated,
         }
 
 
@@ -142,10 +137,14 @@ def find_hits(text: str, terms: Sequence[AssistTerm]) -> list[CaptionHit]:
     """
     if not text:
         return []
+    # Every entry is matched, however long the glossary: a plain substring test first skips the
+    # terms that cannot occur, so only the few that might are scanned for whole-word matches.
+    folded = text.casefold()
     found = sorted(
         (
             (start, end, rank, term)
             for rank, term in enumerate(terms)
+            if (term.source_term in text if term.case_sensitive else term.source_term.casefold() in folded)
             for start, end in find_term_spans(term, text)
             if end > start
         ),
@@ -212,7 +211,6 @@ async def load_booth_glossary(booth_id: str) -> BoothGlossary:
             room_id=room_id,
             booth_id=db_booth_id,
             target_language=language_code,
-            max_entries=MAX_GLOSSARY_TERMS + 1,
         )
     terms = tuple(
         AssistTerm(
@@ -222,9 +220,9 @@ async def load_booth_glossary(booth_id: str) -> BoothGlossary:
             description=entry.description,
             case_sensitive=bool(entry.case_sensitive),
         )
-        for entry in entries[:MAX_GLOSSARY_TERMS]
+        for entry in entries
     )
-    return BoothGlossary(terms=terms, truncated=len(entries) > MAX_GLOSSARY_TERMS)
+    return BoothGlossary(terms=terms)
 
 
 class GlossaryCache:

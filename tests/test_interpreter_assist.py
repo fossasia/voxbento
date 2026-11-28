@@ -416,7 +416,6 @@ async def test_booth_glossary_has_the_event_room_and_booth_entries_for_its_langu
             # The booth's own entry wins over the room's entry for the same term.
             ("Keynote", "Hauptvortrag"),
         ]
-        assert glossary.truncated is False
         assert (await load_booth_glossary(f"assist-scope-{hall_id}-floor")).terms == ()
         assert (await load_booth_glossary("no-such-event-1-de")).terms == ()
     finally:
@@ -424,11 +423,9 @@ async def test_booth_glossary_has_the_event_room_and_booth_entries_for_its_langu
 
 
 @pytest.mark.anyio
-async def test_a_long_glossary_is_capped_and_says_so(monkeypatch):
-    from portal import interpreter_assist
+async def test_a_long_glossary_is_sent_and_matched_in_full():
     from portal.database import configure, dispose, init_db
 
-    monkeypatch.setattr(interpreter_assist, "MAX_GLOSSARY_TERMS", 3)
     configure("sqlite+aiosqlite://")
     await init_db()
     try:
@@ -448,15 +445,18 @@ async def test_a_long_glossary_is_capped_and_says_so(monkeypatch):
                     target_term=f"Begriff {i}",
                     priority=i,
                 )
-                for i in range(5)
+                for i in range(1200)
             )
             room_id = room.id
 
         glossary = await load_booth_glossary(f"assist-cap-{room_id}-de")
 
-        assert glossary.truncated is True
+        assert len(glossary.terms) == 1200
         # Highest priority first.
-        assert [t.source_term for t in glossary.terms] == ["term 4", "term 3", "term 2"]
+        assert [t.source_term for t in glossary.terms[:3]] == ["term 1199", "term 1198", "term 1197"]
+        # The last, lowest-priority entry is still marked in a caption.
+        hits = find_hits("We start with term 0 today.", glossary.terms)
+        assert [(h["target_term"], h["term_id"]) for h in hits] == [("Begriff 0", glossary.terms[-1].id)]
     finally:
         await dispose()
 
@@ -525,7 +525,6 @@ def test_joining_a_booth_brings_its_glossary(booth_ws_app):
 
     assert joined["type"] == "booth:joined"
     assert joined["glossary"]["type"] == "booth:glossary"
-    assert joined["glossary"]["truncated"] is False
     assert [(t["source_term"], t["target_term"], t["description"]) for t in joined["glossary"]["terms"]] == [
         ("keynote", "discours d'ouverture", "Opening talk")
     ]

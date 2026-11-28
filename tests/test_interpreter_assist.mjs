@@ -132,7 +132,7 @@ class FakeNode {
 function fakeDocument() {
   const ids = [
     'assist-term-count', 'assist-floor-log', 'assist-floor-empty', 'assist-search',
-    'assist-glossary', 'assist-glossary-empty', 'assist-glossary-note',
+    'assist-glossary', 'assist-glossary-empty',
   ]
   const nodes = Object.fromEntries(ids.map((id) => [id, new FakeNode('div')]))
   nodes['assist-search'].value = ''
@@ -161,11 +161,9 @@ function findAll(node, tag, out = []) {
       { id: 1, source_term: 'keynote', target_term: 'discours', description: 'Opening talk' },
       { id: 2, source_term: '<img src=x onerror=alert(1)>', target_term: 'safe' },
     ],
-    truncated: true,
   })
   assert(nodes['assist-term-count'].textContent === '2', 'the count shows the number of terms')
   assert(nodes['assist-glossary'].children.length === 2, 'every term is listed')
-  assert(!nodes['assist-glossary-note'].classList.contains('hidden'), 'a capped glossary says so')
   assert(
     nodes['assist-glossary'].children[1].children[0].textContent === '<img src=x onerror=alert(1)>',
     'glossary text is shown as text, never parsed as HTML',
