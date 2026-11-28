@@ -59,9 +59,13 @@ async def _check_mediamtx() -> bool:
         r = await client.get(f"{base}/v3/paths/list", timeout=2.0)
         ok = r.status_code < 500
         _mediamtx_cache = (now + _MEDIAMTX_CACHE_TTL, ok)
+        if not ok:
+            _created_paths.clear()
         return ok
     except (httpx.ConnectError, httpx.TimeoutException, httpx.RequestError, RuntimeError):
         _mediamtx_cache = (now + _MEDIAMTX_CACHE_TTL, False)
+        # MediaMTX may restart and lose its dynamic paths; re-create them once it is back.
+        _created_paths.clear()
         return False
 
 
@@ -113,7 +117,9 @@ async def _ensure_mediamtx_path(channel_id: str) -> None:
             if r2.status_code == 200:
                 _created_paths.add(channel_id)
     except (httpx.ConnectError, httpx.TimeoutException, httpx.RequestError, RuntimeError):
-        pass  # Non-fatal; path will use all_others defaults
+        # Non-fatal; path will use all_others defaults. MediaMTX is unreachable, so it may
+        # restart and lose its paths: forget the cache so they are re-created once it is back.
+        _created_paths.clear()
 
 
 def _require_access(
